@@ -331,9 +331,12 @@ function plannerMetadata(planner: unknown, reason?: PlannerReason): Pick<History
   return { planner: plannerValue(planner), ...(reason === undefined ? {} : { plannerReason: reason }) };
 }
 /** #604: what this project handed to another project, and the last state that project reported (agent-hub#1030 design 4). */
-export interface HandoffOutboundRow { remoteProject: string; remoteTask: number; originPeer: string; localTask: number | null; title: string; state: string; pr: number | null; head: string | null; updatedAt: number }
+export interface HandoffOutboundRow { remoteProject: string; remoteTask: number; originPeer: string; localTask: number | null; title: string; state: string; pr: number | null; head: string | null; updatedAt: number;
+  /** #733: the target task's flow revision at the last event applied; null for a row from before sequences or from a target that sends none. */
+  seq: number | null }
+const OUTBOUND_COLUMNS = "remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at, seq";
 const handoffOutboundFromRow = (row: Record<string, unknown>): HandoffOutboundRow => ({ remoteProject: String(row.remote_project), remoteTask: Number(row.remote_task), originPeer: String(row.origin_peer),
-  localTask: row.local_task === null ? null : Number(row.local_task), title: String(row.title), state: String(row.last_state), pr: row.pr === null ? null : Number(row.pr), head: row.head === null ? null : String(row.head), updatedAt: Number(row.updated_at) });
+  localTask: row.local_task === null ? null : Number(row.local_task), title: String(row.title), state: String(row.last_state), pr: row.pr === null ? null : Number(row.pr), head: row.head === null ? null : String(row.head), updatedAt: Number(row.updated_at), seq: row.seq === null || row.seq === undefined ? null : Number(row.seq) });
 
 export interface Task extends PlanningFields {
   offer?: TaskOffer;
@@ -547,6 +550,8 @@ export class Board {
     this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS task_handoff_origin_key ON task_handoff_origin(project_id, handoff_key) WHERE handoff_key IS NOT NULL");
     this.db.run(`CREATE TABLE IF NOT EXISTS task_handoff_outbound (remote_project TEXT NOT NULL, remote_task INTEGER NOT NULL, origin_peer TEXT NOT NULL, local_task INTEGER,
       title TEXT NOT NULL, last_state TEXT NOT NULL, pr INTEGER, head TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(remote_project, remote_task))`);
+    // #733: the sequence of the last applied event, so an event that arrives late cannot move a row backwards. Rows from before keep NULL and accept any event.
+    if (!(this.db.query("PRAGMA table_info(task_handoff_outbound)").all() as { name: string }[]).some(c => c.name === "seq")) this.db.run("ALTER TABLE task_handoff_outbound ADD COLUMN seq INTEGER");
     this.db.run(`CREATE TABLE IF NOT EXISTS research_handoffs (
       campaign_id TEXT NOT NULL, unit_id TEXT NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL,
       task_id INTEGER NOT NULL, body TEXT NOT NULL, by_peer TEXT NOT NULL, at INTEGER NOT NULL, private INTEGER NOT NULL,
@@ -632,18 +637,32 @@ export class Board {
     });
   }
 
-  /** ORIGIN side: what this project handed to another one. Keyed by the target project and its task id, so a repeated event updates one row. */
+  /**
+   * ORIGIN side: what this project handed to another one, newest first, for the person's list (`ahub board --handoffs`). Keyed by the target project and its task id, so a repeated event updates
+   * one row. Capped for display only: the catch-up never reads this (`handoffOutboundOpen`), so a row the list does not show is still caught up (#733).
+   */
   handoffOutbound(): HandoffOutboundRow[] {
-    return (this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound ORDER BY updated_at DESC, remote_project, remote_task LIMIT 200").all() as Record<string, unknown>[]).map(handoffOutboundFromRow);
+    return (this.db.query(`SELECT ${OUTBOUND_COLUMNS} FROM task_handoff_outbound ORDER BY updated_at DESC, remote_project, remote_task LIMIT 200`).all() as Record<string, unknown>[]).map(handoffOutboundFromRow);
+  }
+  /** #733 (H5): every row the catch-up still asks about, no cap, oldest first so a long backlog is worked through in the same order every pass. The caller filters with `handoffCatchUpRow`. */
+  handoffOutboundOpen(): HandoffOutboundRow[] {
+    return (this.db.query(`SELECT ${OUTBOUND_COLUMNS} FROM task_handoff_outbound WHERE last_state != 'cancelled' ORDER BY updated_at, remote_project, remote_task`).all() as Record<string, unknown>[]).map(handoffOutboundFromRow);
   }
   handoffOutboundFor(remoteProject: string, remoteTask: number): HandoffOutboundRow | undefined {
-    const row = this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound WHERE remote_project=? AND remote_task=?").get(remoteProject, remoteTask) as Record<string, unknown> | null;
+    const row = this.db.query(`SELECT ${OUTBOUND_COLUMNS} FROM task_handoff_outbound WHERE remote_project=? AND remote_task=?`).get(remoteProject, remoteTask) as Record<string, unknown> | null;
     return row ? handoffOutboundFromRow(row) : undefined;
   }
-  recordHandoffOutbound(row: { remoteProject: string; remoteTask: number; originPeer: string; localTask?: number; title: string; state: string; pr?: number; head?: string }): void {
-    this.db.query(`INSERT INTO task_handoff_outbound(remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at) VALUES(?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(remote_project, remote_task) DO UPDATE SET last_state=excluded.last_state, pr=COALESCE(excluded.pr, pr), head=COALESCE(excluded.head, head), updated_at=excluded.updated_at`)
-      .run(row.remoteProject, row.remoteTask, row.originPeer, row.localTask ?? null, row.title, row.state, row.pr ?? null, row.head ?? null, Date.now());
+  /**
+   * Record a state. With a `seq` the write applies only when it is newer than the stored one (#733 H4: events use a connection each and can arrive out of order), decided inside the one statement so
+   * two events cannot both pass a check made before either wrote. Returns whether the row changed. An event with no `seq` (an older target, or the origin's own first write) behaves as before:
+   * it applies, and keeps the highest `seq` already stored.
+   */
+  recordHandoffOutbound(row: { remoteProject: string; remoteTask: number; originPeer: string; localTask?: number; title: string; state: string; pr?: number; head?: string; seq?: number }): { applied: boolean } {
+    const result = this.db.query(`INSERT INTO task_handoff_outbound(remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at, seq) VALUES(?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(remote_project, remote_task) DO UPDATE SET last_state=excluded.last_state, pr=COALESCE(excluded.pr, pr), head=COALESCE(excluded.head, head), updated_at=excluded.updated_at, seq=COALESCE(MAX(excluded.seq, seq), excluded.seq, seq)
+      WHERE excluded.seq IS NULL OR seq IS NULL OR excluded.seq > seq`)
+      .run(row.remoteProject, row.remoteTask, row.originPeer, row.localTask ?? null, row.title, row.state, row.pr ?? null, row.head ?? null, Date.now(), row.seq ?? null);
+    return { applied: result.changes > 0 };
   }
   /** A digest over both tables, so a recovery that restores or loses a row is seen. */
   handoffIntegrity(): { origins: number; outbound: number; digest: string } {
@@ -655,7 +674,10 @@ export class Board {
         if (row.handoff_key === null) { delete row.handoff_key; delete row.request_digest; }
         digest.update(JSON.stringify(row)).update("\n"); origins++;
       }
-      for (const row of this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound ORDER BY remote_project, remote_task").iterate()) { digest.update(JSON.stringify(row)).update("\n"); outbound++; }
+      for (const row of this.db.query(`SELECT ${OUTBOUND_COLUMNS} FROM task_handoff_outbound ORDER BY remote_project, remote_task`).iterate() as Iterable<Record<string, unknown>>) {
+        if (row.seq === null) delete row.seq;   // a row from before sequences keeps its digest (#733)
+        digest.update(JSON.stringify(row)).update("\n"); outbound++;
+      }
       return { origins, outbound, digest: digest.digest("hex") };
     })();
   }

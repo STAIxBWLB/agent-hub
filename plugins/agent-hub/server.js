@@ -24601,7 +24601,8 @@ init_research_campaign();
 init_board();
 var HANDOFF_LIMITS = Object.freeze({ title: 300, detail: 4000, paths: 16, path: 512, issue: 2000000000, bodyBytes: 8 * 1024, duplicateOk: 300 });
 var HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detail", "paths", "issue", "task", "duplicate_ok", "handoffKey"]);
-var HANDOFF_EVENTS = Object.freeze(["accepted", "in_review", "approved", "declined", "cancelled"]);
+var HANDOFF_EVENTS = Object.freeze(["accepted", "in_review", "approved", "declined", "cancelled", "changes_requested", "reopened"]);
+var HANDOFF_APPROVED_GRACE_MS = 7 * 24 * 3600000;
 
 // src/hub/tasks.ts
 init_task_code_symbols();

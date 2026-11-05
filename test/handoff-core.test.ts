@@ -3,7 +3,7 @@ import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { parseHandoffArgs } from "../src/cli/handoff-args.ts";
 import { HANDOFF_CONNECT_MS, HANDOFF_CONTROL_TIMEOUT_MS, HANDOFF_LOOKUP_CONNECT_MS, HANDOFF_LOOKUP_REQUEST_MS, HANDOFF_REQUEST_MS, controlRequestTimeout } from "../src/hub/control-client.ts";
-import { HANDOFF_KEY, HANDOFF_LIMITS, HandoffRefusal, type HandoffRefusalCode, checkTarget, handoffOutcomeUnknown, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
+import { HANDOFF_APPROVED_GRACE_MS, HANDOFF_KEY, HANDOFF_LIMITS, HANDOFF_STATES_CHUNK, handoffCatchUpRow, handoffChunks, HandoffRefusal, type HandoffRefusalCode, checkTarget, handoffOutcomeUnknown, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
 
 const refusal = (run: () => unknown): HandoffRefusal => { try { run(); } catch (error) { if (error instanceof HandoffRefusal) return error; throw error; } throw new Error("expected a refusal"); };
 const good = { project: "p_aaaa", title: "Raise the exact pin", class: "implement", detail: "to 0.16.0", paths: ["package.json", "bun.lock"], issue: 12 };
@@ -75,7 +75,9 @@ test("only the listed state changes reach the origin, read from the task's own e
   expect(handoffEventFor("done", "approved")).toBe("approved");                          // a class with no reviewer: the done approves, observed on a real daemon in handoff-daemon.test.ts
   expect(handoffEventFor("declined", "proposed")).toBe("declined");
   expect(handoffEventFor("cancelled", "cancelled")).toBe("cancelled");
-  for (const [event, state] of [["proposed", "proposed"], ["assigned", "proposed"], ["reassigned", "proposed"], ["done (checking)", "in_progress"], ["changes_requested", "changes_requested"], ["check passed", "in_progress"], ["approved", "in_review"], ["accepted", "proposed"]] as const)
+  expect(handoffEventFor("changes_requested", "changes_requested")).toBe("changes_requested");   // #733: a verdict the origin used to hear nothing about
+  expect(handoffEventFor("reopened", "in_progress")).toBe("reopened");
+  for (const [event, state] of [["proposed", "proposed"], ["assigned", "proposed"], ["reassigned", "proposed"], ["done (checking)", "in_progress"], ["changes_requested", "in_review"], ["reopened", "changes_requested"], ["check passed", "in_progress"], ["approved", "in_review"], ["accepted", "proposed"]] as const)
     expect(handoffEventFor(event, state), `${event}/${state}`).toBeUndefined();
 });
 
@@ -202,4 +204,23 @@ test("#731 a handoff caller's deadline covers two attempts and the by-key lookup
   expect(controlRequestTimeout({ t: "task", op: "hub_task_handoff" }, 0)).toBe(0);                       // an explicit "no deadline" stays one
   expect(controlRequestTimeout({ t: "task", op: "hub_task_handoffs" }, 30_000)).toBe(30_000);            // the read-only list keeps the default
   expect(controlRequestTimeout({ t: "task", op: "hub_task_propose" }, 30_000)).toBe(30_000);
+});
+
+// #733 (agent-hub#1203 T2): the catch-up's pure rules.
+test("#733 the catch-up keeps open rows and recently approved ones, and never asks about a cancelled one", () => {
+  const now = 10 * HANDOFF_APPROVED_GRACE_MS;
+  for (const state of ["proposed", "accepted", "in_review", "declined", "changes_requested", "reopened"]) expect(handoffCatchUpRow({ state, updatedAt: 0 }, now), state).toBe(true);   // open: however old
+  expect(handoffCatchUpRow({ state: "cancelled", updatedAt: now }, now)).toBe(false);
+  expect(handoffCatchUpRow({ state: "approved", updatedAt: now - HANDOFF_APPROVED_GRACE_MS + 1 }, now)).toBe(true);    // a withdrawn approval is still seen for a week
+  expect(handoffCatchUpRow({ state: "approved", updatedAt: now - HANDOFF_APPROVED_GRACE_MS - 1 }, now)).toBe(false);
+});
+
+test("#733 task ids go to the target in chunks of at most 200, in order, none dropped", () => {
+  expect(HANDOFF_STATES_CHUNK).toBe(200);
+  const ids = Array.from({ length: 450 }, (_, i) => i + 1);
+  const chunks = handoffChunks(ids);
+  expect(chunks.map(chunk => chunk.length)).toEqual([200, 200, 50]);
+  expect(chunks.flat()).toEqual(ids);
+  expect(handoffChunks([])).toEqual([]);
+  expect(handoffChunks([7])).toEqual([[7]]);
 });

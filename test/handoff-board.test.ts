@@ -89,3 +89,35 @@ test("a row from before handoff keys keeps its integrity digest, and a keyed row
   f.board.proposeHandoff(HUB, { title: "keyed", class: "implement" }, { projectId: "p_a", peer: "claude", key: "6f1c2c0e-8b1a-4c3e-9d3a-1b2c3d4e5f60", digest: "d" });
   expect(f.board.handoffIntegrity().digest).not.toBe(before);
 });
+
+// #733: the outbound row keeps the sequence of the last applied event; an older one changes nothing.
+test("an outbound write with a sequence applies only when newer; one without applies as before and keeps the highest stored", () => {
+  const f = fixture();
+  const row = { remoteProject: "p_b", remoteTask: 7, originPeer: "claude", title: "t" };
+  expect(f.board.recordHandoffOutbound({ ...row, state: "proposed" })).toEqual({ applied: true });
+  expect(f.board.recordHandoffOutbound({ ...row, state: "approved", seq: 9 })).toEqual({ applied: true });
+  expect(f.board.recordHandoffOutbound({ ...row, state: "in_review", seq: 5 })).toEqual({ applied: false });     // a late in_review after approved
+  expect(f.board.handoffOutboundFor("p_b", 7)).toMatchObject({ state: "approved", seq: 9 });
+  expect(f.board.recordHandoffOutbound({ ...row, state: "in_review", seq: 9 })).toEqual({ applied: false });     // an equal sequence is a repeat
+  expect(f.board.recordHandoffOutbound({ ...row, state: "changes_requested", seq: 12 })).toEqual({ applied: true });   // a withdrawn approval moves it on
+  expect(f.board.recordHandoffOutbound({ ...row, state: "accepted" })).toEqual({ applied: true });                // no sequence: an older target, applies as before
+  expect(f.board.handoffOutboundFor("p_b", 7)).toMatchObject({ state: "accepted", seq: 12 });                     // and the highest sequence is kept
+  f.restart();
+  expect(f.board.handoffOutboundFor("p_b", 7)).toMatchObject({ seq: 12 });
+});
+
+test("the open-row reader has no 200 cap, skips cancelled rows and a row from before sequences keeps its integrity digest", () => {
+  const f = fixture();
+  for (let n = 1; n <= 250; n++) f.board.recordHandoffOutbound({ remoteProject: "p_b", remoteTask: n, originPeer: "claude", title: `t${n}`, state: "accepted" });
+  f.board.recordHandoffOutbound({ remoteProject: "p_b", remoteTask: 251, originPeer: "claude", title: "gone", state: "cancelled" });
+  expect(f.board.handoffOutbound()).toHaveLength(200);                                  // the person's list stays capped
+  expect(f.board.handoffOutboundOpen()).toHaveLength(250);                              // the catch-up reads them all
+  expect(f.board.handoffOutboundOpen().map(row => row.remoteTask)).not.toContain(251);
+  const db = (f.board as any).db;
+  expect(db.query("SELECT COUNT(*) AS n FROM task_handoff_outbound WHERE seq IS NOT NULL").get()).toEqual({ n: 0 });
+  const before = f.board.handoffIntegrity().digest;
+  f.restart();
+  expect(f.board.handoffIntegrity().digest).toBe(before);
+  f.board.recordHandoffOutbound({ remoteProject: "p_b", remoteTask: 1, originPeer: "claude", title: "t1", state: "accepted", seq: 3 });
+  expect(f.board.handoffIntegrity().digest).not.toBe(before);                           // a sequenced row changes it, so a lost sequence is seen by a recovery
+});
