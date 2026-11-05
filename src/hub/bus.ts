@@ -1279,6 +1279,22 @@ export class Bus {
     } catch { return false; }
   }
 
+  private holdRemoteDeliveryMetadata(peer: PeerId, row: JournalDelivery, reason: string): boolean {
+    try { this.journal!.transition(row.id, "needs_review", reason, row.revision); }
+    catch (error) {
+      if (error instanceof Error && /stale delivery revision|unknown delivery|already has a person disposition/.test(error.message)) return false;
+      this.storageError = "delivery journal unavailable";
+      this.onQueues?.();
+      return false;
+    }
+    this.activeDeliveries.delete(row.id);
+    if (this.remoteTransport.get(row.id)?.peer === peer) this.remoteTransport.delete(row.id);
+    this.refreshRecoveryHold(peer);
+    this.onQueues?.();
+    void this.drain(peer);
+    return true;
+  }
+
   /** Hold a remote row for human inspection when its durable Store intent is absent. */
   holdRemoteMissingIntent(source: PeerAdapter, deliveryId: string, currentGuard: () => boolean, origin: "restored" | "known-not-sent" = "restored"): boolean {
     if (origin !== "restored" && origin !== "known-not-sent") return false;
@@ -1298,19 +1314,20 @@ export class Bus {
     const reason = origin === "restored"
       ? `room durable intent unavailable after restart; inspect ahub queue show ${deliveryId}`
       : `room not-sent checkpoint unavailable; inspect ahub queue show ${deliveryId}`;
-    try { this.journal.transition(deliveryId, "needs_review", reason, row.revision); }
-    catch (error) {
-      if (error instanceof Error && /stale delivery revision|remote delivery|person disposition/.test(error.message)) return false;
-      this.storageError = "delivery journal unavailable";
-      this.onQueues?.();
-      return false;
-    }
-    this.activeDeliveries.delete(deliveryId);
-    if (this.remoteTransport.get(deliveryId)?.peer === peer) this.remoteTransport.delete(deliveryId);
-    this.refreshRecoveryHold(peer);
-    this.onQueues?.();
-    void this.drain(peer);
-    return true;
+    return this.holdRemoteDeliveryMetadata(peer, row, reason);
+  }
+
+  /** Host-only quarantine when a signed room outcome belongs to an invalidated recipient tuple. */
+  holdInvalidatedRemoteOutcome(peerId: string, deliveryId: string, expectedRoom: string, expectedMember: string, currentGuard: () => boolean): boolean {
+    if (!parseRemotePeerId(peerId) || typeof expectedRoom !== "string" || !expectedRoom || expectedRoom.length > 256 ||
+        !remoteFingerprint(expectedMember) || !this.journal || this.storageError || this.closed ||
+        this.remoteQueueRooms.get(peerId) !== expectedRoom || this.remoteQueueMembers.get(peerId) !== expectedMember) return false;
+    const row = this.journal.get(deliveryId);
+    if (!row || row.peer !== peerId || !["dispatching", "accepted"].includes(row.state) || row.originals.length !== 1 ||
+        row.originals[0]?.to?.includes(peerId) !== true || this.journal.resolution(deliveryId) ||
+        this.activeDeliveries.has(deliveryId) || this.remoteTransport.has(deliveryId)) return false;
+    try { if (currentGuard() !== true) return false; } catch { return false; }
+    return this.holdRemoteDeliveryMetadata(peerId, row, `room recipient proof no longer current after restart; inspect ahub queue show ${deliveryId}`);
   }
 
   /** Resume the same delivery after the host revalidates its durable outbox proof. */

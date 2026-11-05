@@ -11,7 +11,7 @@ import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { parseRouting } from "../src/hub/routing.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
-import { verifyPublicFrame, sealFrame, openFrame } from "../src/rooms/wire.ts";
+import { verifyPublicFrame, sealFrame, openFrame, roomMembers } from "../src/rooms/wire.ts";
 import { RoomNotSentError, type RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
 import { RoomStore, RoomStoreError, RoomApplicationLimitError, ROOM_APPLICATION_RETENTION } from "../src/rooms/store.ts";
 import { encodeRoomMessage, decodeRoomMessage, type RoomMessage } from "../src/rooms/application.ts";
@@ -454,6 +454,34 @@ test("a Bus disposition survives sender restart before the Store flag and a late
   expect(f.a.bus.remoteDisposition(deliveryId)).toBe("discard");
   expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === deliveryId)).toMatchObject({ state: "needs_review", disposition: "discard" });
   expect(f.frames.filter(row => row.sender === f.owner && !row.ephemeral).length).toBe(phaseFrames);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+});
+
+test("a terminal Store proof for a revoked recipient holds the old Bus tuple after restart", async () => {
+  const f = await mesh(600), env = newEnvelope("user", "receipt belongs to the old room member", { to: ["codex@beta"] });
+  f.control.holdSender = f.guest; f.control.hold = true;
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "signed receipt is held after broker storage");
+  const settle = f.a.bus.settleRemoteReceipt.bind(f.a.bus); let failOnce = true;
+  f.a.bus.settleRemoteReceipt = (source, id, outcome, reason, current) => {
+    if (failOnce) { failOnce = false; return false; }
+    return settle(source, id, outcome, reason, current);
+  };
+  f.control.hold = false; f.control.gate.release();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "signed Store outcome commits before its Bus CAS");
+  const deliveryId = String((await outbound(f.a, env.id))?.id), owner = f.a.store!, room = owner.get("work")!;
+  expect(f.a.journal.get(deliveryId)?.state).toBe("accepted");
+  await owner.rotate("work", roomMembers(room.current).filter(member => member.fingerprint !== f.guest), room.current.digest, () => true);
+  const ownerFrames = f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length;
+  const disconnectAt = f.brokerEvents.length;
+  await f.a.close();
+  await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old owner session fenced after revocation");
+  f.control.phase = "after"; await f.restart("a");
+  await f.event.wait(() => f.a.journal.get(deliveryId)?.state === "needs_review"
+    && f.a.journal.get(deliveryId)?.reason?.includes("recipient proof no longer current") === true, "restart quarantines the signed proof bound to the revoked member");
+  expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === deliveryId)).toMatchObject({ state: "completed", recipient: f.guest });
+  expect(f.a.journal.resolution(deliveryId)).toBeUndefined();
+  expect(f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length).toBe(ownerFrames);
   expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
 });
 

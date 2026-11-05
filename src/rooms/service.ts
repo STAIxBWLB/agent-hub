@@ -315,15 +315,28 @@ export class RoomChat {
   }
   private outcome(binding: Binding, row: RoomOutgoing): void {
     const remote = this.remotes.get(row.remotePeer);
-    if ((row.state === "completed" || row.state === "failed_safe") && remote && !row.disposition) this.settleStoredOutcome(binding, remote, row);
+    if ((row.state === "completed" || row.state === "failed_safe") && !row.disposition) this.settleStoredOutcome(binding, remote, row);
     else if (!row.disposition) remote?.receipt({ id: row.deliveryId, state: row.state === "dispatching" ? "needs_review" : row.state, reason: row.state === "completed" ? `room ${completedText(row.reason)}` : row.state === "failed_safe" ? roomReceiptReasonText(row.reason ?? "invalid_message") : row.state === "accepted" ? "room broker accepted ciphertext" : "room acknowledgement expired or outcome uncertain" });
     this.refreshOutgoing(binding); this.queueChanged(); this.options.changed?.();
   }
-  private settleStoredOutcome(binding: Binding, remote: RemotePeer, row: RoomOutgoing): boolean {
+  private settleStoredOutcome(binding: Binding, remote: RemotePeer | undefined, row: RoomOutgoing): boolean {
     if ((row.state !== "completed" && row.state !== "failed_safe") || row.disposition) return false;
     const outcome = row.lateReceipt?.outcome ?? row.state;
     const reason = row.lateReceipt?.reason ?? row.reason ?? (outcome === "completed" ? "admitted" : "boundary_refused");
     const target = this.targets.get(row.remotePeer), state = binding.store.get(binding.name);
+    const targetCurrent = target?.binding === binding && target.member === row.recipient && target.peer === row.peer;
+    const proofCurrent = () => this.valid(binding) && binding.store.get(binding.name)?.current.room === binding.room
+      && binding.store.get(binding.name)?.current.digest === state?.current.digest
+      && binding.store.applicationOutbox(binding.name).some(saved => saved.deliveryId === row.deliveryId
+        && saved.remotePeer === row.remotePeer && saved.recipient === row.recipient && saved.peer === row.peer
+        && saved.state === row.state && !saved.disposition);
+    if (!targetCurrent || !remote) {
+      const invalidated = () => proofCurrent() && (() => {
+        const next = this.targets.get(row.remotePeer);
+        return !next || next.binding !== binding || next.member !== row.recipient || next.peer !== row.peer;
+      })();
+      return this.options.bus.holdInvalidatedRemoteOutcome(row.remotePeer, row.deliveryId, binding.room, row.recipient, invalidated);
+    }
     const current = () => this.valid(binding) && target?.binding === binding && target.member === row.recipient
       && target.peer === row.peer && state?.current.room === binding.room
       && binding.store.get(binding.name)?.current.digest === state?.current.digest;
@@ -339,7 +352,7 @@ export class RoomChat {
       for (const row of binding.store.applicationOutbox(binding.name)) {
         if ((row.state === "completed" || row.state === "failed_safe") && !row.disposition) {
           const remote = this.remotes.get(row.remotePeer);
-          if (remote) this.settleStoredOutcome(binding, remote, row);
+          this.settleStoredOutcome(binding, remote, row);
         }
       }
     } catch { /* The next authenticated online edge retries the signed outcome reconciliation. */ }

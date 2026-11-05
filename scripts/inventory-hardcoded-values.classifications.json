@@ -2055,6 +2055,7 @@
   "src/rooms/link.ts:delay:inline:Math.min=7#0": "operational",
   "src/rooms/link.ts:publishPresence:inline:setTimeout=0#0": "operational",
   "src/rooms/link.ts:retryAttempt:inline:retryAttempt=0#0": "operational",
+  "src/rooms/service.ts:reconcileMissingStoreIntents:inline:this.options.bus.queueList(id, true).slice=200#0": "operational",
   "src/rooms/store.ts:GRACE_MS:constant:GRACE_MS=60000#0": "safety floor",
   "src/rooms/store.ts:ROOM_DB_BUSY_TIMEOUT_MS:constant:ROOM_DB_BUSY_TIMEOUT_MS=1#0": "operational",
   "src/rooms/store.ts:SCHEMA:constant:SCHEMA=5#0": "contract",

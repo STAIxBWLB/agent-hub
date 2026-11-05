@@ -231,6 +231,53 @@ test("late room receipts refuse person-disposed, stale-instance, foreign-member 
   expect(native.journal.get(nativeRow.id)?.state).toBe("needs_review");
 });
 
+test("invalidated signed outcomes require the exact old tuple and only quarantine restored unowned rows", async () => {
+  const oldMember = "a".repeat(64);
+  const orphan = () => {
+    const { bus, journal } = fixture();
+    const env = newEnvelope("user", "old recipient proof", { to: [remote] });
+    const snapshot = bus.snapshot(false);
+    snapshot.queues[remote] = [];
+    snapshot.remoteQueueRooms = { [remote]: room };
+    snapshot.remoteQueueMembers = { [remote]: oldMember };
+    snapshot.remoteQueueExpires = { [remote]: { [env.id]: Date.now() + 60_000 } };
+    journal.persistBus(snapshot, []);
+    bus.restore(snapshot);
+    const id = `restored-${crypto.randomUUID()}`;
+    const row = journal.createDelivery({ id, peer: remote, state: "dispatching", createdAt: Date.now(), originals: [env], out: [env] });
+    return { bus, journal, env, id, row };
+  };
+
+  const staleRoom = orphan();
+  expect(staleRoom.bus.holdInvalidatedRemoteOutcome(remote, staleRoom.id, "new-room", oldMember, () => true)).toBe(false);
+  expect(staleRoom.journal.get(staleRoom.id)?.state).toBe("dispatching");
+  const staleMember = orphan();
+  expect(staleMember.bus.holdInvalidatedRemoteOutcome(remote, staleMember.id, room, "b".repeat(64), () => true)).toBe(false);
+  expect(staleMember.bus.holdInvalidatedRemoteOutcome(remote, staleMember.id, room, oldMember, () => false)).toBe(false);
+  expect(staleMember.journal.get(staleMember.id)?.state).toBe("dispatching");
+
+  const disposed = orphan();
+  disposed.journal.resolve(disposed.id, disposed.row.revision, "discard", "person resolved");
+  expect(disposed.bus.holdInvalidatedRemoteOutcome(remote, disposed.id, room, oldMember, () => true)).toBe(false);
+  expect(disposed.journal.get(disposed.id)?.state).toBe("discarded");
+
+  const live = fixture(), target = new Peer(remote, room), sending = deferred();
+  target.accepted = async () => { await sending.promise; };
+  live.bus.add(target); await target.start();
+  const liveEnv = newEnvelope("user", "still live", { to: [remote] }); live.bus.publish(liveEnv);
+  await until(() => live.journal.list(remote).some(row => row.state === "dispatching" && row.originals.some(env => env.id === liveEnv.id)));
+  const liveRow = live.journal.list(remote).find(row => row.originals.some(env => env.id === liveEnv.id))!;
+  expect(live.bus.holdInvalidatedRemoteOutcome(remote, liveRow.id, room, oldMember, () => true)).toBe(false);
+  expect(live.journal.get(liveRow.id)?.state).toBe("dispatching");
+  sending.resolve();
+
+  const unbound = orphan();
+  expect(unbound.bus.peers.has(remote)).toBe(false);
+  expect(unbound.bus.holdInvalidatedRemoteOutcome(remote, unbound.id, room, oldMember, () => true)).toBe(true);
+  expect(unbound.journal.get(unbound.id)).toMatchObject({ state: "needs_review", reason: `room recipient proof no longer current after restart; inspect ahub queue show ${unbound.id}` });
+  expect(unbound.journal.offerRead(remote, unbound.env.id)).toBe(false);
+});
+
 test("a remote needs_review row does not hold later messages for that peer", async () => {
   const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
   target.accepted = async (_envs, id) => target.onDelivery?.({ id: id!, state: target.batches.length === 1 ? "needs_review" : "completed" });
