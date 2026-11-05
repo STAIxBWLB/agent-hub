@@ -789,7 +789,7 @@ test("#1056 local review turns refuse remember and task proposals until a later 
   ctx.bus.publish(newEnvelope("user", "review task #7 and save useful follow-up", { to: ["local"], priority: "important" }));
   await until(() => ctx.said.length === 1, "anchored review turn conclusion");
   expect(taskCalls.map(call => call.name)).toEqual(["hub_review"]);
-  expect(JSON.stringify(taskCalls)).not.toContain(quote);
+  expect(taskCalls[0]!.text).toContain(quote);
   const reviewToolResults = ctx.model.requests[1]!.body.messages.filter((message: { role: string }) => message.role === "tool");
   expect(reviewToolResults.map((message: { content: string }) => message.content)).toEqual([
     "error: anchored review in this batch; save notes in a later turn",
