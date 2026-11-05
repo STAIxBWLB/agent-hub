@@ -61,6 +61,7 @@ export class RoomChat {
   private readonly remotes = new Map<string, RemotePeer>();
   private readonly outgoing = new Map<string, { binding: Binding; row: RoomOutgoing }>();
   private readonly resuming = new Set<string>();
+  private readonly personHeldInvocations = new Map<string, Set<string>>();
   private evidenceCache?: Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string }>;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
@@ -131,6 +132,7 @@ export class RoomChat {
     if (binding.digest !== digest) { binding.states.clear(); binding.online = false; binding.digest = digest; }
     this.bindings.set(name, binding);
     this.reconcileDispositions(binding);
+    this.refreshInvocationHolds(binding);
     this.refreshOutgoing(binding); this.refreshTargets(); this.queueChanged();
   }
   invocationIdentity(id: string, sender?: string): RoomInvocationIdentity | undefined {
@@ -262,7 +264,8 @@ export class RoomChat {
       const queuedIds = new Set(this.options.bus.pendingEnvelopes(id).map(env => env.id));
       for (const { binding, row } of this.outgoing.values()) {
         if (binding === target.binding && row.remotePeer === id && row.recipient === target.member && row.peer === target.peer
-          && (row.state === "dispatching" || row.state === "accepted") && !row.disposition && !queuedIds.has(row.application)) {
+          && (row.state === "dispatching" || row.state === "accepted") && !row.disposition
+          && !this.personHeldInvocations.get(binding.name)?.has(row.deliveryId) && !queuedIds.has(row.application)) {
           remote.retainPending(row.deliveryId);
         }
       }
@@ -315,6 +318,13 @@ export class RoomChat {
   }
   private outcome(binding: Binding, row: RoomOutgoing): void {
     const remote = this.remotes.get(row.remotePeer);
+    if (row.state === "needs_review" && !row.disposition) {
+      const journalRow = this.options.bus.queueShow(row.deliveryId);
+      if (journalRow?.originals.some(isInvocationKind) && !this.options.bus.remoteDisposition(row.deliveryId)) {
+        const held = this.personHeldInvocations.get(binding.name) ?? new Set<string>();
+        held.add(row.deliveryId); this.personHeldInvocations.set(binding.name, held);
+      }
+    }
     if ((row.state === "completed" || row.state === "failed_safe") && !row.disposition) this.settleStoredOutcome(binding, remote, row);
     else if (!row.disposition) remote?.receipt({ id: row.deliveryId, state: row.state === "dispatching" ? "needs_review" : row.state, reason: row.state === "completed" ? `room ${completedText(row.reason)}` : row.state === "failed_safe" ? roomReceiptReasonText(row.reason ?? "invalid_message") : row.state === "accepted" ? "room broker accepted ciphertext" : "room acknowledgement expired or outcome uncertain" });
     this.refreshOutgoing(binding); this.queueChanged(); this.options.changed?.();
@@ -481,6 +491,23 @@ export class RoomChat {
     if (receipt) await context.link.publishApplication(receipt, input.sender, undefined, context.current);
     this.options.changed?.();
   }
+  private refreshInvocationHolds(binding: Binding): void {
+    const room = binding.store.get(binding.name);
+    if (!room || !this.valid(binding)) return;
+    const held = new Set<string>();
+    try {
+      for (const member of roomMembers(room.current)) {
+        if (member.fingerprint === binding.store.identity.public.fingerprint) continue;
+        for (const peer of new Set([...member.exposedPeers, USER])) {
+          const id = `${peer}@${member.label}`;
+          for (const row of this.options.bus.queueList(id, true)) {
+            if (row.state === "needs_review" && row.originals.some(isInvocationKind) && !this.options.bus.remoteDisposition(row.id)) held.add(row.id);
+          }
+        }
+      }
+    } catch { /* Unknown Bus state never grants a proof resume by itself. */ }
+    this.personHeldInvocations.set(binding.name, held);
+  }
   queueChanged(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined; if (this.stopped || !this.bindings.size) return;
@@ -525,7 +552,8 @@ export class RoomChat {
   private async resumeActive(binding: Binding): Promise<void> {
     if (!binding.online || !this.valid(binding)) return;
     try {
-      const active = binding.store.applicationOutbox(binding.name, true).filter(row => row.state === "dispatching" || row.state === "accepted");
+      const active = binding.store.applicationOutbox(binding.name, true).filter(row => (row.state === "dispatching" || row.state === "accepted")
+        && !this.personHeldInvocations.get(binding.name)?.has(row.deliveryId));
       for (const row of active) this.remotes.get(row.remotePeer)?.reservePending(row.deliveryId);
       for (const row of active) this.launchResume(binding, row);
     } catch { /* The next authenticated online edge will retry durable rows. */ }
@@ -538,6 +566,7 @@ export class RoomChat {
   }
   private async resumeApplication(binding: Binding, row: RoomOutgoing): Promise<void> {
     const remote = this.remotes.get(row.remotePeer);
+    if (this.personHeldInvocations.get(binding.name)?.has(row.deliveryId)) return;
     if (!remote || !remote.isPendingHead(row.deliveryId)) return;
     const original = remote && this.options.bus.remoteDeliveryEnvelope(remote, row.deliveryId);
     if (!original || !binding.online || !this.valid(binding) || row.disposition || row.expiresAt <= this.now()) return;
@@ -601,6 +630,7 @@ export class RoomChat {
         && binding.store.get(binding.name)?.current.room === room && binding.store.get(binding.name)?.current.digest === digest
         && this.options.bus.remoteDisposition(deliveryId) === action);
       if (disposed?.disposition === action) this.remotes.get(peer)?.settled(deliveryId);
+      this.personHeldInvocations.get(binding.name)?.delete(deliveryId);
       this.refreshOutgoing(binding); break;
     }
     this.refreshTargets(); this.queueChanged(); void this.retryPending();
