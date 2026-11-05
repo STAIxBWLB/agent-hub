@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { renderDigest, remoteEnvelope, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer, type SessionTitleResult } from "../hub/peers.ts";
+import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { assessVersion, COMPAT, type CompatVerdict } from "./compat.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
@@ -662,12 +663,12 @@ export class PiPeer extends BasePeer {
     if (!snapshot.idle) this.clearWatchdog();
   }
 
-  async stop(reason?: string): Promise<void> {
+  async stop(reason?: string, failureCause?: DeliveryFailureCause): Promise<void> {
     if (reason !== undefined) this.requestedStopReason = reason;
     this.rosterEpoch++;
     this.terminalOwnerObservation = undefined;
     this.stopping = true; // fence new calls before withdrawing both turn and idle-shell execution
-    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement" });
+    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement", ...(failureCause ? { failureCause } : {}) });
     this.activeDeliveryIds.clear();
     const settling = this.abortTools();
     let unsettled: unknown;
@@ -1088,11 +1089,11 @@ export class PiPeer extends BasePeer {
     await this.terminateFailedTurn(new ApprovalWaitStop(reason));
   }
 
-  private async terminateFailedTurn(error: Error): Promise<void> {
+  private async terminateFailedTurn(error: Error, failureCause?: DeliveryFailureCause): Promise<void> {
     const envs = this.activeEnvs.slice(), reply = this.currentReply;
     this.stopping = true;
     try {
-      await this.stop();
+      await this.stop(undefined, failureCause);
       // The process exit handler may already have reported this failure.
       if (this.activeEnvs.length) this.fail(error);
     } catch (stopError) {
@@ -1110,7 +1111,7 @@ export class PiPeer extends BasePeer {
   protected override onWatchdog(): void {
     if (this.stopping || this.rosterDetached || this.rosterUnownedRun) return;
     if (this.activeTools) { this.touch(); return; }
-    void this.terminateFailedTurn(new Error("Pi run became inactive before agent_settled"));
+    void this.terminateFailedTurn(new Error("Pi run became inactive before agent_settled"), "timeout");
   }
 }
 

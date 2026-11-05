@@ -17,6 +17,8 @@ export interface StatusOutput {
   controlWriteTiming?: { active: number; slowRequests: number; blockedLoopSamples: number; droppedActive: number; droppedRecent: number; droppedLogs: number; droppedSpans?: number; droppedMetadata?: number; expiredRequests?: number };
   specs?: SpecsStatus & { missingBlockHint?: boolean };
   queueBackpressure?: QueueBackpressureStatus;
+  /** Unresolved failed delivery counts, absent when an older hub or storage cannot answer. */
+  deliveryFailures?: Record<string, number>;
   pendingRestart?: readonly { key: string; reason: string }[];
   retainedConfig?: readonly { key: string; reason: string }[];
   /** #572 AC3: advisory, present while the project root checkout is on a branch other than the default. */
@@ -262,6 +264,9 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (text) out.push(...detail(`${id} owner isolation`, text, columns, isolated ? undefined : "attention"));
   }
   if (data.deliveryError) out.push(...detail("delivery storage", `${data.deliveryError}; dispatch is stopped`, columns, "failure"));
+  for (const [peer, count] of Object.entries(data.deliveryFailures ?? {})) {
+    if (Number.isSafeInteger(count) && count > 0) out.push(...detail(`${peer} failed deliveries`, `${count}; next: ahub queue discard --peer ${peer} --state failed`, columns, "attention"));
+  }
   if (data.reviewInputHealth) {
     const health = reviewInputHealthLine(data.reviewInputHealth);
     if (health) out.push(...detail("review input provenance", health, columns, data.reviewInputHealth.state === "corrupt" ? "failure" : "attention"));
@@ -562,6 +567,7 @@ function fields(value: unknown, columns: number | undefined, now: number, prefix
 }
 export function renderQueueShow(delivery: any, columns?: number, now = Date.now()): Span[][] {
   const out = [...lines("Delivery", columns, "strong"), ...fields(delivery, columns, now)];
+  if (delivery?.state === "failed" && delivery.failureCause === undefined) out.push(...detail("failure cause", "unknown (not recorded by this hub version)", columns, "muted"));
   if (delivery?.state === "needs_review" && delivery.id) out.push([], ...detail("resolve", `ahub queue resolve ${delivery.id} --action completed|retry|discard --reason <text>`, columns, "failure"));
   // #1096: a failed row that no one has settled can be cleared by the person or the conductor; one a resolution already settled says what is left (nothing).
   else if (delivery?.state === "failed" && delivery.id) {

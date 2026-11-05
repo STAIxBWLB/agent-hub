@@ -413,8 +413,8 @@ export class CodexPeer extends BasePeer {
     for (const pending of pendingStarts) pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed");
     this.activeTurns.clear();
     this.unboundAccepted = false;
-    for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
-    for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
+    for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout", failureCause: "timeout" });
+    for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout", failureCause: "timeout" });
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.injected = undefined;
     this.answering = [];

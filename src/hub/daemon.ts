@@ -5949,7 +5949,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const peerIds = byKind(statusPeerIds(taskNeeds));
     const queueBackpressure = tasks.queuePressureStatus(peerIds);
     const crashLines = crashView();
+    const deliveryFailures = bus.failedDeliveryCounts();
     const view = {
+    ...(deliveryFailures ? { deliveryFailures } : {}),
     ...(queueBackpressure ? { queueBackpressure } : {}),
     ...(crashLines.length ? { crash: crashLines } : {}),
     projectId,
@@ -7943,6 +7945,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const privateDelivery = originals.some((env) => env.private || publicOnly && env.refs?.task && (()=>{const task=board.get(Number(env.refs!.task));return !task || tasks.isPii(task);})());
     return {
       id: row.id, peer: row.peer, state: row.state, revision: row.revision,
+      ...(row.failureCause ? { failureCause: row.failureCause } : {}),
       ...roomChat.evidence(row.peer, row.id),
       ...(detail && bus.deliveryResolution(row.id) ? { resolvedBy: bus.deliveryResolution(row.id) } : {}),
       ...(!membershipAllowed(row.peer) ? { rostered: false, holdReason: "off roster" } : {}),

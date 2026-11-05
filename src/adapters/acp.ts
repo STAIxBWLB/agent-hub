@@ -9,6 +9,7 @@ import { KIMI_MODE_IDS } from "./definitions/kimi-native.ts";
 import { QWEN_MODE_IDS, qwenNativeIdentity } from "./definitions/qwen-native.ts";
 export { QwenIdentityError } from "./definitions/qwen-native.ts";
 import { BasePeer } from "../hub/peers.ts";
+import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { AcpOwnedGroup } from "./acp-owned-group.ts";
 import type { StartForm } from "./registry-types.ts";
@@ -637,8 +638,8 @@ export class AcpPeer extends BasePeer {
     this.cancelPermissions();
     this.activeLegacy = undefined; // the cancelled prompt is discarded, never returned by a later stop
     const durable = !!this.activeDeliveryId;
-    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout" });
-    this.settleSteers("needs_review", "ACP turn watchdog timeout");
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout", failureCause: "timeout" });
+    this.settleSteers("needs_review", "ACP turn watchdog timeout", "timeout");
     this.activeDeliveryId = undefined;
     this.notify("session/cancel", { sessionId: this.sessionId });
     this.turn++; // whatever the cancelled prompt still reports is stale
@@ -693,9 +694,9 @@ export class AcpPeer extends BasePeer {
     if (deliveryId) { this.steerIds.push(deliveryId); this.delivery({ id: deliveryId, state: "accepted" }); }
   }
 
-  private settleSteers(state: "completed" | "needs_review", reason?: string): void {
+  private settleSteers(state: "completed" | "needs_review", reason?: string, failureCause?: DeliveryFailureCause): void {
     const ids = this.steerIds; this.steerIds = [];
-    for (const id of ids) this.delivery({ id, state, ...(state === "needs_review" ? { reason: reason ?? "steered turn did not complete normally" } : {}) });
+    for (const id of ids) this.delivery({ id, state, ...(state === "needs_review" ? { reason: reason ?? "steered turn did not complete normally", ...(failureCause ? { failureCause } : {}) } : {}) });
   }
 
   private acceptDelivery(): void {

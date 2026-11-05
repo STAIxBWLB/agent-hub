@@ -1,3 +1,4 @@
+import type { DeliveryFailureCause } from "./delivery-failure.ts";
 import type { Envelope, EnvelopeOpts, PeerId, PeerState } from "./envelope.ts";
 import type { PermissionMode } from "./permission-mode.ts";
 import type { StartForm } from "../adapters/registry-types.ts";
@@ -9,6 +10,8 @@ export interface DeliveryReceipt {
   id: string;
   state: "accepted" | "completed" | "failed_safe" | "needs_review";
   reason?: string;
+  /** Public-safe transport cause only, never native error text. */
+  failureCause?: DeliveryFailureCause;
   /** A provider refused before acceptance for quota; requeue without spending poison retries while paused. */
   quota?: true;
 }
@@ -115,7 +118,7 @@ export interface PeerAdapter {
   /** Set by the bus. */
   onState?: (state: PeerState) => void;
   /** Set by the bus. A delivery that had resolved turned out not to reach the agent: put it back. */
-  onFailed?: (envs: Envelope[], failure?: { quota?: true }) => void;
+  onFailed?: (envs: Envelope[], failure?: { quota?: true; failureCause?: DeliveryFailureCause }) => void;
   /** Correlated durable-delivery lifecycle, emitted only when the bus supplied an id. */
   onDelivery?: (receipt: DeliveryReceipt) => void;
   /** Set by the bus (#878): a native session title or current plan item the adapter observed; `reset` on a new session. */
@@ -133,7 +136,7 @@ export abstract class BasePeer implements PeerAdapter {
   /** Returns a reason (a string) when the hub refused the message (issue #38). */
   onMessage?: (body: string, opts?: EnvelopeOpts) => unknown;
   onState?: (state: PeerState) => void;
-  onFailed?: (envs: Envelope[], failure?: { quota?: true }) => void;
+  onFailed?: (envs: Envelope[], failure?: { quota?: true; failureCause?: DeliveryFailureCause }) => void;
   onDelivery?: (receipt: DeliveryReceipt) => void;
   onDoing?: (kind: DoingKind, text?: unknown) => void;
   private _state: PeerState = "offline";

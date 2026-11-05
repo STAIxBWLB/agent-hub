@@ -3089,6 +3089,21 @@ The states are `queued`, `dispatching`, `accepted`, `completed`,
 the native bridge received the delivery; it does not prove that the agent
 executed it. Only native completion or a correlated reply can settle a receipt.
 
+Failed deliveries carry a public-safe `failureCause` from the fixed classes
+`peer offline`, `adapter refused`, `push error`, `turn aborted`, and `timeout`
+(#1178). `ahub queue show` and `ahub queue list --json` expose the class, never
+message text as the cause. Older rows without it have an unknown cause; the hub
+does not reconstruct one from their reason or body. This diagnostic does not
+change settlement: a possibly effected delivery remains `needs_review`, not a
+safe failure merely because its cause is known.
+
+`ahub status` shows each peer's unresolved failed count above zero, with
+`ahub queue discard --peer <id> --state failed` as the next step. Inspect the
+rows first, then supply the discard command's reason and confirmation. A row
+already settled by an explicit resolution is excluded, including a failed
+parent left behind by `retry`; its linked attempt has its own state. Older hubs
+without this count and unavailable delivery storage do not imply a zero count.
+
 The console interface is:
 
 ```text
