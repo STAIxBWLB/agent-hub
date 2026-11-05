@@ -350,6 +350,9 @@ test("ephemeral presence is withheld from legacy members while their chat remain
   const producer = await FakeBrokerClient.connect(f.url, f.epoch.room, { "x-agent-hub-ephemeral": "1" });
   clients.push(producer); await producer.authenticate(f.owner);
   const legacy = await connect(f.url, f.epoch.room); await legacy.authenticate(f.guest);
+  legacy.send(await seal(f.epoch, f.guest, f.owner.public.fingerprint, "legacy ready barrier"));
+  const probe = packetObject(await legacy.take("stored"));
+  await producer.take("frame"); await producer.ack(String(probe.digest));
   producer.send(await sealFrame({ epoch: f.epoch, identity: f.owner, recipients: [f.guest.public.fingerprint],
     plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }] }), sequence: f.seq, ephemeral: true }));
   await producer.take("stored");
