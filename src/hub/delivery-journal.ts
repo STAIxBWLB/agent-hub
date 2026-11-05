@@ -366,6 +366,9 @@ export class DeliveryJournal {
   private queueMetadataTracking = false;
   private queueMetadataInvalidated = false;
   private pruningDeferred = 0;
+  private legacyReviewCandidateIds = new Set<string>();
+  private legacyReviewCandidatesCaptured = false;
+  private legacyReviewCandidatesOverflow = false;
   private readonly operationId?: string;
   private readonly terminalHistoryLimit?: () => number;
   constructor(options: DeliveryJournalOptions) {
@@ -437,6 +440,7 @@ export class DeliveryJournal {
         this.recoverInterrupted();
       })();
     }
+    this.captureLegacyReviewCandidates();
   }
   private harden(): void {
     chmodSync(this.file, 0o600);
@@ -676,17 +680,50 @@ export class DeliveryJournal {
     const digest = reviewInputDigest(instanceId, REVIEW_INPUT_VERSION, complete, coverageComplete, count, holds, incompletePeers, incompleteSessions);
     return { version: REVIEW_INPUT_VERSION, instanceId, complete, coverageComplete, count, digest, holds, incompletePeers, incompleteSessions };
   }
-  /** Legacy coverage waits for review deliveries that may already have been consumed. */
+  /** Snapshot the pre-existing handed review rows once while legacy coverage is incomplete. */
+  private captureLegacyReviewCandidates(force = false): void {
+    this.legacyReviewCandidateIds.clear();
+    this.legacyReviewCandidatesCaptured = true;
+    this.legacyReviewCandidatesOverflow = false;
+    try {
+      const provenance = this.readReviewInputProvenance();
+      if (!provenance.complete || provenance.coverageComplete && !force) return;
+      const rows = this.db.query(`SELECT d.id FROM deliveries d
+        WHERE d.project_id=? AND d.state IN ('dispatching','accepted','needs_review')
+          AND EXISTS (SELECT 1 FROM json_each(d.originals) e
+            WHERE (json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review')
+              OR (json_extract(e.value,'$.from') NOT IN ('hub','user') AND json_extract(e.value,'$.kind') IN ('chat','status')
+                AND json_type(e.value,'$.refs.reviewResponse')='text'))
+        LIMIT ?`).all(this.projectId, MAX_ROWS + 1) as { id: unknown }[];
+      if (rows.length > MAX_ROWS) { this.legacyReviewCandidatesOverflow = true; return; }
+      for (const row of rows) this.legacyReviewCandidateIds.add(text(row.id, "legacy review delivery id", 256));
+    } catch {
+      // An unbounded or unreadable candidate set cannot prove legacy coverage complete.
+      this.legacyReviewCandidatesOverflow = true;
+    }
+  }
+  /** Check only captured pre-upgrade rows; current guarded deliveries carry their own provenance. */
   private hasUnsettledReviewInput(): boolean {
-    // deliveries_pending indexes these states by project; queued work is not consumption evidence.
-    const row = this.db.query(`SELECT 1 FROM deliveries d
-      WHERE d.project_id=? AND d.state IN ('dispatching','accepted','needs_review')
-        AND EXISTS (SELECT 1 FROM json_each(d.originals) e
-          WHERE (json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review')
-            OR (json_extract(e.value,'$.from') NOT IN ('hub','user') AND json_extract(e.value,'$.kind') IN ('chat','status')
-              AND json_type(e.value,'$.refs.reviewResponse')='text'))
-      LIMIT 1`).get(this.projectId);
-    return !!row;
+    if (!this.legacyReviewCandidatesCaptured) this.captureLegacyReviewCandidates();
+    if (this.legacyReviewCandidatesOverflow) return true;
+    const ids = [...this.legacyReviewCandidateIds];
+    for (let offset = 0; offset < ids.length; offset += 256) {
+      const batch = ids.slice(offset, offset + 256);
+      try {
+        const rows = this.db.query(`SELECT d.state FROM json_each(?) candidate
+          LEFT JOIN deliveries d ON d.project_id=? AND d.id=candidate.value`).all(JSON.stringify(batch), this.projectId) as { state: string | null }[];
+        if (rows.length !== batch.length || rows.some(row => !row.state || !["completed", "failed", "discarded"].includes(row.state))) return true;
+      } catch { return true; }
+    }
+    return false;
+  }
+  private markReviewInputCoverageIncomplete(prior: ReviewInputProvenance): void {
+    if (prior.coverageComplete) this.captureLegacyReviewCandidates(true);
+    this.transaction(() => {
+      this.bump();
+      this.writeReviewInputProvenance(prior.complete, false);
+      this.harden();
+    });
   }
   /** Complete legacy coverage after every handed review delivery is settled; then NULL means clean by absence. */
   private refreshReviewInputCoverage(inTransaction = false): void {
@@ -829,7 +866,7 @@ export class DeliveryJournal {
     const pending = prior.incompleteSessions.some(row => row.peer === hold.peer && row.sessionHash === hold.sessionHash);
     if (existing?.inputHash === hold.inputHash) return;
     if (!existing && !pending && prior.count >= MAX_REVIEW_INPUTS) {
-      this.transaction(() => { this.bump(); this.db.query("UPDATE delivery_meta SET review_input_coverage_complete=0 WHERE project_id=?").run(this.projectId); });
+      this.markReviewInputCoverageIncomplete(prior);
       fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
     }
     try {
@@ -916,7 +953,7 @@ export class DeliveryJournal {
     const legacyConfirmation = !prior.coverageComplete && !existing && !pending;
     if ((!existing || existing.inputHash === null) && !pending && !legacyConfirmation && !incompletePeer) return;
     if (!existing && !pending && !incompletePeer && prior.count >= MAX_REVIEW_INPUTS) {
-      this.transaction(() => { this.bump(); this.db.query("UPDATE delivery_meta SET review_input_coverage_complete=0 WHERE project_id=?").run(this.projectId); });
+      this.markReviewInputCoverageIncomplete(prior);
       fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
     }
     this.writePendingReviewInputSession(peer, sessionHash, prior.complete, prior.coverageComplete, true);
@@ -980,7 +1017,7 @@ export class DeliveryJournal {
     if (sessionHash !== undefined && prior.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash)) return;
     if (sessionHash === undefined && prior.incompletePeers.includes(peer)) return;
     if (prior.count >= MAX_REVIEW_INPUTS) {
-      this.transaction(() => { this.bump(); this.db.query("UPDATE delivery_meta SET review_input_coverage_complete=0 WHERE project_id=?").run(this.projectId); });
+      this.markReviewInputCoverageIncomplete(prior);
       fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
     }
     this.transaction(() => {
@@ -1287,8 +1324,8 @@ export class DeliveryJournal {
           "UPDATE deliveries SET state = ?, revision = ?, updated_at = ?, reason = ? WHERE id = ? AND project_id = ?",
         )
         .run(state, revision, Date.now(), reason ?? null, id, this.projectId);
-      this.pruneTerminal(state, id);
       this.refreshReviewInputCoverage(true);
+      this.pruneTerminal(state, id);
       return this.get(id)!;
     })();
   }
@@ -1504,9 +1541,11 @@ export class DeliveryJournal {
         actionState(action) !== current.state
       )
         throw new Error(`delivery ${id} is already terminal`);
+      const retryChildId = action === "retry" ? `${id}:retry:${(current.attempt ?? 0) + 1}` : undefined;
+      if (retryChildId && this.legacyReviewCandidateIds.has(id)) this.legacyReviewCandidateIds.add(retryChildId);
       const result = this.transition(id, actionState(action), reason, revision);
       if (action === "retry") {
-        const childId = `${id}:retry:${(current.attempt ?? 0) + 1}`;
+        const childId = retryChildId!;
         if (!this.get(childId))
           this.createDelivery({
             id: childId,
@@ -1599,7 +1638,7 @@ export class DeliveryJournal {
       Object.keys(storedBus).length !== 0
     )
       return false;
-    return this.queueMetadataTransaction(trackQueuePressure, () => {
+    const imported = this.queueMetadataTransaction(trackQueuePressure, () => {
       this.db
         .query(
           "UPDATE delivery_meta SET revision = ?, bus_snapshot = ?, manual_paused = ?, operation_id = ?, review_input_version=?,review_input_complete=?,review_input_coverage_complete=?,review_input_count=?,review_input_digest=?,review_input_instance_id=? WHERE project_id = ?",
@@ -1648,6 +1687,8 @@ export class DeliveryJournal {
       this.markRetryUnknown(snapshot.deliveries, bus);
       return true;
     });
+    if (imported) this.captureLegacyReviewCandidates();
+    return imported;
   }
   close(): void {
     if (!this.closed) {
