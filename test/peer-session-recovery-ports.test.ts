@@ -166,7 +166,7 @@ test("restored or unreadable review provenance excludes the actual memory observ
   const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
   const recorded: string[] = [];
   let host: any;
-  host = hostVariables(["contextSession", "contextPii", "reviewObserverHash", "reviewObserverSessionHash", "reviewObserverStableSessionHash", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged", "reviewObserverDurableHeld", "reviewObserverInput", "reviewObserverHeld", "memoryObservations"], {
+  host = hostVariables(["contextSession", "contextPii", "reviewObserverHash", "reviewObserverSessionHash", "reviewObserverStableSessionHash", "hasSessionlessOrdinaryObserverInput", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged", "reviewObserverDurableHeld", "reviewObserverInput", "reviewObserverHeld", "memoryObservations"], {
     bus, journal, HUB, USER, createHash, randomUUID, isWsPeer, definitionOf, claudeSession: () => { throw new Error("unexpected Claude read"); },
     turns: new Map(), board: { peerTaskSignals: () => [], get: () => undefined, hasReviewObserverScope: () => false }, isClosedTaskState,
     currentReviewObserverInputs: new Map(), pendingReviewObserverInputs: new Map(), ordinaryReviewObserverInputs: new Map(), reviewObserverRuntimeSessions: new WeakMap(),
