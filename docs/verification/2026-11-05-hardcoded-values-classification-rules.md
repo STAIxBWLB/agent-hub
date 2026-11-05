@@ -61,6 +61,12 @@ Ruled by the conductor on 2026-11-05. It decides bounds (`x.length > N`, `Object
 3. A cap on **the hub's own lists, batches or reports**, which the hub trims, pages or reports as truncated, is **operational**.
 4. A bound on the **shape of a documented file format the person writes** (config, profile, role, extension, text projection) is a **contract**, like a documented message.
 
+Truncations (`.slice`, `.substring`) are decided by what is cut:
+
+5. A **shortened id, hash or commit** (`commit.slice(0, 12)`, `sha256.slice(0, 16)`, a log timestamp used as an evidence id) is a **contract**: a displayed identity format that other tools and people match on.
+6. The **hub's own list** cut to N (`pending.slice(0, 64)`, `history.slice(-5)`) is **operational**, and so is a **display cap on the hub's own report** (`pool.walk.length > 16`, `paths.length > 20`, a held-rows cap).
+7. **Text cut for a log line, notice or reply** is a **safety floor** only when the cut text **originates outside the hub process**: a model, a peer, a person, another project, a native hook process, or a subprocess, network, git or file-parse error that can carry external content. The hub's own composed message, or its own internal error text logged locally, is **operational**. Ask where the text comes from, not where it goes.
+
 A number is never evidence by itself. Many unrelated schema entries share `32`, `64`, `256` or `4096`, so "the same number appears in `hub-tools.ts`" decides nothing: the first measurement of #739 counted 280 of 378 `src/hub` bounds as mirrors of a schema by number, and only a handful really repeat a tool schema's limit once the call sites are read.
 
 ### What the committed file did before this change (measured on `8e44babc`)
@@ -148,6 +154,82 @@ Reason: Each is the bound on the shape of a documented file format the person wr
 | `roles.ts` `roles.length > 2=2` (in `catalogSection`) | safety floor | contract |
 | `roles.ts` `text.length > 2000=2000` (in `taskRoleText`) | safety floor | contract |
 
+
+### Additional relabels (47, by key, old to new)
+
+A second round, after the first sample showed the convention did not decide truncations. Each change was asserted against its old label when applied; nothing else changed. The 17 truncations that fit no line (for example `action-class.ts` `text.slice(i, i + 256)`, `permission-payload.ts` `full.slice` 600, `envelope.ts` `noteLine`) keep their labels.
+
+#### Shortened id, hash or commit: to contract (6)
+
+| Key | Old | New |
+| --- | --- | --- |
+| `ask.ts` `l.slice=10` (in `id`) | operational | contract |
+| `daemon.ts` `publicStatus.generation.slice=8` (in `generation`) | operational | contract |
+| `deliverables.ts` `createHash(sha256).update(${format}\0${path}).digest(hex).slice=12` (in `deliverableId`) | operational | contract |
+| `registry.ts` `createHash(sha256).update(root).digest(hex).slice=24` (in `idFor`) | operational | contract |
+| `research.ts` `createHash(sha256).update(projectId).digest(hex).slice=16` (in `projectKey`) | operational | contract |
+| `task-code-group.ts` `r.head.slice=8` (in `head`) | operational | contract |
+
+#### The hub's own list cut to N: to operational (10)
+
+| Key | Old | New |
+| --- | --- | --- |
+| `activity.ts` `u.locations.slice=12` (in `updateActivity`) | safety floor | operational |
+| `tasks.ts` `(Array.isArray(v) ? v : typeof v === string ? [v] : []).map(text).filter((p): p is string => !!p).slice=50` (in `textList`) | safety floor | operational |
+| `tasks.ts` `holders.slice=8` (in `detail`) | safety floor | operational |
+| `tasks.ts` `history.slice=-5` (in `publicHistory`) | safety floor | operational |
+| `tasks.ts` `[...this.incomingBacklog].sort((a, b) => a - b).slice=64` (in `incoming`) | contract | operational |
+| `tasks.ts` `[...pending].sort((a, b) => a - b).slice=64` (in `ids`) | contract | operational |
+| `tasks.ts` `pool.walk.slice=16` (in `walk`) | safety floor | operational |
+| `tasks.ts` `paths.slice=20` (in `list`) | safety floor | operational |
+| `tasks.ts` `[...new Set([taskNode, ...symbols.nodes, ...about])].slice=64` (in `saveNative`) | safety floor | operational |
+| `text-projection.ts` `(process.env.PATH ?? /usr/bin:/bin).split(:).slice=32` (in `choices`) | safety floor | operational |
+
+#### Text cut for a log line, notice or reply: to safety floor (origin test noted per entry) (21)
+
+| Key | Old | New | Origin of the cut text |
+| --- | --- | --- | --- |
+| `ask.ts` `raw.slice=2000` (in `answer`) | operational | safety floor | model output |
+| `conflicts.ts` `String(r.title).slice=100` (in `<anonymous>`) | operational | safety floor | another agent's task title |
+| `daemon.ts` `sanitize(row.key).slice=160` (in `retainedConfigAfterReload`) | operational | safety floor | a rejected config key the person wrote |
+| `daemon.ts` `sanitize(row.reason).slice=1200` (in `retainedConfigAfterReload`) | operational | safety floor | a rejected config reason built from the person's config value |
+| `daemon.ts` `${v.title ? ${v.title}: : }${v.text}.replace(/\s+/g, ).slice=160` (in `memoryLine`) | operational | safety floor | memory text written by peers and the model |
+| `daemon.ts` `${v.title ?? }\n${v.text}.slice=1500` (in `note`) | operational | safety floor | memory note text written by peers and the model |
+| `daemon.ts` `${c.title ?? }\n${c.text}.slice=600` (in `note`) | operational | safety floor | memory note text written by peers and the model |
+| `daemon.ts` `JSON.stringify(v).slice=60` (in `peerArg`) | operational | safety floor | the caller's tool argument echoed in a refusal |
+| `daemon.ts` `sanitize(e.reason ?? delivery retries exhausted).replace(/\s+/g, ).slice=300` (in `reason`) | operational | safety floor | a delivery retry reason, which can carry a native adapter's error text |
+| `daemon.ts` `e.env.body.slice=200` (in `<anonymous>`) | operational | safety floor | a peer's message body logged |
+| `daemon.ts` `v.text.slice=600` (in `text`) | operational | safety floor | memory text written by peers and the model |
+| `daemon.ts` `msg.tool.slice=64` (in `tool`) | operational | safety floor | a native hook process's tool name |
+| `daemon.ts` `msg.toolUseId.slice=128` (in `toolUseId`) | operational | safety floor | a native hook process's tool use id |
+| `daemon.ts` `msg.sessionId.slice=128` (in `sessionId`) | operational | safety floor | a native hook process's session id |
+| `daemon.ts` `String(msg.question).slice=80` (in `title`) | operational | safety floor | a person's question to ahub ask |
+| `daemon.ts` `String(msg.question).slice=300` (in `text`) | operational | safety floor | a person's question to ahub ask |
+| `deliverables.ts` `extra[0]!.slice=32` (in `own`) | operational | safety floor | an unknown field name from the caller's deliverable |
+| `packs.ts` `(error as Error).message.slice=200` (in `reason`) | operational | safety floor | a project role-pack file's parse error, which echoes the file's content |
+| `progress.ts` `tool.slice=80` (in `name`) | operational | safety floor | a native hook process's tool name |
+| `progress.ts` `item.name.slice=80` (in `name`) | operational | safety floor | a progress item sent by a peer |
+| `progress.ts` `item.source.slice=40` (in `source`) | operational | safety floor | a progress item sent by a peer |
+
+#### Display caps on the hub's own report: to operational (5)
+
+| Key | Old | New |
+| --- | --- | --- |
+| `tasks.ts` `pool.walk.length > 16=16` (in `walk`) | safety floor | operational |
+| `tasks.ts` `paths.length > 20=20` (in `list`) | safety floor | operational |
+| `tasks.ts` `result.length < 32=32` (in `outsideIds`) | safety floor | operational |
+| `daemon.ts` `guarded.length > 200=200` (in `prepareConfiguration`) | safety floor | operational |
+| `delivery-hints.ts` `result.rows.length >= 32=32` (in `heldDeliveryHints`) | safety floor | operational |
+
+#### Bounds on the shape of the person's config (`config-reload.ts`): to contract (5)
+
+| Key | Old | New |
+| --- | --- | --- |
+| `config-reload.ts` `Object.keys(v).length > 256=256` (in `table`) | operational | contract |
+| `config-reload.ts` `v.length > 4096=4096` (in `text`) | operational | contract |
+| `config-reload.ts` `v.length > 128=128` (in `peers`) | safety floor | contract |
+| `config-reload.ts` `v.length > 16_384=16_384` (in `openValue`) | operational | contract |
+| `config-reload.ts` `v.length > 1024=1024` (in `openValue`) | safety floor | contract |
 
 ### Calibration after the 44 relabels (#739): the bar is not met, no baseline key is labelled
 
