@@ -222,7 +222,7 @@ test("corrupt review provenance reopens as unknown while ordinary journal operat
     const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i2" });
     expect(reopened.get("ordinary-row")).toMatchObject({ state: "queued", peer: "codex" });
     expect(reopened.reviewInputState("claude", sessionHash)).toEqual({ state: "unknown" });
-    expect(reopened.reviewInputEvidence("claude", sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown" });
+    expect(reopened.reviewInputEvidence("claude", sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown", retainedSessionHold: false });
     expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_corrupt" });
     expect(reopened.reviewInputHealth().nextStep).toContain("review-input provenance");
     expect(reopened.hasReviewInputState()).toBe(true);
@@ -259,7 +259,7 @@ test("reopened incomplete provenance is corrupt and cannot release peer or sessi
     const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "incomplete-reopened" });
     const reopenedDb = (reopened as unknown as { db: Database }).db;
     try {
-      expect(reopened.reviewInputEvidence(peer, sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown" });
+      expect(reopened.reviewInputEvidence(peer, sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown", retainedSessionHold: false });
       expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_incomplete" });
       expect(() => reopened.clearReviewInputIncomplete(peer)).toThrow("provenance is incomplete");
       expect(() => reopened.clearReviewInput(peer, sessionHash)).toThrow("provenance is incomplete");
@@ -281,7 +281,7 @@ test("reopened bad provenance digest stays corrupt after restart marks completen
     const reopenedDb = (reopened as unknown as { db: Database }).db;
     try {
       expect(reopenedDb.query("SELECT review_input_complete FROM delivery_meta WHERE project_id='p'").get()).toMatchObject({ review_input_complete: 0 });
-      expect(reopened.reviewInputEvidence(peer, sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown" });
+      expect(reopened.reviewInputEvidence(peer, sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown", retainedSessionHold: false });
       expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_corrupt" });
       expect(() => reopened.clearReviewInputIncomplete(peer)).toThrow("integrity mismatch");
       expect(() => reopened.clearReviewInput(peer, sessionHash)).toThrow("integrity mismatch");
@@ -330,7 +330,10 @@ test("verified input clears only its own peer marker and selected session eviden
     journal.markReviewInputIncomplete("codex", incompleteSession);
     journal.clearReviewInputIncomplete("claude"); // New native SID confirmation has no stable session receipt to clear.
     expect(journal.reviewInputEvidence("claude")).toMatchObject({ provenance: "available", incompletePeer: false, sessionState: "clean" });
-    expect(journal.reviewInputEvidence("codex", sessionA)).toMatchObject({ incompletePeer: true, sessionState: "unknown" });
+    expect(journal.reviewInputEvidence("codex", sessionA)).toMatchObject({ incompletePeer: true, sessionState: "unknown", retainedSessionHold: true });
+    expect(journal.reviewInputEvidence("codex", sessionB)).toMatchObject({ incompletePeer: true, sessionState: "unknown", retainedSessionHold: true });
+    expect(journal.reviewInputEvidence("codex", "f".repeat(64))).toMatchObject({ incompletePeer: true, sessionState: "unknown", retainedSessionHold: false });
+    expect(journal.reviewInputEvidence("codex")).toMatchObject({ incompletePeer: true, sessionState: "unknown", retainedSessionHold: false });
     expect(journal.snapshot().reviewInputProvenance?.holds).toEqual([
       { peer: "codex", sessionHash: sessionA, inputHash: hashA },
       { peer: "codex", sessionHash: sessionB, inputHash: hashB },
@@ -338,7 +341,7 @@ test("verified input clears only its own peer marker and selected session eviden
 
     journal.clearReviewInput("codex", sessionA); // Verified ordinary input releases its own marker and SID.
     expect(journal.reviewInputState("codex", sessionA)).toEqual({ state: "clean" });
-    expect(journal.reviewInputEvidence("codex", sessionB)).toMatchObject({ incompletePeer: false, sessionState: "held" });
+    expect(journal.reviewInputEvidence("codex", sessionB)).toMatchObject({ incompletePeer: false, sessionState: "held", retainedSessionHold: true });
     expect(journal.reviewInputState("codex", sessionB)).toEqual({ state: "held", inputHash: hashB });
     expect(journal.reviewInputEvidence("codex", incompleteSession)).toMatchObject({ incompleteSession: true, sessionState: "unknown" });
     expect(journal.reviewInputHealth()).toMatchObject({ state: "incomplete", cause: "incomplete_markers" });
