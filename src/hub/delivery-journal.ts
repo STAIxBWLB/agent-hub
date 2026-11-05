@@ -1337,7 +1337,7 @@ export class DeliveryJournal {
     this.ensureOpen(); text(deliveryId, "delivery id", 256); text(peer, "delivery peer", 256);
     if (peer === HUB || peer === USER || !["adapter", "reply", "pull"].includes(source)) throw new Error("invalid delivered completion source");
     if (reason !== undefined) text(reason, "delivery completion reason", 1_000_000);
-    return this.db.transaction((): JournalDelivery => {
+    return this.transaction((): JournalDelivery => {
       const row = this.get(deliveryId);
       if (!row || row.peer !== peer || !["dispatching", "accepted"].includes(row.state)) throw new Error("delivery is not active for this peer");
       const completed = this.withPruningDeferred(() => {
@@ -1349,7 +1349,7 @@ export class DeliveryJournal {
       // Proof is now durable in this transaction, and the return receipt is captured.
       this.pruneTerminal("completed", "");
       return completed;
-    })();
+    });
   }
   /** Exact immutable offer id, independent of queue snapshots or generic completed rows. */
   offerRead(peer: string, envelopeId: string): boolean {
@@ -1366,7 +1366,7 @@ export class DeliveryJournal {
   ): JournalDelivery {
     this.ensureOpen();
     if (!STATES.has(state)) throw new Error("invalid delivery state");
-    return this.db.transaction(() => {
+    return this.transaction(() => {
       const old = this.get(id);
       if (!old) throw new Error(`unknown delivery ${id}`);
       if (expectedRevision !== undefined && old.revision !== expectedRevision)
@@ -1382,7 +1382,7 @@ export class DeliveryJournal {
       this.refreshReviewInputCoverage(true);
       this.pruneTerminal(state, id);
       return this.get(id)!;
-    })();
+    });
   }
   get(id: string): JournalDelivery | undefined {
     this.ensureOpen();
@@ -1639,7 +1639,7 @@ export class DeliveryJournal {
       if (action === "retry") this.recordRetryEvidence(current.peer, current.originals, id, actor === `peer:${current.peer}`);
       this.pruneTerminal(result.state, result.id);
       return result;
-    })();
+    });
   }
   /** #1096: the ids of every delivery an operator action (completed, retry, discard) already settled. One query, so a list of any length costs one read. */
   resolvedIds(): Set<string> {
