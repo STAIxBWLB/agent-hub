@@ -173,6 +173,12 @@ receiver replay/admission checks are unchanged. A `queue_full` storage refusal
 names the verified frame digest; local bounded backoff retries that same sealed
 frame and grants no completion authority.
 
+
+The ephemeral advertisement is a transport capability, not authentication or
+completion authority. Old brokers receive the legacy frame shape. The broker withholds ephemeral frames from older member
+hubs until they upgrade; chat
+frames remain compatible. See [room wire compatibility](design/bus.md#room-wire-compatibility-1204-t1).
+
 ## What is not defended
 
 - **A malicious local process running as you.** It can read the control token, `hub.db`, the project and your home directory without the hub's help. The token keeps web pages and other users out, not your own processes.

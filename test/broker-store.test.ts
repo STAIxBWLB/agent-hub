@@ -38,7 +38,7 @@ test("broker store persists only sealed frame bytes and restores roster pins and
     expect(f.store.install(f.roster, f.owner.public.fingerprint)).toEqual({ changed: true, revoked: [] });
     const packet = await f.frame();
     expect(f.store.enqueue(packet.proof, f.owner.public.fingerprint)).toEqual({ digest: packet.proof.digest, duplicate: false });
-    expect(f.store.next(f.roster.room, f.guest.public.fingerprint)).toEqual({ digest: packet.proof.digest, wire: packet.wire });
+    expect(f.store.next(f.roster.room, f.guest.public.fingerprint)).toEqual({ digest: packet.proof.digest, wire: packet.wire, expiresAt: 86_410_000 });
     expect(f.store.next(f.roster.room, f.guest.public.fingerprint)?.wire).not.toBe(packet.wire);
     f.store.close();
     const disk = readFileSync(join(f.stateDir, "broker.db"));
@@ -46,7 +46,7 @@ test("broker store persists only sealed frame bytes and restores roster pins and
     const restored = await BrokerStore.open({ stateDir: f.stateDir, clock: () => now });
     try {
       expect(restored.current(f.roster.room)?.current.digest).toBe(f.roster.digest);
-      expect(restored.next(f.roster.room, f.guest.public.fingerprint)).toEqual({ digest: packet.proof.digest, wire: packet.wire });
+      expect(restored.next(f.roster.room, f.guest.public.fingerprint)).toEqual({ digest: packet.proof.digest, wire: packet.wire, expiresAt: 86_410_000 });
       restored.ack(f.roster.room, f.guest.public.fingerprint, packet.proof.digest);
       expect(restored.stats()).toMatchObject({ queuedFrames: 0, queuedBytes: 0 });
     } finally { restored.close(); }
@@ -294,10 +294,10 @@ test("schema v1 migrates queue epochs without dropping roster, floors or ciphert
     f.store = await BrokerStore.open({ stateDir: migration.stateDir, clock: () => now });
     expect(f.store.current(f.roster.room)?.current.digest).toBe(current.digest);
     expect(f.store.current(f.roster.room)?.previous?.expiresAt).toBe(65_000);
-    expect(f.store.next(f.roster.room, f.guest.public.fingerprint)).toEqual({ digest: packet.proof.digest, wire: packet.wire });
+    expect(f.store.next(f.roster.room, f.guest.public.fingerprint)).toEqual({ digest: packet.proof.digest, wire: packet.wire, expiresAt: 65_000 });
     expect(f.store.stats()).toMatchObject({ queuedFrames: 2, queuedBytes: packet.wire.byteLength + later.wire.byteLength });
     f.store.ack(f.roster.room, f.guest.public.fingerprint, packet.proof.digest);
-    expect(f.store.next(f.roster.room, f.guest.public.fingerprint)).toEqual({ digest: later.proof.digest, wire: later.wire });
+    expect(f.store.next(f.roster.room, f.guest.public.fingerprint)).toEqual({ digest: later.proof.digest, wire: later.wire, expiresAt: 65_000 });
     f.store.ack(f.roster.room, f.guest.public.fingerprint, later.proof.digest);
     expect(f.store.enqueue(later.proof, f.owner.public.fingerprint)).toMatchObject({ duplicate: true });
     now = 64_000; expect(f.store.install(current, f.owner.public.fingerprint).changed).toBe(false);

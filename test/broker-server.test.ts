@@ -15,7 +15,7 @@ const roots: string[] = [], servers: BrokerRuntime[] = [], clients: FakeBrokerCl
 afterEach(async () => { for (const client of clients.splice(0)) client.close(); for (const server of servers.splice(0)) await server.stop(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const member = (id: HubIdentity, label: string) => ({ ...id.public, label, exposedPeers: ["codex"] });
 const sequence = (): SequencePort => { let seq = 0; return { reserve: async () => String(++seq), isCurrent: () => true }; };
-async function setup(options: { limits?: { queuedPerRoom?: number; rooms?: number }; ports?: BrokerPorts; stateDir?: string; owners?: readonly string[] } = {}) {
+async function setup(options: { limits?: { queuedPerRoom?: number; rooms?: number; queueTtlMs?: number }; ports?: BrokerPorts; stateDir?: string; owners?: readonly string[] } = {}) {
   const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), "ahub-broker-")); if (!options.stateDir) roots.push(stateDir);
   const server = await startBroker({ stateDir, port: 0, ...(options.limits ? { limits: options.limits } : {}), ...(options.owners ? { owners: options.owners } : {}) }, options.ports); servers.push(server);
   return { server, stateDir, url: `ws://127.0.0.1:${server.port}/` };
@@ -76,15 +76,17 @@ test("auth rejects nonmembers, cross-socket challenge replay, expired proofs and
 
 test("queue capacity refuses without evicting an accepted offline frame and forged sender traffic closes", async () => {
   const f = await fixture({ limits: { queuedPerRoom: 1 } });
-  f.ownerClient.send(await seal(f.epoch, f.owner, f.guest.public.fingerprint, "one", f.seq)); await f.ownerClient.take("stored");
+  const producer = await FakeBrokerClient.connect(f.url, f.epoch.room, { "x-agent-hub-ephemeral": "1" });
+  clients.push(producer); await producer.authenticate(f.owner);
+  producer.send(await seal(f.epoch, f.owner, f.guest.public.fingerprint, "one", f.seq)); await producer.take("stored");
   const refusedWire = await seal(f.epoch, f.owner, f.guest.public.fingerprint, "two", f.seq);
-  f.ownerClient.send(refusedWire);
-  const refusal = packetObject(await f.ownerClient.take("error"));
+  producer.send(refusedWire);
+  const refusal = packetObject(await producer.take("error"));
   expect(refusal.code).toBe("queue_full");
   expect(refusal.digest).toBe(encodeBase64url(await roomCrypto.sha256(refusedWire)));
   expect(f.server.stats().queuedFrames).toBe(1);
-  f.ownerClient.send(await seal(f.epoch, f.guest, f.owner.public.fingerprint, "forged socket sender"));
-  expect((await f.ownerClient.closed).code).toBe(4403);
+  producer.send(await seal(f.epoch, f.guest, f.owner.public.fingerprint, "forged socket sender"));
+  expect((await producer.closed).code).toBe(4403);
   expect(f.server.stats().queuedFrames).toBe(1);
 });
 
@@ -243,4 +245,118 @@ test("unapproved owners consume no room slots and offline drop frees a named slo
   const fresh = await createRoomEpoch({ owner, members: [member(owner, "approved")] });
   const producer = await connect(next.url, fresh.epoch.room); await producer.authenticate(owner, fresh.wire);
   expect(next.server.stats().rooms).toBe(1);
+});
+
+test("broker advertises ephemeral only to explicitly opted-in clients and preserves legacy ready keys", async () => {
+  const f = await fixture();
+  for (const value of [undefined, "0", "1"] as const) {
+    const client = await FakeBrokerClient.connect(f.url, f.epoch.room, value === undefined ? undefined : { "x-agent-hub-ephemeral": value });
+    clients.push(client);
+    const challenge = decodeBrokerChallenge(await client.take("challenge"));
+    client.send(await createBrokerAuth({ challenge, identity: f.guest, broker: f.url, room: f.epoch.room }));
+    await client.take("roster");
+    const ready = packetObject(await client.take("ready"));
+    expect(Object.keys(ready).sort()).toEqual(["v", "type", "room", "member", "epoch", "digest", ...(value === "1" ? ["ephemeral"] : [])].sort());
+    expect(ready.ephemeral).toBe(value === "1" ? true : undefined);
+    client.control({ v: 1, type: "roster_ready", digest: ready.digest });
+    client.close();
+  }
+});
+
+
+test("legacy broker clients keep the closed queue_full error shape", async () => {
+  const f = await fixture({ limits: { queuedPerRoom: 1 } });
+  f.ownerClient.send(await seal(f.epoch, f.owner, f.guest.public.fingerprint, "one", f.seq));
+  await f.ownerClient.take("stored");
+  f.ownerClient.send(await seal(f.epoch, f.owner, f.guest.public.fingerprint, "two", f.seq));
+  const refusal = packetObject(await f.ownerClient.take("error"));
+  expect(refusal).toEqual({ v: 1, type: "error", code: "queue_full" });
+  expect(f.ownerClient.ws.readyState).toBe(WebSocket.OPEN);
+});
+
+
+test("replaced ephemeral frames keep a slow recipient's one-packet slot until its ACK", async () => {
+  const f = await fixture();
+  const guest = await FakeBrokerClient.connect(f.url, f.epoch.room, { "x-agent-hub-ephemeral": "1" });
+  clients.push(guest); await guest.authenticate(f.guest);
+  const guestSequence = sequence();
+  // A signed guest probe follows roster_ready on that socket, proving it is ready.
+  guest.send(await seal(f.epoch, f.guest, f.owner.public.fingerprint, "ready probe", guestSequence));
+  const readyProbe = packetObject(await guest.take("stored"));
+  await f.ownerClient.take("frame"); await f.ownerClient.ack(String(readyProbe.digest));
+  const presenceFrame = () => sealFrame({ epoch: f.epoch, identity: f.owner, recipients: [f.guest.public.fingerprint], plaintext: text.encode("presence"), ephemeral: true, sequence: f.seq });
+  const first = await presenceFrame();
+  f.ownerClient.send(first); const firstStored = packetObject(await f.ownerClient.take("stored"));
+  expect(await guest.take("frame")).toEqual(first); // Deliberately leave this transport ACK outstanding.
+  let latest = first, latestDigest = String(firstStored.digest);
+  for (let flip = 0; flip < 12; flip++) {
+    latest = await presenceFrame(); f.ownerClient.send(latest);
+    latestDigest = String(packetObject(await f.ownerClient.take("stored")).digest);
+  }
+  const chat = await seal(f.epoch, f.owner, f.guest.public.fingerprint, "chat after presence", f.seq);
+  f.ownerClient.send(chat); const chatStored = packetObject(await f.ownerClient.take("stored"));
+  // This same-socket response follows all prior broker sends to the guest, so the
+  // absence assertion below needs no sleep or negative take() timeout.
+  guest.send(await seal(f.epoch, f.guest, f.owner.public.fingerprint, "delivery barrier", guestSequence));
+  const barrier = packetObject(await guest.take("stored"));
+  expect(guest.packets.filter(wire => packetObject(wire).type === "frame")).toHaveLength(0);
+  expect(guest.ws.readyState).toBe(WebSocket.OPEN);
+  await guest.ack(String(firstStored.digest));
+  expect(await guest.take("frame")).toEqual(latest);
+  await guest.ack(latestDigest);
+  expect(await guest.take("frame")).toEqual(chat);
+  await guest.ack(String(chatStored.digest));
+  await f.ownerClient.take("frame"); await f.ownerClient.ack(String(barrier.digest));
+  expect(f.server.stats().queuedFrames).toBe(0);
+});
+
+
+test("a replaced unacknowledged ephemeral slot expires at its original queue deadline", async () => {
+  let now = 1_000;
+  const f = await fixture({ ports: { clock: () => now }, limits: { queueTtlMs: 500 } });
+  const guest = await FakeBrokerClient.connect(f.url, f.epoch.room, { "x-agent-hub-ephemeral": "1" });
+  clients.push(guest); await guest.authenticate(f.guest);
+  const guestSequence = sequence();
+  const barrier = async () => {
+    guest.send(await seal(f.epoch, f.guest, f.owner.public.fingerprint, "signed barrier", guestSequence));
+    const stored = packetObject(await guest.take("stored"));
+    await f.ownerClient.take("frame"); await f.ownerClient.ack(String(stored.digest));
+  };
+  await barrier();
+  const presenceFrame = () => sealFrame({ epoch: f.epoch, identity: f.owner, recipients: [f.guest.public.fingerprint], plaintext: text.encode("presence"), ephemeral: true, sequence: f.seq });
+  const first = await presenceFrame();
+  f.ownerClient.send(first); await f.ownerClient.take("stored");
+  expect(await guest.take("frame")).toEqual(first); // No ACK: this slot's original deadline is 1_500.
+  now = 1_200;
+  const latest = await presenceFrame();
+  f.ownerClient.send(latest); const latestStored = packetObject(await f.ownerClient.take("stored"));
+  now = 1_300;
+  const chat = await seal(f.epoch, f.owner, f.guest.public.fingerprint, "queued chat", f.seq);
+  f.ownerClient.send(chat); const chatStored = packetObject(await f.ownerClient.take("stored"));
+  now = 1_499; f.server.sweep(); await barrier();
+  expect(guest.packets.filter(wire => packetObject(wire).type === "frame")).toHaveLength(0);
+  expect(f.server.stats().queuedFrames).toBe(2);
+  now = 1_500; f.server.sweep();
+  expect(await guest.take("frame")).toEqual(latest);
+  expect(f.server.stats().queuedFrames).toBe(2); // Slot expiry never evicts the retained replacement or chat.
+  await guest.ack(String(latestStored.digest));
+  expect(await guest.take("frame")).toEqual(chat);
+  await guest.ack(String(chatStored.digest));
+  expect(f.server.stats().queuedFrames).toBe(0);
+});
+
+test("ephemeral presence is withheld from legacy members while their chat remains usable", async () => {
+  const f = await fixture();
+  const producer = await FakeBrokerClient.connect(f.url, f.epoch.room, { "x-agent-hub-ephemeral": "1" });
+  clients.push(producer); await producer.authenticate(f.owner);
+  const legacy = await connect(f.url, f.epoch.room); await legacy.authenticate(f.guest);
+  producer.send(await sealFrame({ epoch: f.epoch, identity: f.owner, recipients: [f.guest.public.fingerprint],
+    plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }] }), sequence: f.seq, ephemeral: true }));
+  await producer.take("stored");
+  const chat = await seal(f.epoch, f.owner, f.guest.public.fingerprint, "legacy member chat", f.seq);
+  producer.send(chat); const stored = packetObject(await producer.take("stored"));
+  expect(await legacy.take("frame")).toEqual(chat);
+  await legacy.ack(String(stored.digest));
+  expect(legacy.ws.readyState).toBe(WebSocket.OPEN);
+  expect(f.server.stats().queuedFrames).toBe(0);
 });

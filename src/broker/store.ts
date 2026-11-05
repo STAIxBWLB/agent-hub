@@ -447,7 +447,7 @@ export class BrokerStore {
     }
   }
 
-  next(room: string, recipient: string): { digest: string; wire: Uint8Array } | undefined {
+  next(room: string, recipient: string): { digest: string; wire: Uint8Array; expiresAt: number } | undefined {
     this.assertOpen(); let now = 0;
     let state = this.rooms.get(room);
     if (!state) return undefined;
@@ -455,13 +455,16 @@ export class BrokerStore {
     if (state) this.rooms.set(room, state);
     if (!state?.current.members.some(member => member.fingerprint === recipient)) return undefined;
     const previous = state.previous && state.previous.expiresAt > now ? state.previous.roster.epoch : state.current.epoch;
-    const rows = this.db.query<{ id: number; digest: string; recipients: string }, [string, number, string, string]>(
-      "SELECT rowid AS id,digest,recipients FROM queued_frames WHERE room=? AND expires_at>? AND epoch IN (?,?) ORDER BY rowid",
+    const rows = this.db.query<{ id: number; digest: string; recipients: string; epoch: string; expiresAt: number }, [string, number, string, string]>(
+      "SELECT rowid AS id,digest,recipients,epoch,expires_at AS expiresAt FROM queued_frames WHERE room=? AND expires_at>? AND epoch IN (?,?) ORDER BY rowid",
     ).all(room, now, state.current.epoch, previous);
     for (const row of rows) {
       if (!parseRecipients(row.recipients).includes(recipient)) continue;
       const packet = this.db.query<{ wire: Uint8Array }, [number]>("SELECT wire FROM queued_frames WHERE rowid=?").get(row.id);
-      if (packet?.wire instanceof Uint8Array) return { digest: row.digest, wire: new Uint8Array(packet.wire) };
+      if (packet?.wire instanceof Uint8Array) {
+        const expiresAt = row.epoch === state.current.epoch ? row.expiresAt : Math.min(row.expiresAt, state.previous!.expiresAt);
+        return { digest: row.digest, wire: new Uint8Array(packet.wire), expiresAt };
+      }
     }
     return undefined;
   }

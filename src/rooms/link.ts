@@ -45,7 +45,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const STATES: readonly string[] = ["idle", "busy", "paused", "offline"];
-interface PendingFrame { wire: Uint8Array; digest: string; ephemeral: boolean; requestReply: boolean; current: () => boolean }
+interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean }
 interface Session {
   outbound: PendingFrame[];
   outboundBytes: number;
@@ -53,6 +53,7 @@ interface Session {
   retryAttempt: number;
   frameRetry?: ReturnType<typeof setTimeout>;
   lastPresence?: string;
+  ephemeral?: boolean;
   ws: WebSocket;
   generation: number;
   room: string;
@@ -268,7 +269,8 @@ export class RoomLink {
     } catch { this.setState("offline"); return; }
     url.pathname = `/v1/rooms/${row.current.room}`;
     let ws: WebSocket;
-    try { ws = new WebSocket(url.href); } catch { this.retry(); return; }
+    // ponytail: negotiate only ephemeral here; replace this opt-in with #1204 T4 codec capabilities.
+    try { ws = new WebSocket(url.href, { headers: { "x-agent-hub-ephemeral": "1" } }); } catch { this.retry(); return; }
     ws.binaryType = "arraybuffer";
     const generation = ++this.generation;
     const session: Session = { ws, generation, room: row.current.room, broker: row.broker, phase: "challenge", outbound: [], outboundBytes: 0, frameSent: false, retryAttempt: 0, queue: [], queuedBytes: 0, processing: false, initialRoster: true, requestPresenceReply: true,
@@ -285,16 +287,15 @@ export class RoomLink {
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
   }
-  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true): void {
+  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false): void {
     this.current(session);
-    const ephemeral = decodeFrame(wire).ephemeral === true;
     // Only an unsent observation may be replaced. Never reorder an attempted frame.
-    if (ephemeral) {
-      const at = session.outbound.findIndex((frame, index) => frame.ephemeral && (!frame.requestReply || requestReply) && (index > 0 || !session.frameSent && !session.frameRetry));
+    if (presence) {
+      const at = session.outbound.findIndex((frame, index) => frame.presence && (!frame.requestReply || requestReply) && (index > 0 || !session.frameSent && !session.frameRetry));
       if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
     }
     if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
-    session.outbound.push({ wire, digest, ephemeral, requestReply, current }); session.outboundBytes += wire.byteLength;
+    session.outbound.push({ wire, digest, presence, requestReply, current }); session.outboundBytes += wire.byteLength;
     this.pumpFrames(session);
   }
   private pumpFrames(session: Session): void {
@@ -302,7 +303,7 @@ export class RoomLink {
     this.current(session);
     const frame = session.outbound[0]!;
     if (!frame.current()) {
-      if (!frame.ephemeral) fail("state_changed");
+      if (!frame.presence) fail("state_changed");
       session.outbound.shift(); session.outboundBytes -= frame.wire.byteLength; session.lastPresence = undefined;
       this.pumpFrames(session);
       void this.publishPresence().catch(() => this.retry(session));
@@ -384,13 +385,15 @@ export class RoomLink {
       return;
     }
     if (message.type === "ready") {
-      const ready = exact(message, ["v", "type", "room", "member", "epoch", "digest"]), roster = session.roster;
+      const ready = exact(message, ["v", "type", "room", "member", "epoch", "digest", ...(Object.hasOwn(message, "ephemeral") ? ["ephemeral"] : [])]), roster = session.roster;
+      if (ready.ephemeral !== undefined && ready.ephemeral !== true) fail();
       if (!roster || ready.room !== local.current.room || ready.member !== this.options.store.identity.public.fingerprint || ready.epoch !== roster.epoch || ready.digest !== roster.digest) fail("untrusted");
       if (roster.digest !== local.current.digest) {
         if (roster.owner !== this.options.store.identity.public.fingerprint || BigInt(roster.epoch) >= BigInt(local.current.epoch)) fail("untrusted");
         session.ownerUpgrading = true;
         this.send(session, local.wire); return;
       }
+      session.ephemeral = ready.ephemeral === true;
       session.phase = "ready"; session.ownerUpgrading = false; clearTimeout(session.handshake); this.attempts = 0;
       if (session.deferredFrame) {
         session.queue.unshift(session.deferredFrame); session.queuedBytes += session.deferredFrame.byteLength; session.deferredFrame = undefined;
@@ -616,7 +619,7 @@ export class RoomLink {
         const requestReply = !response && session.requestPresenceReply;
         const presenceKey = JSON.stringify([row.current.digest, recipients, peers]);
         if (!requestReply && !response && session.lastPresence === presenceKey) return;
-        const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers, ...(requestReply ? { requestReply: true } : {}) }), ephemeral: true, sequence: this.options.store.sequence });
+        const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers, ...(requestReply ? { requestReply: true } : {}) }), ...(session.ephemeral ? { ephemeral: true as const } : {}), sequence: this.options.store.sequence });
         if (!this.publicationCurrent(session, row.current.digest)) return;
         // Machine-local exposure can change during reserve/encryption/signing even
         // when the signed roster is unchanged. Never emit an id it now withholds.
@@ -624,7 +627,7 @@ export class RoomLink {
         if (!this.publicationCurrent(session, row.current.digest)) return;
         const allowed = new Set(this.currentPresence(own.exposedPeers).map(peer => peer.id));
         if (peers.some(peer => !allowed.has(peer.id))) return;
-        this.queueFrame(session, wire, frameDigest, requestReply, () => this.publicationCurrent(session, row.current.digest) && peers.every(peer => this.currentPresence(own.exposedPeers).some(value => value.id === peer.id))); session.lastPresence = presenceKey; sent = true;
+        this.queueFrame(session, wire, frameDigest, requestReply, () => this.publicationCurrent(session, row.current.digest) && peers.every(peer => this.currentPresence(own.exposedPeers).some(value => value.id === peer.id)), true); session.lastPresence = presenceKey; sent = true;
       });
     } catch (error) {
       this.retry(session); // Existing bounded reconnect, never a self-polling refresh retry.

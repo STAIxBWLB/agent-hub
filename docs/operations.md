@@ -5907,6 +5907,13 @@ clears connection timers. The broker storage ACK remains transport metadata;
 application receipts, current acknowledgement deadlines and uncertainty rules
 remain unchanged until the T2 delivery work. No layer cap is raised.
 
+
+A hub uses the ephemeral bit only after the broker advertises it to that
+connection. Against an older broker, presence uses the legacy wire shape and
+chat stays usable; upgrade the broker to avoid offline presence retention.
+The supporting broker withholds ephemeral frames from older member hubs; they
+must upgrade to see upgraded hubs' presence. Chat wire shapes remain unchanged. See [wire compatibility](design/bus.md#room-wire-compatibility-1204-t1).
+
 ## Screened room chat (#446 X4)
 
 After joining and confirming fingerprints, expose each receiving native peer with

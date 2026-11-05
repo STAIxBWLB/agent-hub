@@ -147,13 +147,18 @@ function fillApplicationIdentityCap(receiver: Hub, remoteSender: string, now: nu
 }
 const meshes: Mesh[] = [];
 afterEach(async () => { for (const mesh of meshes.splice(0).reverse()) await mesh.close(); });
-async function mesh(ackSeconds = 600, brokerQueueCap?: number): Promise<Mesh> {
+async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = false): Promise<Mesh> {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-delivery-")), event = signals();
   const control: Control = { now: Date.now(), phase: "setup", hold: false, entered: false, gate: deferred() }, frames: Mesh["frames"] = [], brokerEvents: Mesh["brokerEvents"] = [];
   const brokerRoot = join(root, "broker");
   const broker = await startBroker({ stateDir: brokerRoot, port: 0, ...(brokerQueueCap ? { limits: { queuedPerRoom: brokerQueueCap } } : {}) }, {
     log: (kind, ids) => { brokerEvents.push({ event: kind, ...(ids.member ? { member: ids.member } : {}), ...(ids.code ? { code: ids.code } : {}) }); event.notify(); },
     verifyFrame: async input => {
+      if (legacyFrames) {
+        const frame = JSON.parse(new TextDecoder().decode(input.wire)) as Record<string, unknown>;
+        const oldKeys = ["v", "type", "room", "epoch", "sender", "recipients", "seq", "nonce", "ciphertext", "signature"];
+        if (Object.keys(frame).sort().join(",") !== oldKeys.sort().join(",")) throw new Error("old broker closed frame grammar refused an added field");
+      }
       const proof = await verifyPublicFrame(input); frames.push({ sender: proof.sender, digest: proof.digest, phase: control.phase, ephemeral: proof.ephemeral === true });
       if (control.hold && control.holdSender === proof.sender) { control.entered = true; event.notify(); await control.gate.promise; }
       event.notify(); return proof;
@@ -458,6 +463,46 @@ test("queue_full keeps the durable frame and retries its digest after broker cap
   expect(f.a.journal.unresolved("codex@beta").some(row => row.originals.some(item => item.id === env.id))).toBe(false);
   expect((await f.a.commands.rows("work"))[0]?.state).toBe("online");
 });
+
+test("new links retain the closed legacy frame shape when a broker does not advertise ephemeral", async () => {
+  const NativeWebSocket = globalThis.WebSocket, readyKeys: string[][] = [];
+  let dials = 0, f: Mesh | undefined;
+  // Exercise the old broker branch over real authenticated sockets. The only
+  // interception is removing the new request header, which old brokers ignore.
+  globalThis.WebSocket = class extends NativeWebSocket {
+    constructor(url: string | URL, options?: Bun.WebSocketOptions | string | string[]) {
+      if (options && typeof options === "object" && !Array.isArray(options)) {
+        const headers = Object.fromEntries(Object.entries(options.headers ?? {}).filter(([name]) => name.toLowerCase() !== "x-agent-hub-ephemeral"));
+        super(url, { ...options, headers });
+      } else super(url, options);
+      dials++;
+      this.addEventListener("message", event => {
+        try {
+          const packet = JSON.parse(new TextDecoder().decode(event.data)) as Record<string, unknown>;
+          if (packet.type === "ready") readyKeys.push(Object.keys(packet).sort());
+        } catch { /* Other transport messages are checked by the real RoomLink. */ }
+      });
+    }
+  };
+  try {
+    f = await mesh(600, undefined, true);
+    const dialsBefore = dials, eventsBefore = f.brokerEvents.length;
+    f.a.bus.pause("codex"); await f.a.link!.publishPresence();
+    await f.event.wait(() => f!.b.bus.stateOf("codex@alpha") === "paused", "legacy presence state delivered");
+    f.a.bus.resume("codex"); await f.a.link!.publishPresence();
+    await f.event.wait(() => f!.b.bus.stateOf("codex@alpha") === "idle", "legacy presence state restored");
+    const env = newEnvelope("user", "chat over old broker frame contract", { to: ["codex@beta"] });
+    f.a.bus.publish(env);
+    await f.event.wait(async () => (await outbound(f!.a, env.id))?.state === "completed (admitted)", "legacy broker chat admitted");
+    expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+    expect(readyKeys.length).toBeGreaterThan(0);
+    for (const keys of readyKeys) expect(keys).toEqual(["digest", "epoch", "member", "room", "type", "v"]);
+    expect(f.frames.length).toBeGreaterThan(0);
+    expect(f.frames.every(frame => !frame.ephemeral)).toBe(true);
+    expect(dials).toBe(dialsBefore);
+    expect(f.brokerEvents.slice(eventsBefore).some(row => row.event === "refused" || row.event === "disconnected")).toBe(false);
+  } finally { await f?.close(); globalThis.WebSocket = NativeWebSocket; }
+}, 20000);
 
 test("1000 presence flips with an offline member leave online chat usable and identical presence dedupes", async () => {
   const f = await mesh();

@@ -1123,6 +1123,16 @@ not project config or synced memory. A hub stop closes links and retains members
 A person may explicitly import a pinned signed roster to reactivate a left room;
 automatic link traffic cannot reactivate it.
 
+
+The optional ephemeral field is used only after an opted-in connection receives
+`ephemeral: true` in the broker ready control. The upgrade header is
+`x-agent-hub-ephemeral: 1`; brokers preserve the old closed ready shape for
+clients that do not opt in. Missing advertisement means legacy presence frames,
+with dedupe/backoff still active. The broker withholds ephemeral frames from older member hubs
+until upgraded; application chat stays wire-compatible. See the [compatibility
+ceiling](../design/bus.md#room-wire-compatibility-1204-t1); #1204 T4 owns full codec
+feature negotiation.
+
 ### Durable state and outbound link
 
 `<hub-state>/rooms/rooms.db` is schema version 1, SQLite DELETE/EXTRA with exclusive
