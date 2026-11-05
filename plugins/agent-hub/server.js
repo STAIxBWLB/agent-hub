@@ -1472,6 +1472,9 @@ var init_reviewer_print = __esm(() => {
     get isolationReceipt() {
       return this.receipt;
     }
+    reviewObserverInputHeld() {
+      return this.opts.reviewObserverHeld?.() ?? false;
+    }
     reviewing;
     get observerSessionId() {
       return this.observerSessionIdValue;
