@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, memoryProjectKey, type View } from "@staix/agent-mem";
 import { CodeFacts } from "../src/hub/code-facts.ts";
 import { hubGitSync } from "../src/hub/git.ts";
+import { installFakeRipwire, withProbe } from "./helpers/ripwire-probe.ts";
 import { memoryStaleAnchorsCommand } from "../src/cli/memory.ts";
 import { formatMemoryStaleAnchors, memoryStaleAnchors, unavailableMemoryStaleAnchors, type MemoryStaleAnchorOptions } from "../src/hub/memory-stale-anchors.ts";
 const HEAD = "a".repeat(40), cleanup: Array<() => void> = [];
@@ -52,12 +53,14 @@ test("#411 real CodeFacts does not treat unindexed qualification as known negati
   const root = temp(), repo = join(root, "repo"), bin = join(root, "bin"); mkdirSync(repo); mkdirSync(bin);
   const git = (...args: string[]) => { const r = hubGitSync(["-C", repo, ...args], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.test", GIT_COMMITTER_NAME: "fixture", GIT_COMMITTER_EMAIL: "fixture@example.test" } }); expect(r.status).toBe(0); return r.stdout.trim(); };
   git("init", "-q"); writeFileSync(join(repo, "a.ts"), "export function retained() {}\n"); git("add", "."); git("commit", "-qm", "fixture"); const head = git("rev-parse", "HEAD");
-  const fake = join(root, "fake.ts"), executable = join(bin, "ripwire"), quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
-  writeFileSync(fake, `if(process.argv.includes("--version")){console.log("ripwire 0.6.7");process.exit(0);}const arg=process.argv.find(a=>a.startsWith("--callers="));const name=arg?.slice(10);console.log('<callers schema="ripwire.callers/v1" of="'+name+'" found="0"/>');process.exit(1);`);
-  writeFileSync(executable, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fake)} "$@"\n`); chmodSync(executable, 0o755);
-  const facts = new CodeFacts({ env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+  const probe = installFakeRipwire(root, bin, `if(process.argv.includes("--version")){console.log("ripwire 0.6.7");process.exit(0);}const arg=process.argv.find(a=>a.startsWith("--callers="));const name=arg?.slice(10);console.log('<callers schema="ripwire.callers/v1" of="'+name+'" found="0"/>');process.exit(1);`);
+  const facts = new CodeFacts({ env: { ...process.env, PATH: `${probe.bin}:${process.env.PATH}` } });
+  const disarm = probe.watch(15000, "#723 stale-followups-684");   // names the stall on stderr before the 20 s test timeout would hide it
+  probe.markCall();
   try {
-    for (const name of ["Tasks#complete", "Tasks:complete", "Tasks->complete", "Tasks.complete", "Tasks::complete"]) expect(await facts.exists(repo, head, name)).toEqual({ state: "unknown" });
-    expect(await facts.exists(repo, head, "ImportedStore")).toEqual({ state: "known", value: { exists: false, ambiguous: false } });
-  } finally { await facts.close(); }
+    await withProbe(probe, async () => {
+      for (const name of ["Tasks#complete", "Tasks:complete", "Tasks->complete", "Tasks.complete", "Tasks::complete"]) expect(await facts.exists(repo, head, name)).toEqual({ state: "unknown" });
+      expect(await facts.exists(repo, head, "ImportedStore")).toEqual({ state: "known", value: { exists: false, ambiguous: false } });
+    });
+  } finally { disarm(); await facts.close(); }
 }, 20000);
