@@ -1189,7 +1189,7 @@ export class Bus {
 
   private clearReviewProvenance(peer: PeerId): void {
     this.reviewParents.delete(peer);
-    this.resetLastDelivery(peer);
+    this.lastPulled.delete(peer);
     for (const [id, source] of this.reviewResponses) if (source.peer === peer) this.reviewResponses.delete(id);
   }
 

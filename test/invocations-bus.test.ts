@@ -158,6 +158,26 @@ test("a nonempty inbox pull cannot replace the pushed invocation answer parent",
   } finally { bus.closeJournal(); await Promise.all([callee.stop(), other.stop()]); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("session reset clears pulled provenance but retains the pushed invocation answer parent", async () => {
+  const bus = new Bus({ batchMs: 0 }), callee = new Recorder("kimi"), other = new Recorder("pi");
+  for (const peer of [callee, other]) { bus.add(peer); await peer.start(); }
+  const answers: { text: string; ids: string[] }[] = [];
+  bus.onAnswer = (_peer, text, handed) => { answers.push({ text, ids: handed.map(env => env.id) }); return true; };
+  try {
+    const req = request("kimi"); bus.publish(req);
+    for (let i = 0; i < 100 && !callee.batches.length; i++) await Bun.sleep(5);
+    const ordinary = chat("kimi", "pulled before reset"); bus.publish(ordinary);
+    expect(bus.pull("kimi")?.map(env => env.id)).toEqual([ordinary.id]);
+    expect(bus.lastDeliveredTo("kimi").map(env => env.id)).toEqual([ordinary.id]);
+
+    callee.onDoing?.("reset");
+    expect(bus.lastDeliveredTo("kimi").map(env => env.id)).toEqual([req.id]);
+    callee_say(callee, "named answer after adapter reset", req);
+    expect(answers).toEqual([{ text: "named answer after adapter reset", ids: [req.id] }]);
+    expect(other.batches).toEqual([]);
+  } finally { bus.closeJournal(); await Promise.all([callee.stop(), other.stop()]); }
+});
+
 test("an answer the host does not take flows on as an ordinary message", async () => {
   const f = await answering({ host: () => false });
   callee_say(f.callee, "ordinary answer", f.req, ["pi"]);
