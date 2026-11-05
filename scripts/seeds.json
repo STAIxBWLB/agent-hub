@@ -3740,10 +3740,10 @@
     {
       "id": "room-presence-exposure-await-fence",
       "file": "src/rooms/link.ts",
-      "search": "if (peers.some(peer => !allowed.has(peer.id))) return;",
-      "replacement": "if (false) return;",
-      "testFile": "test/rooms-link.test.ts",
-      "testName": "a presence exposure removed while encryption waits is withheld before the socket send"
+      "search": "&& peers.every(peer => this.currentPresence(own.exposedPeers).some(value => value.id === peer.id))",
+      "replacement": "&& true",
+      "testFile": "test/rooms-backpressure-732.test.ts",
+      "testName": "queued presence rechecks exposure at actual send and stop clears queue_full backoff"
     },
     {
       "id": "room-durable-counter-restore",

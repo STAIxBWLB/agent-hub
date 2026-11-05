@@ -291,7 +291,7 @@ test("a broker's expired previous epoch and wrong epoch frames retire durably be
 test("a failed durable refusal write retains the broker packet without transport ACK", async () => {
   const f = await fixture(), owner = linked(f.owner);
   await owner.link.start(); await owner.online();
-  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room); clients.push(guest);
+  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room, { "x-agent-hub-ephemeral": "1" }); clients.push(guest);
   await guest.authenticate(f.guest.identity);
   await requestFreshPresence(f, guest);
   const initial = await freshPresenceFrame(f, guest); await guest.ack(encodeBase64url(await sha256(initial)));
@@ -310,7 +310,7 @@ test("a failed durable refusal write retains the broker packet without transport
 
 test("a new local epoch cannot publish ciphertext before that socket verifies the same roster", async () => {
   const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
-  const guest = await FakeBrokerClient.connect(f.broker.publicUrl, f.guest.get("test")!.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
+  const guest = await FakeBrokerClient.connect(f.broker.publicUrl, f.guest.get("test")!.current.room, { "x-agent-hub-ephemeral": "1" }); clients.push(guest); await guest.authenticate(f.guest.identity);
   await requestFreshPresence(f, guest);
   const initial = await freshPresenceFrame(f, guest); await guest.ack(encodeBase64url(await sha256(initial)));
   const before = f.owner.get("test")!;
@@ -324,7 +324,7 @@ test("a new local epoch cannot publish ciphertext before that socket verifies th
 
 test("a runtime capacity metadata failure cannot become a safe presence drop or transport ACK", async () => {
   const f = await fixture(), owner = linked(f.owner); await owner.link.start(); await owner.online();
-  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room); clients.push(guest); await guest.authenticate(f.guest.identity);
+  const row = f.guest.get("test")!, guest = await FakeBrokerClient.connect(f.broker.publicUrl, row.current.room, { "x-agent-hub-ephemeral": "1" }); clients.push(guest); await guest.authenticate(f.guest.identity);
   await requestFreshPresence(f, guest);
   const initial = await freshPresenceFrame(f, guest); await guest.ack(encodeBase64url(await sha256(initial)));
   const available = f.owner.ordinaryInboxAvailable;

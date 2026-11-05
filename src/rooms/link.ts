@@ -45,7 +45,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const STATES: readonly string[] = ["idle", "busy", "paused", "offline"];
-interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean }
+interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean }
 interface Session {
   outbound: PendingFrame[];
   outboundBytes: number;
@@ -287,7 +287,7 @@ export class RoomLink {
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
   }
-  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false): void {
+  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean): void {
     this.current(session);
     // Only an unsent observation may be replaced. Never reorder an attempted frame.
     if (presence) {
@@ -295,13 +295,18 @@ export class RoomLink {
       if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
     }
     if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
-    session.outbound.push({ wire, digest, presence, requestReply, current }); session.outboundBytes += wire.byteLength;
+    session.outbound.push({ wire, digest, presence, requestReply, current, retained }); session.outboundBytes += wire.byteLength;
     this.pumpFrames(session);
   }
   private pumpFrames(session: Session): void {
     if (session.frameSent || session.frameRetry || !session.outbound.length) return;
     this.current(session);
     const frame = session.outbound[0]!;
+    if (frame.retained && !frame.retained()) {
+      // Disposed/expired intent cannot survive in the transport's RAM queue.
+      session.outbound.shift(); session.outboundBytes -= frame.wire.byteLength; session.retryAttempt = 0;
+      this.pumpFrames(session); return;
+    }
     if (!frame.current()) {
       if (!frame.presence) fail("state_changed");
       session.outbound.shift(); session.outboundBytes -= frame.wire.byteLength; session.lastPresence = undefined;
@@ -591,7 +596,7 @@ export class RoomLink {
       const record = metadata ? await this.options.store.queueApplication(this.options.name, wire, metadata, allowed) : undefined;
       const frameDigest = record?.digest ?? await this.frameDigest(wire);
       if (!allowed()) fail("state_changed");
-      this.queueFrame(session, wire, frameDigest, false, allowed);
+      this.queueFrame(session, wire, frameDigest, false, allowed, false, record ? () => this.options.store.applicationSendable(this.options.name, frameDigest) : undefined);
       return frameDigest;
     });
   }

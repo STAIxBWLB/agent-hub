@@ -464,6 +464,46 @@ test("queue_full keeps the durable frame and retries its digest after broker cap
   expect((await f.a.commands.rows("work"))[0]?.state).toBe("online");
 });
 
+test("a discarded queue_full application is never retried when broker capacity returns", async () => {
+  const f = await mesh(600, 1);
+  await f.event.wait(() => f.broker.stats().queuedFrames === 0, "initial ciphertext queues drained");
+  const at = f.brokerEvents.length; await f.b.close();
+  await f.event.wait(() => f.brokerEvents.slice(at).some(row => row.event === "disconnected" && row.member === f.guest), "recipient link offline");
+  const blocker: RoomMessage = { v: 1, type: "chat", envelope: { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: "durable blocker before discard", ts: f.control.now } };
+  await f.a.link!.publishApplication(blocker, f.guest);
+  await f.event.wait(() => f.broker.stats().queuedFrames === 1, "durable chat occupies broker cap");
+  const env = newEnvelope("user", "discard this rejected application", { to: ["codex@beta"] });
+  const refusalAt = f.brokerEvents.length; f.a.bus.publish(env);
+  await f.event.wait(() => {
+    const target = f.a.store!.applicationOutbox("work").find(row => row.application === env.id);
+    return target !== undefined
+      && f.frames.filter(frame => frame.sender === f.owner && frame.digest === target.digest).length >= 2
+      && f.brokerEvents.slice(refusalAt).filter(row => row.event === "refused" && row.member === f.owner && row.code === "queue_full").length >= 2;
+  }, "queue_full backoff actually retries the retained application before disposition");
+  const target = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  expect(target.state).toBe("dispatching");
+  expect(f.a.store!.outbox("work").some(row => row.digest === target.digest)).toBe(true);
+  const attemptsBeforeDiscard = f.frames.filter(frame => frame.sender === f.owner && frame.digest === target.digest).length;
+  expect(attemptsBeforeDiscard).toBeGreaterThanOrEqual(2);
+  await acknowledgementDeadline(f, f.a, env.id);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "refused application acknowledgement deadline reached");
+  const row = (await outbound(f.a, env.id))!, id = String(row.id), before = f.a.journal.get(id)!;
+  f.a.bus.resolveDelivery(id, before.revision, "discard", "person discards rejected room application");
+  f.a.chat.tick();
+  expect(f.a.store!.applicationOutbox("work").find(item => item.deliveryId === id)?.disposition).toBe("discard");
+  expect(f.a.store!.outbox("work").some(item => item.digest === target.digest)).toBe(false);
+  await f.restart("b");
+  await f.event.wait(() => f.broker.stats().queuedFrames === 0 && f.a.bus.stateOf("codex@beta") === "idle", "receiver drains capacity after discarded application");
+  const probe = newEnvelope("user", "fresh chat after discarded retry", { to: ["codex@beta"] });
+  f.a.bus.publish(probe);
+  // A new send behind the old in-memory retry head is the non-vacuous fence:
+  // the probe cannot complete until that head has been retired or sent.
+  await f.event.wait(async () => (await outbound(f.a, probe.id))?.state === "completed (admitted)", "fresh probe passes the retired retry head");
+  expect(f.b.peer.got.filter(item => item.id === probe.id)).toHaveLength(1);
+  expect(f.b.peer.got.some(item => item.id === env.id)).toBe(false);
+  expect(f.frames.filter(frame => frame.sender === f.owner && frame.digest === target.digest)).toHaveLength(attemptsBeforeDiscard);
+});
+
 test("new links retain the closed legacy frame shape when a broker does not advertise ephemeral", async () => {
   const NativeWebSocket = globalThis.WebSocket, readyKeys: string[][] = [];
   let dials = 0, f: Mesh | undefined;
