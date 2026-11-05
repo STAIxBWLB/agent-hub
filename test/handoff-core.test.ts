@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { parseHandoffArgs } from "../src/cli/handoff-args.ts";
+import { HANDOFF_CONNECT_MS, HANDOFF_CONTROL_TIMEOUT_MS, HANDOFF_LOOKUP_CONNECT_MS, HANDOFF_LOOKUP_REQUEST_MS, HANDOFF_REQUEST_MS, controlRequestTimeout } from "../src/hub/control-client.ts";
 import { HANDOFF_KEY, HANDOFF_LIMITS, HandoffRefusal, type HandoffRefusalCode, checkTarget, handoffOutcomeUnknown, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
 
 const refusal = (run: () => unknown): HandoffRefusal => { try { run(); } catch (error) { if (error instanceof HandoffRefusal) return error; throw error; } throw new Error("expected a refusal"); };
@@ -191,4 +192,14 @@ test("#731 the CLI takes --key as a UUID and passes it as handoffKey; a malforme
   expect(parseHandoffArgs(["--project", "p_b", "a title"])).not.toHaveProperty("handoffKey");
   expect(parseHandoffArgs(["--project", "p_b", "a title", "--key", "nope"])).toHaveProperty("usage");
   expect(parseHandoffArgs(["--project", "p_b", "a title", "--key", KEY, "--key", KEY])).toHaveProperty("usage");
+});
+
+// #731 review: the caller (the CLI's taskOp and the MCP path both ask for the default 30 s) must outlast the origin's own recovery, or it times out before outcome_unknown can name the key.
+test("#731 a handoff caller's deadline covers two attempts and the by-key lookup, whatever default the CLI or the MCP path asks for", () => {
+  const worst = 2 * (HANDOFF_CONNECT_MS + HANDOFF_REQUEST_MS) + HANDOFF_LOOKUP_CONNECT_MS + HANDOFF_LOOKUP_REQUEST_MS;
+  expect(HANDOFF_CONTROL_TIMEOUT_MS).toBeGreaterThan(worst);
+  for (const asked of [30_000, undefined, 60_000]) expect(controlRequestTimeout({ t: "task", op: "hub_task_handoff", args: {} }, asked as number)).toBeGreaterThanOrEqual(HANDOFF_CONTROL_TIMEOUT_MS);
+  expect(controlRequestTimeout({ t: "task", op: "hub_task_handoff" }, 0)).toBe(0);                       // an explicit "no deadline" stays one
+  expect(controlRequestTimeout({ t: "task", op: "hub_task_handoffs" }, 30_000)).toBe(30_000);            // the read-only list keeps the default
+  expect(controlRequestTimeout({ t: "task", op: "hub_task_propose" }, 30_000)).toBe(30_000);
 });

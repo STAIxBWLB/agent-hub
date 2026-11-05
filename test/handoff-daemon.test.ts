@@ -568,3 +568,43 @@ test("#731 AC7 of T1: an older target without task_handoff_key is sent no key an
   try { expect(((read.board as any).db.query("SELECT handoff_key, request_digest FROM task_handoff_origin").get())).toEqual({ handoff_key: null, request_digest: null }); } finally { read.close(); }
   expect(DAEMON_FEATURES).toContain("task_handoff_key");
 }, 60_000);
+
+// #731 review: a refusal of the RESEND does not settle a first attempt whose outcome is unknown.
+test("#731 a resend refused while the first attempt is still screening ends as outcome_unknown with the key, never as a refusal; the retry with the key returns the task the first attempt filed", async () => {
+  let release!: () => void, calls = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  // call 1 (the first attempt) is held open; call 2 (the resend) is refused by the screen as unknown; any later call is clear
+  const screen = async () => { const n = ++calls; if (n === 1) { await held; return { label: "clear" as const, ms: 0 }; } if (n === 2) return { label: "unknown" as const, ms: 0 }; return { label: "clear" as const, ms: 0 }; };
+  const { a, b } = await pair({ a: { handoffRequestMs: 300 }, b: { screen } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const reply = await task(planner, "hub_task_handoff", { project: b.id, title: "Chore whose resend is refused" });
+  expect(reply.ok).toBe(false);
+  expect(String(reply.error)).toContain("did not confirm");                                // not "invalid": the first attempt may still file it
+  expect(String(reply.error)).toContain("the resend was refused");
+  const key = /--key ([0-9a-f-]{36})/.exec(String(reply.error))?.[1];
+  expect(key, String(reply.error)).toBeDefined();
+  expect(readOnly(a).handoffOutbound()).toEqual([]);
+  release();                                                                               // the first attempt now clears its screen and files the task
+  await until(() => rowsOf(b).length === 1, "the first attempt filed the task");
+  const retried = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore whose resend is refused", handoffKey: key }));
+  expect(retried.task).toBe(rowsOf(b)[0]!.id);
+  expect(rowsOf(b)).toHaveLength(1);
+}, 60_000);
+
+test("#731 a resend that is refused after the first attempt filed the task is answered by the by-key lookup with that task, not reported as a refusal", async () => {
+  // call 1 (the first attempt) is held until the resend's screen starts; the resend's screen then lets the first attempt file the task before it refuses, so the lookup must find it
+  let calls = 0, release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const screen = async () => {
+    const n = ++calls;
+    if (n === 1) { await held; return { label: "clear" as const, ms: 0 }; }
+    release(); await Bun.sleep(150);
+    return { label: "unknown" as const, ms: 0 };
+  };
+  const { a, b } = await pair({ a: { handoffRequestMs: 300 }, b: { screen } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore filed during recovery" }));
+  expect(rowsOf(b)).toHaveLength(1);
+  expect(sent.task).toBe(rowsOf(b)[0]!.id);                                                // the lookup established the task the first attempt filed
+  expect(readOnly(a).handoffOutbound()).toMatchObject([{ remoteProject: b.id, remoteTask: sent.task }]);
+}, 60_000);

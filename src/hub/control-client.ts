@@ -120,9 +120,21 @@ const instancePins = new Map<string, { instanceId: string }>();
 export const INVOCATION_CONTROL_TIMEOUT_MS = 3_665_000;
 export function controlRequestTimeout(msg: Record<string, unknown>, requested = 30_000): number {
   if (msg.t === "task" && msg.op === "hub_ask" && requested !== 0) return Math.max(Number.isFinite(requested) ? requested : 0, QUESTION_CONTROL_TIMEOUT_MS);
+  if (msg.t === "task" && msg.op === "hub_task_handoff" && requested !== 0) return Math.max(Number.isFinite(requested) ? requested : 0, HANDOFF_CONTROL_TIMEOUT_MS);
   return msg.t === "task" && msg.op === "hub_invoke" && requested !== 0
     ? Math.max(Number.isFinite(requested) ? requested : 0, INVOCATION_CONTROL_TIMEOUT_MS) : requested;
 }
+/**
+ * #731 (agent-hub#1203): `hub_task_handoff` can legitimately take longer than the default 30 s, because the origin's own recovery runs inside it: a connect and a request to the target, the same
+ * again for the resend with the same key, then a connect and a request for the by-key lookup. The caller (the CLI and the MCP path alike) must outlast that, or it reports a generic timeout before
+ * `outcome_unknown` can name the key to retry with. The budgets are shared with `handoffOut`, so changing one moves the deadline with it.
+ */
+export const HANDOFF_CONNECT_MS = 5_000;
+export const HANDOFF_REQUEST_MS = 30_000;
+export const HANDOFF_LOOKUP_CONNECT_MS = 3_000;
+export const HANDOFF_LOOKUP_REQUEST_MS = 5_000;
+/** Two attempts, one by-key lookup, and a margin for the hello and the reply to travel back. */
+export const HANDOFF_CONTROL_TIMEOUT_MS = 2 * (HANDOFF_CONNECT_MS + HANDOFF_REQUEST_MS) + HANDOFF_LOOKUP_CONNECT_MS + HANDOFF_LOOKUP_REQUEST_MS + 12_000;
 /**
  * #1053: `hub_ask` holds its request open for the daemon's bounded wait (at most `QUESTION_WAIT_MAX_MS`) plus a margin, so the client's own 30 s cap never turns a
  * working wait into "no answer from the hub". The daemon, not this bound, decides when the wait ends.

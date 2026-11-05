@@ -196,7 +196,7 @@ import { ACCEPTED_SETTLE_TIMEOUT_REASON, DeliveryJournal } from "./delivery-jour
 import { assertHubDbCompatible } from "./db-schema.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
-import { ControlClient, DAEMON_FEATURES, PROTOCOL, PROTOCOL_MIN, readControl, stateDirFor } from "./control-client.ts";
+import { ControlClient, DAEMON_FEATURES, HANDOFF_CONNECT_MS, HANDOFF_LOOKUP_CONNECT_MS, HANDOFF_LOOKUP_REQUEST_MS, HANDOFF_REQUEST_MS, PROTOCOL, PROTOCOL_MIN, readControl, stateDirFor } from "./control-client.ts";
 import { negotiateProtocol, protocolWindow } from "./protocol-window.ts";
 import { attachEvent, originOf, type Origin } from "./provenance.ts";
 import { mintSessionId, sessionGate } from "./session-identity.ts";
@@ -4275,29 +4275,33 @@ export async function startDaemon(opts: DaemonOptions) {
     const keyed = descriptor!.features?.includes("task_handoff_key") === true;
     const { project: _project, task: originTask, handoffKey: given, ...body } = request;
     const key = keyed ? given ?? randomUUID() : undefined;
-    const requestMs = opts.handoffRequestMs ?? 30_000;
+    const requestMs = opts.handoffRequestMs ?? HANDOFF_REQUEST_MS;
     const attempt = async (): Promise<{ reply: any } | { unreachable: true }> => {
       let client: ControlClient;
-      try { client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot: descriptor!.cwd ?? target.root }, 5000); }
+      try { client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot: descriptor!.cwd ?? target.root }, HANDOFF_CONNECT_MS); }
       catch { return { unreachable: true }; }
       try { return { reply: await client.request({ t: "task_handoff", origin: { projectId, peer: by, ...(originTask === undefined ? {} : { taskId: originTask }) }, request: key === undefined ? body : { ...body, handoffKey: key } }, requestMs) }; }
       finally { client.close(); }
     };
-    let result = await attempt();
+    const result = await attempt();
     if ("unreachable" in result) throw new HandoffRefusal("not_running", `the hub of ${target.id} did not answer; run \`ahub up\` in ${target.root}, then hand the task off again (handoffs are not queued)`);
     // A timeout or a closed connection is not a refusal: the target may have written the task. With a key the same request is sent once more (the target answers a key it has with its task);
-    // then the target is asked by key, and only then is the outcome reported as unknown, naming the key to retry with.
-    if (key !== undefined && handoffOutcomeUnknown(result.reply)) {
+    // then the target is asked by key, and only then is the outcome reported as unknown, naming the key to retry with. The first attempt keeps running on the target after the origin stopped waiting, so
+    // a refusal of the RESEND settles nothing about it (the resend's PII screen may refuse while the first one's still pending and later files the task): it is kept as a note, and the lookup still runs.
+    let reply = result.reply, resendRefused: string | undefined;
+    if (key !== undefined && handoffOutcomeUnknown(reply)) {
       const again = await attempt();
-      if ("reply" in again) result = again;
+      if ("reply" in again) {
+        if (again.reply.ok === true || handoffOutcomeUnknown(again.reply)) reply = again.reply;
+        else resendRefused = sanitize(String(again.reply.error ?? "the resend was refused")).slice(0, 160);
+      }
     }
-    let reply = result.reply;
     if (key !== undefined && handoffOutcomeUnknown(reply)) {
       const found = await handoffStateByKey(target, descriptor!.cwd ?? target.root, key);
       if (found) reply = { ok: true, task: found.task, state: found.state, byKey: found };
     }
     if (handoffOutcomeUnknown(reply)) {
-      const cause = sanitize(String(reply.error)).slice(0, 120);
+      const cause = sanitize(String(reply.error)).slice(0, 120) + (resendRefused ? `; the resend was refused: ${resendRefused}` : "");
       throw new HandoffRefusal("outcome_unknown", key === undefined
         ? `the hub of ${target.id} did not confirm the handoff (${cause}); it may exist on its board: check \`ahub board\` there before handing it off again. That hub is too old to take a handoff key (run \`ahub upgrade\` in ${target.root}), so a retry could file a second task`
         : `the hub of ${target.id} did not confirm the handoff (${cause}); it may exist on its board. Retry with the same key and it is filed once: --key ${key} (handoffKey ${key} in hub_task_handoff)`);
@@ -4320,9 +4324,9 @@ export async function startDaemon(opts: DaemonOptions) {
   async function handoffStateByKey(target: { id: string; stateDir: string; root: string }, projectRoot: string, key: string | undefined): Promise<{ task: number; state: string; pr?: number; head?: string } | undefined> {
     if (key === undefined) return undefined;
     try {
-      const client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot }, 3000);
+      const client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot }, HANDOFF_LOOKUP_CONNECT_MS);
       try {
-        const reply = await client.request({ t: "task_handoff_by_key", projectId, key }, 5000);
+        const reply = await client.request({ t: "task_handoff_by_key", projectId, key }, HANDOFF_LOOKUP_REQUEST_MS);
         return reply.ok === true && reply.found === true && Number.isSafeInteger(reply.task) && typeof reply.state === "string" ? { task: reply.task, state: reply.state, ...(Number.isSafeInteger(reply.pr) ? { pr: reply.pr } : {}), ...(typeof reply.head === "string" ? { head: reply.head } : {}) } : undefined;
       } finally { client.close(); }
     } catch { return undefined; }

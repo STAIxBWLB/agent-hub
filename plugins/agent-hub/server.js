@@ -24350,8 +24350,15 @@ var INVOCATION_CONTROL_TIMEOUT_MS = 3665000;
 function controlRequestTimeout(msg, requested = 30000) {
   if (msg.t === "task" && msg.op === "hub_ask" && requested !== 0)
     return Math.max(Number.isFinite(requested) ? requested : 0, QUESTION_CONTROL_TIMEOUT_MS);
+  if (msg.t === "task" && msg.op === "hub_task_handoff" && requested !== 0)
+    return Math.max(Number.isFinite(requested) ? requested : 0, HANDOFF_CONTROL_TIMEOUT_MS);
   return msg.t === "task" && msg.op === "hub_invoke" && requested !== 0 ? Math.max(Number.isFinite(requested) ? requested : 0, INVOCATION_CONTROL_TIMEOUT_MS) : requested;
 }
+var HANDOFF_CONNECT_MS = 5000;
+var HANDOFF_REQUEST_MS = 30000;
+var HANDOFF_LOOKUP_CONNECT_MS = 3000;
+var HANDOFF_LOOKUP_REQUEST_MS = 5000;
+var HANDOFF_CONTROL_TIMEOUT_MS = 2 * (HANDOFF_CONNECT_MS + HANDOFF_REQUEST_MS) + HANDOFF_LOOKUP_CONNECT_MS + HANDOFF_LOOKUP_REQUEST_MS + 12000;
 var QUESTION_WAIT_MAX_MS = 600000;
 var QUESTION_CONTROL_TIMEOUT_MS = QUESTION_WAIT_MAX_MS + 15000;
 
