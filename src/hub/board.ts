@@ -541,6 +541,10 @@ export class Board {
     // is the ORIGIN's record of what it handed to another project and the last state that project reported. Both are additive: a daemon without `task_handoff` never reads them, so a target
     // lacking the feature is refused at recovery while either holds a row.
     this.db.run("CREATE TABLE IF NOT EXISTS task_handoff_origin (task_id INTEGER PRIMARY KEY, project_id TEXT NOT NULL, peer TEXT NOT NULL, origin_task INTEGER, at INTEGER NOT NULL)");
+    // #731 (agent-hub#1203): the origin's idempotency key and a digest of what it asked for. A key is unique per origin project, so a replay can never file a second task. Rows from before keep NULL.
+    for (const [column, type] of [["handoff_key", "TEXT"], ["request_digest", "TEXT"]] as const)
+      if (!(this.db.query("PRAGMA table_info(task_handoff_origin)").all() as { name: string }[]).some(c => c.name === column)) this.db.run(`ALTER TABLE task_handoff_origin ADD COLUMN ${column} ${type}`);
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS task_handoff_origin_key ON task_handoff_origin(project_id, handoff_key) WHERE handoff_key IS NOT NULL");
     this.db.run(`CREATE TABLE IF NOT EXISTS task_handoff_outbound (remote_project TEXT NOT NULL, remote_task INTEGER NOT NULL, origin_peer TEXT NOT NULL, local_task INTEGER,
       title TEXT NOT NULL, last_state TEXT NOT NULL, pr INTEGER, head TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY(remote_project, remote_task))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS research_handoffs (
@@ -603,6 +607,31 @@ export class Board {
     this.db.query("INSERT INTO task_handoff_origin(task_id, project_id, peer, origin_task, at) VALUES(?,?,?,?,?) ON CONFLICT(task_id) DO NOTHING").run(taskId, origin.projectId, origin.peer, origin.originTask ?? null, Date.now());
   }
 
+  /**
+   * #731: the task a handoff key already made for this origin project, with the digest of the request that made it, or undefined. A read: a replayed key is answered from here.
+   */
+  handoffOriginByKey(projectId: string, key: string): { taskId: number; digest: string | null } | undefined {
+    const row = this.db.query("SELECT task_id, request_digest FROM task_handoff_origin WHERE project_id=? AND handoff_key=?").get(projectId, key) as { task_id: number; request_digest: string | null } | null;
+    return row ? { taskId: row.task_id, digest: row.request_digest } : undefined;
+  }
+  /**
+   * #731 (H9): the proposal and its origin row in ONE transaction, so a crash or a failure between them can never leave a task with no origin (which the origin could then never be told about),
+   * and a replayed key answers with the task it already made instead of filing a second one. The unique index is the last guard: even two writers of one key cannot both commit.
+   * Observers (`onChange`) run after the commit, as for every other multi-row write.
+   */
+  proposeHandoff(by: PeerId, t: Parameters<Board["propose"]>[1], origin: { projectId: string; peer: string; originTask?: number; key?: string; digest?: string }): { task: Task; replayed: boolean } {
+    return this.atomic(() => {
+      if (origin.key !== undefined) {
+        const existing = this.handoffOriginByKey(origin.projectId, origin.key);
+        if (existing) { const task = this.get(existing.taskId); if (task) return { task, replayed: true }; }
+      }
+      const task = this.propose(by, t);
+      this.db.query("INSERT INTO task_handoff_origin(task_id, project_id, peer, origin_task, at, handoff_key, request_digest) VALUES(?,?,?,?,?,?,?)")
+        .run(task.id, origin.projectId, origin.peer, origin.originTask ?? null, Date.now(), origin.key ?? null, origin.digest ?? null);
+      return { task, replayed: false };
+    });
+  }
+
   /** ORIGIN side: what this project handed to another one. Keyed by the target project and its task id, so a repeated event updates one row. */
   handoffOutbound(): HandoffOutboundRow[] {
     return (this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound ORDER BY updated_at DESC, remote_project, remote_task LIMIT 200").all() as Record<string, unknown>[]).map(handoffOutboundFromRow);
@@ -621,7 +650,11 @@ export class Board {
     return this.db.transaction(() => {
       const digest = createHash("sha256").update("agent-hub.handoff-integrity/v1\n");
       let origins = 0, outbound = 0;
-      for (const row of this.db.query("SELECT task_id, project_id, peer, origin_task, at FROM task_handoff_origin ORDER BY task_id").iterate()) { digest.update(JSON.stringify(row)).update("\n"); origins++; }
+      for (const row of this.db.query("SELECT task_id, project_id, peer, origin_task, at, handoff_key, request_digest FROM task_handoff_origin ORDER BY task_id").iterate() as Iterable<Record<string, unknown>>) {
+        // A row from before handoff keys has no key columns in its digest, so an upgrade does not change what a recovery compares (#731).
+        if (row.handoff_key === null) { delete row.handoff_key; delete row.request_digest; }
+        digest.update(JSON.stringify(row)).update("\n"); origins++;
+      }
       for (const row of this.db.query("SELECT remote_project, remote_task, origin_peer, local_task, title, last_state, pr, head, updated_at FROM task_handoff_outbound ORDER BY remote_project, remote_task").iterate()) { digest.update(JSON.stringify(row)).update("\n"); outbound++; }
       return { origins, outbound, digest: digest.digest("hex") };
     })();

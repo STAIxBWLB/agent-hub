@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { HANDOFF_LIMITS, HandoffRefusal, type HandoffRefusalCode, checkTarget, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
+import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
+import { newEnvelope } from "../src/hub/envelope.ts";
+import { parseHandoffArgs } from "../src/cli/handoff-args.ts";
+import { HANDOFF_KEY, HANDOFF_LIMITS, HandoffRefusal, type HandoffRefusalCode, checkTarget, handoffOutcomeUnknown, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, resolveTarget } from "../src/hub/handoff.ts";
 
 const refusal = (run: () => unknown): HandoffRefusal => { try { run(); } catch (error) { if (error instanceof HandoffRefusal) return error; throw error; } throw new Error("expected a refusal"); };
 const good = { project: "p_aaaa", title: "Raise the exact pin", class: "implement", detail: "to 0.16.0", paths: ["package.json", "bun.lock"], issue: 12 };
@@ -143,4 +146,49 @@ test("#1175 an issue number only identifies work together with its repository: a
   ];
   expect(duplicateIssueTasks(board, 12, "acme/hub")).toEqual([801, 803, 804]);
   expect(duplicateIssueTasks(board, 12, "acme/mem")).toEqual([800, 802, 803, 805]);   // a checkout path names no slug, so the bare #12 still counts
+});
+
+// #731 (agent-hub#1203) T1: the key, the request digest, the outcome-unknown test and the follow-back envelope.
+const KEY = "6f1c2c0e-8b1a-4c3e-9d3a-1b2c3d4e5f60";
+test("#731 handoffKey is closed-parsed: a lowercase UUID v4 is kept, anything else is refused, and an empty one is no key", () => {
+  expect(parseHandoff({ ...good, handoffKey: KEY }).handoffKey).toBe(KEY);
+  expect(parseHandoff(good)).not.toHaveProperty("handoffKey");
+  expect(parseHandoff({ ...good, handoffKey: "" })).not.toHaveProperty("handoffKey");
+  for (const bad of ["not-a-uuid", KEY.toUpperCase(), KEY.replace("4c3e", "1c3e"), `${KEY} `, 5, {}]) expect(refusal(() => parseHandoff({ ...good, handoffKey: bad })).code, String(bad)).toBe("invalid");
+  expect(HANDOFF_KEY.test(crypto.randomUUID())).toBe(true);                                      // what the origin mints always parses
+});
+
+test("#731 the request digest covers what was asked and not the key or the target: the same request matches, any change differs", () => {
+  const base = parseHandoff({ ...good, handoffKey: KEY });
+  const digest = handoffRequestDigest(base, 5);
+  expect(handoffRequestDigest(parseHandoff({ ...good, project: "p_other", handoffKey: "0b8f3f3e-2d52-4f7e-8f55-5a7a0f2d9c11" }), 5)).toBe(digest);
+  for (const changed of [{ title: "Another title" }, { detail: "other" }, { class: "plan" }, { paths: ["a"] }, { issue: 13 }, { duplicate_ok: "why" }]) expect(handoffRequestDigest(parseHandoff({ ...good, ...changed }), 5), JSON.stringify(changed)).not.toBe(digest);
+  expect(handoffRequestDigest(base, 6)).not.toBe(digest);
+  expect(handoffRequestDigest(base)).not.toBe(digest);
+});
+
+test("#731 only the client's own timeout or a closed connection is outcome unknown; a refusal the target wrote, or a request never sent, is not", () => {
+  expect(handoffOutcomeUnknown({ ok: false, error: "no answer from the hub within 30 s" })).toBe(true);
+  expect(handoffOutcomeUnknown({ ok: false, error: "hub connection closed" })).toBe(true);
+  expect(handoffOutcomeUnknown({ ok: false, error: "hub connection is not open" })).toBe(false);
+  expect(handoffOutcomeUnknown({ ok: false, error: "hub request could not be sent" })).toBe(false);
+  expect(handoffOutcomeUnknown({ ok: false, error: "spec issue #7 already has open task here: #3" })).toBe(false);
+  expect(handoffOutcomeUnknown({ ok: false, error: "a target wrote: no answer from the hub within 5 s" })).toBe(false);   // anchored: text inside a target's refusal never counts
+  expect(handoffOutcomeUnknown({ ok: true })).toBe(false);
+  expect(new HandoffRefusal("outcome_unknown", "x").code).toBe("outcome_unknown");
+});
+
+test("#731 a follow-back envelope carries refs.handoff and no refs.task, so supersession never judges it against a local task of the same number", () => {
+  const env = newEnvelope("hub", "agent-hub task 3 accepted", { to: ["claude"], kind: "task", priority: "important", refs: { handoff: { project: "p_b", task: 3 } } });
+  const board = { get: (id: number) => ({ id, state: "cancelled", owner: null, reviewer: null, cancelled: { flowRevision: 1 }, history: [] }) as never };   // a local #3 that is cancelled
+  expect(supersededDeliveryReason([env], board, "claude")).toBeUndefined();
+  const legacy = newEnvelope("hub", "agent-hub task 3 accepted", { to: ["claude"], kind: "task", priority: "important", refs: { task: "3" } });
+  expect(supersededDeliveryReason([legacy], board, "claude")).toContain("cancelled");               // what the old envelope suffered
+});
+
+test("#731 the CLI takes --key as a UUID and passes it as handoffKey; a malformed one is a usage error", () => {
+  expect(parseHandoffArgs(["--project", "p_b", "a title", "--key", KEY])).toMatchObject({ project: "p_b", title: "a title", handoffKey: KEY });
+  expect(parseHandoffArgs(["--project", "p_b", "a title"])).not.toHaveProperty("handoffKey");
+  expect(parseHandoffArgs(["--project", "p_b", "a title", "--key", "nope"])).toHaveProperty("usage");
+  expect(parseHandoffArgs(["--project", "p_b", "a title", "--key", KEY, "--key", KEY])).toHaveProperty("usage");
 });

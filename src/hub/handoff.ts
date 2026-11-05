@@ -1,5 +1,6 @@
 // Cross-project task handoff (#604, agent-hub#1030). Pure: values in, values out, no clock, no file system, no socket. The daemon, the registry and the control client are
 // passed in as data or as small ports, so every refusal here is testable without a second daemon and the policy cannot drift from what the daemon enforces.
+import { createHash } from "node:crypto";
 import { CLASSES, type TaskClass } from "./board.ts";
 
 /**
@@ -7,10 +8,12 @@ import { CLASSES, type TaskClass } from "./board.ts";
  * ceiling on the whole request: a body that fills several fields is refused whole, and no partial task is built from it.
  */
 export const HANDOFF_LIMITS = Object.freeze({ title: 300, detail: 4000, paths: 16, path: 512, issue: 2_000_000_000, bodyBytes: 8 * 1024, duplicateOk: 300 });
-export const HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detail", "paths", "issue", "task", "duplicate_ok"] as const);
+export const HANDOFF_FIELDS = Object.freeze(["project", "title", "class", "detail", "paths", "issue", "task", "duplicate_ok", "handoffKey"] as const);
+/** #731 (agent-hub#1203): the origin's idempotency key for one handoff request, a lowercase UUID v4 (what `randomUUID` writes). */
+export const HANDOFF_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export type HandoffRefusalCode =
-  | "invalid" | "too_large" | "unregistered" | "same_project" | "not_running" | "older_target" | "pii_turn" | "pii_task" | "no_authority" | "duplicate";
+  | "invalid" | "too_large" | "unregistered" | "same_project" | "not_running" | "older_target" | "pii_turn" | "pii_task" | "no_authority" | "duplicate" | "outcome_unknown";
 
 /** A refusal always names its reason, and for the person-fixable ones the action. The code is for tests and logs, the message for the caller. */
 export class HandoffRefusal extends Error {
@@ -20,7 +23,9 @@ export class HandoffRefusal extends Error {
 /** `task` is the caller's OWN task this handoff comes from, so a `[pii]` one is refused and the target can name it in the follow-back. It never crosses as text. */
 export interface HandoffRequest { title: string; class: TaskClass; detail: string; paths: string[]; issue?: number; task?: number;
   /** #1175: the sender's reason for filing a second task on a spec issue that already has an open one on the target's board. Absent means the target refuses a duplicate. */
-  duplicate_ok?: string }
+  duplicate_ok?: string;
+  /** #731: the key of this request. Absent means the origin mints one when the target understands keys; it crosses inside the request body only to a target that advertises `task_handoff_key`. */
+  handoffKey?: string }
 
 const hasControl = (text: string): boolean => /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text);
 
@@ -75,9 +80,28 @@ export function parseHandoff(input: unknown): HandoffRequest & { project: string
   }
   const duplicateOk = text(field("duplicate_ok"), "duplicate_ok", HANDOFF_LIMITS.duplicateOk, false).replace(/\s+/g, " ").trim();
   if (field("duplicate_ok") !== undefined && field("duplicate_ok") !== null && field("duplicate_ok") !== "" && !duplicateOk) throw new HandoffRefusal("invalid", "handoff duplicate_ok needs a reason");
-  const request = { project, title, class: cls as TaskClass, detail, paths, ...(issue === undefined ? {} : { issue }), ...(task === undefined ? {} : { task }), ...(duplicateOk ? { duplicate_ok: duplicateOk } : {}) };
+  const rawKey = field("handoffKey");
+  if (rawKey !== undefined && rawKey !== null && rawKey !== "" && (typeof rawKey !== "string" || !HANDOFF_KEY.test(rawKey))) throw new HandoffRefusal("invalid", "handoff handoffKey must be a lowercase UUID v4");
+  const handoffKey = typeof rawKey === "string" && rawKey ? rawKey : undefined;
+  const request = { project, title, class: cls as TaskClass, detail, paths, ...(issue === undefined ? {} : { issue }), ...(task === undefined ? {} : { task }), ...(duplicateOk ? { duplicate_ok: duplicateOk } : {}), ...(handoffKey === undefined ? {} : { handoffKey }) };
   if (Buffer.byteLength(JSON.stringify(request), "utf8") > HANDOFF_LIMITS.bodyBytes) throw new HandoffRefusal("too_large", `handoff is over ${HANDOFF_LIMITS.bodyBytes} bytes`);
   return request;
+}
+
+/**
+ * #731: what a key stands for. The target keeps this with the key, so a replay of the same key answers with the existing task, and the same key with a different request is refused, never
+ * silently answered with a task the caller did not ask for. The key itself and the target are not part of it; the origin's own task id is.
+ */
+export function handoffRequestDigest(request: Pick<HandoffRequest, "title" | "class" | "detail" | "paths" | "issue" | "duplicate_ok">, originTask?: number): string {
+  return createHash("sha256").update(JSON.stringify([request.title, request.class, request.detail, request.paths, request.issue ?? null, request.duplicate_ok ?? null, originTask ?? null])).digest("hex");
+}
+
+/**
+ * #731 (H1): whether a control reply says the request may have reached the target without an answer coming back: the client's own timeout, or a connection that closed while the request was out.
+ * A refusal the target wrote, and a request that was never sent, are definite and are not this. Reads the client's fixed wording (`control-client.ts`), never the target's text.
+ */
+export function handoffOutcomeUnknown(reply: { ok?: unknown; error?: unknown }): boolean {
+  return reply.ok !== true && typeof reply.error === "string" && /^(no answer from the hub within \d+ s|hub connection closed)/.test(reply.error);
 }
 
 export interface RegisteredProject { id: string; root: string; stateDir: string }

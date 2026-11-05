@@ -20,7 +20,7 @@ import { parseExperimentProtocol, parseExperimentAttempt, parseExperimentEvent, 
 import { parseComparisonPlan, comparisonPlanHash, comparisonProjection, evaluatorIdentityHash, protocolApprovalBindingMatches, type ComparisonPlanV1 } from "./research-experiments.ts";
 import { parseResearchHandoff, studyProjection, campaignHash, parseResearchCampaign, type ResearchCampaignContract, type ResearchCampaignStatus } from "./research-campaign.ts";
 import type { ResearchCampaignRecord, ResearchUnitBinding, PreparedResearchUnit, HandoffOutboundRow } from "./board.ts";
-import { HANDOFF_EVENTS, HandoffRefusal, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, type HandoffEvent } from "./handoff.ts";
+import { HANDOFF_EVENTS, HANDOFF_KEY, HandoffRefusal, handoffRequestDigest, duplicateIssueTasks, duplicateRefusalText, followBackLine, handoffEventFor, parseHandoff, type HandoffEvent } from "./handoff.ts";
 import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
@@ -2146,6 +2146,8 @@ export class Tasks {
 
   /** ORIGIN side: remember what was handed over, once the target answered with its task id. */
   handoffSent(by: PeerId, target: { projectId: string }, remoteTask: number, title: string, localTask?: number): void {
+    // #731: a row that already exists is never reset to "proposed": a replayed answer can arrive after the target's own event for the same task was recorded.
+    if (this.d.board.handoffOutboundFor(target.projectId, remoteTask)) return;
     this.d.board.recordHandoffOutbound({ remoteProject: target.projectId, remoteTask, originPeer: by, ...(localTask === undefined ? {} : { localTask }), title: title.slice(0, 300), state: "proposed" });
   }
 
@@ -2154,7 +2156,7 @@ export class Tasks {
    * The request was parsed closed by the origin and is parsed again here, because a control message is data from another process: the body is bounded, control characters are refused and the
    * text is sanitized before it is stored. A `[pii]` result is refused whole, and nothing is left behind.
    */
-  async handoffIn(origin: { projectId: unknown; peer: unknown; taskId?: unknown }, input: unknown, fence: () => string | undefined = () => undefined): Promise<{ task: number; state: string; note?: string }> {
+  async handoffIn(origin: { projectId: unknown; peer: unknown; taskId?: unknown }, input: unknown, fence: () => string | undefined = () => undefined): Promise<{ task: number; state: string; note?: string; replayed?: true }> {
     const request = parseHandoff({ ...(input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : { invalid: true }), project: "local" });
     if (typeof origin.projectId !== "string" || !origin.projectId || origin.projectId.length > 200 || typeof origin.peer !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(origin.peer)
       || origin.taskId !== undefined && (!Number.isSafeInteger(origin.taskId) || (origin.taskId as number) < 1)) throw new HandoffRefusal("invalid", "handoff origin is malformed");
@@ -2162,6 +2164,18 @@ export class Tasks {
     // The fence is asked right before the board write and after every await: a recovery that began while the PII screen was pending must find nothing written (agent-hub#1030, review).
     const held = (): void => { const reason = fence(); if (reason) throw new HandoffRefusal("invalid", reason); };
     held();
+    // #731 (agent-hub#1203): a request key this origin already used answers with the task it made, before the duplicate check (which would refuse it as a duplicate of itself) and before any PII screen
+    // or write. The same key for a different request is refused, never answered with a task the caller did not ask for.
+    const key = request.handoffKey, digest = handoffRequestDigest(request, origin.taskId as number | undefined);
+    const replay = (): { task: number; state: string; replayed: true } | undefined => {
+      const existing = key === undefined ? undefined : this.d.board.handoffOriginByKey(origin.projectId as string, key);
+      const task = existing && this.d.board.get(existing.taskId);
+      if (!existing || !task) return undefined;
+      if (existing.digest !== null && existing.digest !== digest) throw new HandoffRefusal("invalid", "that handoff key was already used for a different request: hand the task off again with a new key");
+      return { task: task.id, state: task.state, replayed: true };
+    };
+    const early = replay();
+    if (early) return early;
     // The spec issue the caller named is kept in the task itself, as its own line: the target's planner reads it from the detail, and `ahub task show` shows it there.
     const issueLine = request.issue === undefined ? "" : `spec issue: #${request.issue} in this repository`;
     const detail = sanitize([request.detail, issueLine, request.duplicate_ok === undefined ? "" : `duplicate acknowledged by the sender: ${request.duplicate_ok}`, `[handed off from project ${origin.projectId} by ${origin.peer}${origin.taskId === undefined ? "" : ` (their task #${origin.taskId})`}]`].filter(Boolean).join("\n\n"));
@@ -2172,14 +2186,20 @@ export class Tasks {
     const screened = screening ? await this.screenCall(screenText({ title: request.title, detail: [detail, ...request.paths].join("\n"), plan: {} })) : undefined;
     held();
     if (screening && (!screened || screened.label !== "clear")) throw new HandoffRefusal("pii_task", "the handed-off text could not be cleared by the PII screen; it is not stored here");
+    // The first attempt may have committed while this one waited for the screen (the origin's timeout does not stop it): ask again, with nothing awaited between here and the write below.
+    const late = replay();
+    if (late) return late;
     // #1175: a spec issue that already has open work here is refused before any row exists, so a duplicate is never offered to an owner or escalated by the sweep. This runs after the last
     // await and writes nothing before it, so the check and the proposal below see one board; a `[pii]` task is left out, so no private task id is named to another project.
     if (request.issue !== undefined && request.duplicate_ok === undefined) {
       const open = duplicateIssueTasks(this.d.board.list().filter(row => !this.isPii(row)).map(row => ({ id: row.id, state: row.state, title: row.title, detail: row.detail, refs: row.refs, external: row.external, sdlc: row.sdlc })), request.issue, this.d.repository);
       if (open.length) throw new HandoffRefusal("duplicate", duplicateRefusalText(request.issue, open));
     }
-    let task = this.d.board.propose(HUB, { title: request.title, detail, class: request.class, refs, plan: {}, signals });
-    this.d.board.setHandoffOrigin(task.id, { projectId: origin.projectId, peer: origin.peer, ...(origin.taskId === undefined ? {} : { originTask: origin.taskId as number }) });
+    // #731 (H9): the proposal and its origin row are one board transaction. A request with no key (an older origin) is written the same way, without a key, so it is never left without its origin either.
+    const made = this.d.board.proposeHandoff(HUB, { title: request.title, detail, class: request.class, refs, plan: {}, signals },
+      { projectId: origin.projectId, peer: origin.peer, ...(origin.taskId === undefined ? {} : { originTask: origin.taskId as number }), ...(key === undefined ? {} : { key, digest }) });
+    if (made.replayed) return { task: made.task.id, state: made.task.state, replayed: true };
+    let task = made.task;
     // From here the task and its origin are saved, so nothing below may fail the handoff: the origin must learn the task id, or the target keeps work nobody can track.
     try { task = this.linkOnWrite(task); } catch { /* the lifecycle link is advice */ }
     try { this.d.notify(`task ${this.publicTitle(task)} handed off from project ${origin.projectId} by ${origin.peer}`); } catch { /* never throw after a board write */ }
@@ -2211,7 +2231,9 @@ export class Tasks {
     this.d.board.recordHandoffOutbound({ remoteProject: row.remoteProject, remoteTask: row.remoteTask, originPeer: row.originPeer, ...(row.localTask === null ? {} : { localTask: row.localTask }), title: row.title, state: e.state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }) });
     const body = followBackLine(row.remoteTask, e.state as HandoffEvent, { pr, head });
     if (row.originPeer !== USER && row.originPeer !== HUB) {
-      try { this.d.bus.publish(newEnvelope(HUB, body, { to: [row.originPeer], kind: "task", priority: "important", refs: { task: String(row.localTask ?? row.remoteTask) } })); }
+      // #731 (H3): the envelope names the REMOTE task and no local one. `refs.task` made the bus judge it against whatever local task has that number (or the origin's own task it came from), so a
+      // cancelled or approved local task of the same number dropped a state change that was about another project's task.
+      try { this.d.bus.publish(newEnvelope(HUB, body, { to: [row.originPeer], kind: "task", priority: "important", refs: { handoff: { project: row.remoteProject, task: row.remoteTask } } })); }
       catch { /* never throw after a board write */ }
     }
     return { recorded: true };
@@ -2234,6 +2256,16 @@ export class Tasks {
       out.push({ task: id, state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }) });
     }
     return out;
+  }
+
+  /**
+   * TARGET side (#731): where the task a handoff key made stands, for an origin whose request got no answer. Answers only the asking project, and only the fields a live event carries; nothing is
+   * written. `undefined` means this target holds no task for that key.
+   */
+  handoffStateByKey(projectId: unknown, key: unknown): { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string } | undefined {
+    if (typeof projectId !== "string" || !projectId || projectId.length > 200 || typeof key !== "string" || !HANDOFF_KEY.test(key)) throw new HandoffRefusal("invalid", "handoff key lookup is malformed");
+    const found = this.d.board.handoffOriginByKey(projectId, key);
+    return found ? this.handoffStatesFor(projectId, [found.taskId])[0] : undefined;
   }
 
   /** ORIGIN side: record what a target answered to the catch-up, and tell the origin peer about a change this project missed while it was down. */
