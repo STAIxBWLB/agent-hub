@@ -54,25 +54,97 @@ Not labelled, on purpose: every length bound and truncation in `src/hub`, `src/c
 
 ## The `src/hub` convention for bounds and truncations (#739)
 
-Status: **proposed by the planner, measured here, not yet applied to any label.** No existing label is changed and no baseline key is labelled by this section until the open question below is ruled.
+Ruled by the conductor on 2026-11-05. It decides bounds (`x.length > N`, `Object.keys(x).length > N`, a byte limit) and truncations (`.slice(0, N)`, `.substring`) in `src/hub`. Ask in order:
 
-A bound (`x.length > N`, `Object.keys(x).length > N`, a byte limit) or a truncation (`.slice(0, N)`, `.substring`) is labelled by **where the bounded thing comes from and what the number is for**, asked in this order:
+1. A validation bound on an argument of a **documented tool or control message** is a **contract**, whether or not `hub-tools.ts` repeats the number: it is part of that message's shape.
+2. A bound or truncation on **free text, ids or raw input that no message shape defines** (a peer's body, a model's output, another project's or GitHub's text, a person's input) is a **safety floor**.
+3. A cap on **the hub's own lists, batches or reports**, which the hub trims, pages or reports as truncated, is **operational**.
+4. A bound on the **shape of a documented file format the person writes** (config, profile, role, extension, text projection) is a **contract**, like a documented message.
 
-1. The bounded thing is text, ids, a list or an object that **came from a peer, a model, another project or a person's input** and the code refuses, drops or truncates it: **safety floor**.
-2. The number is part of the **shape of our own wire, storage or configuration protocol**, stated in a schema, a documented limit or a stored format, so that changing it changes what stored or exchanged data means: **contract**.
-3. The bounded thing is **the hub's own list, queue, cache or batch**, and the code trims, pages or reports it truncated rather than refusing it: **operational**.
+A number is never evidence by itself. Many unrelated schema entries share `32`, `64`, `256` or `4096`, so "the same number appears in `hub-tools.ts`" decides nothing: the first measurement of #739 counted 280 of 378 `src/hub` bounds as mirrors of a schema by number, and only a handful really repeat a tool schema's limit once the call sites are read.
 
-### What the committed file does today (measured on `8e44babc`)
+### What the committed file did before this change (measured on `8e44babc`)
 
 | Shape | Decided keys | operational | safety floor | contract |
 | --- | ---: | ---: | ---: | ---: |
 | `src/hub` length bounds | 213 | 63 | 91 | 59 |
 | `src/hub` truncations (`.slice`) | 151 | 73 | 47 | 31 |
 
-Among the 213 decided `src/hub` length bounds, those that **refuse or validate input** (171) are 77 safety floor, 53 contract and 41 operational; those that **trim the hub's own list** (19) are 12 operational, 6 safety floor and 1 contract. So rule 3 matches the file where it applies, and rule 1 against rule 2 is where the file splits. The split follows the file, not the kind of bound: in `tasks.ts` 19 of 20 validation bounds are contract, in `sdlc.ts` 14 of 22 are safety floor, in `test-integrity.ts` 6 of 6 are safety floor, although each checks the same kind of thing, a list or text a peer or a model supplied.
+Among the 213, those that refuse or validate input (171) were 77 safety floor, 53 contract and 41 operational, and the file labelled the same kind of check differently by file: `tasks.ts` 19 of 20 contract, `sdlc.ts` 14 of 22 safety floor, `test-integrity.ts` 6 of 6 safety floor. Across the whole decided file 214 expressions appear in more than one place and 28 of them carried conflicting labels (133 keys), mostly default-parameter timeouts and `Math.min`/`Math.max` clamps, which this change does not touch.
 
-Across the whole decided file, 214 expressions appear in more than one place and 28 of them carry conflicting labels (133 keys), mostly default-parameter timeouts (`timeoutMs = 3000`: operational in `upgrade-runtime.ts`, test seam in `control-client.ts`) and `Math.min`/`Math.max` clamps.
+### Existing labels changed by this convention (44, by key, old to new)
 
-### Open question
+All 173 decided `src/hub` validation bounds (outside `hub-tools.ts`) were read at their call sites. 44 contradicted the convention and are changed; every other decided bound already agrees with it and was left alone, including `deferred-hub.ts` `env.body.length > 1_000_000` and `delivery-hints.ts` `row.id.length > 256` (a peer's raw body and a hub-built hint, no message shape: safety floor). Group membership is a reading of each call site, reviewed by the conductor.
 
-The same number is often both the limit a tool schema advertises and the limit the hub enforces on what a peer sends (`after.length > 64` in `planning.ts` and `tasks.ts` against `maxItems: 64` in `hub-tools.ts`). Rule 1 calls the enforcement a safety floor and rule 2 calls the schema a contract. Which wins decides a large share: 280 of the 378 `src/hub` bounds outside `hub-tools.ts` use a number that a `hub-tools.ts` schema also advertises (151 already decided: 55 safety floor, 51 contract, 45 operational; 129 still in the baseline). The 102 decided schema numbers in `hub-tools.ts` themselves are all contract, so the file already treats the advertised shape as a contract and the question is only about the code that enforces it.
+#### A. Argument of a documented tool or control message: to contract (19)
+
+Reason: Each is an argument of a documented tool or control message (`taskOpBody`, `uiAction`, `recoveryOp`, `onMessage`, the check runner's `files`, the planning `deps` list). The bound is part of that message's shape, whether or not `hub-tools.ts` repeats the number.
+
+| Key | Old | New |
+| --- | --- | --- |
+| `check-runner.ts` `request.files.length > 32=32` (in `start`) | operational | contract |
+| `daemon.ts` `a.files.length > 32=32` (in `taskOpBody`) | safety floor | contract |
+| `daemon.ts` `a.delivery_id.length > 256=256` (in `taskOpBody`) | safety floor | contract |
+| `daemon.ts` `a.delivery_id.length > 256=256` (in `taskOpBody`) | safety floor | contract |
+| `daemon.ts` `a.reason.length > 2000=2000` (in `taskOpBody`) | safety floor | contract |
+| `daemon.ts` `a.superseded_by.length > 2000=2000` (in `taskOpBody`) | safety floor | contract |
+| `daemon.ts` `a.release.length > 100=100` (in `taskOpBody`) | safety floor | contract |
+| `daemon.ts` `liveIssues.length > 32=32` (in `uiAction`) | operational | contract |
+| `daemon.ts` `a.to.length > 32=32` (in `uiAction`) | operational | contract |
+| `daemon.ts` `msg.operationId.length > 128=128` (in `recoveryOp`) | operational | contract |
+| `daemon.ts` `msg.launchId.length <= 128=128` (in `onMessage`) | operational | contract |
+| `daemon.ts` `msg.launchId.length <= 128=128` (in `onMessage`) | operational | contract |
+| `daemon.ts` `msg.launchId.length <= 128=128` (in `onMessage`) | operational | contract |
+| `daemon.ts` `msg.reason.length > 2000=2000` (in `onMessage`) | operational | contract |
+| `daemon.ts` `msg.id.length > 256=256` (in `onMessage`) | operational | contract |
+| `daemon.ts` `msg.reason.length > 2000=2000` (in `onMessage`) | operational | contract |
+| `daemon.ts` `(msg.liveIssues ?? []).length > 32=32` (in `onMessage`) | operational | contract |
+| `daemon.ts` `(msg.liveIssues ?? []).length > 32=32` (in `onMessage`) | operational | contract |
+| `planning.ts` `value.length > 64=64` (in `planningPatch`) | operational | contract |
+
+#### B. Text or replies from GitHub, another project or a person: to safety floor (6)
+
+Reason: Each bounds text or a reply that comes from GitHub, another project or a person, which no tool or control message defines, so it limits untrusted input.
+
+| Key | Old | New |
+| --- | --- | --- |
+| `dogfood-read.ts` `r.pull_requests.length <= 100=100` (in `validRun`) | operational | safety floor |
+| `github-import.ts` `row.title.length>300=300` (in `<anonymous>`) | operational | safety floor |
+| `github-import.ts` `row.body.length>8000=8000` (in `<anonymous>`) | operational | safety floor |
+| `sdlc-queue.ts` `p.baseRefName.length > 200=200` (in `<anonymous>`) | operational | safety floor |
+| `sdlc-queue.ts` `threads.nodes.length > 100=100` (in `finalSnapshot`) | operational | safety floor |
+| `sdlc-queue.ts` `checks.nodes.length > 100=100` (in `finalSnapshot`) | operational | safety floor |
+
+#### C. The hub's own derived list: to operational (1)
+
+Reason: A cap on the hub's own derived list, which the hub builds itself and reports as truncated, so it tunes a list size and is not an input bound.
+
+| Key | Old | New |
+| --- | --- | --- |
+| `task-code-symbols.ts` `brief.reviewable.length > 500=500` (in `buildTaskCodeSymbols`) | safety floor | operational |
+
+#### D. Shape of a documented file the person writes: to contract (18)
+
+Reason: Each is the bound on the shape of a documented file format the person writes (config, profile, role, extension or text projection), which is a contract like a documented message (the conductor's wording of the convention).
+
+| Key | Old | New |
+| --- | --- | --- |
+| `github-import.ts` `value.length<=100=100` (in `selectionText`) | operational | contract |
+| `path-policy.ts` `raw.length > 64=64` (in `policyPaths`) | safety floor | contract |
+| `config-tier.ts` `part.length > 64=64` (in `<anonymous>`) | safety floor | contract |
+| `text-projection.ts` `Object.keys(raw).length > 16=16` (in `projectionConfig`) | safety floor | contract |
+| `text-projection.ts` `argv.length > 16=16` (in `projectionConfig`) | safety floor | contract |
+| `text-projection.ts` `arg.length > 2000=2000` (in `<anonymous>`) | safety floor | contract |
+| `profiles.ts` `Object.keys(data.classes).length > 32=32` (in `resolveProfile`) | safety floor | contract |
+| `profiles.ts` `Object.keys(data.role_text).length > 8=8` (in `resolveProfile`) | operational | contract |
+| `profiles.ts` `data.example_checks.length > 16=16` (in `resolveProfile`) | operational | contract |
+| `profiles.ts` `data.review_checklist.length > 16=16` (in `resolveProfile`) | safety floor | contract |
+| `profiles.ts` `value.length > 500=500` (in `<anonymous>`) | operational | contract |
+| `planning.ts` `Object.keys(input).length > 64=64` (in `planningWipLimits`) | operational | contract |
+| `roles.ts` `sanitize(body).length > 2000=2000` (in `parseRole`) | safety floor | contract |
+| `roles.ts` `files.length > 64=64` (in `loadRoleCatalog`) | safety floor | contract |
+| `roles.ts` `Object.keys(raw).length > 64=64` (in `catalogAssignments`) | safety floor | contract |
+| `roles.ts` `ids.length > 2=2` (in `catalogAssignments`) | safety floor | contract |
+| `roles.ts` `roles.length > 2=2` (in `catalogSection`) | safety floor | contract |
+| `roles.ts` `text.length > 2000=2000` (in `taskRoleText`) | safety floor | contract |
+
