@@ -51,3 +51,28 @@ R1x is the conductor's ruling on the review of PR #1212, not a calibrated rule: 
 R4 (a `maxTokens` or `contextWindow` default, 97%) and R7 (a length bound in `src/adapters`, `src/models`, `src/local`, 91%) agree with the file, but no baseline key was labelled by R4, and R7's five baseline keys have no exact agreeing precedent, so they stay in the baseline. Taken together the rules agree with 303 of the 311 decided keys they cover (97.4%) and with 97% and 98% on the two halves of a by-file hold-out (files split by a hash of their path), which is the same data seen differently, not an independent reader.
 
 Not labelled, on purpose: every length bound and truncation in `src/hub`, `src/cli`, `src/ui`, `src/rooms` and `src/broker`; `Math.min`/`Math.max` clamps of a timeout; default-parameter timeouts (`timeoutMs = 2000`); `MAX_*` and `*_BYTES` constants; unit conversions. #739 settles their convention first and then relabels the inconsistent existing entries by name.
+
+## The `src/hub` convention for bounds and truncations (#739)
+
+Status: **proposed by the planner, measured here, not yet applied to any label.** No existing label is changed and no baseline key is labelled by this section until the open question below is ruled.
+
+A bound (`x.length > N`, `Object.keys(x).length > N`, a byte limit) or a truncation (`.slice(0, N)`, `.substring`) is labelled by **where the bounded thing comes from and what the number is for**, asked in this order:
+
+1. The bounded thing is text, ids, a list or an object that **came from a peer, a model, another project or a person's input** and the code refuses, drops or truncates it: **safety floor**.
+2. The number is part of the **shape of our own wire, storage or configuration protocol**, stated in a schema, a documented limit or a stored format, so that changing it changes what stored or exchanged data means: **contract**.
+3. The bounded thing is **the hub's own list, queue, cache or batch**, and the code trims, pages or reports it truncated rather than refusing it: **operational**.
+
+### What the committed file does today (measured on `8e44babc`)
+
+| Shape | Decided keys | operational | safety floor | contract |
+| --- | ---: | ---: | ---: | ---: |
+| `src/hub` length bounds | 213 | 63 | 91 | 59 |
+| `src/hub` truncations (`.slice`) | 151 | 73 | 47 | 31 |
+
+Among the 213 decided `src/hub` length bounds, those that **refuse or validate input** (171) are 77 safety floor, 53 contract and 41 operational; those that **trim the hub's own list** (19) are 12 operational, 6 safety floor and 1 contract. So rule 3 matches the file where it applies, and rule 1 against rule 2 is where the file splits. The split follows the file, not the kind of bound: in `tasks.ts` 19 of 20 validation bounds are contract, in `sdlc.ts` 14 of 22 are safety floor, in `test-integrity.ts` 6 of 6 are safety floor, although each checks the same kind of thing, a list or text a peer or a model supplied.
+
+Across the whole decided file, 214 expressions appear in more than one place and 28 of them carry conflicting labels (133 keys), mostly default-parameter timeouts (`timeoutMs = 3000`: operational in `upgrade-runtime.ts`, test seam in `control-client.ts`) and `Math.min`/`Math.max` clamps.
+
+### Open question
+
+The same number is often both the limit a tool schema advertises and the limit the hub enforces on what a peer sends (`after.length > 64` in `planning.ts` and `tasks.ts` against `maxItems: 64` in `hub-tools.ts`). Rule 1 calls the enforcement a safety floor and rule 2 calls the schema a contract. Which wins decides about 70 of the `src/hub` validation bounds.
