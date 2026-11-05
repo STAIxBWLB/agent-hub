@@ -667,6 +667,15 @@ file edits, and a configuration reload refuses roster changes. External ids outs
 admission rules. A roster key left by an undeclared instance loads as inert and grants
 nothing; the only change it accepts is its removal from `config.local.json`.
 
+Handing a peer to a standby session (#1174) is the person's: `peer_takeover` is
+console-role only, and `ahub peer takeover` is refused to agent shells and
+`--live-test`. A standby connection runs no peer operation until it owns the peer,
+and the selected standby is rechecked for membership, launch and isolation,
+lifecycle and claim generation after its preface. Standby ids and reported PIDs are
+display metadata, never native-session or permission evidence. Takeover detaches
+the old hub connection, not its native process; that session's later hub calls are
+refused, and takeover never marks a delivery completed.
+
 Kimi's pull-only TUI owns its tool approvals and session. The person's launcher
 merges/removes only the hub MCP entry; the daemon never edits that file and
 refuses headless starts while a stale entry exists. An attached Kimi TUI blocks
