@@ -1334,9 +1334,10 @@ export class Bus {
   /** Resume the same delivery after the host revalidates its durable outbox proof. */
   resumeRemotePending(source: PeerAdapter, deliveryId: string, state: "dispatching" | "accepted" | "needs_review", currentGuard: () => boolean): boolean {
     const peer = source.id;
-    if (!this.remoteSendAllowed(source)) return false;
-    const row = this.journal.get(deliveryId), env = row?.originals[0], expiry = env && this.remoteQueueExpires.get(peer)?.get(env.id);
-    if (!row || row.peer !== peer || !["dispatching", "accepted", "needs_review"].includes(row.state) || row.originals.length !== 1 || env?.to?.includes(peer) !== true || this.journal.resolution(deliveryId) || !env || expiry === undefined || expiry <= Date.now()) return false;
+    const journal = this.journal;
+    if (!journal || !this.remoteSendAllowed(source)) return false;
+    const row = journal.get(deliveryId), env = row?.originals[0], expiry = env && this.remoteQueueExpires.get(peer)?.get(env.id);
+    if (!row || row.peer !== peer || !["dispatching", "accepted", "needs_review"].includes(row.state) || row.originals.length !== 1 || env?.to?.includes(peer) !== true || journal.resolution(deliveryId) || !env || expiry === undefined || expiry <= Date.now()) return false;
     if (state === "needs_review") return false;
     if ([...(this.queues.get(peer) ?? [])].some(item => item.id === env.id)) return false;
     if ([...this.activeDeliveries].some(([id, owner]) => owner === peer && id !== deliveryId)) return false;
@@ -1345,7 +1346,7 @@ export class Bus {
     try {
       // Store and journal commit independently. An already-active journal row is
       // authoritative; a different Store state must not strand or downgrade it.
-      if (row.state === "needs_review") this.journal.transition(deliveryId, state, "room outbox proof confirmed pending", row.revision);
+      if (row.state === "needs_review") journal.transition(deliveryId, state, "room outbox proof confirmed pending", row.revision);
     }
     catch {
       this.storageError = "delivery journal unavailable";
