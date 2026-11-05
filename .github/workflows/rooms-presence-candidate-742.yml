@@ -1,0 +1,63 @@
+name: rooms presence candidate (temporary 742)
+on:
+  push:
+    branches: [fix/742-rooms-presence-cost]
+    paths:
+      - .github/workflows/rooms-presence-candidate-742.yml
+      - scripts/diagnose-presence-cost-742.ts
+permissions:
+  contents: read
+concurrency:
+  group: rooms-presence-candidate-742
+  cancel-in-progress: false
+jobs:
+  macos-presence-candidate:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Candidate regressions and unchanged acceptance test
+        run: |
+          echo "PRESENCE_CANDIDATE_742 $GITHUB_SHA"
+          bun test test/bus-closed-publication-742.test.ts test/rooms-presence-coalescing-742.test.ts test/rooms-backpressure-732.test.ts --timeout 20000
+          bun test test/rooms-delivery.test.ts --test-name-pattern "1000 presence flips" --timeout 20000
+      - name: Candidate natural and idle-entry profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/presence-candidate-742"
+          for mode in 0 1; do
+            echo "PRESENCE_CANDIDATE_MODE $GITHUB_SHA mode=$mode"
+            AHUB_PRESENCE_DIAG_IDLE_ENTRY="$mode" bun test --preload ./scripts/diagnose-presence-cost-742.ts test/rooms-delivery.test.ts --test-name-pattern "1000 presence flips" --timeout 20000 2>&1 | tee "$RUNNER_TEMP/presence-candidate-742/candidate-$mode.log"
+          done
+      - name: Complete missing historical reference (diagnostic only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference_sha=92486ab5c48b4c0281643750590fa6693aaaa7e6
+          git fetch --no-tags origin "$reference_sha"
+          reference_dir="$RUNNER_TEMP/presence-reference-924"
+          git worktree add --detach "$reference_dir" "$reference_sha"
+          cp scripts/diagnose-presence-cost-742.ts "$reference_dir/scripts/diagnose-presence-cost-742.ts"
+          cd "$reference_dir"
+          bun install --frozen-lockfile
+          for mode in 0 1; do
+            echo "PRESENCE_REFERENCE_MODE $reference_sha mode=$mode"
+            set +e
+            AHUB_PRESENCE_DIAG_IDLE_ENTRY="$mode" bun test --preload ./scripts/diagnose-presence-cost-742.ts test/rooms-delivery.test.ts --test-name-pattern "1000 presence flips" --timeout 20000 2>&1 | tee "$RUNNER_TEMP/presence-candidate-742/reference-$mode.log"
+            result=${PIPESTATUS[0]}
+            set -e
+            echo "PRESENCE_REFERENCE_EXIT $reference_sha mode=$mode exit=$result"
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rooms-presence-candidate-742
+          path: ${{ runner.temp }}/presence-candidate-742/*.log
