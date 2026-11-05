@@ -33,9 +33,25 @@ export function withoutPii<T extends { title: string | null; text: string; about
  * The promotion screen for one project: another project's notes are left to that project's own processes; this one's
  * move only when no secret, PII pattern or private path (`policy()`, read when asked) is in them.
  */
-export function promotionScreen(project: string, cwd: string, routing: () => Routing, policy: () => string[], taskPaths: (task: string) => string[] = () => []): PromotionScreen {
+export type SyncPromotionPolicy = () => { screen(row: Record<string, unknown>): { ok: boolean; rule?: string } };
+
+export function promotionScreen(
+  project: string,
+  cwd: string,
+  routing: () => Routing,
+  policy: () => string[],
+  taskPaths: (task: string) => string[] = () => [],
+  syncPolicy?: SyncPromotionPolicy,
+): PromotionScreen {
   return (v) => {
     if (v.project !== project) return "skip";
+    if (syncPolicy) {
+      // Reconstruct only the authored note payload; `View` also has derived local/expiry/supersession fields that sync never sends.
+      const row = { op: "note", project: v.project, scope: v.scope, tier: v.tier, kind: v.kind, peer: v.peer,
+        ...(v.title === null ? {} : { title: v.title }), text: v.text, ...(v.task === null ? {} : { task: v.task }), about: v.about, source: v.source };
+      try { if (!syncPolicy().screen(row).ok) return "keep"; }
+      catch { return "keep"; }
+    }
     // The task's current paths too, with no denylist: a path the note's own nodes leave out is still checked.
     const screened = { ...v, about: [...v.about, ...(v.task ? taskPaths(v.task) : []).map((p) => `path:${p}`)] };
     return looksSecret(`${v.title ?? ""}\n${v.text}`) || !withoutPii([screened], routing(), cwd, policy()).length ? "keep" : "promote";

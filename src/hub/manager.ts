@@ -132,7 +132,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       // #1057: the worktree shelf's person actions. The refresh is the one that reads GitHub, so it gets the delivery reads' deadline in its own branch below.
       const worktreeAction = ["worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs"].includes(String(input.action));
       // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
-      if (!["snapshot", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release"].includes(String(input.action)) && !worktreeAction) return { ok: false, error: "invalid dashboard action" };
+      if (!["snapshot", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release", "result_seen", "results_read_all", "results_unread_last"].includes(String(input.action)) && !worktreeAction) return { ok: false, error: "invalid dashboard action" };
       client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
       const deliveryRead = input.action === "sdlc_queue" || input.action === "sdlc_release";
       let nominalMs = 10_000;
@@ -175,6 +175,24 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch (error) { return { ok: false, error: safeError(error) }; }
     finally { client?.close(); }
   };
+  // #1054 T6: the acon plugin's receipt for a result: marking one read, all read, or the last read unread again. A port of its own like `answer`, never an `act` action from the plugin:
+  // the provider checks the console's verified person meta first. The hub's console-role `result_seen` and `results` control messages do the write, on the `acon` surface, and name a
+  // stale or unknown result in their refusal. (The page of `ahub ui` and `ahub ui --all` reaches the same writes as dashboard actions, which is the person's own browser session.)
+  const receipt = async (target: { projectId: unknown; instanceId: unknown }, payload: { op: "result_seen"; id: string } | { op: "results"; action: "read-all" | "unread-last" }) => {
+    if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project) return { ok: false, error: "unknown project" };
+    if (typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "expected daemon instance is required" };
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      const message = payload.op === "result_seen" ? { t: "result_seen", id: payload.id, surface: "acon" } : { t: "results", action: payload.action, surface: "acon" };
+      const result = await client.request(message, 10_000);
+      const { rid: _rid, t: _t, ...reply } = result as Record<string, unknown>;
+      return reply;
+    } catch (error) { return { ok: false, error: safeError(error) }; }
+    finally { client?.close(); }
+  };
   // #1056: only the server-side acon provider calls this port. Dashboard action bodies
   // cannot select a control operation or manufacture verified person metadata.
   const consoleControl = async (target: { projectId: unknown; instanceId: unknown },
@@ -196,7 +214,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch { return { ok: false, unconfirmed: true as const, text: "Review result is unconfirmed. Refresh and check the task before retrying.", error: "Review result is unconfirmed. Refresh and check the task before retrying." }; }
     finally { client?.close(); }
   };
-  return { list, act, answer, consoleControl };
+  return { list, act, answer, receipt, consoleControl };
 }
 
 export async function startManager(options: ManagerOptions = {}): Promise<ManagerHandle> {

@@ -99,6 +99,7 @@ import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type Fold
 import { FolderStore, registerScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import { QuestionStore, QUESTION_SURFACES } from "./questions.ts";
 import { RunTracker, outcomeOf, settleVerdict, type Run } from "./completions.ts";
+import { resultDetail, type ResultDetail } from "./completion-detail.ts";
 import { CompletionStore } from "./completions-store.ts";
 import { QuestionDesk } from "./question-desk.ts";
 import type { ScannedFile } from "./schedules.ts";
@@ -236,6 +237,8 @@ import { SourceRegistry } from "./sources.ts";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead, sourceRead, validateSourceRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
+import { classifyMemorySyncFailure, initialMemorySyncState, memorySyncDeclinedDetails, memorySyncFailureDetailHash, memorySyncView, reduceMemorySync } from "./memory-sync-state.ts";
+import { createMemorySyncPolicy, inspectDeclinedMemoryRows } from "./memory-sync-policy.ts";
 import { DEFAULT_SPECS_CONFIG, parseSpecsConfig, type SpecsConfig } from "./specs-config.ts";
 
 export interface HubConfig {
@@ -775,6 +778,8 @@ export interface DaemonOptions {
   webFetchTransport?: import("../local/web-fetch.ts").WebFetchPort["fetch"];
   /** Tests observe timer-driven sync without opening a remote; production uses the package sync. */
   memorySync?: typeof syncMemory;
+  /** Host-only fixture seam to trigger the existing single-flight sync cycle; suppresses its timers only in the fixture; never config or control input. */
+  memorySyncTrigger?: (syncNow: () => Promise<void>) => void;
   /** Host-only test/embedding transports. Never read from config or tool input. */
   boundedTools?: {
     specAvailable?: typeof specAvailable;
@@ -1649,11 +1654,31 @@ export async function startDaemon(opts: DaemonOptions) {
     syncStop.abort();
     memoryNotice(`hub native memory disabled: ${reason}`);
   };
+  const memorySyncHostScreen = (row: Record<string, unknown>) => {
+    const title = typeof row.title === "string" ? row.title : "";
+    const text = typeof row.text === "string" ? row.text : "";
+    const about = Array.isArray(row.about) ? row.about.filter((node): node is string => typeof node === "string") : [];
+    const extraText = JSON.stringify(Object.fromEntries(Object.entries(row).filter(([key]) => !["title", "text", "about", "task", "project"].includes(key))));
+    const task = typeof row.task === "string" ? row.task : null;
+    const rowProject = typeof row.project === "string" ? row.project : undefined;
+    const taskMatch = rowProject === memoryProject && task?.startsWith(`${memoryProject}#`) ? /#(\d+)@(\d+)$/.exec(task) : null;
+    const item = taskMatch ? board.get(Number(taskMatch[1])) : undefined;
+    const taskPaths = item && String(item.created) === taskMatch?.[2] && taskKey(memoryProject, item) === task ? [...(item.refs.paths ?? []), ...(item.plan?.paths ?? [])] : [];
+    const candidate = { title, text: `${text}\n${extraText}`, about: [...about, ...taskPaths.map(path => `path:${path}`)], task, project: rowProject };
+    if (looksSecret(`${title}\n${text}\n${extraText}`)) return { ok: false, rule: "hub privacy policy: PII pattern or private path" };
+    if (!withoutPii([candidate], activeRouting(), opts.cwd, config.pii?.paths ?? []).length) return { ok: false, rule: "hub privacy policy: PII pattern or private path" };
+    return { ok: true };
+  };
+  const currentMemorySyncPolicy = () => createMemorySyncPolicy({
+    home: memoryBinding?.home ?? memoryHome(), cwd: opts.cwd,
+    denyPaths: config.local.deny, piiPatterns: activeRouting().signals.pii_patterns,
+    hostScreen: memorySyncHostScreen,
+  });
   if (config.memory.native) {
     try { const opened = openProfileMemory({ project: memoryProject, projectKey: memoryProjectRaw, ttlMs: (config.memory.short_ttl_days ?? 14) * 24 * 3600_000, log, screen: promotionScreen(memoryProject, opts.cwd, () => activeRouting(), () => config.pii?.paths ?? [], (key) => {
       const m = /#(\d+)@(\d+)$/.exec(key), t = m ? board.get(Number(m[1])) : undefined;
       return t && String(t.created) === m![2] ? [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])] : [];
-    }) }, memoryUnavailable); memoryStore = opened.store; memoryBinding = opened.binding; startupCleanup.push(() => opened.store.close()); }
+    }, () => currentMemorySyncPolicy()) }, memoryUnavailable); memoryStore = opened.store; memoryBinding = opened.binding; startupCleanup.push(() => opened.store.close()); }
     catch (error) { if (!memoryProblem) memoryUnavailable(error instanceof Error && error.message === MEMORY_SPLIT_INCOMPLETE ? error.message : "memory profile unavailable; inspect the selector and generation, then restart the hub"); }
   }
   const memoryProfileStatus = (person = false) => {
@@ -1661,9 +1686,13 @@ export async function startDaemon(opts: DaemonOptions) {
       state: config.memory.native ? "unavailable" : "disabled", home: memoryHome(), agentMemVersion: AGENT_MEM_VERSION,
       ...(memoryProblem ? { error: memoryProblem } : {}),
     } satisfies UnboundMemoryProfileReceipt);
-    if (person) return value;
+    const memorySyncAvailability = !config.memory.native || (config.memory.sync_interval_min ?? 10) <= 0
+      ? "disabled" as const
+      : !memoryStore || memoryProblem ? "unavailable" as const : "enabled" as const;
+    const withSync = { ...value, sync: memorySyncView(memorySyncState, memorySyncAvailability) };
+    if (person) return withSync;
     // Skip counts, the selector receipt and the machine's home are person-local diagnostics.
-    const { home: _home, selectorRevision: _selector, skippedRows: _skipped, ...publicStatus } = value as typeof value & { selectorRevision?: string; skippedRows?: number };
+    const { home: _home, selectorRevision: _selector, skippedRows: _skipped, ...publicStatus } = withSync as typeof withSync & { selectorRevision?: string; skippedRows?: number };
     return { ...publicStatus, ...("generation" in publicStatus && typeof publicStatus.generation === "string" ? { generation: publicStatus.generation.slice(0, 8) } : {}) };
   };
   // ponytail: operation-entry fencing is not atomic with an in-flight cross-process cutover.
@@ -1681,6 +1710,14 @@ export async function startDaemon(opts: DaemonOptions) {
     try { candidates = openProfileCandidates(memoryBinding!); const opened = candidates; startupCleanup.push(() => opened.close()); }
     catch { log("memory candidate sidecar unavailable"); }
   }
+  const memorySyncPolicyVersion = () => {
+    const profile = memoryBinding?.status(memoryStore);
+    return createHash("sha256").update(JSON.stringify([
+      profile ? [profile.state, "profile" in profile ? profile.profile : undefined, "generation" in profile ? profile.generation : undefined,
+        "selectorRevision" in profile ? profile.selectorRevision : undefined] : "unbound", config.local.deny,
+      config.pii?.paths ?? [], activeRouting().signals.pii_patterns,
+    ])).digest("hex");
+  };
   let captureBinding = memoryBinding;
   if (config.memory.enabled && !captureBinding && !memoryProblem) {
     try { captureBinding = new MemoryProfileBinding({ project: memoryProject, projectKey: memoryProjectRaw }); }
@@ -1859,21 +1896,71 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const t of board.list("in_progress")) if (!tasks.isPii(t)) renewLeases(t);
   }
   let syncRun: Promise<void> | undefined;
+  let memorySyncState = initialMemorySyncState();
   let controlWriteTelemetry: ControlWriteTelemetry | undefined;
   /** Machine sync, when a person set a remote; one log line per failure, never a blocked turn. Stopping aborts and awaits it. */
   function syncNow(): Promise<void> {
     if (!memoryStore || syncRun || stopping) return syncRun ?? Promise.resolve();
+    const recordFailure = (cause: ReturnType<typeof classifyMemorySyncFailure> & { declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string }, errorText?: string) => {
+      if (quietSyncError(errorText)) {
+        const state = errorText?.startsWith("stopped") ? "stopped" : "not-configured";
+        memorySyncState = reduceMemorySync(memorySyncState, { type: "quiet", at: Date.now(), state }).state;
+        return;
+      }
+      const reduced = reduceMemorySync(memorySyncState, { type: "failure", at: Date.now(), ...cause });
+      memorySyncState = reduced.state;
+      if (reduced.logFailure && !quietSyncError(errorText)) log(`hub memory sync failed: ${cause.cause}${cause.cause === "declined" ? ` (${cause.declinedCount ?? 0} declined)` : ""}`);
+    };
+    const recordUnexpectedFailure = (error: unknown) => {
+      const errorText = typeof error === "string" ? error : error instanceof Error ? error.message : undefined;
+      if (quietSyncError(errorText)) {
+        recordFailure(classifyMemorySyncFailure(error), errorText);
+        return;
+      }
+      recordFailure({ cause: "unknown", failureDetailHash: memorySyncFailureDetailHash(error) }, errorText);
+    };
     const run = async () => {
       try {
         checkMemory();
-        const r = await (opts.memorySync ?? syncMemory)(memoryStore!, { signal: syncStop.signal });
-        if (!r.ok && !quietSyncError(r.error)) log(`hub memory sync failed: ${r.error}`);
-        else if (r.warning) log(`hub memory sync: ${r.warning}`);
-      } catch { /* A stale binding disables native memory, never the bus. */ }
-      finally { syncRun = undefined; }
+        const policy = currentMemorySyncPolicy();
+        const policyVersion = memorySyncPolicyVersion();
+        const r = await (opts.memorySync ?? syncMemory)(memoryStore!, {
+          signal: syncStop.signal,
+          screen: row => policy.screen(row).ok,
+          policyVersion: () => memorySyncPolicyVersion(),
+        });
+        if (memorySyncPolicyVersion() !== policyVersion) {
+          recordFailure({ cause: "binding" }, "binding changed");
+          return;
+        }
+        checkMemory();
+        if (r.ok) {
+          memorySyncState = reduceMemorySync(memorySyncState, { type: "success", at: Date.now() }).state;
+          if (r.warning) log("hub memory sync completed with a warning");
+        } else {
+          const failure = classifyMemorySyncFailure(r.error);
+          if (failure.cause === "declined") {
+            const inspected = inspectDeclinedMemoryRows(memoryStore!, policy);
+            recordFailure(memorySyncDeclinedDetails(failure, inspected), r.error);
+          } else recordFailure({ ...failure, failureDetailHash: memorySyncFailureDetailHash(r.error) }, r.error);
+        }
+      } catch (error) { recordUnexpectedFailure(error); }
     };
-    syncRun = controlWriteTelemetry ? controlWriteTelemetry.observe("memory", () => !stopping, run) : run();
-    return syncRun;
+    // Publish the single-flight promise before invoking policy construction or telemetry: either can fail before `run` reaches its first await.
+    let settle!: () => void;
+    const flight = new Promise<void>(resolve => { settle = resolve; }).finally(() => {
+      if (syncRun === flight) syncRun = undefined;
+    });
+    syncRun = flight;
+    try {
+      const observed = controlWriteTelemetry ? controlWriteTelemetry.observe("memory", () => !stopping, run) : run();
+      void Promise.resolve(observed).then(settle, error => {
+        try { recordUnexpectedFailure(error); } finally { settle(); }
+      }).catch(() => {});
+    } catch (error) {
+      try { recordUnexpectedFailure(error); } finally { settle(); }
+    }
+    return flight;
   }
 
   /** Session-start cross-platform recall. Awaited before the peer can receive anything, so it rides on the first delivery. Fail-open. */
@@ -5082,6 +5169,62 @@ export async function startDaemon(opts: DaemonOptions) {
     title: row.private ? `${row.peer}: a private result` : `${row.peer}: ${row.outcome === "done" ? "finished" : row.outcome === "failed" ? "failed" : row.outcome === "limit" ? "stopped at a limit" : "interrupted"}`,
     read: row.seenAt !== undefined, ...(row.seenAt !== undefined ? { seenAt: row.seenAt, surface: row.surface } : {}),
   });
+  /**
+   * #1054 T6: the detail of a result for the person's surfaces (the acon inbox and the dashboard), built NOW from the starting prompt's envelope if the bus still holds it, and
+   * never stored, logged or put in an event. A private run shows a stub without reading the body; a head the hub's own screens refuse shows a stub; an envelope the bus no longer
+   * holds shows nothing. The body is sanitized so a prompt cannot forge a hub header in the panel.
+   */
+  const resultDetailOf = (row: { promptEnvelope?: string; private: boolean }): ResultDetail => {
+    try {
+      const body = row.private || !row.promptEnvelope ? undefined : bus.get(row.promptEnvelope)?.body;
+      return resultDetail({ private: row.private, ...(body !== undefined ? { body: sanitize(body) } : {}), safe: boundedSafe });
+    } catch { return { kind: "none" }; }
+  };
+  /** Unread results the dashboard and the acon inbox may list at once; the rest is a count, and `ahub results --unread` reaches every one. */
+  const RESULTS_VIEW_MAX = 50;
+  /**
+   * #1054 T6: the `results` of a dashboard snapshot, for the person's surfaces only. A READ: building it never writes a receipt (a poll is not a person looking). Unread rows
+   * only, newest first, each with its detail built now (`resultDetailOf`); `moreUnread` counts what the bound left out and `canUnread` says a read result exists to relight.
+   * A live-test dashboard never gets it, and a read that fails reads as none (a need is advice).
+   */
+  const resultsView = (session?: DashboardSession): { unread: Record<string, unknown>[]; moreUnread: number; canUnread: boolean } | undefined => {
+    if (session?.liveTest) return undefined;
+    try {
+      const rows = completionStore.listWithState(RESULTS_VIEW_MAX, true);
+      return {
+        unread: rows.map(row => ({ ...resultView(row), detail: resultDetailOf(row) })),
+        moreUnread: Math.max(0, completionStore.unreadCount() - rows.length),
+        canUnread: completionStore.hasRead(),
+      };
+    } catch { return undefined; }
+  };
+  /**
+   * #1054 T4/T6: the three receipt writes, once, for every surface that may make one: the console-role control messages (`result_seen`, `results`) and the dashboard session's
+   * `uiAction`. A receipt is only ever the person's: the callers check the role or the session before they get here. Each write is held during recovery or shutdown, names its
+   * refusal, and emits `completion_seen` (id and surface, no text) for exactly the rows it changed.
+   */
+  type ReceiptSurface = "terminal" | "console" | "dashboard" | "acon";
+  const receiptSurface = (value: unknown): ReceiptSurface => (["terminal", "console", "dashboard", "acon"] as const).find(known => known === value) ?? "console";
+  const receiptHeld = () => recoveryActive() || stopping;
+  const markResultSeen = (id: unknown, surface: ReceiptSurface): { ok: true; id: string } | { ok: false; error: string } => {
+    if (receiptHeld()) return { ok: false, error: "recovery or shutdown is holding receipts; mark it read again once the hub is back" };
+    if (typeof id !== "string") return { ok: false, error: "result_seen needs the result id (ahub results lists them)" };
+    const marked = completionStore.markSeen(id, Date.now(), surface);
+    if (!marked.ok) return marked;
+    event({ type: "completion_seen", id, surface });
+    return { ok: true, id };
+  };
+  const markAllResultsSeen = (surface: ReceiptSurface): { ok: true; marked: number } | { ok: false; error: string } => {
+    if (receiptHeld()) return { ok: false, error: "recovery or shutdown is holding receipts; try again once the hub is back" };
+    const ids = completionStore.markAllSeen(Date.now(), surface);
+    for (const id of ids) event({ type: "completion_seen", id, surface });
+    return { ok: true, marked: ids.length };
+  };
+  const unmarkLastResult = (): { ok: true; unread: string } | { ok: false; error: string } => {
+    if (receiptHeld()) return { ok: false, error: "recovery or shutdown is holding receipts; try again once the hub is back" };
+    const relit = completionStore.unmarkLast();
+    return relit ? { ok: true, unread: relit } : { ok: false, error: "no result has been read, so there is nothing to mark unread" };
+  };
   /** An explicit stop by the person: the run ends and creates nothing. */
   const quietStop = (peer: PeerId): void => { try { const run = runs.get(peer); if (run) { completionStore.dropRun(run.runTurn); runs.quietStop(peer); } } catch { log(`completion quiet stop for ${peer} failed; its run stays open`); } };
   /** Restart reconstruction: an open run row whose process is gone settles `interrupted`, once. The unique run turn makes any number of restarts yield one completion per run. */
@@ -7793,8 +7936,11 @@ export async function startDaemon(opts: DaemonOptions) {
       }),
       // #1053 T4: the open questions, for the person's surfaces (the panel and the acon inbox). A live-test dashboard never gets the text.
       questions: session?.liveTest ? [] : questionStore.list({ state: "open" }, 64).map(row => ({ set: row.set, peer: row.peer, created: row.created, private: row.private, questions: row.questions })),
+      // #1054 T6: unread results for the person's surfaces (the panel and the acon inbox), only for the Agents view the inbox and the Results section read.
+      ...(_input?.view === "agents" ? { results: resultsView(session) } : {}),
       events: uiEvents.filter((e) => e.seq > after),
       cursor: uiSequence,
+      memorySync: memoryProfileStatus(true).sync,
       ...settingsSnapshot(session),
       starts: startPlans(),
       roster: rosterView(),
@@ -8645,6 +8791,17 @@ export async function startDaemon(opts: DaemonOptions) {
         if (out.ok !== true) return { ok: false, error: String(out.error ?? "the worktree shelf could not be read") };
         const r = out.refreshed as { read: number; failed: number; skipped: number } | undefined;
         return { ok: true, text: r ? `Read ${r.read} PR state${r.read === 1 ? "" : "s"}${r.failed ? `, ${r.failed} unreadable` : ""}${r.skipped ? `, ${r.skipped} left for the next refresh` : ""}.` : a.action === "worktree_override_set" ? "Worktree moved." : "Worktree override cleared." };
+      }
+      // #1054 T6: a person's receipt from the dashboard session. The manager forwards these only from the server-side acon provider's `receipt` port (after it checked the console's
+      // person meta) or from the page of `ahub ui` itself, which is the person's own browser session; a live-test dashboard is refused here as in `ui.ts`. The writes are the same three
+      // the console control messages make, so a receipt means the same on every surface; the surface is `dashboard`, and `acon` only through the control message the port sends.
+      case "result_seen":
+      case "results_read_all":
+      case "results_unread_last": {
+        if (session?.liveTest) return { ok: false, error: "live-test dashboard cannot write a receipt for the person" };
+        const done = a.action === "result_seen" ? markResultSeen(a.id, "dashboard") : a.action === "results_read_all" ? markAllResultsSeen("dashboard") : unmarkLastResult();
+        if (!done.ok) return { ok: false, error: done.error };
+        return { ok: true, text: a.action === "result_seen" ? "Marked read." : a.action === "results_read_all" ? `Marked ${(done as { marked: number }).marked} read.` : "Marked unread again." };
       }
       case "config_edit_preview":
         return configEditor!.preview(a.edit, authority);
@@ -10596,25 +10753,13 @@ export async function startDaemon(opts: DaemonOptions) {
       // the store. A snapshot or a `results` read never writes one. Every message gets a reply (rid), a refusal included.
       case "result_seen": {
         if (c.role !== "console") return void reply({ t: "result_seen", ok: false, error: "result_seen is a console command: only the person marks a result read" });
-        if (recoveryActive() || stopping) return void reply({ t: "result_seen", ok: false, error: "recovery or shutdown is holding receipts; mark it read again once the hub is back" });
-        const surface = (["terminal", "console", "dashboard", "acon"] as const).find(known => known === msg.surface) ?? "console";
-        if (typeof msg.id !== "string") return void reply({ t: "result_seen", ok: false, error: "result_seen needs the result id (ahub results lists them)" });
-        const marked = completionStore.markSeen(msg.id, Date.now(), surface);
-        if (marked.ok) event({ type: "completion_seen", id: msg.id, surface });
-        return void reply(marked.ok ? { t: "result_seen", ok: true, id: msg.id } : { t: "result_seen", ok: false, error: marked.error });
+        const marked = markResultSeen(msg.id, receiptSurface(msg.surface));
+        return void reply({ t: "result_seen", ...marked });
       }
       case "results": {
         if (c.role !== "console") return void reply({ t: "results", ok: false, error: "results are shown to the person: use the console" });
         if (msg.action === "read-all" || msg.action === "unread-last") {
-          if (recoveryActive() || stopping) return void reply({ t: "results", ok: false, error: "recovery or shutdown is holding receipts; try again once the hub is back" });
-          const surface = (["terminal", "console", "dashboard", "acon"] as const).find(known => known === msg.surface) ?? "console";
-          if (msg.action === "read-all") {
-            const ids = completionStore.markAllSeen(Date.now(), surface);
-            for (const id of ids) event({ type: "completion_seen", id, surface });
-            return void reply({ t: "results", ok: true, marked: ids.length });
-          }
-          const relit = completionStore.unmarkLast();
-          return void reply(relit ? { t: "results", ok: true, unread: relit } : { t: "results", ok: false, error: "no result has been read, so there is nothing to mark unread" });
+          return void reply({ t: "results", ...(msg.action === "read-all" ? markAllResultsSeen(receiptSurface(msg.surface)) : unmarkLastResult()) });
         }
         const unreadOnly = msg.unread === true;
         const rows = completionStore.listWithState(100, unreadOnly).map(resultView);
@@ -10816,11 +10961,12 @@ export async function startDaemon(opts: DaemonOptions) {
     renewAllLeases();
     const leases = setInterval(renewAllLeases, 10 * 60_000); leases.unref?.(); intervals.push(leases);
     const every = config.memory.sync_interval_min ?? 10;
-    if (every > 0) {
+    if (every > 0 && !opts.memorySyncTrigger) {
       const first = setTimeout(() => void syncNow(), 5_000); first.unref?.(); intervals.push(first);
       const timer = setInterval(() => void syncNow(), every * 60_000); timer.unref?.(); intervals.push(timer);
     }
   }
+  opts.memorySyncTrigger?.(syncNow);
   if (crashed) {
     // This run owns the record now, so its clean stop removes it even if no peer attaches to rewrite it.
     try { if (readSessions(opts.stateDir)?.instanceId === crashed.instanceId) writeSessions(opts.stateDir, { ...crashed, instanceId, at: Date.now() }); } catch (error) { log(`session record not adopted: ${(error as Error).message}`); }

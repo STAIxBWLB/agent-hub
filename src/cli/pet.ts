@@ -18,7 +18,7 @@ export function parseNeedsSummary(raw: unknown): NeedsSummary | undefined {
   if (row.first !== undefined) {
     if (!row.first || typeof row.first !== "object" || Array.isArray(row.first)) return;
     const item = row.first as Record<string, unknown>;
-    if (typeof item.kind !== "string" || typeof item.level !== "string" || !["approval", "default", "question", "storage", "recovery", "delivery", "review", "budget", "offline"].includes(item.kind) || !["act", "watch"].includes(item.level)) return;
+    if (typeof item.kind !== "string" || typeof item.level !== "string" || !["approval", "default", "question", "storage", "recovery", "delivery", "review", "result", "budget", "offline"].includes(item.kind) || !["act", "watch"].includes(item.level)) return;
     if (item.peer !== undefined && !id(item.peer)) return;
     if (item.id !== undefined && !id(item.id) && !(count(item.id) && item.id > 0)) return;
     if (item.until !== undefined && !count(item.until) || item.since !== undefined && !count(item.since)) return;
@@ -29,7 +29,7 @@ export function parseNeedsSummary(raw: unknown): NeedsSummary | undefined {
   if ((row.act + row.watch > 0) !== !!first) return;
   if (row.act > 0 && first?.level !== "act" || row.act === 0 && first?.level === "act") return;
   if (row.act === 0 && ["waiting", "blocked", "review"].includes(row.state) || row.act > 0 && ["working", "idle", "sleeping"].includes(row.state)) return;
-  if (first?.level === "watch" && !["recovery", "budget", "offline"].includes(first.kind) || first?.level === "act" && ["budget", "offline"].includes(first.kind)) return;
+  if (first?.level === "watch" && !["recovery", "result", "budget", "offline"].includes(first.kind) || first?.level === "act" && ["budget", "offline"].includes(first.kind)) return;
   if (row.state === "waiting" && !["approval", "default", "question"].includes(first?.kind ?? "")) return;
   if (row.state === "blocked" && !["storage", "recovery", "delivery"].includes(first?.kind ?? "")) return;
   if (row.state === "review" && first?.kind !== "review") return;

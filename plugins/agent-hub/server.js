@@ -315,12 +315,12 @@ var init_compat = __esm(() => {
     },
     "claude-implementer": {
       label: "Claude headless implementer",
-      verified: ["2.1.309", "2.1.310", "2.1.314", "2.1.316"],
+      verified: ["2.1.309", "2.1.310", "2.1.314", "2.1.316", "2.1.318"],
       gate: "contract",
       probe: ["claude", "--version"],
       parse: (out) => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
       trustNote: "The native prompt-tool transport and host-wrapper rewrite, environment isolation and replay contract have isolated receipts. No dontAsk/bypass fallback exists; another version's permission or rewrite behavior is unverified.",
-      receipt: "docs/verification/2026-10-31-claude-implementer-2.1.316.md"
+      receipt: "docs/verification/2026-11-05-claude-implementer-2.1.318.md"
     },
     "codex-review": {
       label: "Codex reviewer (codex-cli)",
@@ -1267,6 +1267,7 @@ class OwnedPrintChild {
     });
     const frameLimit = options.maxFrameBytes ?? 256 * 1024, outputLimit = options.maxOutputBytes ?? 4 * 1024 * 1024;
     let buffer = "", outputBytes = 0;
+    let inputFailed = false;
     const current = () => !this.limited && options.current?.() !== false;
     const limit = () => {
       if (!this.limited) {
@@ -1279,7 +1280,9 @@ class OwnedPrintChild {
         options.onError?.(error);
         reject(error);
       });
-      child.stdin.on("error", () => {});
+      child.stdin.on("error", () => {
+        inputFailed = true;
+      });
       child.once("spawn", () => {
         trackGroup(child);
         if (!current()) {
@@ -1288,7 +1291,13 @@ class OwnedPrintChild {
         }
         options.onSpawn?.();
         if (current())
-          child.stdin.end(options.input);
+          child.stdin.end(options.input, () => {
+            if (inputFailed || !current())
+              return;
+            try {
+              options.onInputReleased?.();
+            } catch {}
+          });
         else
           child.stdin.destroy();
       });
@@ -1413,7 +1422,7 @@ function reviewerNoVerdictLine(peer, diagnostic, safeRefusal, withheld = false) 
   const line = safeRefusal === undefined ? undefined : Array.from(sanitize(safeRefusal).replace(/\s+/g, " ")).filter((char) => !/\p{C}/u.test(char)).slice(0, 240).join("");
   return prefix + detail + (diagnostic.refusal === undefined && diagnostic.hostRefusal === undefined ? "" : `; refusal: ${line ?? "withheld"}`);
 }
-var ReviewerUnavailableError, ReviewerAdmissionError, REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ", reviewTarget = (env) => {
+var ReviewerUnavailableError, ReviewerAdmissionError, ReviewerInputAdmissionError, REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ", reviewTarget = (env) => {
   const task = reviewTask(env);
   if (task === undefined || env.private)
     return;
@@ -1444,6 +1453,8 @@ var init_reviewer_print = __esm(() => {
       this.reason = reason;
     }
   };
+  ReviewerInputAdmissionError = class ReviewerInputAdmissionError extends Error {
+  };
   ReviewerPrintPeer = class ReviewerPrintPeer extends BasePeer {
     opts;
     hubNative = true;
@@ -1454,13 +1465,18 @@ var init_reviewer_print = __esm(() => {
     childCurrent;
     reviewMcpClose;
     activeDeliveryId;
+    deliveryAccepted = false;
     batch;
     preparation;
     receipt;
+    observerSessionIdValue;
     get isolationReceipt() {
       return this.receipt;
     }
     reviewing;
+    get observerSessionId() {
+      return this.observerSessionIdValue;
+    }
     reviewSeq = 0;
     runningBinding;
     activeTrace;
@@ -1582,10 +1598,9 @@ var init_reviewer_print = __esm(() => {
       }
       const generation = ++this.generation;
       this.activeDeliveryId = deliveryId;
+      this.deliveryAccepted = false;
       this.batch = { targets: envs.map(reviewTarget), next: 0, failures: [] };
       this.setState("busy");
-      if (deliveryId)
-        this.delivery({ id: deliveryId, state: "accepted" });
       this.run(envs, generation).catch((error) => {
         if (generation !== this.generation)
           return;
@@ -1622,6 +1637,11 @@ var init_reviewer_print = __esm(() => {
         } catch (error) {
           if (generation !== this.generation)
             return;
+          if (error instanceof ReviewerInputAdmissionError) {
+            failure = { state: started ? "needs_review" : "failed_safe", reason: "review input provenance unavailable" };
+            batch.next = envs.length;
+            break;
+          }
           if (error instanceof ReviewerAdmissionError) {
             this.opts.log?.(`[${this.id}] review of task #${task} skipped: ${error.reason === "stale_binding" ? "stale binding" : "review policy changed"}`);
             if (error.reason === "policy_changed") {
@@ -1766,25 +1786,44 @@ var init_reviewer_print = __esm(() => {
       const input = `${frame(env)}${facts ? `
 
 ${facts}` : ""}`;
+      const sessionId = randomUUID2();
+      const inputContext = Object.freeze({ sessionId, inputId: randomUUID2() });
+      this.observerSessionIdValue = sessionId;
+      try {
+        this.opts.beforeInput?.(inputContext, [env]);
+      } catch {
+        this.observerSessionIdValue = undefined;
+        throw new ReviewerInputAdmissionError;
+      }
+      if (this.activeDeliveryId && !this.deliveryAccepted) {
+        this.deliveryAccepted = true;
+        this.delivery({ id: this.activeDeliveryId, state: "accepted" });
+      }
       let launch;
       const trace = { reviewCalled: false };
       this.activeTrace = { task, generation, value: trace };
       const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined && this.opts.bindingCurrent?.(task, binding) !== false) : undefined;
-      let mcpClosed = false;
+      let mcpClosed = false, mcpCloseConfirmed = false;
       const closeMcp = () => {
         if (mcpClosed)
           return;
         mcpClosed = true;
-        mcp?.close();
+        try {
+          mcp?.close();
+          mcpCloseConfirmed = true;
+        } catch {
+          this.opts.log?.(`[${this.id}] reviewer task MCP cleanup incomplete`);
+        }
         if (this.reviewMcpClose === closeMcp)
           this.reviewMcpClose = undefined;
       };
       this.reviewMcpClose = closeMcp;
       let ownedChild, releasing;
+      let inputReleased = false, childClosed = false, launchCleanupConfirmed = false;
       let policyTimer;
       const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
       try {
-        launch = await this.prepare(randomUUID2(), input, task, mcp?.config);
+        launch = await this.prepare(sessionId, input, task, mcp?.config);
         if (generation !== this.generation)
           throw new ReviewerAdmissionError("stale_binding");
         this.assertAdmission(env, task, binding);
@@ -1802,6 +1841,10 @@ ${facts}` : ""}`;
           input,
           current: () => generation === this.generation,
           stop: launch.stop,
+          onInputReleased: () => {
+            inputReleased = true;
+            this.opts.inputReleased?.(inputContext, [env]);
+          },
           onError: () => {
             if (this.child === child)
               this.child = undefined;
@@ -1840,6 +1883,7 @@ ${facts}` : ""}`;
         this.childCleanup = release;
         this.childCurrent = launch.watchCurrent ? launch.current : undefined;
         const code = await child.done;
+        childClosed = true;
         if (this.child === child)
           this.child = undefined;
         return { code, quota, trace };
@@ -1854,10 +1898,16 @@ ${facts}` : ""}`;
             await release();
             if (this.childCleanup === release)
               this.childCleanup = undefined;
+            launchCleanupConfirmed = true;
           }
         } catch {
           this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`);
         }
+        const closedWithoutChild = !ownedChild || ownedChild.process.pid === undefined;
+        if (mcpCloseConfirmed && launchCleanupConfirmed && (closedWithoutChild || inputReleased && childClosed))
+          try {
+            this.opts.inputFinished?.(inputContext, [env]);
+          } catch {}
       }
     }
     settle(state, reason) {
@@ -13365,6 +13415,9 @@ var init_local_worker = __esm(() => {
     get titleSession() {
       return this.sessionId;
     }
+    get observerSessionId() {
+      return this.sessionId;
+    }
     async setSessionTitle(title, onlyIfUnnamed, current) {
       if (typeof title !== "string" || !title.trim() || [...title].length > 80 || typeof onlyIfUnnamed !== "boolean")
         return { ok: false, reason: "invalid", error: "Session title must contain 1-80 normalized characters and use a conditional-write flag; correct the title request and try again." };
@@ -13399,6 +13452,8 @@ var init_local_worker = __esm(() => {
     approvalAnswerEpoch;
     approvalStopReason = "";
     activeDeliveryId;
+    currentObserverInputContext;
+    observerInputReleasedId;
     sandboxProfile;
     lastServedBy = "";
     constructor(id, opts) {
@@ -13415,6 +13470,7 @@ var init_local_worker = __esm(() => {
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
           const tools = judge ? undefined : [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : []];
+          this.releaseObserverInput(this.currentObserverInputContext, envs);
           const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {} }, { signal, ...pii ? { onCampusOnly: true } : {} });
           this.recordUsage(result, model, task);
           if (generation !== this.turn)
@@ -13455,6 +13511,16 @@ var init_local_worker = __esm(() => {
           this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
         throw new Error(`${this.id} is ${this.state}`);
       }
+      const inputContext = Object.freeze({ sessionId: this.observerSessionId, inputId: randomUUID7() });
+      try {
+        this.opts.beforeInput?.(inputContext, envs);
+      } catch {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason: "review input provenance unavailable" });
+        throw new Error("review input provenance unavailable");
+      }
+      this.currentObserverInputContext = inputContext;
+      this.observerInputReleasedId = undefined;
       const turn = ++this.turn;
       this.budgetStopReason = "";
       this.approvalExpiries = 0;
@@ -13752,10 +13818,19 @@ var init_local_worker = __esm(() => {
       if (routed)
         return routed;
       await this.requireBudget(envs, "model_calls");
+      this.releaseObserverInput(this.currentObserverInputContext, envs);
       const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...policy?.pii ? { onCampusOnly: true } : {} });
       this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
       this.recordUsage(res, fixedModel, task);
       return res;
+    }
+    releaseObserverInput(context, envs) {
+      if (!context || this.currentObserverInputContext !== context || this.observerInputReleasedId === context.inputId)
+        return;
+      this.observerInputReleasedId = context.inputId;
+      try {
+        this.opts.inputReleased?.(context, envs);
+      } catch {}
     }
     beginRouteTurn(generation, pii, task) {
       let id;
@@ -14182,11 +14257,14 @@ var init_claude_implementer = __esm(() => {
     binding;
     command;
     deliveryId;
+    deliveryAccepted = false;
     inputReleased = false;
     failureTrace;
     sessions;
     stopping;
     stoppingTarget;
+    observerSessionIdValue;
+    currentInputContext;
     mode;
     constructor(id, options) {
       super(id, options.watchdogMs);
@@ -14206,6 +14284,9 @@ var init_claude_implementer = __esm(() => {
     }
     get sessionGeneration() {
       return this.active?.generation;
+    }
+    get observerSessionId() {
+      return this.observerSessionIdValue;
     }
     ownedTools(launchId) {
       return typeof launchId === "string" && this.active?.launchId === launchId && !this.abort?.signal.aborted ? this.active : undefined;
@@ -14310,10 +14391,9 @@ var init_claude_implementer = __esm(() => {
       const generation = this.generation;
       this.deliveryId = deliveryId;
       this.inputReleased = false;
+      this.deliveryAccepted = false;
       this.abort = new AbortController;
       this.setState("busy");
-      if (deliveryId)
-        this.delivery({ id: deliveryId, state: "accepted" });
       const running = Promise.resolve().then(() => this.run(groups, generation, running));
       this.running = running;
       running.finally(() => {
@@ -14343,6 +14423,14 @@ var init_claude_implementer = __esm(() => {
               turn = this.sessions.session(group.task);
               this.options.notify?.(`${this.id}: task #${group.task} session fresh; recorded transcript is missing`);
             }
+          }
+          const inputContext = Object.freeze({ sessionId: turn.sessionId, inputId: randomUUID9() });
+          this.observerSessionIdValue = turn.sessionId;
+          this.currentInputContext = inputContext;
+          this.options.beforeInput?.(inputContext, group.envs);
+          if (this.deliveryId && !this.deliveryAccepted) {
+            this.deliveryAccepted = true;
+            this.delivery({ id: this.deliveryId, state: "accepted" });
           }
           const launchId = randomUUID9(), directory = mkdtempSync5(join17(this.options.stateDir, "claude-child-")), settings = join17(directory, "settings.json");
           let launchFailureTrace;
@@ -14388,7 +14476,12 @@ var init_claude_implementer = __esm(() => {
                 launchFailureTrace = undefined;
               }
               this.failureTrace = launchFailureTrace;
+            },
+            onInputReleased: () => {
+              if (!current() || this.currentInputContext !== inputContext)
+                return;
               this.inputReleased = true;
+              this.options.inputReleased?.(inputContext, group.envs);
             },
             onLeaderExit: () => {
               sealFailureTrace(launchFailureTrace);
@@ -24579,6 +24672,12 @@ init_tool_refusal();
 
 // src/hub/tasks.ts
 init_memory_policy();
+
+// src/hub/memory-sync-policy.ts
+init_src();
+var GENERATED2 = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
+
+// src/hub/tasks.ts
 init_profiles();
 init_workflow();
 

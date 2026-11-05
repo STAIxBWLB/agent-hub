@@ -31,6 +31,7 @@ import { renderIntake, renderIntakeChange } from "./intake-output.ts";
 import { renderLearnChange, renderLearnList } from "./learn-output.ts";
 import { renderCapabilities } from "./capabilities-output.ts";
 import { parseStudyArgs } from "./study.ts";
+import { parseBacklogReturn } from "./backlog-return-args.ts";
 import { parseResultsArgs } from "./results-args.ts";
 import { renderExperiments, renderStudyList, renderStudyReceipt, renderStudyShow } from "./study-output.ts";
 import { renderHandoffReceipt, renderHandoffs } from "./handoff-output.ts";
@@ -1410,7 +1411,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (sub === "groom" && operands.length === 1) return shown(renderGroom)(taskOp("hub_planner_groom", {}));
     if (["return", "return-untouched"].includes(sub ?? "") && /^[1-9]\d*$/.test(id ?? "") && /^\d+$/.test(revision ?? "") && operands.length >= 4) {
-      return shown((data, columns, now) => renderBacklogResult("return-untouched", data, columns, now))(taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: operands.slice(3).join(" ") }));
+      // #1177: `--reserved <peer>` / `--unreserve` edit the reservation atomically with the return (fields.reserved); with neither, the arguments are what they always were.
+      const returned = parseBacklogReturn(operands.slice(3));
+      if (!returned.ok) return fail(returned.error);
+      return shown((data, columns, now) => renderBacklogResult("return-untouched", data, columns, now))(taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: returned.value.reason, ...(returned.value.fields ? { fields: returned.value.fields } : {}) }));
     }
     if (sub === "add" && args.length >= 3) return console.log(await taskOp("hub_task_propose", { class: id, title: args.slice(2).join(" "), backlog: true }));
     if (!/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog list|add <class> <title...>|pull|return <id>|plan|pin <id> <revision> <value> <reason...>|undo <id> <revision>");

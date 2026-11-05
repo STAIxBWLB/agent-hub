@@ -5,7 +5,7 @@ import { boardColumns, type BoardPeerInput } from "../ui/task-board.ts";
 import { peerStyle } from "../ui/peer-palette.ts";
 import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
-import { backendLabel } from "./status-lines.ts";
+import { backendLabel, memorySyncLine } from "./status-lines.ts";
 import { ownerIsolationText } from "./role-holders.ts";
 import { schedulePeriodText, scheduleWhen } from "../hub/schedules.ts";
 import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
@@ -29,7 +29,7 @@ export interface StatusOutput {
   pendingTaskOffers?: readonly { task: number; peer: string }[];
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
   memoryRead?: { truncated: boolean; scanned: number; limit: number };
-  memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string };
+  memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string; sync?: { state: "disabled" | "unavailable" | "notrun" | "not-configured" | "stopped" | "ok" | "failed" | "unknown"; at?: number; cause?: string; declinedCount?: number; declinedIdsKnown?: false; nextStep?: string } };
   /** #784 AC3: `active`, `reviewWait` and `reserved` add up to `wip`; absent from an older hub. */
   taskWip?: Record<string, { wip: number; wipLimit: number; active?: number; reviewWait?: number; reserved?: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
@@ -252,6 +252,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     const memory = data.memoryProfile;
     const profile = memory.profile === "generation" ? `generation ${memory.generation?.slice(0, 8) ?? "unknown"}` : memory.profile ?? "unbound";
     out.push(...detail("memory", `${profile}; ${memory.state ?? "unknown"}; agent-mem ${memory.agentMemVersion ?? "unknown"}${memory.skippedRows ? `; malformed legacy rows skipped: ${memory.skippedRows}` : ""}${memory.error ? `; ${memory.error}` : ""}`, columns, memory.state === "unavailable" ? "attention" : undefined));
+    const sync = memory.sync;
+    out.push(...detail("memory sync", memorySyncLine(sync ?? { state: "unknown" }), columns, sync?.state === "failed" ? "attention" : undefined));
   }
   if (data.memoryRead?.truncated) out.push(...detail("memory view", `truncated: newest ${data.memoryRead.limit} project candidates considered`, columns, "attention"));
   if (data.planner) out.push(...detail("planner", `${data.planner.peers?.join(", ") || "nobody"} (${data.planner.source ?? "unknown"})${data.planner.source === "automatic" || data.planner.source === "none" ? "; pin it with ahub settings set planner <peer>" : ""}`, columns, data.planner.source === "none" ? "attention" : undefined));

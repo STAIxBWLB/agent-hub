@@ -78,6 +78,48 @@ test("profile-check is person-only and decay JSON alone carries additive profile
   expect(JSON.parse(await memoryCommand(["list", "--json"], f.cwd, { store: f.store, person: true }))[0]?.memoryProfile).toBeUndefined();
 });
 
+test("declined person inspection reports unavailable bounded inspection without exposing row text", async () => {
+  const f = fixture();
+  const store = await selectGeneration(f.home, f.memoryDir);
+  writeFileSync(join(f.cwd, ".agenthub", "config.json"), JSON.stringify({ pii: { paths: ["private/student.txt"] } }));
+  store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "details in private/student.txt; never print this text", about: ["file:private/student.txt"] });
+  let inspectedTargets = 0, inspectedSnapshots = 0;
+  const openedSyncTargets = store.openedSyncTargets.bind(store), prunePort = store.prunePort.bind(store);
+  store.openedSyncTargets = () => { inspectedTargets++; return openedSyncTargets(); };
+  store.prunePort = () => { inspectedSnapshots++; return prunePort(); };
+  const result = JSON.parse(await memoryCommand(["declined", "--json"], f.cwd, { store, person: true }));
+  expect(result).toMatchObject({ complete: false, rows: [], reason: "declined-row inspection requires a bounded public agent-mem API", memoryProfile: { profile: "generation", state: "ready" } });
+  expect([inspectedTargets, inspectedSnapshots]).toEqual([0, 0]);
+  expect(JSON.stringify(result)).not.toContain("never print this text");
+  expect(JSON.stringify(result)).not.toContain("private/student.txt");
+  await expect(memoryCommand(["declined"], f.cwd, { store, person: false })).rejects.toThrow("person authority");
+  const human = await memoryCommand(["declined"], f.cwd, { store, person: true });
+  expect(human).toContain("inspection incomplete");
+  expect(human).not.toContain("never print this text"); expect(human).not.toContain("private/student.txt");
+});
+
+test("declined person inspection also refuses a complete result for shared-v1 without scanning physical rows", async () => {
+  const f = fixture(), store = f.store;
+  let inspectedTargets = 0, inspectedSnapshots = 0;
+  const openedSyncTargets = store.openedSyncTargets.bind(store), prunePort = store.prunePort.bind(store);
+  store.openedSyncTargets = () => { inspectedTargets++; return openedSyncTargets(); };
+  store.prunePort = () => { inspectedSnapshots++; return prunePort(); };
+  const result = JSON.parse(await memoryCommand(["declined", "--json"], f.cwd, { store, person: true }));
+  expect(result).toMatchObject({ rows: [], complete: false, reason: "declined-row inspection requires a bounded public agent-mem API" });
+  expect([inspectedTargets, inspectedSnapshots]).toEqual([0, 0]);
+  expect(JSON.stringify(result)).not.toContain("selected profile note");
+  expect(await memoryCommand(["declined"], f.cwd, { store, person: true })).toContain("inspection incomplete");
+});
+
+test("manual sync does not apply current-project task paths to a foreign project's task note", async () => {
+  const f = fixture(), task = "foreign-project#1@1";
+  f.store.note({ op: "note", project: "foreign-project", scope: "project", tier: "long", kind: "finding", peer: "codex", source: "hub", task, text: "safe foreign project note", about: [] });
+  const stopped = new AbortController(); stopped.abort();
+  await expect(memoryCommand(["sync"], f.cwd, { store: f.store, person: true, sync: { signal: stopped.signal } }))
+    .rejects.toThrow("stopped");
+  expect(existsSync(join(f.store.dir, ".git"))).toBe(false);
+});
+
 
 test("agent memory and goal reads reveal only profile kind and generation prefix, never person-only skip totals", async () => {
   const f = fixture();

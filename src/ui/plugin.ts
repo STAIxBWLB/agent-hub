@@ -17,15 +17,18 @@ import { projectConsole, type Lifecycle, type ManagerOptions } from "../hub/mana
 import { DASHBOARD_VIEWS, renderDashboard } from "../hub/ui.ts";
 import { officeModel, type OfficeScene } from "./office-model.ts";
 import { personEvidence, questionItem, QUESTION_ITEM, type InboxAnswers, type QuestionRowView } from "./plugin-questions.ts";
+import { canPublishResults, receiptEvidence, resultItem, RESULT_ACTIONS, RESULT_ITEM, type ResultAction, type ResultRowView } from "./plugin-results.ts";
 import { mergeSpaces, officeSpace } from "./office-space.ts";
 import { VERSION as version } from "../version.ts";
 
 type Tone = "ok" | "warn" | "err" | "neutral";
 interface InboxItem {
-  id: string; group: "decision" | "review" | "candidate" | "alert"; kind: string; title: string; detail?: string; actor?: string; project?: string;
+  id: string; group: "decision" | "review" | "result" | "candidate" | "alert"; kind: string; title: string; detail?: string; actor?: string; project?: string;
   at: string; chip?: { text: string; tone: Tone };
   verbs: { id: string; label: string; primary?: boolean; destructive?: boolean; reason?: "optional" | "required" }[];
   link: { panel: string; params?: Record<string, string> };
+  /** #1054: a `result` item carries the action acon runs once the person has seen it. */
+  seen?: { action: string };
 }
 type ActionResult =
   | ({ ok: true } & Record<string, unknown>)
@@ -51,6 +54,8 @@ const TITLES: Record<(typeof DASHBOARD_VIEWS)[number], string> = { board: "Board
 const FORWARDED = ["start", "stop", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release", "worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs"] as const;
 /** Advertised so acon lets the page send it, never forwarded: `action()` answers it through its own port (`answerVerb`), after the console's person meta is checked (#1053 T5). */
 const QUESTION_ACTIONS = ["answer"] as const;
+/** #1054 T6: the receipt actions, advertised so acon lets the inbox and the page send them, never forwarded: `action()` checks the console's person meta, then calls the dedicated `projectConsole(...).receipt` port (`receiptVerb`). */
+const RESULT_ADVERTISED = RESULT_ACTIONS;
 const REVIEW_ACTIONS = ["review_comment_put", "review_comment_delete", "review_comment_send"] as const;
 const INBOX_VERBS = ["approve", "deny", "open"] as const;
 /** Outward or destructive: answered needsConfirm first (agent-console AGENTS.md); previews are read-only and stay direct. */
@@ -157,7 +162,7 @@ export function createProvider(options: { home: string; registry?: Registry; lif
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
-  const { list, act, answer, consoleControl } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
+  const { list, act, answer, receipt, consoleControl } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
   const assets = panelAssets();
   const seen = new Map<string, string>(); // inbox item id -> first-seen ISO time, so `at` stays stable
 
@@ -188,6 +193,17 @@ export function createProvider(options: { home: string; registry?: Registry; lif
         const item = questionItem(q, { id: project.id, name }, options.features);
         seen.set(item.id, item.at);
         items.push(item);
+      }
+      // #1054 T6: unread results, only to a console that renders the `result` group AND gives a receipt person evidence. Otherwise they stay in the ahub panel, `ahub console`, `ahub status`
+      // and `ahub results`. A row that is not well formed is dropped, never rendered; the detail is what the hub built at display (a stub when private).
+      if (canPublishResults(options.features)) {
+        const results = (snap.results as { unread?: ResultRowView[] } | undefined)?.unread;
+        for (const row of Array.isArray(results) ? results : []) {
+          if (!row || typeof row.id !== "string" || !/^cmp-[a-f0-9]{12}$/.test(row.id) || typeof row.peer !== "string" || !Number.isSafeInteger(row.settledAt)) continue;
+          const item = resultItem(row, { id: project.id, name });
+          seen.set(item.id, item.at);
+          items.push(item);
+        }
       }
       // #1057 D4: one alert when the shelf holds more settled worktrees than `worktrees.alert_over` (0 = never). Counts only: no path, branch or title, and no action
       // beyond opening the panel, because removal is the person's `ahub worktrees tidy` and never a button.
@@ -265,10 +281,32 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     return result.ok === true ? { ok: true, message: "Answered" } : { ok: false, error: String(result.error ?? "the answer was refused") };
   }
 
+  /**
+   * #1054 T6: a receipt for the person: one result read (the inbox's `result_seen`, whose item id names the project and the completion; the panel's carries the same ids), all read, or the
+   * last read unread again. Only with the console's own person meta (checked by the caller). The project comes from the item id or, from the panel, from the project it is showing; the
+   * hub re-checks that the result exists and is unread, and names a stale one. `seenAt` and `explicit` are acon's and are not forwarded: the hub stamps its own time.
+   */
+  async function receiptVerb(name: ResultAction, input: Record<string, unknown>): Promise<ActionResult> {
+    let projectId: string | undefined, id: string | undefined;
+    if (name === "result_seen") {
+      const m = typeof input.id === "string" ? RESULT_ITEM.exec(input.id) : null;
+      if (m) { projectId = m[1]; id = m[2]; }
+      else if (typeof input.projectId === "string" && typeof input.id === "string" && /^cmp-[a-f0-9]{12}$/.test(input.id)) { projectId = input.projectId; id = input.id; }
+      if (!projectId || !id) return { ok: false, error: "unknown result" };
+    } else projectId = typeof input.projectId === "string" ? input.projectId : undefined;
+    const project = (await running()).find((p) => p.id === projectId);
+    if (!project) return { ok: false, error: "project is not running" };
+    const target = { projectId: project.id, instanceId: project.instanceId };
+    const result = (name === "result_seen" ? await receipt(target, { op: "result_seen", id: id! })
+      : await receipt(target, { op: "results", action: name === "results_read_all" ? "read-all" : "unread-last" })) as Record<string, unknown>;
+    if (result.ok !== true) return { ok: false, error: String(result.error ?? "the receipt was refused") };
+    return { ok: true, message: name === "result_seen" ? "Marked read" : name === "results_read_all" ? `Marked ${Number(result.marked) || 0} read` : "Marked unread again" };
+  }
+
   /** approve/deny resolve to the hub's own `permit` with the request's option; nothing else is reachable from an item. */
   async function inboxVerb(input: Record<string, unknown>): Promise<ActionResult> {
     const m = typeof input.id === "string" ? /^perm:([^:]+):(.+)$/.exec(input.id) : null;
-    if (input.action === "open") return { ok: true, message: typeof input.id === "string" && (input.id.startsWith("worktrees:") || input.id.startsWith("question:")) ? `Open the Agents panel to ${input.id.startsWith("question:") ? "answer" : "review the shelf"}.` : "Open the Board panel to review." };
+    if (input.action === "open") return { ok: true, message: typeof input.id === "string" && (input.id.startsWith("worktrees:") || input.id.startsWith("question:") || input.id.startsWith("result:")) ? `Open the Agents panel to ${input.id.startsWith("question:") ? "answer" : input.id.startsWith("result:") ? "read the result" : "review the shelf"}.` : "Open the Board panel to review." };
     if (!m) return { ok: false, error: "unknown inbox item" };
     const project = (await running()).find((p) => p.id === m[1]);
     if (!project) return { ok: false, error: "project is not running" };
@@ -312,6 +350,13 @@ export function createProvider(options: { home: string; registry?: Registry; lif
         const { action: _a, confirmed: _c, fingerprint: _f, ...forward } = input;
         return await answerVerb(forward, evidence.identity);
       }
+      // #1054 T6: a receipt is accepted only with the console's own verified person meta, and never with page-supplied identity or target fields; anything else is refused before the hub.
+      if ((RESULT_ACTIONS as readonly string[]).includes(name)) {
+        const evidence = receiptEvidence(options.features, meta, input);
+        if (!evidence.ok) return { ok: false, error: evidence.error };
+        const { action: _a, confirmed: _c, fingerprint: _f, seenAt: _s, explicit: _e, ...forward } = input;
+        return await receiptVerb(name as ResultAction, forward);
+      }
       const review = REVIEW_ACTIONS.includes(name as typeof REVIEW_ACTIONS[number]);
       if (review && (!options.features?.includes("action.meta") || !meta || meta.via !== "console" || typeof meta.identity !== "string" || !meta.identity.trim() || typeof meta.node !== "string" || !meta.node.trim())) {
         return { ok: false, error: "Review comments need a console with verified person identity; update acon and reopen this panel." };
@@ -346,7 +391,7 @@ const plugin: ConsolePlugin = {
   manifest: {
     api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: 2000,
     panels: DASHBOARD_VIEWS.map((id, order) => ({ id, title: TITLES[id], order })),
-    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...REVIEW_ACTIONS], confirm: true, multiProject: true, inbox: true, space: true },
+    capabilities: { actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...RESULT_ADVERTISED, ...REVIEW_ACTIONS], confirm: true, multiProject: true, inbox: true, space: true },
   },
   async open(ctx) { return createProvider({ home: ctx.home, log: ctx.log, features: ctx.features }); },
 };
