@@ -407,6 +407,38 @@ test("legacy coverage waits for its captured rows but not new guarded review del
   } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
 });
 
+test("import recaptures guarded reviews during legacy coverage until explicit disposition", () => {
+  const oldSource = open(), sourceDir = mkdtempSync(join(tmpdir(), "ahub-legacy-recapture-source-")), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-recapture-target-"));
+  const source = new DeliveryJournal({ file: join(sourceDir, "hub.db"), projectRoot: sourceDir, projectId: "p", instanceId: "legacy-source" });
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-reopened" });
+  const bSession = "b".repeat(64), bInput = "c".repeat(64);
+  try {
+    const aReview = newEnvelope("hub", "pre-upgrade A", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-A" } });
+    oldSource.journal.createDelivery({ id: "legacy-a", peer: "claude", state: "accepted", createdAt: aReview.ts, originals: [aReview], out: [aReview] });
+    const { reviewInputProvenance: _oldProvenance, ...oldSnapshot } = oldSource.journal.snapshot();
+    expect(source.importSnapshot(oldSnapshot, "legacy-source-import")).toBe(true); // This journal captures only A.
+
+    const bReview = newEnvelope("hub", "new guarded B", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-B" } });
+    source.holdReviewInput({ peer: "claude", sessionHash: bSession, inputHash: bInput });
+    source.createDelivery({ id: "legacy-b", peer: "claude", state: "accepted", createdAt: bReview.ts, originals: [bReview], out: [bReview] });
+    const reopenedSnapshot = source.snapshot(); // Coverage remains incomplete and B's positive SID hold is portable.
+    expect(target.importSnapshot(reopenedSnapshot, "legacy-reopened-import")).toBe(true); // Reopen recaptures A and B.
+
+    source.transition("legacy-a", "completed");
+    expect(source.reviewInputEvidence("claude", bSession)).toMatchObject({ coverageComplete: true, sessionState: "held", retainedSessionHold: true });
+    expect(source.get("legacy-b")?.state).toBe("accepted");
+
+    target.transition("legacy-a", "completed");
+    expect(target.reviewInputEvidence("claude", "d".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.transition("legacy-b", "needs_review"); // A timeout still leaves B's imported legacy candidate unsettled.
+    expect(target.reviewInputEvidence("claude", "d".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    const b = target.get("legacy-b")!;
+    target.resolve(b.id, b.revision, "completed", "person confirmed B disposition");
+    expect(target.reviewInputEvidence("claude", bSession)).toMatchObject({ coverageComplete: true, sessionState: "held", retainedSessionHold: true, retainedPeerSessionHold: true });
+    expect(target.reviewInputState("claude", bSession)).toEqual({ state: "held", inputHash: bInput });
+  } finally { oldSource.journal.close(); source.close(); target.close(); rmSync(oldSource.dir, { recursive: true, force: true }); rmSync(sourceDir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
 test("captured terminal review receipts survive pruning until all legacy candidates settle", () => {
   const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-candidate-prune-"));
   const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-prune", terminalHistoryLimit: () => 1 });
