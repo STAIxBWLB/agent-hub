@@ -15,6 +15,8 @@ interface Metric { calls: number; totalMs: number; maxMs: number }
 type Metrics = Record<string, Metric>;
 const total: Metrics = Object.create(null), duringFlips: Metrics = Object.create(null);
 let flips = 0, phaseStarted: number | undefined, phaseEnded: number | undefined;
+let waitedForIdle = false;
+const idleEntry = process.env.AHUB_PRESENCE_DIAG_IDLE_ENTRY === "1";
 const began = performance.now(), wrappedStores = new WeakSet<object>();
 function metric(rows: Metrics, label: string): Metric {
   return rows[label] ??= { calls: 0, totalMs: 0, maxMs: 0 };
@@ -38,7 +40,14 @@ function wrap(target: object, key: string, label: string, asynchronous = false, 
     }
     const finish = measure(label);
     let result: unknown;
-    try { result = Reflect.apply(original, this, args); } catch (error) { finish(); throw error; }
+    try {
+      // Controlled scheduling probe, reported separately from the unchanged run:
+      // finish the already queued seal before the first state-change publication.
+      if (idleEntry && label === "link.publishPresence" && flips === 1 && !waitedForIdle) {
+        waitedForIdle = true;
+        result = Promise.resolve(Reflect.get(this as object, "sendTail")).then(() => Reflect.apply(original, this, args));
+      } else result = Reflect.apply(original, this, args);
+    } catch (error) { finish(); throw error; }
     if (!asynchronous) { finish(); return result; }
     return Promise.resolve(result).then(value => {
       resolved?.(value); finish();
@@ -66,7 +75,7 @@ function rounded(rows: Metrics): Metrics {
 afterAll(() => {
   const elapsed = (phaseEnded ?? performance.now()) - (phaseStarted ?? began);
   console.error("PRESENCE_COST_742 " + JSON.stringify({
-    platform: process.platform, arch: process.arch, bun: Bun.version,
+    platform: process.platform, arch: process.arch, bun: Bun.version, mode: idleEntry ? "awaited-idle-entry" : "natural",
     flips, phaseCompleted: phaseEnded !== undefined, phaseWallMs: Math.round(elapsed), totalWallMs: Math.round(performance.now() - began),
     duringFlips: rounded(duringFlips), total: rounded(total),
   }));
