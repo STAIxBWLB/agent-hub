@@ -7,10 +7,11 @@ import type { Database } from "bun:sqlite";
 import { Bus, type PublishResult } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { HUB, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { parseRouting } from "../src/hub/routing.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
+import { authorizeRoomInvocation } from "../src/rooms/boundary.ts";
 import { verifyPublicFrame, sealFrame, openFrame, roomMembers } from "../src/rooms/wire.ts";
 import { RoomNotSentError, type RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
 import { RoomStore, RoomStoreError, RoomApplicationLimitError, ROOM_APPLICATION_RETENTION } from "../src/rooms/store.ts";
@@ -69,6 +70,7 @@ interface Control {
   screenLabel?: "pii" | "clear";
   screenHold?: boolean; screenEntered?: boolean; screenGate?: ReturnType<typeof deferred>;
   holdOutgoing?: string; outgoingEntered?: boolean; outgoingGate?: ReturnType<typeof deferred>;
+  authorizeInvocation?: boolean;
   blockIncoming?: boolean; blockedApplication?: string; blockedAttempts?: number; hush?: string; holdNative?: string;
 }
 interface Hub {
@@ -88,6 +90,9 @@ async function hub(root: string, label: string, event: Signal, control: Control,
   const routing = parseRouting('[local]\nfixed_model="fixture"\n');
   chat = new RoomChat({ bus, cwd, now: () => control.now, routing: () => routing, piiPaths: () => [], senderPrivate: () => false, taskPrivate: () => false, modelScreenOn: () => control.modelScreen === true,
     screen: async () => { if (control.screenHold) { control.screenEntered = true; event.notify(); await control.screenGate?.promise; } return { label: control.screenLabel ?? "clear", ms: 0 }; }, policyVersion: () => control.policyVersion ?? 1,
+    invocationAuthorization: (env, identity) => control.authorizeInvocation ? authorizeRoomInvocation(env, "codex", {
+      invocation: env.id, capability: "command:probe", digest: `sha256:${"0".repeat(64)}`, class: "read", depth: 1, args: {},
+    }, identity.current) : undefined,
     roster: ids => { roster.clear(); roster.add("codex"); for (const id of ids) roster.add(id); event.notify(); }, changed: event.notify, notice: value => { notices.push({ ...value }); event.notify(); } });
   let ownedStore: RoomStore | undefined, ownedLink: RoomLink | undefined;
   const wrapped = new WeakSet<RoomStore>(), wrappedLinks = new WeakSet<RoomLink>(), members = chat.application.members;
@@ -456,6 +461,38 @@ test("a Bus disposition survives sender restart before the Store flag and a late
   expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === deliveryId)).toMatchObject({ state: "needs_review", disposition: "discard" });
   expect(f.frames.filter(row => row.sender === f.owner && !row.ephemeral).length).toBe(phaseFrames);
   expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+});
+
+test("an uncertain invocation is not resumed after restart and person discard frees ordinary FIFO", async () => {
+  const f = await mesh(1), env = newEnvelope(HUB, "fixture invocation body", { to: ["codex@beta"], kind: "invocation" });
+  f.control.authorizeInvocation = true; f.control.holdSender = f.guest; f.control.hold = true;
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "invocation receipt held after local admission refusal");
+  const saved = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  const remote = (f.a.chat as unknown as { remotes: Map<string, { receipt(receipt: { id: string; state: "needs_review"; reason: string }): boolean }> }).remotes.get("codex@beta")!;
+  expect(remote.receipt({ id: saved.deliveryId, state: "needs_review", reason: "fixture invocation transport uncertainty" })).toBe(true);
+  await f.event.wait(() => f.a.journal.list("codex@beta").some(row => row.state === "needs_review" && row.originals.some(original => original.id === env.id)), "invocation transport becomes person-held");
+  const held = f.a.journal.list("codex@beta").find(row => row.originals.some(original => original.id === env.id))!;
+  const ownerFrames = f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length;
+  const disconnectAt = f.brokerEvents.length;
+  f.a.bus.closeJournal(); await f.a.close();
+  await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender fenced before invocation recovery");
+  f.control.phase = "after"; await f.restart("a");
+  await f.event.wait(() => f.a.bus.isHeld("codex@beta") && f.a.store?.applicationOutbox("work").some(row => row.deliveryId === held.id), "invocation stays held without an automatic resend");
+  expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === held.id)?.state).toBe("accepted");
+  expect(f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length).toBe(ownerFrames);
+  const current = f.a.journal.get(held.id)!;
+  f.a.bus.resolveDelivery(held.id, current.revision, "discard", "person discards uncertain invocation");
+  f.a.chat.disposition("codex@beta", held.id, "discard");
+  await f.event.wait(() => f.a.store!.applicationOutbox("work").find(row => row.deliveryId === held.id)?.disposition === "discard", "person disposition reaches the Store");
+  f.control.hold = false; f.control.gate.release(); f.control.now = Date.now(); f.event.notify();
+  await f.event.wait(() => f.a.bus.stateOf("codex@beta") === "idle", "remote presence returns after its receipt is released");
+  const later = newEnvelope("user", "ordinary work after invocation discard", { to: ["codex@beta"] });
+  f.a.bus.publish(later);
+  await f.event.wait(async () => (await outbound(f.a, later.id))?.state === "completed (admitted)", "ordinary FIFO drains after invocation disposition");
+  expect(f.a.bus.remoteDisposition(held.id)).toBe("discard");
+  expect(f.b.peer.got.some(row => row.id === env.id)).toBe(false);
+  expect(f.b.peer.got.filter(row => row.id === later.id)).toHaveLength(1);
 });
 
 test("a terminal Store proof for a revoked recipient holds the old Bus tuple after restart", async () => {

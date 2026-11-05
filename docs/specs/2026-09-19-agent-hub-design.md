@@ -1299,6 +1299,9 @@ oldest settled rows are evicted first. Pending, dispatching and unresolved
 `needs_review` are never evicted. An all-unsettled cap refuses with the room and
 count. Outside retention or after settled eviction, there is no historical
 app-id dedupe claim; an old signed frame is still refused by its seq floor.
+Automatic resend can reach this settled-eviction ceiling and repeat admission
+under a fresh ciphertext sequence: exactly once within dedupe ceiling. Pinning
+retryable identities or #737 receipt confirmation is the upgrade path.
 
 The trace high-water mark is kept for the tombstone retention (30 days / 10,000
 per room, settled rows evicted first); outside it there is no historical trace

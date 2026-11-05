@@ -6001,7 +6001,10 @@ Neither sends, re-admits, or produces a signed completion. The displayed state i
 
 Application-id and trace metadata retain 30 days/10,000 per room, evicting settled
 rows first. Protected uncertainty remains until person disposition. Outside that
-retention no historical app-id or trace claim is made; permanent seq floors and
+retention no historical app-id or trace claim is made. Automatic resend can reach
+this ceiling and admit an application again after settled eviction; the guarantee
+is "exactly once within dedupe ceiling". Pinning retryable identities or #737
+receipt confirmation would extend it. Permanent seq floors and
 MAX_HOP 3 still apply. Status prioritizes uncertainty and bounds each direction's
 rows to 200; queue inspection remains the delivery-history entry point. Broker,
 TLS/proxy and real two-machine/account receipts remain separate live proof.

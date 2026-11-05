@@ -127,6 +127,10 @@ recorded in the rooms spec.
 Room sends retain one immutable application id and original queue expiry across
 fresh ciphertext attempts. Receiver admission keeps the existing application-id
 dedupe horizon (30 days / 10,000 identities with settled-first eviction).
+This is exactly once within dedupe ceiling. Automatic resend can reach that
+ceiling after a settled identity is evicted, permitting duplicate admission under
+a fresh ciphertext sequence. Pinning retryable identities or #737 receipt
+confirmation is the upgrade path.
 A typed refusal before durable enqueue requeues the original without uncertainty
 or poison retry accounting. Online readiness and the ACK deadline trigger retries;
 the ACK deadline is not a terminal disposition. Queue TTL or a permanent refusal
