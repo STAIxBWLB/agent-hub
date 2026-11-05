@@ -98,6 +98,8 @@ test("review input provenance is ID-only, snapshot-restorable and session-scoped
     source.journal.close();
     reopenedSource = new DeliveryJournal({ file: join(source.dir, "hub.db"), projectRoot: source.dir, projectId: "p", instanceId: "i2" });
     expect(reopenedSource.reviewInputState(hold.peer, hold.sessionHash)).toEqual({ state: "held", inputHash: hold.inputHash });
+    const unresolvedReview = newEnvelope("hub", "legacy review still awaiting disposition", { kind: "review", to: ["new-peer"], refs: { reviewPackage: "reviewer-request-legacy" } });
+    reopenedSource.createDelivery({ id: "legacy-review-unsettled", peer: "new-peer", state: "needs_review", createdAt: unresolvedReview.ts, originals: [unresolvedReview], out: [unresolvedReview] });
     const snapshot = reopenedSource.snapshot();
     expect(snapshot.reviewInputProvenance?.holds).toEqual([hold]);
     expect(Object.keys(snapshot.reviewInputProvenance!.holds[0]!)).toEqual(["peer", "sessionHash", "inputHash"]);
@@ -116,8 +118,6 @@ test("review input provenance is ID-only, snapshot-restorable and session-scoped
     try {
       const { reviewInputProvenance: _marker, ...legacySnapshot } = snapshot;
       expect(legacyTarget.importSnapshot(legacySnapshot, "restore-legacy")).toBe(true);
-      const unresolvedReview = newEnvelope("hub", "legacy review still awaiting disposition", { kind: "review", to: ["new-peer"], refs: { reviewPackage: "reviewer-request-legacy" } });
-      legacyTarget.createDelivery({ id: "legacy-review-unsettled", peer: "new-peer", state: "needs_review", createdAt: unresolvedReview.ts, originals: [unresolvedReview], out: [unresolvedReview] });
       expect(legacyTarget.reviewInputState("new-peer", "d".repeat(64))).toEqual({ state: "unknown" });
       expect(legacyTarget.hasReviewInputState()).toBe(true);
       legacyTarget.clearReviewInput("new-peer", "d".repeat(64)); // A positive ordinary ACK confirms only this session.
