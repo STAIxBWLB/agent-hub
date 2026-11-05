@@ -220,7 +220,24 @@ for (const state of ["dispatching", "accepted"] as const) test(`sender ${state} 
   await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender socket fenced");
   f.control.hold = false; f.control.gate.release(); f.control.afterPublication = undefined; f.control.phase = "after";
   await f.restart("a");
-  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)" && f.a.bus.stateOf("codex@beta") === "idle", "sender resumed active intent");
+  try {
+    await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)" && f.a.bus.stateOf("codex@beta") === "idle", "sender resumed active intent");
+  } catch (error) {
+    const outgoing = f.a.store!.applicationOutbox("work").filter(row => row.application === env.id).map(row => ({ id: row.deliveryId, state: row.state, reason: row.reason, ackDeadline: row.ackDeadline, expiresAt: row.expiresAt }));
+    const journal = f.a.journal.list("codex@beta").filter(row => row.originals.some(original => original.id === env.id)).map(row => ({ id: row.id, state: row.state, reason: row.reason }));
+    const remoteMap = (f.a.chat as unknown as { remotes: Map<string, unknown> }).remotes;
+    const remote = remoteMap.get("codex@beta") as { running?: boolean; online?: boolean; pending?: Set<string>; blockedNotSent?: boolean } | undefined;
+    const bus = f.a.bus as unknown as { activeDeliveries: Map<string, string>; remoteTransport: Map<string, { peer: string }>; };
+    let outgoingMessage: { status: string; errorCode?: string };
+    try {
+      const message = await f.a.store!.outgoingMessage("work", env.id);
+      outgoingMessage = { status: message ? message.type : "undefined" };
+    } catch (readError) {
+      outgoingMessage = { status: "error", errorCode: readError instanceof RoomStoreError ? readError.code : readError instanceof Error ? readError.name : "unknown" };
+    }
+    console.error("room sender restart diagnostic", JSON.stringify({ application: env.id, journal, outgoing, busState: f.a.bus.stateOf("codex@beta"), activeDeliveryCount: [...bus.activeDeliveries.values()].filter(peer => peer === "codex@beta").length, remoteTransportCount: [...bus.remoteTransport.values()].filter(row => row.peer === "codex@beta").length, applicationCipherCount: f.a.store!.outbox("work").filter(row => row.kind === "application").length, remote: remote ? { running: remote.running, online: remote.online, pendingCount: remote.pending?.size ?? 0, blockedNotSent: remote.blockedNotSent } : "undefined", outgoingMessage }));
+    throw error;
+  }
   const before = new Set(f.frames.filter(row => row.sender === f.owner && row.phase === "before").map(row => row.digest));
   expect(f.frames.some(row => row.sender === f.owner && row.phase === "after" && !before.has(row.digest))).toBe(true);
   expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
@@ -340,6 +357,7 @@ test("a locally stored signed receipt replays after receiver restart before brok
   expect(f.b.store!.receiptStored("work", inboundDigest!)).toBeDefined();
   f.control.hold = false; f.control.gate.release(); f.b.link!.refresh(); f.event.notify();
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "replayed receipt settles sender delivery");
+  await f.event.wait(() => f.b.store?.receiptStored("work", inboundDigest!) === undefined, "broker queue ACK retires the receiver receipt proof");
   const receiverInstances = new Set([oldReceiver, f.b.peer]);
   expect([...receiverInstances].reduce((count, peer) => count + peer.got.filter(row => row.id === env.id).length, 0)).toBe(1);
   expect(f.b.store!.receiptStored("work", inboundDigest!)).toBeUndefined();
