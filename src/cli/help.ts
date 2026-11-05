@@ -64,6 +64,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub role list [--group <group>] | show <id>", "read bounded catalog guidance with layer and content hash"],
     ["ahub role assign <peer> <id> | clear <peer> [<id>]", "person only: add or clear catalog guidance, applied at the next peer start"],
     ["ahub stop <peer>", "person or configured conductor: stop a hub-owned headless peer; end TUI agents in their terminals"],
+    ["ahub peer takeover <peer> [standby-id]", "person only: detach the attached session without stopping its process and request that the selected standby session attach; ahub status shows standby identities"],
     ["ahub models status [--json] [--color=auto|always|never]", "inspect local model state as labelled fields"],
     ["ahub models setup|start [--json] [--color=auto|always|never] | stop", "prepare or inspect local Ollama MLX; setup and start print the model state like status (legacy stop is explicit)"],
   ]],

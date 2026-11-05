@@ -281,6 +281,12 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   let settling = false;
   const peerDetails = Object.entries(data.peers).map(([id, p]) => {
     const out: Span[][] = [];
+    for (const session of Array.isArray(p.standbySessions) ? p.standbySessions : []) {
+      if (!session || typeof session.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(session.id)) continue;
+      const pid = Number.isSafeInteger(session.pid) && session.pid > 0 ? String(session.pid) : "unknown";
+      const since = Number.isFinite(session.since) ? `; waiting ${relative(session.since, now)}` : "";
+      out.push(...detail(`${id} standby`, `pid ${pid}; session ${session.id}${since}; ahub peer takeover ${id} ${session.id}`, columns, "attention"));
+    }
     if (typeof p.form === "string") out.push(...detail(`${id} form`, p.form, columns));
     if (Array.isArray(p.capableRoles)) out.push(...detail(`${id} capable roles`, p.capableRoles.join(", ") || "none", columns));
     if (p.flowRoles) out.push(...detail(`${id} flow roles`, p.flowRoles.join(", ") || "none", columns));

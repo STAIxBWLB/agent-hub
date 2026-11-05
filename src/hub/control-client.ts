@@ -21,7 +21,7 @@ export const PROTOCOL = 17;
 /** The descriptor's legacy protocol field remains this floor for previous published clients. */
 export const PROTOCOL_MIN = 16;
 // Literal metadata is read without executing a recovery target; consistency is pinned in tests.
-export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states", "tool_write_idempotency", "research_evidence", "review_comments", "questions", "accepted_delivery_settlement", "completions", "review_observer_input_state", "task_handoff_key", "task_handoff_seq"] as const;
+export const DAEMON_FEATURES = ["project_autonomy", "conductor_recovery", "encrypted_rooms", "external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "invocation", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated", "action_policy_floor", "calendar_schedules", "research_records", "research_dispatch", "research_dropped_offers", "research_experiments", "research_comparisons", "research_runners", "task_handoff", "session_identity", "schema_guard", "design_specs", "queue_discard_states", "tool_write_idempotency", "research_evidence", "review_comments", "questions", "accepted_delivery_settlement", "completions", "review_observer_input_state", "task_handoff_key", "task_handoff_seq", "peer_takeover"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, 16, PROTOCOL] as const;
 
@@ -72,6 +72,10 @@ export interface Hello {
   session?: string;
   /** Reclaim after replacement, never an intentional initial takeover. */
   standby?: boolean;
+  /** Opt in to a retained, person-selectable standby connection when another session owns this peer. */
+  retainStandby?: true;
+  /** Display-only process id, never native-session or authorization evidence. */
+  clientPid?: number;
   projectId?: string;
   instanceId?: string;
   projectRoot?: string;
@@ -146,6 +150,9 @@ export const QUESTION_CONTROL_TIMEOUT_MS = QUESTION_WAIT_MAX_MS + 15_000;
 /** One authenticated control connection. `request` correlates replies by `rid`; everything else goes to `onPush`. */
 export class ControlClient {
   features: readonly string[] = [];
+  /** A retained peer connection awaiting a person-requested takeover. */
+  standby = false;
+  standbyId?: string;
   /** The id the hub minted for a distinct session (agent-hub#1036); absent for every ordinary connection. */
   sessionId?: string;
   /** Selected wire version, checked against the welcome when that legacy-optional field is present. */
@@ -213,7 +220,13 @@ export class ControlClient {
         try { msg = JSON.parse(String(ev.data)); } catch { return refuse(new Error("invalid hub response")); }
         if (!msg || typeof msg !== "object" || Array.isArray(msg)) return refuse(new Error("invalid hub response"));
         const done = msg.rid !== undefined ? client.pending.get(msg.rid) : undefined;
-        if (!done) return client.onPush(msg);
+        if (!done) {
+          if (msg.t === "peer_attached" && msg.standbyId === client.standbyId) {
+            client.standby = false;
+            client.standbyId = undefined;
+          }
+          return client.onPush(msg);
+        }
         client.pending.delete(msg.rid);
         done(msg);
       };
@@ -229,6 +242,8 @@ export class ControlClient {
         client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature: unknown): feature is string => typeof feature === "string") : []);
         client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
         client.sessionId = typeof reply.session === "string" && reply.session.length <= 64 ? reply.session : undefined;
+        client.standby = reply.standby === true;
+        client.standbyId = client.standby && typeof reply.standbyId === "string" ? reply.standbyId : undefined;
         clearTimeout(timer);
         resolve(client);
       });

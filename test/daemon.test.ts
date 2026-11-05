@@ -643,25 +643,47 @@ test("an outdated plugin is refused loudly instead of silently dropping digests;
   expect(res).toMatchObject({ ok: true, recorded: true, targets: [] });
 });
 
-// issue #30: the replaced session used to stay detached for good, even after the taker left.
-test("a second session attached as the same peer wins, and the replaced one stands by and takes it back", async () => {
-  const { stateDir, daemon, events } = await hub();
+test("a retained standby only takes the peer after the person requests takeover", async () => {
+  const { stateDir, daemon, events, console_ } = await hub();
   const first = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "first attach");
-  const second = await fakeClaude(stateDir);
-  await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 1, "replacement");
-  await Bun.sleep(2500); // past the replaced side's first retries: it must not fight for a peer someone holds
-  expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(1);
+  const second = await fakeClaude(stateDir, "1", false);
+  let standbyId: string | undefined;
+  for (let n = 0; n < 400 && !standbyId; n++) {
+    const status = await console_.request({ t: "status" });
+    standbyId = status.status.peers.claude.standbySessions?.[0]?.id;
+    if (!standbyId) await Bun.sleep(5);
+  }
+  expect(typeof standbyId).toBe("string");
+  await Bun.sleep(2500); // the retained standby must not fight for a peer someone still holds
+  expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(0);
   expect(daemon.bus.peers.get("claude")?.state).toBe("idle");
-  const held: any = await first.client.callTool({ name: "hub_send", arguments: { text: "x" } });
+  let held: any;
+  for (let n = 0; n < 400; n++) {
+    held = await second.client.callTool({ name: "hub_inbox", arguments: {} });
+    if (held.content[0]?.text?.startsWith('another session is attached to the hub as "claude"')) break;
+    await Bun.sleep(5);
+  }
   expect(held.content[0].text).toStartWith('another session is attached to the hub as "claude"');
+  expect(held.content[0].text).toContain("ahub peer takeover claude");
+
+  expect(await console_.request({ t: "peer_takeover", peer: "claude", standbyId })).toMatchObject({ ok: true, outcome: "requested", standbyId });
+  await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 1, "old owner detached");
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "standby attached");
+  let detached: any;
+  for (let n = 0; n < 400; n++) {
+    detached = await first.client.callTool({ name: "hub_inbox", arguments: {} });
+    if (detached.content[0]?.text?.includes("detached by the person")) break;
+    await Bun.sleep(5);
+  }
+  expect(detached.isError).toBe(true);
+  expect(detached.content[0].text).toContain("detached by the person");
 
   await second.client.close(); // the taking session leaves: the slot is free again
   await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 2, "taker left");
-  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "reclaimed without a restart");
-  await first.waitConnected(2); // this session processed its new welcome, not only the daemon attach
-  const back: any = await first.client.callTool({ name: "hub_send", arguments: { text: "back" } });
-  expect(back.content[0].text).not.toContain("standing by");
+  await Bun.sleep(2500); // the detached session must not silently reclaim after the taker leaves
+  expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(2);
+  expect(daemon.bus.peers.get("claude")?.state).toBe("offline");
 }, 30_000);
 
 // Codex review of #34: the standing-by gate reads status.json, so a hello that is still arriving must show there.

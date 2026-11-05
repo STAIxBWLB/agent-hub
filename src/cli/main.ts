@@ -2024,6 +2024,35 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally { hub.close(); }
   },
 
+  peer: async () => {
+    const options = outputOptions();
+    const { operands, flags } = splitPresentation(args);
+    const usage = "usage: ahub peer takeover <peer> [standby-id] [--json] [--color=auto|always|never]";
+    const [sub, peer, standbyId, ...extra] = operands;
+    const uuid = (value: string | undefined): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+    if (sub !== "takeover" || !peer || !/^[a-z][a-z0-9-]{0,31}$/.test(peer) || extra.length || standbyId !== undefined && !uuid(standbyId)
+      || flags.some(flag => flag !== "--json" && !flag.startsWith("--color="))) fail(usage);
+    const hub = await connect();
+    try {
+      if (!hub.features.includes("peer_takeover")) fail("running hub lacks peer_takeover; upgrade and restart the running hub first");
+      let reply: any;
+      try { reply = await hub.request({ t: "peer_takeover", peer, ...(standbyId ? { standbyId } : {}) }, 5000); }
+      catch (error) {
+        const message = String((error as Error).message ?? "");
+        if (/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know \"peer_takeover\"/i.test(message)) fail(`${message}; upgrade and restart the running hub to use ahub peer takeover`);
+        fail(`${message || "peer takeover result is unconfirmed"}; inspect ahub status before retrying; takeover may already have started`);
+      }
+      const transportError = String(reply.error ?? "");
+      if (reply.ok === false && (transportError === "hub connection closed" || transportError === "hub request could not be sent" || /^no answer from the hub within \d+ s$/.test(transportError))) {
+        fail(`${transportError}; inspect ahub status before retrying; takeover may already have started`);
+      }
+      if (reply.ok !== true) fail(String(reply.error ?? "peer takeover was refused"), reply.refusalAudited === true, reply.authorityRefused);
+      if (reply.outcome !== "requested" || !uuid(reply.standbyId) || standbyId !== undefined && reply.standbyId !== standbyId) fail("peer takeover result was not confirmed; refresh ahub status");
+      if (options.json) console.log(JSON.stringify(reply, null, 2));
+      else console.log(`${peer}: old session detached; standby attachment requested`);
+    } finally { hub.close(); }
+  },
+
   title: async () => {
     const [peer, ...words] = args;
     if (!peer || !words.length) fail("usage: ahub title <peer> <text...>");

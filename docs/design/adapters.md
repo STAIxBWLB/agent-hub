@@ -55,6 +55,30 @@ The Claude plugin's inherited launcher marker is insufficient to enable push. In
 
 The flattened process row is a conservative launch observation, not authentication or proof of registration or model consumption. Unsupported invocation layouts remain pull-only. An attached peer's status reports its mode and a closed evidence label without command text. Evidence belongs to that socket's attachment and is omitted when no current attachment exists. Older clients that omit the optional evidence field retain their prior behavior and report `unreported`; no control protocol version changes. The separate delivery-settlement contract handles an accepted notification that remains unconfirmed. The [investigation report](../verification/2026-11-04-1171-channel-client-evidence.md) distinguishes static client inspection, passive process observation and synthetic fixtures.
 
+## Person takeover of a channel peer (#1174)
+
+An opted-in channel process may retain a live, non-owning standby connection when
+a current session holds the peer. The adapter keeps a bounded standby registry;
+status exposes only its server-generated connection id, reported PID when present,
+and arrival time. These values are display metadata, never native session ids,
+launch/isolation evidence or caller authority. Every standby peer operation is
+refused centrally until that exact socket owns the attachment.
+
+The person's `peer_takeover` control request, used by `ahub peer takeover <peer>`
+and the console, selects an explicit live standby id or the oldest eligible one.
+The host checks person authority, current membership and lifecycle fences before
+detaching the old ownership; the selected claim/preface reuses normal admission
+and generation checks. A `requested` result means attachment is pending, not
+completed. Socket detachment never stops the native process, grants no delivery
+receipt and replays no work. Unconfirmed deliveries keep ordinary settlement.
+
+The old plugin reports a fixed person-detachment cause and stops reconnecting.
+A legacy plugin receives an already-terminal refusal so it cannot undo the
+handover, but may report its older generic admission message until upgraded.
+Older daemons retain their existing close-and-retry standby behavior. An ordinary
+owner departure may release an eligible standby through normal claim admission;
+a standby never evicts a live owner without the person's takeover operation.
+
 ## Accepted channel delivery settlement (#1172)
 
 Only an attached push channel opts into explicit disposition of its own accepted delivery. An `accepted` receipt acknowledges that the notification was accepted by the channel transport; it is not a native handling or task-completion signal. The host reads `bus.accepted_settle_ms` from accepted configuration on its existing maintenance sweep, defaulting to ten minutes. A row that remains unconfirmed becomes `needs_review` with no replay. `hub_inbox` returns bounded id/revision metadata for the channel's accepted and held rows, including when an accepted push prevents the pull itself. The plugin renders that metadata and avoids both an empty-inbox claim and polling advice while there is an actionable row. Important, task and review timeouts produce one durable status-kind, status-priority conductor message containing ids only when the existing `conductor.feed` policy is on; `feed: off` remains an opt-out. Pull-only sessions do not gain the explicit accepted-disposition port.

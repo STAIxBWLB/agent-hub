@@ -188,6 +188,8 @@ test("real channel MCP inbox pulls a busy daemon queue and later idle sends no d
   let diagnostic = "";
   transport.stderr!.on("data", chunk => { diagnostic += chunk.toString(); });
   try {
+    f.peer.close();
+    await until(() => f.daemon.bus.stateOf("claude") === "offline");
     await client.connect(transport);
     await until(() => diagnostic.includes('connected to hub as "claude"'));
     f.native.nativeStarted("mcp-fixture-session");
