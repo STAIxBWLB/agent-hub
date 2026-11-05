@@ -148,3 +148,16 @@ Reason: Each is the bound on the shape of a documented file format the person wr
 | `roles.ts` `roles.length > 2=2` (in `catalogSection`) | safety floor | contract |
 | `roles.ts` `text.length > 2000=2000` (in `taskRoleText`) | safety floor | contract |
 
+
+### Calibration after the 44 relabels (#739): the bar is not met, no baseline key is labelled
+
+A blind 80-sample (seed 739101) was drawn from the 365 decided `src/hub` bounds and truncations of the relabelled file and read with only the convention above, the committed labels hidden: **56 of 80 (70.0%), below the 85% bar**. By shape: bounds 36 of 44 (82%), truncations 20 of 36 (56%). The convention decides bounds but not truncations. Of the 16 truncation misses, the file labels a truncation by what it is used for and the convention does not say so:
+
+| What the truncation is | Decided in the file | Majority |
+| --- | ---: | ---: |
+| shortened id or hash for display (`commit.slice(0, 12)`, `sha256.slice(0, 16)`, `instanceId.slice(0, 8)`) | 23: 18 contract, 4 operational, 1 safety floor | 78% |
+| the hub's own list or report cut to N (`pending.slice(0, 64)`, `history.slice(-5)`) | 20: 16 operational, 3 safety floor, 1 contract | 80% |
+| error or message text into a log line or a notice (`error.message.slice(0, 120)`, `title.slice(0, 100)`) | 45: 28 safety floor, 17 operational | 62% |
+| other | 57: 31 operational, 15 safety floor, 11 contract | 54% |
+
+The 8 bound misses are display caps the file calls safety floor (`pool.walk > 16`, `paths > 20`, `guarded > 200`, `held rows >= 32`) and a gap in this change's own application: the `config-reload.ts` bounds on the shape of the person's config (`table`, `text`, `peers`, `openValue` strings and lists) fall under line 4 of the convention and were left out of the 44. So baseline labelling waits for a ruling on truncations and on those five config bounds.
