@@ -378,6 +378,30 @@ test("legacy coverage retains a handed host-stamped review response until it set
   } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
 });
 
+test("legacy coverage waits for its captured rows but not new guarded review deliveries", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-captured-review-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-captured" });
+  try {
+    const priorReview = newEnvelope("hub", "pre-upgrade review", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-before-upgrade" } });
+    const prior = source.journal.createDelivery({ id: "pre-upgrade-review", peer: "claude", state: "accepted", createdAt: priorReview.ts, originals: [priorReview], out: [priorReview] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-captured-review")).toBe(true);
+    target.transition(prior.id, "queued"); // A captured handoff remains uncertain if a manual retry queues it again.
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.transition(prior.id, "accepted");
+    target.clearReviewInput("claude", "a".repeat(64));
+
+    const currentReview = newEnvelope("hub", "current guarded review", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-current" } });
+    target.holdReviewInput({ peer: "claude", sessionHash: "b".repeat(64), inputHash: "c".repeat(64) });
+    target.createDelivery({ id: "current-review", peer: "claude", state: "accepted", createdAt: currentReview.ts, originals: [currentReview], out: [currentReview] });
+
+    target.transition(prior.id, "completed");
+    expect(target.reviewInputEvidence("claude", "b".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "held", retainedSessionHold: true });
+    expect(target.get("current-review")?.state).toBe("accepted");
+    expect((target as unknown as { db: Database }).db.query("SELECT 1 FROM review_input_sessions WHERE project_id='p' AND input_hash IS NULL LIMIT 1").get()).toBeNull();
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
 test("legacy coverage completes after its final review delivery settles and prunes NULL clean receipts", () => {
   const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-coverage-"));
   const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-target" });
