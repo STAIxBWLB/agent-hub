@@ -870,7 +870,7 @@ test("an unanswered durable steer stays pending past native completion and holds
     steer.expire(); await steer.result;
     expect(steer.error()).toBe("steer unanswered: RPC timeout");
     expect(steer.timers[0]!.cleared).toBe(true);
-    expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toEqual([{ id: "late-steer", state: "needs_review", reason: "steer unanswered: RPC timeout" }]);
+    expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toEqual([{ id: "late-steer", state: "needs_review", reason: "steer unanswered: RPC timeout", failureCause: "timeout" }]);
   } finally { try { await fixture.stop(); } finally { steer.restore(); } }
 });
 
