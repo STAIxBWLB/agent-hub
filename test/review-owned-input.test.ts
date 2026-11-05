@@ -253,7 +253,7 @@ test("ClaudeImplementer cancellation after partial stdin keeps needs_review with
   const script = join(root, "paused-stdin.js");
   writeFileSync(script, "const fs=require('node:fs');\n"
     + "const marker=" + JSON.stringify(marker) + ";\n"
-    + "let recorded=false;\nprocess.stdin.on('data',()=>{if(!recorded){recorded=true;fs.writeFileSync(marker,'first-data');process.stdin.pause();}});\n"
+    + "const first=Buffer.alloc(1);\nif(fs.readSync(0,first,0,1,null)===1)fs.writeFileSync(marker,'first-data');\n"
     + "setInterval(()=>{},1000);\n", { mode: 0o700 });
   let observerReleases = 0;
   const receipts: string[] = [];
@@ -266,7 +266,8 @@ test("ClaudeImplementer cancellation after partial stdin keeps needs_review with
   try {
     await peer.start();
     peer.onDelivery = receipt => { receipts.push(receipt.state); };
-    await peer.deliver([newEnvelope("user", "x".repeat(850_000), { to: [peer.id] })], "partial-input");
+    // Ten individually bounded messages exceed the native pipe buffer while the child reads exactly one byte.
+    await peer.deliver(Array.from({ length: 10 }, () => newEnvelope("user", "x".repeat(850_000), { to: [peer.id] })), "partial-input");
     await waitUntil(() => existsSync(marker));
     expect(readFileSync(marker, "utf8")).toBe("first-data");
     expect(observerReleases).toBe(0);
