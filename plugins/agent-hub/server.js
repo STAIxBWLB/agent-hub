@@ -33858,6 +33858,8 @@ var heldMetadataNeedsReviewOnly = (value) => {
   return Number.isSafeInteger(held.count) && held.count > 0 && held.truncated === false && Array.isArray(held.rows) && held.rows.length > 0 && held.rows.every((row) => !!row && typeof row === "object" && !Array.isArray(row) && (row.state === undefined || row.state === "needs_review"));
 };
 async function withPendingHint(result, recommendInbox = true) {
+  if (hub?.standby)
+    return result;
   const r = result;
   const appendQueued = (hint) => {
     if (!recommendInbox) {
@@ -33998,8 +34000,8 @@ async function connectLoop() {
       hub = client;
       attempt = -1;
       standingBy = client.standby;
-      detached = client.standby ? `standing by for a person to hand over "${peerId}"` : undefined;
-      log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles` : client.standby ? `standing by: a person can take over "${peerId}" from this session` : `connected to hub as "${peerId}"`);
+      detached = client.standby ? `${HELD}; a person can hand it over with ahub peer takeover ${peerId}` : undefined;
+      log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles` : client.standby ? `standing by: ${detached}` : `connected to hub as "${peerId}"`);
       if (listedTools !== undefined)
         reannounce(client).catch(() => {});
       code = await new Promise((r) => {
@@ -34093,6 +34095,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 async function callTool(req, signal) {
   const { name, arguments: args } = req.params;
+  if (hub?.standby)
+    return text5(detached ?? HELD);
   if (unidentified)
     return { ...text5(UNIDENTIFIED), isError: true };
   if (!own3)
