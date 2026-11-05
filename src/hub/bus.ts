@@ -321,7 +321,8 @@ export class Bus {
       const pulledInvocation = pulled?.out.some(e => e.kind === "invocation") === true;
       const answerParent = namedPush && pushedInvocation ? pushed
         : namedPull && pulledInvocation ? pulled
-          : parentId === undefined && pushedInvocation && this.invocationTurnOpen(peer.id) ? pushed
+          : parentId === undefined && this.invocationTurnOpen(peer.id)
+            ? pushedInvocation ? pushed : pulledInvocation ? pulled : undefined
             : undefined;
       if (this.onAnswer && answerParent && (namedPush || namedPull || parentId === undefined && this.invocationTurnOpen(peer.id))) {
         let taken = false;

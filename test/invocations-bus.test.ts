@@ -78,6 +78,29 @@ test("a pull that starts with an invocation takes only it, even when more is que
   expect(bus.pull("claude")!.map(e => e.kind)).toEqual(["chat"]);
 });
 
+test("a busy journal-less turn captures an unnamed pulled invocation answer, then publishes after idle", async () => {
+  const bus = new Bus({ batchMs: 0 }), callee = new Recorder("kimi"), other = new Recorder("pi");
+  for (const peer of [callee, other]) { bus.add(peer); await peer.start(); }
+  callee.force("busy");
+  const answers: { text: string; ids: string[] }[] = [], published: string[] = [];
+  bus.onAnswer = (_peer, text, handed) => { answers.push({ text, ids: handed.map(env => env.id) }); return true; };
+  try {
+    const req = request("kimi"); bus.publish(req);
+    expect(bus.pull("kimi")?.map(env => env.id)).toEqual([req.id]);
+    bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") published.push(event.env.body); });
+    callee.onMessage!("implicit pulled invocation answer", {});
+    expect(answers).toEqual([{ text: "implicit pulled invocation answer", ids: [req.id] }]);
+    expect(published).toEqual([]); expect(other.batches).toEqual([]);
+
+    callee.force("idle");
+    callee.onMessage!("ordinary after idle", {});
+    await Bun.sleep(40);
+    expect(answers).toHaveLength(1);
+    expect(published).toEqual(["ordinary after idle"]);
+    expect(other.batches.flat().map(env => env.body)).toEqual(["ordinary after idle"]);
+  } finally { bus.closeJournal(); await Promise.all([callee.stop(), other.stop()]); }
+});
+
 // ---- the answer hook ----
 async function answering(opts: { host: (peer: string, text: string, handed: readonly Envelope[]) => boolean }) {
   const bus = new Bus({ batchMs: 0 }), callee = new Recorder("kimi"), other = new Recorder("pi"), caller = new Recorder("codex");
