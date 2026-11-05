@@ -370,6 +370,8 @@ export class DeliveryJournal {
   private legacyReviewCandidateIds = new Set<string>();
   private legacyReviewCandidatesCaptured = false;
   private legacyReviewCandidatesOverflow = false;
+  private legacyReviewCandidateFenceIds: string[] | undefined;
+  private legacyReviewCandidateCaptureRevision = -1;
   private readonly operationId?: string;
   private readonly terminalHistoryLimit?: () => number;
   constructor(options: DeliveryJournalOptions) {
@@ -386,6 +388,7 @@ export class DeliveryJournal {
     this.db.run("PRAGMA synchronous = FULL");
     this.createSchema();
     const meta = this.readMeta();
+    let openDeliveryFenceIds: string[] | undefined;
     if (!meta) {
       const holds = this.reviewInputRows(), incompletePeers = this.reviewInputIncompletePeerRows(), incompleteSessions = this.reviewInputIncompleteSessionRows();
       const legacyTable = this.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='review_input_holds'").get();
@@ -408,7 +411,7 @@ export class DeliveryJournal {
           this.instanceId,
         );
     } else {
-      this.validateStored(meta);
+      openDeliveryFenceIds = this.validateStored(meta, true);
       this.rejectLiveOwner(meta);
       let reviewInput: ReviewInputProvenance | undefined;
       try {
@@ -441,7 +444,7 @@ export class DeliveryJournal {
         this.recoverInterrupted();
       })();
     }
-    this.captureLegacyReviewCandidates();
+    this.captureLegacyReviewCandidates(false, openDeliveryFenceIds);
   }
   private harden(): void {
     chmodSync(this.file, 0o600);
@@ -605,7 +608,7 @@ export class DeliveryJournal {
       if (e instanceof Error && e.message.includes("owned by a live")) throw e;
     }
   }
-  private validateStored(meta: Record<string, unknown>): void {
+  private validateStored(meta: Record<string, unknown>, returnDeliveryIds = false): string[] | undefined {
     if (
       meta.project_root != null &&
       String(meta.project_root) !== this.projectRoot
@@ -642,6 +645,7 @@ export class DeliveryJournal {
         .get(this.projectId, MAX_ROWS)
     )
       fail("too many delivery rows");
+    return returnDeliveryIds ? rows.map(row => text(row.id, "stored delivery id", 256)) : undefined;
   }
   private reviewInputRows(): ReviewInputHold[] {
     const rows = this.db.query("SELECT peer,session_hash,input_hash FROM review_input_sessions WHERE project_id=? ORDER BY peer,session_hash LIMIT ?")
@@ -682,30 +686,66 @@ export class DeliveryJournal {
     return { version: REVIEW_INPUT_VERSION, instanceId, complete, coverageComplete, count, digest, holds, incompletePeers, incompleteSessions };
   }
   /** Snapshot the pre-existing handed review rows once while legacy coverage is incomplete. */
-  private captureLegacyReviewCandidates(force = false): void {
+  private captureLegacyReviewCandidates(force = false, importedFenceIds?: readonly string[]): void {
     this.legacyReviewCandidateIds = new Set();
     this.legacyReviewCandidatesCaptured = true;
     this.legacyReviewCandidatesOverflow = false;
+    const revision = Number(this.readMeta()?.revision ?? -1);
+    this.legacyReviewCandidateCaptureRevision = revision;
+    let provenance: ReviewInputProvenance;
     try {
-      const provenance = this.readReviewInputProvenance();
-      if (!provenance.complete || provenance.coverageComplete && !force) return;
-      const rows = this.db.query(`SELECT d.id FROM deliveries d
-        WHERE d.project_id=? AND d.state IN ('dispatching','accepted','needs_review')
-          AND EXISTS (SELECT 1 FROM json_each(d.originals) e
-            WHERE (json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review')
-              OR (json_extract(e.value,'$.from') NOT IN ('hub','user') AND json_extract(e.value,'$.kind') IN ('chat','status')
-                AND json_type(e.value,'$.refs.reviewResponse')='text'))
-        LIMIT ?`).all(this.projectId, MAX_REVIEW_INPUTS + 1) as { id: unknown }[];
-      if (rows.length > MAX_REVIEW_INPUTS) { this.legacyReviewCandidatesOverflow = true; return; }
-      this.legacyReviewCandidateIds = new Set(rows.map(row => text(row.id, "legacy review delivery id", 256)));
+      provenance = this.readReviewInputProvenance();
     } catch {
-      // An unbounded or unreadable candidate set cannot prove legacy coverage complete.
+      // Corrupt provenance is not repaired by retrying a coverage read.
       this.legacyReviewCandidatesOverflow = true;
+      return;
     }
+    if (!provenance.complete) return;
+    if (provenance.coverageComplete && !force) {
+      this.legacyReviewCandidateFenceIds = undefined;
+      return;
+    }
+    if (importedFenceIds !== undefined) {
+      this.legacyReviewCandidateFenceIds = [...importedFenceIds];
+    } else if (force || this.legacyReviewCandidateFenceIds === undefined) {
+      try {
+        const rows = this.db.query("SELECT id FROM deliveries WHERE project_id=? LIMIT ?").all(this.projectId, MAX_ROWS + 1) as { id: unknown }[];
+        if (rows.length > MAX_ROWS) { this.legacyReviewCandidatesOverflow = true; return; }
+        this.legacyReviewCandidateFenceIds = rows.map(row => text(row.id, "legacy delivery fence id", 256));
+      } catch {
+        // Without a frozen id fence, later reads cannot distinguish old rows from current writes.
+        this.legacyReviewCandidatesOverflow = true;
+        return;
+      }
+    }
+    const candidateIds: string[] = [];
+    try {
+      const fenceIds = this.legacyReviewCandidateFenceIds ?? [];
+      for (let offset = 0; offset < fenceIds.length; offset += 256) {
+        const batch = fenceIds.slice(offset, offset + 256);
+        const rows = this.db.query(`SELECT d.id FROM json_each(?) fence
+          JOIN deliveries d ON d.project_id=? AND d.id=fence.value
+          WHERE d.state IN ('dispatching','accepted','needs_review')
+            AND EXISTS (SELECT 1 FROM json_each(d.originals) e
+              WHERE (json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review')
+                OR (json_extract(e.value,'$.from') NOT IN ('hub','user') AND json_extract(e.value,'$.kind') IN ('chat','status')
+                  AND json_type(e.value,'$.refs.reviewResponse')='text'))`)
+          .all(JSON.stringify(batch), this.projectId) as { id: unknown }[];
+        candidateIds.push(...rows.map(row => text(row.id, "legacy review delivery id", 256)));
+        if (candidateIds.length > MAX_REVIEW_INPUTS) { this.legacyReviewCandidatesOverflow = true; return; }
+      }
+    } catch {
+      // Keep the frozen epoch fence and retry only after the journal advances.
+      this.legacyReviewCandidatesOverflow = true;
+      return;
+    }
+    this.legacyReviewCandidateIds = new Set(candidateIds);
+    this.legacyReviewCandidateFenceIds = undefined;
   }
   /** Check only captured pre-upgrade rows; current guarded deliveries carry their own provenance. */
   private hasUnsettledReviewInput(): boolean {
     if (!this.legacyReviewCandidatesCaptured) this.captureLegacyReviewCandidates();
+    if (this.legacyReviewCandidatesOverflow && Number(this.readMeta()?.revision ?? -1) !== this.legacyReviewCandidateCaptureRevision) this.captureLegacyReviewCandidates();
     if (this.legacyReviewCandidatesOverflow) return true;
     const ids = [...this.legacyReviewCandidateIds];
     for (let offset = 0; offset < ids.length; offset += 256) {
@@ -857,12 +897,16 @@ export class DeliveryJournal {
     const legacyReviewCandidateIds = this.legacyReviewCandidateIds;
     const legacyReviewCandidatesCaptured = this.legacyReviewCandidatesCaptured;
     const legacyReviewCandidatesOverflow = this.legacyReviewCandidatesOverflow;
+    const legacyReviewCandidateFenceIds = this.legacyReviewCandidateFenceIds;
+    const legacyReviewCandidateCaptureRevision = this.legacyReviewCandidateCaptureRevision;
     try { return this.db.transaction(fn)(); }
     catch (error) {
       this.queueMetadataInvalidated = invalidated;
       this.legacyReviewCandidateIds = legacyReviewCandidateIds;
       this.legacyReviewCandidatesCaptured = legacyReviewCandidatesCaptured;
       this.legacyReviewCandidatesOverflow = legacyReviewCandidatesOverflow;
+      this.legacyReviewCandidateFenceIds = legacyReviewCandidateFenceIds;
+      this.legacyReviewCandidateCaptureRevision = legacyReviewCandidateCaptureRevision;
       throw error;
     }
   }
@@ -1553,9 +1597,13 @@ export class DeliveryJournal {
       )
         throw new Error(`delivery ${id} is already terminal`);
       const retryChildId = action === "retry" ? `${id}:retry:${(current.attempt ?? 0) + 1}` : undefined;
-      if (retryChildId && this.legacyReviewCandidateIds.has(id) && !this.legacyReviewCandidateIds.has(retryChildId)) {
-        if (this.legacyReviewCandidateIds.size >= MAX_REVIEW_INPUTS) this.legacyReviewCandidatesOverflow = true;
-        else this.legacyReviewCandidateIds = new Set([...this.legacyReviewCandidateIds, retryChildId]);
+      if (retryChildId && (this.legacyReviewCandidateIds.has(id) || this.legacyReviewCandidateFenceIds?.includes(id))
+        && !this.legacyReviewCandidateIds.has(retryChildId) && !this.legacyReviewCandidateFenceIds?.includes(retryChildId)) {
+        if (this.legacyReviewCandidatesOverflow || this.legacyReviewCandidateIds.size >= MAX_REVIEW_INPUTS) {
+          const fence = this.legacyReviewCandidateFenceIds ?? [...this.legacyReviewCandidateIds];
+          if (fence.length < MAX_ROWS) this.legacyReviewCandidateFenceIds = [...fence, retryChildId];
+          this.legacyReviewCandidatesOverflow = true;
+        } else this.legacyReviewCandidateIds = new Set([...this.legacyReviewCandidateIds, retryChildId]);
       }
       const result = this.transition(id, actionState(action), reason, revision);
       if (action === "retry") {
@@ -1705,7 +1753,7 @@ export class DeliveryJournal {
       this.markRetryUnknown(snapshot.deliveries, bus);
       return true;
     });
-    if (imported) this.captureLegacyReviewCandidates();
+    if (imported) this.captureLegacyReviewCandidates(false, snapshot.deliveries.map(row => row.id));
     return imported;
   }
   close(): void {
