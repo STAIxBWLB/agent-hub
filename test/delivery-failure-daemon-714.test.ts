@@ -53,13 +53,34 @@ test("real queue JSON and status expose fixed cause and unresolved count, then d
       expect(stdout).not.toContain(canary);
     }
     const before = await person.request({ t: "status" });
-    expect(before.deliveryFailures).toEqual({ codex: 1 });
+    expect(before.status.deliveryFailures).toEqual({ codex: 1 });
     expect(JSON.stringify(before)).not.toContain(canary);
     const resolved = await person.request({ t: "queue", op: "resolve", id: peer.handed, revision: show.delivery.revision, action: "discard", reason: "person inspected" });
     expect(resolved.ok).toBe(true);
-    expect((await person.request({ t: "status" })).deliveryFailures).toEqual({});
+    expect((await person.request({ t: "status" })).status.deliveryFailures).toEqual({});
     const history = await person.request({ t: "queue", op: "show", id: peer.handed });
     expect(history.delivery.failureCause).toBe("adapter refused");
     expect(history.delivery.resolvedBy).toBe("discard");
   } finally { person.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an owned channel notification refusal records push error without taking a cause from client text (#1178)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-channel-cause-"));
+  const daemon = await startDaemon({ cwd: root, stateDir: root, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    configWatch: false, agentDrift: false,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false } } });
+  let peer: ControlClient | undefined;
+  try {
+    peer = await ControlClient.connect(root, { role: "peer", peer: "claude", channel: true });
+    const pushes: { deliveryId: string; generation: string }[] = [];
+    peer.onPush = message => { if (message.t === "deliver") pushes.push(message); };
+    await until(() => daemon.bus.peers.get("claude")?.state === "idle");
+    daemon.bus.publish(newEnvelope("user", "channel body canary", { to: ["claude"], private: true }));
+    await until(() => pushes.length === 1);
+    const push = pushes[0]!;
+    const result = await peer.request({ t: "delivery_receipt", ...push, state: "needs_review", reason: "untrusted reason canary", failureCause: "untrusted cause canary" });
+    expect(result.ok).toBe(true);
+    expect(daemon.bus.queueShow(push.deliveryId)).toMatchObject({ state: "needs_review", failureCause: "push error" });
+    expect(daemon.bus.failedDeliveryCounts()).toEqual({});
+  } finally { peer?.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
 });

@@ -10044,7 +10044,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "peer" || !isWsPeer(peer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId) || !["accepted", "needs_review", "failed_safe"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
         if (msg.state === "failed_safe" && (!peer.pullOnly || bus.queueShow(msg.deliveryId)?.state !== "dispatching")) return void reply({ ok: false, error: "safe failure requires an unseen push to a pull-only session" });
         const reason = typeof msg.reason === "string" ? sanitize(msg.reason).replace(/\s+/g, " ").trim().slice(0, 300) : "";
-        bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state !== "accepted" ? { reason: reason || "Claude bridge could not confirm notification delivery" } : {}) });
+        bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state !== "accepted" ? { reason: reason || "Claude bridge could not confirm notification delivery", failureCause: msg.state === "failed_safe" ? "adapter refused" : "push error" } : {}) });
         return void reply({ ok: true });
       }
       case "inbox": {

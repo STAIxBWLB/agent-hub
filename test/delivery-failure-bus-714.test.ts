@@ -63,6 +63,7 @@ test("queue overflow has a fixed refusal class and failed-count reads never hydr
   const journal = new DeliveryJournal({ file: join(root, "hub.db"), projectRoot: root, projectId: "p", instanceId: "i" });
   const bus = new Bus({ journal, queueCap: 1 });
   try {
+    bus.ensureKnownRecipientQueue("codex");
     bus.publish(newEnvelope("user", "first canary", { to: ["codex"] }));
     bus.publish(newEnvelope("user", "second canary", { to: ["codex"] }));
     expect(journal.list("codex").filter(row => row.state === "failed").map(row => row.failureCause)).toEqual(["adapter refused"]);
