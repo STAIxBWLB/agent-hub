@@ -683,7 +683,7 @@ export class DeliveryJournal {
   }
   /** Snapshot the pre-existing handed review rows once while legacy coverage is incomplete. */
   private captureLegacyReviewCandidates(force = false): void {
-    this.legacyReviewCandidateIds.clear();
+    this.legacyReviewCandidateIds = new Set();
     this.legacyReviewCandidatesCaptured = true;
     this.legacyReviewCandidatesOverflow = false;
     try {
@@ -695,9 +695,9 @@ export class DeliveryJournal {
             WHERE (json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review')
               OR (json_extract(e.value,'$.from') NOT IN ('hub','user') AND json_extract(e.value,'$.kind') IN ('chat','status')
                 AND json_type(e.value,'$.refs.reviewResponse')='text'))
-        LIMIT ?`).all(this.projectId, MAX_ROWS + 1) as { id: unknown }[];
-      if (rows.length > MAX_ROWS) { this.legacyReviewCandidatesOverflow = true; return; }
-      for (const row of rows) this.legacyReviewCandidateIds.add(text(row.id, "legacy review delivery id", 256));
+        LIMIT ?`).all(this.projectId, MAX_REVIEW_INPUTS + 1) as { id: unknown }[];
+      if (rows.length > MAX_REVIEW_INPUTS) { this.legacyReviewCandidatesOverflow = true; return; }
+      this.legacyReviewCandidateIds = new Set(rows.map(row => text(row.id, "legacy review delivery id", 256)));
     } catch {
       // An unbounded or unreadable candidate set cannot prove legacy coverage complete.
       this.legacyReviewCandidatesOverflow = true;
@@ -854,8 +854,17 @@ export class DeliveryJournal {
   transaction<T>(fn: () => T): T {
     this.ensureOpen();
     const invalidated = this.queueMetadataInvalidated;
+    const legacyReviewCandidateIds = this.legacyReviewCandidateIds;
+    const legacyReviewCandidatesCaptured = this.legacyReviewCandidatesCaptured;
+    const legacyReviewCandidatesOverflow = this.legacyReviewCandidatesOverflow;
     try { return this.db.transaction(fn)(); }
-    catch (error) { this.queueMetadataInvalidated = invalidated; throw error; }
+    catch (error) {
+      this.queueMetadataInvalidated = invalidated;
+      this.legacyReviewCandidateIds = legacyReviewCandidateIds;
+      this.legacyReviewCandidatesCaptured = legacyReviewCandidatesCaptured;
+      this.legacyReviewCandidatesOverflow = legacyReviewCandidatesOverflow;
+      throw error;
+    }
   }
   holdReviewInput(value: unknown): void {
     this.ensureOpen();
@@ -1513,7 +1522,7 @@ export class DeliveryJournal {
     text(reason, "resolution reason", 1_000_000);
     integer(revision, "observed revision");
     if (!ACTIONS.has(action)) throw new Error("invalid resolution action");
-    return this.db.transaction(() => {
+    return this.transaction(() => {
       const resolved = this.resolution(id);
       if (resolved) {
         const current = this.get(id);
@@ -1544,7 +1553,10 @@ export class DeliveryJournal {
       )
         throw new Error(`delivery ${id} is already terminal`);
       const retryChildId = action === "retry" ? `${id}:retry:${(current.attempt ?? 0) + 1}` : undefined;
-      if (retryChildId && this.legacyReviewCandidateIds.has(id)) this.legacyReviewCandidateIds.add(retryChildId);
+      if (retryChildId && this.legacyReviewCandidateIds.has(id) && !this.legacyReviewCandidateIds.has(retryChildId)) {
+        if (this.legacyReviewCandidateIds.size >= MAX_REVIEW_INPUTS) this.legacyReviewCandidatesOverflow = true;
+        else this.legacyReviewCandidateIds = new Set([...this.legacyReviewCandidateIds, retryChildId]);
+      }
       const result = this.transition(id, actionState(action), reason, revision);
       if (action === "retry") {
         const childId = retryChildId!;
@@ -1599,6 +1611,10 @@ export class DeliveryJournal {
     if (this.pruningDeferred) return;
     const terminal = state === "completed" || state === "discarded" || state === "failed";
     const terminalCap = terminal ? this.terminalHistoryLimit?.() ?? TERMINAL_CAP : TERMINAL_CAP;
+    let protectedReviewCandidates: string[] = [];
+    try {
+      if (!this.readReviewInputProvenance().coverageComplete) protectedReviewCandidates = [...this.legacyReviewCandidateIds];
+    } catch { protectedReviewCandidates = [...this.legacyReviewCandidateIds]; }
     // Never delete the receipt this mutation/resolve is still using, at any target.
     const count = Number(
       (
@@ -1614,9 +1630,9 @@ export class DeliveryJournal {
     // A future package archival transaction can replace both with an IDs-only publication tombstone.
     this.db
       .query(
-        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND d.id != ? AND NOT EXISTS (SELECT 1 FROM json_each(d.originals) e WHERE json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review' AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*') AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
+        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND d.id != ? AND NOT EXISTS (SELECT 1 FROM json_each(?) protected WHERE protected.value=d.id) AND NOT EXISTS (SELECT 1 FROM json_each(d.originals) e WHERE json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review' AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*') AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
       )
-      .run(this.projectId, currentId, count - terminalCap);
+      .run(this.projectId, currentId, JSON.stringify(protectedReviewCandidates), count - terminalCap);
   }
   importSnapshot(snapshot: JournalSnapshot, operationId: string, trackQueuePressure = false): boolean {
     this.ensureOpen();
