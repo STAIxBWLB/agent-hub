@@ -162,6 +162,18 @@
     "reason": "A Qwen TUI is the person's own terminal and a headless Qwen is a hub-owned process: a headless start over a terminal the adapter still holds is refused, and an attached TUI answers `already`. The TUI is judged by the process it holds (`holdsTerminal`), not by peer state, since a detached TUI reads offline while Qwen keeps running. No generic port says which form an owner runs; retain this host dispatch until a separately specified form port exists (#286 Part 3)."
   },
   {
+    "predicate": "isClaudeImplementerPeer",
+    "function": "src/hub/daemon.ts:startDaemon.startPeerBody",
+    "count": 1,
+    "reason": "Only the actual owned Claude implementer receives native input observer callbacks and defers Bus quote admission to its persisted target-session context."
+  },
+  {
+    "predicate": "isReviewerPrintPeer",
+    "function": "src/hub/daemon.ts:startDaemon.startPeerBody",
+    "count": 1,
+    "reason": "Only the actual fresh reviewer-print profile receives native input observer callbacks and defers Bus quote admission to its fresh child context."
+  },
+  {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.startPeerBody",
     "count": 1,

@@ -145,6 +145,14 @@ and private stubs still apply to authorized label viewers.
 
 Compatibility probes and fake transports verify source contracts, not an account login, live model turn, native permission prompt, or operating-system isolation. Those receipts remain separate because protocol inventory alone cannot prove runtime behavior ([#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).
 
+## Owned print input admission (#1056)
+
+A trusted owned adapter can accept an envelope before it has chosen the actual model-input session. Reviewer print children choose a fresh isolated context per review; the Claude implementer selects a persisted task-session UUID and may replace it after verified missing-transcript evidence. Their host-only input guard runs with that final target identity before prompt data can reach the backend or native child. It persists quote-bearing provenance before exposure. A failed guard releases no prompt and retains the adapter's owned teardown rules.
+
+Owned observer-context IDs identify the history the host controls. They do not populate `nativeSession` or grant budget, resume, permission or task authority; an unrelated title or socket identity is not a substitute. Local's observer identity belongs to its in-memory history. Retained external native sessions keep their confirmed native identity, including across a launch change. Persistent implementer input keeps the same observer identity when its task session is resumed.
+
+A successful stdin handout may confirm ordinary-input replacement for the matching context and input token. This is metadata about handing over bytes, not native handling, task completion or a new transport ACK. Old callbacks cannot release a newer input hold. The bus journal keeps its original transport receipts separately from this actual native-input observation. A fresh reviewer context may discard its own observer receipt only after its process group is confirmed gone, its task MCP bridge is closed and launch cleanup succeeds. The host retains the turn exclusion through remaining diagnostics. Persistent implementer and retained native histories do not acquire that disposal rule.
+
 ## Local review turns (#1056)
 
 The local worker binds review observer exclusion to its actual input envelopes before awaiting model or tool work. Such turns do not call capture, commit review messages into later model history, or put provider error text and partial model text in failure logs. A later ordinary local turn resumes ordinary history and capture without inheriting the review payload. This is distinct from the PII policy: a public review package retains ordinary task authority and does not acquire an on-campus-only model route. Vendor-native histories remain owned by their adapters; the hub's current-turn and named-parent observer provenance is described in [the bus contract](bus.md#review-observer-provenance-1056).

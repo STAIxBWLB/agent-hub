@@ -18,6 +18,7 @@ import type { ChatMessage, ChatResult, OmniRoute, ToolCall } from "../omniroute/
 import { safeModelLabel } from "../omniroute/usage.ts";
 import { effectiveLocalRoute } from "../hub/routing.ts";
 import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
+import type { OwnedInputContext, OwnedInputObserver } from "./claude-print-child.ts";
 
 export interface LocalOptions {
   profile?: import("../hub/profiles.ts").ProfileSelection;
@@ -50,6 +51,10 @@ export interface LocalOptions {
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean; signal?: AbortSignal }) => Promise<string>;
+  /** Final per-turn input binding after the Bus pre-handoff hold; never a native-session authority port. */
+  beforeInput?: OwnedInputObserver;
+  /** Actual local model handoff metadata; never a budget, native-session or task-authority port. */
+  inputReleased?: OwnedInputObserver;
   /** Successful provider responses only; usage may be absent when the gateway omits it. Never includes prompt data. */
   onUsage?: (record: { id: string; at: string; usage?: ChatResult["usage"]; requestedModel: string; servedModel?: string; provider?: string; task?: number }) => void;
   /** Atomic task/run admission immediately before every model request or tool execution. */
@@ -93,6 +98,8 @@ export class LocalPeer extends BasePeer {
   private title = "";
   get sessionTitle(): string { return this.title; }
   get titleSession(): string { return this.sessionId; }
+  /** Privacy-only identity for review-observer provenance; intentionally not PeerAdapter.nativeSession. */
+  get observerSessionId(): string { return this.sessionId; }
   async setSessionTitle(title: string, onlyIfUnnamed: boolean, current?: () => boolean): Promise<SessionTitleResult> {
     if (typeof title !== "string" || !title.trim() || [...title].length > 80 || typeof onlyIfUnnamed !== "boolean") return { ok: false, reason: "invalid", error: "Session title must contain 1-80 normalized characters and use a conditional-write flag; correct the title request and try again." };
     if (this.state === "offline") return { ok: false, reason: "invalid", error: "Local worker session is offline; start the peer and check ahub status before naming it." };
@@ -119,6 +126,8 @@ export class LocalPeer extends BasePeer {
   private approvalAnswerEpoch: number | undefined;
   private approvalStopReason = "";
   private activeDeliveryId: string | undefined;
+  private currentObserverInputContext: OwnedInputContext | undefined;
+  private observerInputReleasedId: string | undefined;
   private readonly sandboxProfile: string; // built once: profile() spawns git and must stay off the per-call path
   /** What served the last call, for `ahub status`. */
   lastServedBy = "";
@@ -136,6 +145,7 @@ export class LocalPeer extends BasePeer {
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         if (signal.aborted) throw new Error("turn cancelled before model request");
         const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
+        this.releaseObserverInput(this.currentObserverInputContext, envs);
         const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
@@ -177,6 +187,14 @@ export class LocalPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
       throw new Error(`${this.id} is ${this.state}`);
     }
+    const inputContext: OwnedInputContext = Object.freeze({ sessionId: this.observerSessionId, inputId: randomUUID() });
+    try { this.opts.beforeInput?.(inputContext, envs); }
+    catch {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "review input provenance unavailable" });
+      throw new Error("review input provenance unavailable");
+    }
+    this.currentObserverInputContext = inputContext;
+    this.observerInputReleasedId = undefined;
     const turn = ++this.turn;
     this.budgetStopReason = "";
     this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = "";
@@ -434,10 +452,17 @@ export class LocalPeer extends BasePeer {
     const routed = await this.hubCall(route, messages, policy, signal);
     if (routed) return routed;
     await this.requireBudget(envs, "model_calls");
+    this.releaseObserverInput(this.currentObserverInputContext, envs);
     const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...(policy?.pii ? { onCampusOnly: true } : {}) });
     this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
     this.recordUsage(res, fixedModel, task);
     return res;
+  }
+
+  private releaseObserverInput(context: OwnedInputContext | undefined, envs: Envelope[]): void {
+    if (!context || this.currentObserverInputContext !== context || this.observerInputReleasedId === context.inputId) return;
+    this.observerInputReleasedId = context.inputId;
+    try { this.opts.inputReleased?.(context, envs); } catch { /* observer metadata never changes the local model result */ }
   }
 
   private beginRouteTurn(generation: number, pii: boolean, task?: string): string {

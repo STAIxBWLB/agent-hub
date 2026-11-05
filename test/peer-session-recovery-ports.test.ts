@@ -155,7 +155,7 @@ test("#625 local memory provenance stays unbound even when its other native sess
   expect(recorded).toHaveLength(1); expect(recorded[0]!.session).toBeNull();
 });
 
-test("restored and unknown review input excludes the actual memory observation sink until ordinary input", () => {
+test("restored or unreadable review provenance excludes the actual memory observation sink until confirmed release", () => {
   const cwd = scratch(), file = join(cwd, "hub.db"), hash = (value: string) => createHash("sha256").update(value).digest("hex");
   const session = "surviving-observer-session", peer = ports(new PlainPeer("codex"), { nativeSession: session });
   const initial = new DeliveryJournal({ file, projectRoot: cwd, projectId: "observer", instanceId: "before" });
@@ -166,10 +166,12 @@ test("restored and unknown review input excludes the actual memory observation s
   const bus = new Bus({ batchMs: 0 }); bus.add(peer); cleanup.push(() => bus.closeJournal());
   const recorded: string[] = [];
   let host: any;
-  host = hostVariables(["contextSession", "contextPii", "reviewObserverDeliveryKey", "reviewObserverHash", "reviewObserverSessionHash", "reviewObserverInputHash", "reviewObserverDurableHeld", "presenceOnlyDelivery", "reviewInputHeld", "persistReviewObserverHold", "notePulledReviewInput", "reviewObserverInput", "reviewObserverHeld", "memoryObservations"], {
+  host = hostVariables(["contextSession", "contextPii", "reviewObserverHash", "reviewObserverSessionHash", "reviewObserverStableSessionHash", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged", "reviewObserverDurableHeld", "reviewObserverInput", "reviewObserverHeld", "memoryObservations"], {
     bus, journal, HUB, USER, createHash, randomUUID, isWsPeer, definitionOf, claudeSession: () => { throw new Error("unexpected Claude read"); },
     turns: new Map(), board: { peerTaskSignals: () => [], get: () => undefined, hasReviewObserverScope: () => false }, isClosedTaskState,
     currentReviewObserverInputs: new Map(), pendingReviewObserverInputs: new Map(), ordinaryReviewObserverInputs: new Map(), reviewObserverRuntimeSessions: new WeakMap(),
+    reviewObserverSessionBindings: new Map(), currentDaemonReviewObserverHolds: new Map(), restoredPullOnlyReviewHolds: new Map(),
+    ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap(),
     progress: { clearPeer() {} }, readReviewObserverScope: (id: string) => host.reviewObserverInput(id) ? "open-review-comments" : undefined,
     tasks: { isPii: () => { throw new Error("fixture has no task text"); } }, MemoryObservations, isReviewObserverExcluded,
     deliveryTask, taskKey, memoryProject: "observer", memoryTelemetry: { record: (_text: string, _context: unknown, kind: string) => recorded.push(kind) },
@@ -183,10 +185,12 @@ test("restored and unknown review input excludes the actual memory observation s
   };
   expect(host.reviewObserverInput(peer.id)).toBe(true);
   observe(); expect(recorded).toEqual([]);
-  journal.clearReviewInput(peer.id); // Missing persisted evidence remains unknown after restart.
+  const readState = journal.reviewInputState;
+  journal.reviewInputState = () => { throw new Error("fixture provenance read failed"); };
   expect(host.reviewObserverInput(peer.id)).toBe(true);
   observe(); expect(recorded).toEqual([]);
-  host.notePulledReviewInput(peer.id, [ordinary]);
+  journal.reviewInputState = readState;
+  journal.clearReviewInput(peer.id, hash(session)); // Durable release confirmation leaves a clean receipt.
   expect(host.reviewObserverInput(peer.id)).toBe(false);
   observe(); expect(recorded).toEqual(["cited", "rendered", "delivered"]);
 });
