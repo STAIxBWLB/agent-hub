@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import type { PermissionMode } from "../hub/permission-mode.ts";
+import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import { BasePeer, type FrontendProxyPort } from "../hub/peers.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
@@ -135,7 +136,7 @@ export class CodexPeer extends BasePeer {
   }
   private unboundAccepted = false;
   private nextId = -1;
-  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer"; expectedTurnId?: string; afterTurn?: () => void; invalidate?: (reason: string) => void }>();
+  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error, failureCause?: DeliveryFailureCause) => void; deliveryId?: string; kind?: "deliver" | "steer"; expectedTurnId?: string; afterTurn?: () => void; invalidate?: (reason: string, failureCause?: DeliveryFailureCause) => void }>();
   private usageTimer: ReturnType<typeof setInterval> | undefined;
   private injected: Envelope | undefined; // the hub envelope that started the current turn, if any
   private answering: Envelope[] = []; // everything delivered or steered into the current turn: who its answer is for
@@ -260,12 +261,12 @@ export class CodexPeer extends BasePeer {
     return new Promise<void>((resolve, reject) => {
       let invalidated = false;
       const retiredAtCancel = new Set<string>();
-      const invalidate = (reason: string) => {
+      const invalidate = (reason: string, failureCause?: DeliveryFailureCause) => {
         if (invalidated) return;
         invalidated = true;
         for (const turn of [...this.activeTurns, ...this.turnDeliveries.keys()]) if (!turn.startsWith("unknown:")) retiredAtCancel.add(turn);
         envs = []; // only the late native-id callback survives, never the cancelled audience/prompt
-        if (deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason });
+        if (deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason, ...(failureCause ? { failureCause } : {}) });
         reject(new Error(reason));
       };
       this.pending.set(id, {
@@ -330,9 +331,9 @@ export class CodexPeer extends BasePeer {
     return new Promise<void>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const settle = () => { clearTimeout(timer); this.steers.delete(id); };
-      const fail = (e: Error) => {
+      const fail = (e: Error, failureCause?: DeliveryFailureCause) => {
         settle();
-        if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
+        if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message, ...(failureCause ? { failureCause } : {}) });
         reject(e);
       };
       this.pending.set(id, {
@@ -342,7 +343,7 @@ export class CodexPeer extends BasePeer {
           timer = setTimeout(() => {
             const pending = this.pending.get(id);
             this.pending.delete(id);
-            pending?.reject(new Error("steer unanswered: RPC timeout"));
+            pending?.reject(new Error("steer unanswered: RPC timeout"), "timeout");
           }, this.opts.steerTimeoutMs ?? 10_000);
           timer.unref?.();
         } : undefined,
@@ -410,7 +411,7 @@ export class CodexPeer extends BasePeer {
       this.opts.log?.(UNIDENTIFIED_CANCELLATION_NOTICE);
     }
     for (const turnId of known) this.retireTurn(turnId);
-    for (const pending of pendingStarts) pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed");
+    for (const pending of pendingStarts) pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed", "timeout");
     this.activeTurns.clear();
     this.unboundAccepted = false;
     for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout", failureCause: "timeout" });
@@ -420,7 +421,7 @@ export class CodexPeer extends BasePeer {
     this.answering = [];
     this.lastAnswer = "";
     this.deltas.clear();
-    this.abandonSteers("turn went silent");
+    this.abandonSteers("turn went silent", "timeout");
     if (this.unidentifiedCancellation) this.setState("offline");
     else super.onWatchdog();
   }
@@ -432,11 +433,11 @@ export class CodexPeer extends BasePeer {
   }
 
   /** A steer nobody answered must not vanish: rejecting it sends the envelope back to the queue. */
-  private abandonSteers(reason: string): void {
+  private abandonSteers(reason: string, failureCause?: DeliveryFailureCause): void {
     for (const id of this.steers) {
       const p = this.pending.get(id);
       this.pending.delete(id);
-      p?.reject(new Error(`steer unanswered: ${reason}`));
+      p?.reject(new Error(`steer unanswered: ${reason}`), failureCause);
     }
   }
 

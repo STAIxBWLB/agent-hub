@@ -898,10 +898,13 @@ export class Bus {
     if (!remoteId(peer) && (state === "failed" || state === "needs_review")) this.deliveryFailed(peer);
     if (state === "completed" && !remoteId(peer)) this.journal.completeDelivered(id, peer, "adapter", receipt.reason);
     else {
-      const failed = state === "failed" || state === "needs_review";
-      const fallback: DeliveryFailureCause = state === "failed" ? this.stateOf(peer) === "offline" ? "peer offline" : "adapter refused" : "turn aborted";
-      const cause = isDeliveryFailureCause(receipt.failureCause) ? receipt.failureCause : fallback;
-      this.journal.transition(id, state, receipt.reason, undefined, failed ? cause : undefined);
+      let cause: DeliveryFailureCause | undefined;
+      if (state === "failed" || state === "needs_review") {
+        cause = isDeliveryFailureCause(receipt.failureCause) ? receipt.failureCause : undefined;
+        if (!cause && state === "failed") cause = this.stateOf(peer) === "offline" ? "peer offline" : "adapter refused";
+        if (!cause) cause = "turn aborted";
+      }
+      this.journal.transition(id, state, receipt.reason, undefined, cause);
     }
     if (!remoteId(peer) && before?.state === "dispatching" && (state === "accepted" || state === "completed")) {
       this.memoryDelivery(peer, id, before.out, "delivered", before.originals);

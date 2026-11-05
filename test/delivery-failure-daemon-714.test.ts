@@ -40,6 +40,18 @@ test("real queue JSON and status expose fixed cause and unresolved count, then d
     const show = await person.request({ t: "queue", op: "show", id: peer.handed });
     expect(show.delivery.failureCause).toBe("adapter refused");
     expect(JSON.stringify(show)).not.toContain(canary);
+    const cliEnv: Record<string, string | undefined> = { ...process.env, HOME: join(root, "home"), AMEM_HOME: join(root, "amem"), AGENTHUB_HOME: join(root, "hub-home") };
+    for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION"]) delete cliEnv[marker];
+    for (const args of [["queue", "list", "--json"], ["queue", "show", peer.handed!, "--json"]]) {
+      const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), ...args], { cwd: root, env: cliEnv, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(stderr).not.toContain(canary);
+      expect(code).toBe(0);
+      const json = JSON.parse(stdout);
+      const delivery = args[1] === "list" ? json.find((row: { id: string }) => row.id === peer.handed) : json;
+      expect(delivery.failureCause).toBe("adapter refused");
+      expect(stdout).not.toContain(canary);
+    }
     const before = await person.request({ t: "status" });
     expect(before.deliveryFailures).toEqual({ codex: 1 });
     expect(JSON.stringify(before)).not.toContain(canary);
