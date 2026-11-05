@@ -427,7 +427,7 @@ test("ordinary inbox and push ACKs cannot clear a prior hold for an unbound sess
 
     await f.restartNative("fixture-native-session");
     Object.defineProperty(f.owner, "nativeSession", { value: undefined });
-    f.daemon.bus.publish(newEnvelope("user", "ordinary inbox input", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    f.daemon.bus.publish(newEnvelope("user", "ordinary inbox input", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
     expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
     const afterInbox = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "inbox cannot prove same native identity", kind: "finding" } });
     expect(afterInbox.ok).toBe(false);
