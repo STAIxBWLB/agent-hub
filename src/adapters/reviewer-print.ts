@@ -140,6 +140,8 @@ export interface ReviewerPrintOptions {
   /** Private-profile observer input provenance only; never a native resume or budget identity. */
   beforeInput?: OwnedInputObserver;
   inputReleased?: OwnedInputObserver;
+  /** Host privacy state for the currently attached reviewer input, read only for diagnostics. */
+  reviewObserverHeld?(): boolean;
   /** Runs after this fresh child group, task MCP and launch cleanup are confirmed closed. */
   inputFinished?: OwnedInputObserver;
 }
@@ -174,6 +176,7 @@ export class ReviewerPrintPeer extends BasePeer {
   private receipt: ReviewerIsolationReceipt | undefined;
   private observerSessionIdValue: string | undefined;
   get isolationReceipt(): ReviewerIsolationReceipt | undefined { return this.receipt; }
+  reviewObserverInputHeld(): boolean { return this.opts.reviewObserverHeld?.() ?? false; }
   /** The task whose review the running child was started for (R4: the hub records `fresh` for its verdict). */
   reviewing: number | undefined;
   /** Privacy-only identity for a fresh review profile; never part of resume or budget authority. */

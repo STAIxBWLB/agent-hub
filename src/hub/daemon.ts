@@ -146,6 +146,7 @@ import { taskShellSandboxRestrictions } from "./task-shell-sandbox.ts";
 import { hostShellEnvironment } from "../local/shell-environment.ts";
 import { hubGitArgv, hubGitEnv, hubGitSync } from "./git.ts";
 import { isLocalPeer, type LocalPeer } from "../adapters/local-worker.ts";
+import { isClaudeImplementerPeer } from "../adapters/claude-implementer.ts";
 import { isReviewerPrintPeer, reviewerNoVerdictLine, reviewerUnavailableReason, ReviewerUnavailableError, REVIEWER_FALLBACK_UNCONFIRMED, type ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
 import type { OwnedInputContext } from "../adapters/claude-print-child.ts";
 import { createReviewerMcpSession, type ReviewerToolName } from "../adapters/reviewer-mcp.ts";
@@ -7330,7 +7331,6 @@ export async function startDaemon(opts: DaemonOptions) {
       const selected = permissionMode(peer);
       if (selected !== "ask" && selected !== "ask-when-needed") return { ok: false, error: "Claude implementer refuses never-ask" };
       startCurrent?.();
-      const isClaudeImplementerPeer = (await import("../adapters/claude-implementer.ts")).isClaudeImplementerPeer;
       const implementer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: selected, mcpServers: [], daemon: DAEMON_PORTS["claude-implementer"]({
         cwd: executionCwd, stateDir: opts.stateDir, projectRoot: opts.cwd, instanceId, server: SERVER_JS,
         factsHook: join(import.meta.dir, "..", "cli", "facts-hook.ts"), systemPrompt: sessionRoleContract(peer), mode: selected, watchdogMs: config.watchdog_ms, ...(declarations[peer]?.model ? { model: declarations[peer].model } : {}),
@@ -7408,6 +7408,7 @@ export async function startDaemon(opts: DaemonOptions) {
         beforeInput: (context, envs) => beforeOwnedObserverInput(peer, reviewer, context, envs, true),
         inputReleased: (context, envs) => ownedObserverInputReleased(peer, reviewer, context, envs),
         inputFinished: (context, envs) => finishOwnedReviewerInput(peer, reviewer, context, envs),
+        reviewObserverHeld: () => reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded),
         taskMcp: (task, current) => createReviewerMcpSession({ task, current, tools: [...TASK_TOOLS, ...CONDUCTOR_TOOLS],
           call: (name, args) => taskOp(peer, name, args, true, contextPii(peer)),
           onTool: (tool, refusal) => { if (bus.peers.get(peer) === reviewer) reviewer.recordToolTrace(task, { tool, ...(refusal === undefined ? {} : { refusal }) }); } }),
@@ -7426,7 +7427,7 @@ export async function startDaemon(opts: DaemonOptions) {
         onUsage: usage => void addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)),
         onNoVerdict: (diagnostic, current) => {
           const task = board.get(diagnostic.task);
-          const observerHeld = reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded);
+          const observerHeld = reviewer.reviewObserverInputHeld();
           const visible = current() && bus.peers.get(peer) === reviewer && !!task && !tasks.isPii(task) && !contextPii(peer) && !observerHeld
             && tasks.reviewBindingCurrent(peer, diagnostic.task, diagnostic);
           // Screen the complete refusal before any sanitization or bound; no task text or model output is logged.
