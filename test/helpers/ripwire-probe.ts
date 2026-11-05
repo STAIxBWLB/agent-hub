@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, release, totalmem } from "node:os";
 import { join } from "node:path";
 
@@ -42,18 +42,23 @@ export function freshShimReading(first: number, second: number): string {
 
 export interface CallMarks { argv: string; shim?: number; script?: number; output?: number; exit?: number }
 
-/** Folds the fake's event log into one record per call. Events of one call arrive shim, script, output, exit in order; calls do not overlap in these fixtures. */
-export function foldCalls(events: { event: string; at: number; argv?: string }[]): CallMarks[] {
-  const calls: CallMarks[] = [];
-  let open: CallMarks | undefined;
-  for (const entry of events) {
-    if (entry.event === "shim") { open = { argv: "", shim: entry.at }; calls.push(open); continue; }
-    if (entry.event === "script") { if (!open || open.script !== undefined) { open = { argv: "" }; calls.push(open); } open.script = entry.at; open.argv = entry.argv ?? ""; continue; }
-    if (!open) { open = { argv: entry.argv ?? "" }; calls.push(open); }
-    if (entry.event === "output" && open.output === undefined) open.output = entry.at;
-    if (entry.event === "exit") { open.exit = entry.at; open = undefined; }
+/**
+ * Folds the marks into one record per call. The shim `exec`s the fake, which keeps the shell's pid, so the four marks of one call share a pid; pairing by pid (not by time order) is what keeps a
+ * coarse file-mtime clock, which can read a few ms later than the fake's own `Date.now()`, from splitting one call into two. Calls come out ordered by their earliest mark.
+ */
+export function foldCalls(events: { event: string; at: number; pid: number | string; argv?: string }[]): CallMarks[] {
+  const byPid = new Map<string, CallMarks>();
+  for (const entry of events) {   // the shim's pid is a file name and the fake's is a number: one key type
+    const key = String(entry.pid);
+    let call = byPid.get(key);
+    if (!call) { call = { argv: "" }; byPid.set(key, call); }
+    if (entry.event === "shim") call.shim = entry.at;
+    else if (entry.event === "script") { call.script = entry.at; call.argv = entry.argv ?? ""; }
+    else if (entry.event === "output" && call.output === undefined) call.output = entry.at;
+    else if (entry.event === "exit") call.exit = entry.at;
   }
-  return calls;
+  const first = (call: CallMarks) => Math.min(...[call.shim, call.script, call.output, call.exit].filter((n): n is number => n !== undefined));
+  return [...byPid.values()].sort((x, y) => first(x) - first(y));
 }
 
 /**
@@ -63,7 +68,7 @@ export function foldCalls(events: { event: string; at: number; argv?: string }[]
 export function installFakeRipwire(root: string, bin: string, fakeSource: string): FixtureProbe {
   const fake = join(root, "fake.ts"), log = join(root, "ripwire-marks.log"), executable = join(bin, "ripwire");
   writeFileSync(fake, `import { appendFileSync } from "node:fs";
-const mark = (event) => { try { appendFileSync(${JSON.stringify(log)}, JSON.stringify({ event, at: Date.now(), argv: process.argv.slice(2).join(" ").slice(0, 60) }) + "\\n"); } catch {} };
+const mark = (event) => { try { appendFileSync(${JSON.stringify(log)}, JSON.stringify({ event, at: Date.now(), pid: process.pid, argv: process.argv.slice(2).join(" ").slice(0, 60) }) + "\\n"); } catch {} };
 mark("script");
 let wrote = false; const note = () => { if (!wrote) { wrote = true; mark("output"); } };
 const out = process.stdout.write.bind(process.stdout); process.stdout.write = (...args) => { note(); return out(...args); };
@@ -78,15 +83,16 @@ ${fakeSource}
   chmodSync(executable, 0o755);
   const wroteAt = Date.now();
   Bun.spawnSync([executable, "--version"], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });   // the area note's rule (#519): the first exec of a new file runs outside the measured region
-  const firstExecAt = Date.now() + 1;   // +1: a mark stamped in the same millisecond as the warm-up's exit still belongs to the warm-up
+  const firstExecAt = Date.now();
+  // The warm-up is not a call of the test: delete its marks now, by name, instead of cutting by time (a file mtime is a coarse kernel clock that can lag Date.now() by several ms on Linux, so a time cutoff drops real marks).
+  rmSync(log, { force: true }); rmSync(stampDir, { recursive: true, force: true }); mkdirSync(stampDir, { recursive: true });
   let calledAt: number | undefined, diagnosed: string | undefined;
 
-  const events = async (): Promise<{ event: string; at: number; argv?: string }[]> => {
-    const out: { event: string; at: number; argv?: string }[] = [];
+  const events = async (): Promise<{ event: string; at: number; pid: number | string; argv?: string }[]> => {
+    const out: { event: string; at: number; pid: number | string; argv?: string }[] = [];
     try { for (const line of (await Bun.file(log).text()).split("\n").filter(Boolean)) out.push(JSON.parse(line)); } catch { /* no log yet: the fake never started */ }
-    try { const fs = require("node:fs") as typeof import("node:fs"); for (const name of fs.readdirSync(stampDir)) out.push({ event: "shim", at: statSync(join(stampDir, name)).mtimeMs }); } catch { /* none */ }
-    // The run by absolute path above is the warm-up (#519), not a call of the test: its marks are dropped.
-    return out.filter(entry => entry.at >= firstExecAt).sort((a, b) => a.at - b.at);
+    try { const fs = require("node:fs") as typeof import("node:fs"); for (const name of fs.readdirSync(stampDir)) out.push({ event: "shim", at: statSync(join(stampDir, name)).mtimeMs, pid: name }); } catch { /* none */ }
+    return out;
   };
 
   const diagnose = async (): Promise<string> => {
@@ -96,7 +102,7 @@ ${fakeSource}
     lines.push(`[#723 ripwire diagnostics] ${calls.length} fake ripwire launch(es) recorded by the shim and the fake (the product's own spawn instant is not observable, so each phase is the gap between two marks):`);
     let previousExit = calledAt;
     for (const [index, call] of calls.entries()) {
-      const gap = (from: number | undefined, to: number | undefined) => from !== undefined && to !== undefined ? ms(to - from) : "never";
+      const gap = (from: number | undefined, to: number | undefined) => from !== undefined && to !== undefined ? ms(Math.max(0, to - from)) : "never";   // clamped: the shim's mark is a file mtime, a coarse kernel clock (about 10 ms on Linux), so tiny gaps can read slightly negative
       lines.push(`  #${index + 1} ${call.argv || "(unknown args)"}: before-shim ${gap(previousExit, call.shim)} | shim->script (Bun start-up) ${gap(call.shim, call.script)} | script->first output ${gap(call.script, call.output)} | output->exit ${gap(call.output, call.exit)}${call.exit === undefined ? " (no exit mark: it never finished)" : ""}`);
       if (call.exit !== undefined) previousExit = call.exit;
     }

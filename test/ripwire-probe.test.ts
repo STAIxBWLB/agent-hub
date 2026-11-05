@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { foldCalls, freshShimReading, installFakeRipwire, withProbe } from "./helpers/ripwire-probe.ts";
@@ -29,8 +29,8 @@ test("the fake's stdout and exit code are exactly what its source says, through 
 
 test("the passing path is silent: nothing on stdout or stderr from the helper, no diagnostic text unless asked, and the warm-up run is not counted as a call", async () => {
   const f = rig(SIMPLE);
-  const before = readFileSync(join(f.root, "ripwire-marks.log"), "utf8");
-  expect(before).toContain('"event":"script"');                                          // the warm-up ran (the area note's #519 rule) and wrote its marks
+  expect(existsSync(join(f.root, "ripwire-marks.log"))).toBe(false);                    // the warm-up (the area note's #519 rule) ran, and its marks were deleted: it is not a call of the test
+  expect(readdirSync(join(f.root, "shim-stamps"))).toEqual([]);
   f.probe.markCall(); f.run("--callers=x"); f.run("--callees=x");
   let value = 0; expect(await withProbe(f.probe, async () => { value = 7; return value; })).toBe(7);   // a passing body returns its value untouched
   const text = await f.probe.diagnose();
@@ -73,14 +73,16 @@ test("the three explanations are told apart by the fresh-shim pair, and a middli
   expect(freshShimReading(200, 2500)).toContain("inconclusive");
 });
 
-test("foldCalls pairs the four marks of each call and keeps a call that has no exit", () => {
+test("foldCalls pairs the marks of each call by pid, keeps a call that has no exit, and survives a shim mark that reads later than the fake's own (a coarse mtime clock)", () => {
   const calls = foldCalls([
-    { event: "shim", at: 10 }, { event: "script", at: 40, argv: "--callers=a" }, { event: "output", at: 55 }, { event: "exit", at: 60 },
-    { event: "shim", at: 100 }, { event: "script", at: 130, argv: "--callees=a" }, { event: "output", at: 140 },
+    { event: "shim", at: 10, pid: 1 }, { event: "script", at: 40, pid: 1, argv: "--callers=a" }, { event: "output", at: 55, pid: 1 }, { event: "exit", at: 60, pid: 1 },
+    { event: "shim", at: 100, pid: 2 }, { event: "script", at: 130, pid: 2, argv: "--callees=a" }, { event: "output", at: 140, pid: 2 },
   ]);
   expect(calls).toEqual([{ argv: "--callers=a", shim: 10, script: 40, output: 55, exit: 60 }, { argv: "--callees=a", shim: 100, script: 130, output: 140 }]);
+  // the shim's mtime reads 12 ms AFTER the script's own clock: still one call, not two
+  // (the shim's pid is a file name, a string, and the fake's is a number: they are the same call)
+  expect(foldCalls([{ event: "script", at: 40, pid: 7, argv: "x" }, { event: "shim", at: 52, pid: "7" }, { event: "exit", at: 60, pid: 7 }])).toEqual([{ argv: "x", shim: 52, script: 40, exit: 60 }]);
   expect(foldCalls([])).toEqual([]);
-  expect(foldCalls([{ event: "exit", at: 5 }])).toEqual([{ argv: "", exit: 5 }]);          // a stray exit (a mark whose shim stamp is missing) is kept, never thrown on
 });
 
 test("the watchdog is silent when disarmed in time and prints the report once when the call outlives it", async () => {
