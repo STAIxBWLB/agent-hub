@@ -171,6 +171,14 @@ function commands(text: string, nest = 0): Command[] | undefined {
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
+/**
+ * #725 (#1193): the device files a redirect can name without writing any file: `2>/dev/null` is the common case. Matched as the exact literal the command wrote, never as a resolved path, so
+ * `/dev/../tmp/x`, `/dev//null`, `/dev/null/x` and `/dev/sda` stay outputs outside the root. Only `/dev/null` and `/dev/tty` are listed (the person's ruling): no descriptor stands behind either. `/dev/stdout`,
+ * `/dev/stderr`, `/dev/fd/1` and `/dev/fd/2` reopen whatever file fd 1 or 2 already points at, and a `>` truncates it (`sh -c 'echo x >/dev/stdout' >>/tmp/log` truncates /tmp/log on Linux), so they stay
+ * outputs, as does every `/dev/fd/<n>`. The redirect itself is still recorded (`redirected`), so the read-only git fast path stays closed.
+ */
+const DEVICE_OUTPUTS: ReadonlySet<string> = new Set(["/dev/null", "/dev/tty"]);
+const isDeviceOutput = (target: string): boolean => DEVICE_OUTPUTS.has(target);
 function outside(target: string, root: string, cwd: string): boolean {
   if (!isAbsolute(root) || !target || /[$`]/.test(target)) return false;
   if (target.startsWith("~") || !cwd && !isAbsolute(target)) return true;
@@ -646,7 +654,7 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
       if (nested) sequence(nested, root, cwd, found, depth + 1, bare ? floor : undefined);
     }
   }
-  if (command.outputs.some(p => cwd.some(at => outside(p, root, at)))) found.add("destroy");
+  if (command.outputs.some(p => !isDeviceOutput(p) && cwd.some(at => outside(p, root, at)))) found.add("destroy");
   if (program === "git") {
     const heads = commandHeads(words, ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"],
       ["-P", "-p", "--no-pager", "--paginate", "--literal-pathspecs", "--bare", "--no-optional-locks", "--no-replace-objects"], ["push", "reset", "clean", "branch"]);
