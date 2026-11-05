@@ -1189,7 +1189,6 @@ export class Bus {
 
   private clearReviewProvenance(peer: PeerId): void {
     this.reviewParents.delete(peer);
-    this.lastPulled.delete(peer);
     for (const [id, source] of this.reviewResponses) if (source.peer === peer) this.reviewResponses.delete(id);
   }
 
@@ -1199,8 +1198,11 @@ export class Bus {
    */
   reviewResponse(env: Envelope, parentId?: string): Envelope {
     if (env.from === HUB) return env;
-    const active = this.lastPulled.get(env.from)?.originals ?? this.lastDelivery.get(env.from)?.originals ?? [];
-    const parent = parentId ? active.find(item => item.id === parentId && isReviewObserverExcluded(item)) : active.find(isReviewObserverExcluded);
+    const pulled = this.lastPulled.get(env.from)?.originals ?? [], pushed = this.lastDelivery.get(env.from)?.originals ?? [];
+    const active = pulled.length ? pulled : pushed;
+    const parent = parentId
+      ? pulled.find(item => item.id === parentId && isReviewObserverExcluded(item)) ?? pushed.find(item => item.id === parentId && isReviewObserverExcluded(item))
+      : active.find(isReviewObserverExcluded);
     const known = this.reviewResponses.get(env.id);
     let durableScope: string | undefined;
     try { durableScope = this.opts.reviewObserverScope?.(env.from); }
