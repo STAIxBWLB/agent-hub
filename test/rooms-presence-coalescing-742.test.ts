@@ -23,7 +23,7 @@ async function transport() {
     { ...guest.public, label: "guest", exposedPeers: ["codex"] },
   ] });
   const entered = gate(), release = gate();
-  let reserves = 0, peers = [{ id: "codex", state: "idle" }];
+  let reserves = 0, unavailable = false, peers = [{ id: "codex", state: "idle" }];
   const sequence = { reserve: async () => {
     const value = ++reserves;
     if (value === 1) { entered.resolve(); await release.promise; }
@@ -46,7 +46,10 @@ async function transport() {
     frameSent: false, retryAttempt: 0, pendingPresenceReplies: new Set<string>(), presenceAsked: false,
     receiptSends: new Map(), requestPresenceReply: false, queue: [], queuedBytes: 0, handshake: undefined,
     frameRetry: undefined as ReturnType<typeof setTimeout> | undefined };
-  const link = new RoomLink({ store, name: "work", presence: () => peers });
+  const link = new RoomLink({ store, name: "work", presence: () => {
+    if (unavailable) throw new Error("fixture observation unavailable");
+    return peers;
+  } });
   const internal = link as unknown as { running: boolean; generation: number; session: unknown;
     republish?: ReturnType<typeof setTimeout>; replyPresence: boolean; retiredPresenceBytes: number;
     storedFrame(session: unknown, digest: string): void };
@@ -68,7 +71,7 @@ async function transport() {
     return internal.republish;
   }
   return { link, internal, session, sent, receipts, guest, open, pending,
-    reserves: () => reserves, state: (state: string) => { peers = [{ id: "codex", state }]; }, hide: () => { peers = []; } };
+    reserves: () => reserves, state: (state: string) => { peers = [{ id: "codex", state }]; }, hide: () => { peers = []; }, failPresence: () => { unavailable = true; } };
 }
 function chat(): RoomMessage {
   return { v: 1, type: "chat", envelope: { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0,
@@ -178,6 +181,15 @@ test("concurrent chat presence barriers preserve real durable outbox insertion o
     expect(store.applicationOutbox("work").map(row => row.deliveryId)).toEqual([one.deliveryId, two.deliveryId]);
     expect(store.applicationOutbox("work").map(row => row.application)).toEqual([first.envelope.id, second.envelope.id]);
   } finally { release.resolve(); link.stop(); store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a failed deferred observation still rejects its chat rather than becoming an empty send", async () => {
+  const f = await transport();
+  try {
+    await f.pending(); f.failPresence();
+    await expect(f.link.publishApplication(chat(), f.guest.public.fingerprint)).rejects.toThrow("fixture observation unavailable");
+    expect(f.reserves()).toBe(1);
+  } finally { f.link.stop(); }
 });
 
 test("a receipt commits its sealed FIFO frame without flushing deferred ordinary presence", async () => {

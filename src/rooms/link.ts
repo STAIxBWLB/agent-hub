@@ -646,6 +646,9 @@ export class RoomLink {
       if (message.type === "chat" && this.republish) {
         clearTimeout(this.republish); this.republish = undefined;
         presenceWork = this.publishPresence();
+        // It may fail before reaching the serial lane. Observe rejection now;
+        // the reserved chat slot still awaits the original error below.
+        void presenceWork.catch(() => undefined);
       }
       // Reserve this chat's FIFO slot before yielding to the earlier observation.
       return await this.serialSend(async () => {
