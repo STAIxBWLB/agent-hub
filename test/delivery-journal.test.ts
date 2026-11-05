@@ -483,6 +483,41 @@ test("an unreadable legacy candidate scan retries once the journal advances", ()
   } finally { targetDb.query = originalQuery as typeof targetDb.query; source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
 });
 
+test("an outer prune rollback restores the incomplete candidate cache", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-candidate-prune-rollback-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-prune-rollback", terminalHistoryLimit: () => 0 });
+  const targetDb = (target as unknown as { db: Database }).db;
+  const originalQuery = targetDb.query.bind(targetDb);
+  let failedCandidateScan = false;
+  try {
+    for (const id of ["legacy-a", "legacy-b"]) {
+      const review = newEnvelope("hub", `pre-upgrade ${id}`, { kind: "review", to: ["claude"], refs: { reviewPackage: `reviewer-request-${id}` } });
+      source.journal.createDelivery({ id, peer: "claude", state: "accepted", createdAt: review.ts, originals: [review], out: [review] });
+    }
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    targetDb.query = ((sql: string) => {
+      if (!failedCandidateScan && sql.includes("JOIN deliveries d ON d.project_id=? AND d.id=fence.value")) {
+        failedCandidateScan = true;
+        throw new Error("fixture candidate scan failure");
+      }
+      return originalQuery(sql);
+    }) as typeof targetDb.query;
+    expect(target.importSnapshot(legacySnapshot, "legacy-candidate-prune-rollback")).toBe(true);
+    targetDb.query = originalQuery as typeof targetDb.query;
+    targetDb.query("CREATE TRIGGER fail_legacy_candidate_prune BEFORE DELETE ON deliveries WHEN OLD.id='legacy-a' BEGIN SELECT RAISE(ABORT, 'fixture outer prune failure'); END").run();
+
+    expect(() => target.completeDelivered("legacy-a", "claude", "pull")).toThrow("fixture outer prune failure");
+    expect(target.get("legacy-a")?.state).toBe("accepted");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    targetDb.query("DROP TRIGGER fail_legacy_candidate_prune").run();
+
+    target.transition("legacy-a", "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.transition("legacy-b", "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { targetDb.query = originalQuery as typeof targetDb.query; source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
 test("legacy coverage completes after its final review delivery settles and prunes NULL clean receipts", () => {
   const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-coverage-"));
   const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-target" });
