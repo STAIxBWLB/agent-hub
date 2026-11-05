@@ -169,7 +169,7 @@ test("restored or unreadable review provenance excludes the actual memory observ
   host = hostVariables(["contextSession", "contextPii", "reviewObserverHash", "reviewObserverSessionHash", "reviewObserverStableSessionHash", "hasSessionlessOrdinaryObserverInput", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged", "reviewObserverDurableHeld", "reviewObserverInput", "reviewObserverHeld", "memoryObservations"], {
     bus, journal, HUB, USER, createHash, randomUUID, isWsPeer, definitionOf, claudeSession: () => { throw new Error("unexpected Claude read"); },
     turns: new Map(), board: { peerTaskSignals: () => [], get: () => undefined, hasReviewObserverScope: () => false }, isClosedTaskState,
-    currentReviewObserverInputs: new Map(), pendingReviewObserverInputs: new Map(), ordinaryReviewObserverInputs: new Map(), reviewObserverRuntimeSessions: new WeakMap(),
+    currentReviewObserverInputs: new Map(), pendingReviewObserverInputs: new Map(), ordinaryReviewObserverInputs: new Map(), stagedSessionlessOrdinaryInputs: new Map(), reviewObserverRuntimeSessions: new WeakMap(),
     reviewObserverSessionBindings: new Map(), currentDaemonReviewObserverHolds: new Map(), restoredPullOnlyReviewHolds: new Map(),
     ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap(),
     progress: { clearPeer() {} }, readReviewObserverScope: (id: string) => host.reviewObserverInput(id) ? "open-review-comments" : undefined,

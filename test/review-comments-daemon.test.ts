@@ -393,6 +393,10 @@ test("a consumed review package stays excluded for the same native session acros
     const named = await f.peer.request({ t: "task", op: "hub_remember", args: { task: f.task, text: "named review task remains scoped", kind: "finding" } });
     expect(named.ok).toBe(false);
 
+    const piHold = waitForDelivery(piAfterRestart);
+    f.daemon.bus.publish(newEnvelope("hub", "RECOVERY_FEATURE_FLOOR_REVIEW", { to: ["pi"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:recovery-feature-floor" } }));
+    await piHold;
+
     const status = await f.person.request({ t: "status" });
     const prepared = await f.person.request({ t: "recovery", op: "prepare", operationId: "review-observer-restart", expectedInstanceId: status.status.instanceId, targetFeatures: DAEMON_FEATURES });
     expect(prepared.ok).toBe(true);
@@ -1038,7 +1042,7 @@ test("a sessionless anchored submission releases a staged ordinary replacement a
     f.board.update(f.task, "user", "sessionless reviewer", { reviewer: "claude" });
     const done = await f.peer.request({ t: "task", op: "hub_task_done", args: { id: f.task, summary: "Document ready", refs: { commit: f.head } } });
     expect(done.ok).toBe(true);
-    expect(f.daemon.bus.pull("claude")?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
+    expect(f.daemon.bus.pull("claude")?.some(env => env.kind === "review" && env.refs?.task === String(f.task))).toBe(true);
 
     const finding = { id: "sessionless-latched-anchor", pass: "bugs", severity: "important", disposition: "fixed", path: "report.md", anchor: f.anchor };
     const verdict = await f.conductor.request({ t: "task", op: "hub_review", args: { id: f.task, head: f.head, verdict: "approved", note: "fixed at the reviewed head", findings: [finding] } });
