@@ -840,6 +840,7 @@ export class RoomChat {
     if (binding?.store === store && binding.room === state.current.room) {
       // Releasing an old FIFO head must not drain queued work using old presence.
       binding.online = false; binding.states.clear(); binding.observedAt.clear();
+      for (const [id, remote] of this.remotes) if (this.targets.get(id)?.binding === binding) remote.presence("offline", false);
     }
     let complete = true;
     for (const before of expected) {
@@ -854,10 +855,7 @@ export class RoomChat {
         complete = false; continue;
       }
       const remote = this.remotes.get(before.remotePeer);
-      if (remote?.remoteRoom === state.current.room && remote.remoteMember === before.recipient) {
-        remote.presence("offline", false);
-        remote.settled(before.deliveryId);
-      }
+      if (remote?.remoteRoom === state.current.room && remote.remoteMember === before.recipient) remote.settled(before.deliveryId);
     }
     this.evidenceCache = undefined;
     return complete;

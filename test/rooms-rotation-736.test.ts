@@ -244,6 +244,35 @@ for (const kind of ["expose", "revoke", "invite"] as const) {
   });
 }
 
+test("an empty live rotation fences every room peer before a Bus-only message can dispatch", async () => {
+  const f = await fixture(true);
+  await f.wait(() => f.a.bus.peers.get("codex@beta")?.state === "idle", "fresh peer ready before empty rotation");
+  const fresh = newEnvelope("user", "Bus-only work at the epoch boundary", { to: ["codex@beta"] });
+  f.a.bus.pause("codex@beta");
+  f.a.bus.publish(fresh);
+  const preview = await rotation(f, "expose");
+  expect(preview.outstanding).toEqual([]);
+  const epochRotated = f.a.chat.epochRotated.bind(f.a.chat);
+  let inspected = false;
+  f.a.chat.epochRotated = (...args) => {
+    const held = epochRotated(...args);
+    expect(f.a.bus.peers.get("codex@beta")?.state).toBe("offline");
+    expect(f.a.bus.queueIds("codex@beta")).toEqual([fresh.id]);
+    expect(f.a.store.applicationOutbox("work").some(row => row.application === fresh.id)).toBe(false);
+    inspected = true;
+    return held;
+  };
+  const previous = f.a.store.get("work")!.current.digest;
+  await preview.commit();
+  expect(inspected).toBe(true);
+  expect(f.a.store.get("work")!.current.digest).not.toBe(previous);
+  expect(f.a.bus.queueIds("codex@beta")).toEqual([fresh.id]);
+  await command(f.b, "join", { name: "work", roster: encodeBase64url(f.a.store.get("work")!.wire) });
+  f.a.bus.resume("codex@beta");
+  await f.wait(() => f.b.peer.got.some(row => row.id === fresh.id), "Bus-only work delivered under the new epoch");
+  expect(f.b.peer.got.filter(row => row.id === fresh.id)).toHaveLength(1);
+});
+
 test("a committed rotation with unavailable journal holds fails closed with the distinct error", async () => {
   const f = await fixture(true), gate = f.block(f.b), env = newEnvelope("user", "journal failure rotation", { to: ["codex@beta"] });
   f.a.bus.publish(env);
