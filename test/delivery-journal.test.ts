@@ -407,6 +407,51 @@ test("legacy coverage waits for its captured rows but not new guarded review del
   } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
 });
 
+test("captured terminal review receipts survive pruning until all legacy candidates settle", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-candidate-prune-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-prune", terminalHistoryLimit: () => 1 });
+  try {
+    for (const id of ["legacy-a", "legacy-b"]) {
+      const review = newEnvelope("hub", `pre-upgrade ${id}`, { kind: "review", to: ["claude"], refs: { reviewPackage: `reviewer-request-${id}` } });
+      source.journal.createDelivery({ id, peer: "claude", state: "accepted", createdAt: review.ts, originals: [review], out: [review] });
+    }
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-candidate-prune")).toBe(true);
+    const filler = newEnvelope("user", "terminal filler");
+    target.createDelivery({ id: "terminal-filler", peer: "other", state: "failed", createdAt: filler.ts, originals: [filler], out: [] });
+
+    target.transition("legacy-a", "completed");
+    expect(target.get("legacy-a")?.state).toBe("completed");
+    expect(target.get("terminal-filler")).toBeUndefined(); // Pruning selected eligible history while retaining captured evidence.
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+
+    target.transition("legacy-b", "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
+test("a rolled-back legacy retry does not leave a phantom RAM candidate", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-candidate-rollback-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-rollback" });
+  try {
+    const review = newEnvelope("hub", "pre-upgrade review", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-rollback" } });
+    const prior = source.journal.createDelivery({ id: "legacy-retry", peer: "claude", state: "needs_review", createdAt: review.ts, originals: [review], out: [review] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-candidate-rollback")).toBe(true);
+
+    expect(() => target.transaction(() => {
+      target.resolve(prior.id, prior.revision, "retry", "retry legacy review");
+      throw new Error("outer transaction rollback");
+    })).toThrow("outer transaction rollback");
+    expect(target.get(prior.id)?.state).toBe("needs_review");
+    expect(target.get("legacy-retry:retry:1")).toBeUndefined();
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+
+    target.transition(prior.id, "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
 test("legacy coverage completes after its final review delivery settles and prunes NULL clean receipts", () => {
   const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-coverage-"));
   const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-target" });
