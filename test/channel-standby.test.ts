@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
+import { WsPeer } from "../src/adapters/channel-peer.ts";
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -13,12 +14,12 @@ async function until(ready: () => boolean, label: string) {
   for (let n = 0; n < 400 && !ready(); n++) await Bun.sleep(5);
   expect(ready(), label).toBe(true);
 }
-async function fixture(memoryUrl?: string) {
+async function fixture(memoryUrl?: string, roster?: Record<string, boolean>) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-standby-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, "state"); mkdirSync(stateDir);
   const daemon = await startDaemon({ ...(memoryUrl ? { memoryClient: new FakeMemoryClient(memoryUrl) } : {}), cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: !!memoryUrl, ...(memoryUrl ? { worker_url: memoryUrl } : {}) }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false } } });
+    config: { ...DEFAULT_CONFIG, ...(roster ? { roster } : {}), batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: !!memoryUrl, ...(memoryUrl ? { worker_url: memoryUrl } : {}) }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false } } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
   const token = readFileSync(join(stateDir, "control-token"), "utf8").trim();
@@ -96,6 +97,7 @@ test("a retained standby stays fenced until a person hands it over; the selected
   const agentAttempt = await owner.request({ t: "peer_takeover", peer: "claude", standbyId: welcome.standbyId });
   expect(agentAttempt.ok).toBe(false);
   expect(agentAttempt.error).toContain("person-only");
+  expect(agentAttempt.error).toContain("run it from the console or a terminal");
 
   const wrong = await f.console_.request({ t: "peer_takeover", peer: "claude", standbyId: "not-the-live-id" });
   expect(wrong.ok).toBe(false);
@@ -108,6 +110,31 @@ test("a retained standby stays fenced until a person hands it over; the selected
   const admitted = await standby.request({ t: "task", op: "hub_task_list", args: {} });
   expect(admitted.ok).toBe(true);
   expect(f.daemon.bus.stateOf("claude")).toBe("idle");
+});
+
+test("takeover usage and unavailable refusals name a next step without echoing caller input", async () => {
+  const f = await fixture(undefined, { claude: false });
+  const malformed = await f.console_.request({ t: "peer_takeover", peer: "private-caller-input canary" });
+  expect(malformed.ok).toBe(false);
+  expect(malformed.error).toContain("usage: ahub peer takeover <peer> [standby-id]");
+  expect(malformed.error).not.toContain("private-caller-input");
+  const unavailable = await f.console_.request({ t: "peer_takeover", peer: "claude" });
+  expect(unavailable.ok).toBe(false);
+  expect(unavailable.error).toContain("retry ahub peer takeover <peer> once ahub status shows the peer attached and idle");
+});
+
+test("an old socket during a newer claim gets the stale-session cause and status reconnect step", async () => {
+  const f = await fixture(), owner = await f.connect();
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "owner attached");
+  const peer = f.daemon.bus.peers.get("claude");
+  if (!(peer instanceof WsPeer)) throw new Error("fixture has no channel peer");
+  peer.claim({ readyState: WebSocket.OPEN, data: {}, send: () => {}, close: () => {} });
+  expect(owner.closed()).toBeUndefined();
+  const refusal = await owner.request({ t: "inbox" });
+  expect(refusal.ok).toBe(false);
+  expect(refusal.error).toContain("peer session is no longer current");
+  expect(refusal.error).toContain("inspect ahub status");
+  expect(refusal.error).toContain("reconnect the intended session");
 });
 
 test("takeover keeps an accepted old-owner delivery uncertain and never replays it to the standby", async () => {

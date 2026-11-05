@@ -101,6 +101,8 @@ test("retained Claude standby takes over on a person request and the old MCP rep
     const old = await owner.client.callTool({ name: "hub_inbox", arguments: {} });
     expect(old.isError).toBe(true);
     expect(toolText(old)).toContain("detached by the person");
+    expect(toolText(old)).toContain("Stop here and tell the person");
+    expect(toolText(old)).toContain("start a fresh ahub claude");
     const current = await standby.client.callTool({ name: "hub_inbox", arguments: {} });
     expect(toolText(current)).not.toContain("standing by");
   } finally {

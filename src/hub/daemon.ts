@@ -9841,12 +9841,12 @@ export async function startDaemon(opts: DaemonOptions) {
     const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
       && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
     if (stopping && !committedSourceProof && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: "hub is stopping" });
-    if (c.role === "peer" && c.detachedByPerson) return void reply({ t: msg.t, ok: false, error: "detached by the person" });
+    if (c.role === "peer" && c.detachedByPerson) return void reply({ t: msg.t, ok: false, error: "detached by the person; stop using this peer connection and tell the person; inspect ahub status before opening a fresh session" });
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
     if (c.role === "peer" && c.peer) {
       const currentPeer = bus.peers.get(c.peer);
       if (c.standbyId && currentPeer?.ownsSocket?.(sock) !== true) return void reply({ t: msg.t, ok: false, error: "peer is standing by; a person must request takeover" });
-      if (c.peerGeneration !== undefined && currentPeer?.sessionGeneration !== c.peerGeneration) return void reply({ t: msg.t, ok: false, error: "peer session is no longer current" });
+      if (c.peerGeneration !== undefined && currentPeer?.sessionGeneration !== c.peerGeneration) return void reply({ t: msg.t, ok: false, error: "peer session is no longer current; inspect ahub status to see which session owns the peer, then reconnect the intended session" });
     }
     if (c.externalOwner && !currentExternalTools(c)) return void reply({ ok: false, error: "external instance launch or execution root changed" });
     if (c.toolsOwner && !currentImplementerTools(c)) return void reply({ ok: false, error: "Claude child generation or execution root changed" });
@@ -10788,16 +10788,16 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ t: "status", status: current });
       }
       case "peer_takeover": {
-        if (c.role !== "console") return void reply({ t: "peer_takeover", ok: false, error: "peer takeover is a person-only command" });
+        if (c.role !== "console") return void reply({ t: "peer_takeover", ok: false, error: "peer takeover is a person-only command; run it from the console or a terminal" });
         if (Object.keys(msg).some(key => !["t", "rid", "peer", "standbyId"].includes(key))
           || typeof msg.peer !== "string" || !PEER_ID.test(msg.peer)
           || msg.standbyId !== undefined && (typeof msg.standbyId !== "string" || msg.standbyId.length > 64 || /[\p{Cc}\p{Cf}]/u.test(msg.standbyId))) {
-          return void reply({ t: "peer_takeover", ok: false, error: "peer takeover needs a peer id and optional live standby id" });
+          return void reply({ t: "peer_takeover", ok: false, error: "peer takeover needs a peer id and optional live standby id; usage: ahub peer takeover <peer> [standby-id]" });
         }
         const peerId = msg.peer as PeerId;
         if (stopping || recoveryActive() || rosterChanging === peerId || requestedPeerStops.has(peerId) || starting.has(peerId)
           || !membershipAllowed(peerId) || !recoveryPeerAllowed(peerId)) {
-          return void reply({ t: "peer_takeover", ok: false, error: "peer takeover is unavailable while the hub, peer or roster is changing" });
+          return void reply({ t: "peer_takeover", ok: false, error: "peer takeover is unavailable while the hub, peer or roster is changing; retry ahub peer takeover <peer> once ahub status shows the peer attached and idle" });
         }
         const peer = bus.peers.get(peerId), claim = peer?.takeover?.(msg.standbyId as string | undefined, socket => channelTakeoverAdmission(peerId, socket as Sock));
         if (!peer || !claim) return void reply({ t: "peer_takeover", ok: false, error: "no eligible standby session is available; inspect ahub status and reconnect the intended standby session" });

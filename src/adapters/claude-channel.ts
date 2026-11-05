@@ -187,7 +187,9 @@ const server = new Server(
 const inbox: string[] = []; // pushes that failed; drained by hub_inbox
 let hub: ControlClient | undefined;
 let detached: string | undefined; // why this server stopped reconnecting; tool calls report it
-const offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
+const offline = () => detached === "detached by the person"
+  ? `detached by the person; this session no longer acts as ${peerId}. Stop here and tell the person. If they want this session back, start a fresh ahub claude.`
+  : detached ?? "hub is not running for this project (start it with: ahub up).";
 const offlineToolResult = (suffix = "") => {
   const result = text(`${offline()}${suffix}`);
   return detached === "detached by the person" ? { ...result, isError: true } : result;
