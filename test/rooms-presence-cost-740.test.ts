@@ -57,8 +57,10 @@ test("resume still persists the queued delivery it actually drains", async () =>
   }
   const peer = new Peer("codex"); first.bus.add(peer); await peer.start(); first.bus.pause(peer.id);
   const env = newEnvelope("user", "queued while paused", { to: [peer.id] }); first.bus.publish(env);
-  const queued = first.journal.unresolved(peer.id).find(row => row.originals.some(item => item.id === env.id))!;
-  expect(queued.state).toBe("queued"); const before = first.journal.revision();
+  const queued = first.bus.queueList(peer.id, true).find(row => row.originals.some(item => item.id === env.id))!;
+  expect(queued.state).toBe("queued");
+  expect(first.journal.snapshot().bus.queues[peer.id]?.map(item => item.id)).toEqual([env.id]);
+  const before = first.journal.revision();
   first.bus.resume(peer.id); await completed;
   expect(first.journal.revision()).toBeGreaterThan(before);
   const row = first.journal.get(deliveredId)!;
