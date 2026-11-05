@@ -2090,7 +2090,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ordinaryReviewObserverInputs.delete(peer);
     const ownedInput = ownedObserverInputs.get(peer);
     const inputHash = ownedInput?.sessionHash === sessionHash ? ownedInput.inputHash : reviewObserverInputHash(envs, turns.get(peer)?.id);
-    if (ownedInput?.owner === bus.peers.get(peer) && ownedInput.sessionHash === sessionHash) { ownedInput.reviewScoped = true; ownedInput.supersededByReviewInput = true; }
+    if (ownedInput && ownedInput.owner === bus.peers.get(peer) && ownedInput.sessionHash === sessionHash) { ownedInput.reviewScoped = true; ownedInput.supersededByReviewInput = true; }
     try {
       journal.holdReviewInput({ peer, sessionHash, inputHash });
       currentDaemonReviewObserverHolds.set(peer, sessionHash);
@@ -2139,7 +2139,7 @@ export async function startDaemon(opts: DaemonOptions) {
       pending.held = held;
       pending.reviewInputScoped = reviewScoped;
     }
-    currentReviewObserverInputs.set(peer, { deliveryKey, inputId: context.inputId, outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(turns.get(peer)?.id ? { turnId: turns.get(peer)!.id } : {}), held, reviewInputScoped, ...(heldSameTurnAtAdmission ? { heldSameTurnAtAdmission: true } : {}) });
+    currentReviewObserverInputs.set(peer, { deliveryKey, inputId: context.inputId, outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(turns.get(peer)?.id ? { turnId: turns.get(peer)!.id } : {}), held, reviewInputScoped: reviewScoped, ...(heldSameTurnAtAdmission ? { heldSameTurnAtAdmission: true } : {}) });
   };
   const ownedObserverInputReleased = (peer: PeerId, owner: PeerAdapter, context: OwnedInputContext, envs: readonly Envelope[]): void => {
     const owned = ownedObserverInputs.get(peer);

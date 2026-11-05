@@ -48,9 +48,9 @@ test("LocalPeer exposes its owned in-memory observer SID without claiming native
     let calls = 0;
     const peer = new LocalPeer("local", { cwd: root, fixedModel: "fixture", watchdogMs: 5000,
       omni: { onCampus: async () => true, chat: async () => { calls++; return { message: { role: "assistant", content: "fixture answer" } }; } },
-      tools: { deny: [], permit: async () => true }, beforeInput: context => contexts.push(context), inputReleased: context => contexts.push(context),
+      tools: { deny: [], permit: async () => true }, beforeInput: (context: OwnedInputContext) => contexts.push(context), inputReleased: (context: OwnedInputContext) => contexts.push(context),
     } as unknown as LocalOptions);
-    expect(peer.observerSessionId).toBe(peer.recoveryMetadata().sessionId);
+    expect(peer.recoveryMetadata()).toMatchObject({ sessionId: peer.observerSessionId });
     expect(peer.observerSessionId).toMatch(/^agent-hub-local-/);
     expect("nativeSession" in peer).toBe(false);
     peer.onDelivery = receipt => { if (receipt.state === "completed") completions.push(receipt.id); };
@@ -95,7 +95,7 @@ test("the Bus defers only an actual guarded ReviewerPrint peer to its native inp
     bus.add(reviewer); bus.add(implementer); bus.add(unbound);
     await reviewer.start(); await implementer.start(); await unbound.start();
     const message = newEnvelope("hub", "UNBOUND_BUS_REVIEW_CANARY", { to: [reviewer.id, implementer.id, unbound.id], kind: "review", priority: "important", refs: { task: "41", reviewPackage: "review:bus-guard" } });
-    expect(bus.publish(message).targets).toEqual([reviewer.id, implementer.id, unbound.id]);
+    expect(bus.publish(message)).toEqual([reviewer.id, implementer.id, unbound.id]);
     await waitUntil(() => reviewer.state === "idle" && implementer.state === "idle" && before.length === 2 && unbound.deliveries === 0 && bus.queued(unbound.id) === 1);
     expect(before.sort()).toEqual(["implementer", "review"]);
     expect(unbound.deliveries).toBe(0);
