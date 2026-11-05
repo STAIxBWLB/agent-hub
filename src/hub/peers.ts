@@ -18,6 +18,18 @@ export interface OwnedToolsLaunch {
   launchId: string; generation: string; sessionId: string; signal: AbortSignal; task?: number; permissionHook: true;
 }
 
+/** Display-only identity for a live channel connection waiting for a person's handover. */
+export interface PeerStandbySession { id: string; pid?: number; since: number; }
+
+/** Opaque, generation-fenced claim produced by a peer's person-requested takeover port. */
+export interface PeerTakeoverClaim {
+  standbyId: string;
+  socket: object;
+  generation: string | number;
+  isCurrent(): boolean;
+  attach(): boolean;
+}
+
 export interface FrontendProxyPort {
   readonly url: string;
   readonly attached: boolean;
@@ -29,6 +41,12 @@ export interface FrontendProxyPort {
 
 export interface PeerAdapter {
   readonly id: PeerId;
+  /** Live waiting sessions, for display only; ids and pids grant no native identity or authority. */
+  readonly standbySessions?: readonly PeerStandbySession[];
+  /** Person-authorized takeover port. The host still performs its own admission and claim fences. */
+  takeover?(standbyId: string | undefined, eligible: (socket: object) => boolean): PeerTakeoverClaim | undefined;
+  /** Exact transport ownership check for guarding a selected standby through its asynchronous preface. */
+  ownsSocket?(socket: object): boolean;
   /** The explicit own-delivery settlement surface; only a live push channel session opts in. */
   readonly acceptedSettlement?: "explicit";
   /** Host-owned room transport binding; remote ids never gain local role/console authority. */

@@ -24365,6 +24365,8 @@ var QUESTION_CONTROL_TIMEOUT_MS = QUESTION_WAIT_MAX_MS + 15000;
 class ControlClient {
   ws;
   features = [];
+  standby = false;
+  standbyId;
   sessionId;
   protocol;
   welcomeInstanceId;
@@ -24446,8 +24448,13 @@ class ControlClient {
         if (!msg || typeof msg !== "object" || Array.isArray(msg))
           return refuse(new Error("invalid hub response"));
         const done = msg.rid !== undefined ? client.pending.get(msg.rid) : undefined;
-        if (!done)
+        if (!done) {
+          if (msg.t === "peer_attached" && msg.standbyId === client.standbyId) {
+            client.standby = false;
+            client.standbyId = undefined;
+          }
           return client.onPush(msg);
+        }
         client.pending.delete(msg.rid);
         done(msg);
       };
@@ -24463,6 +24470,8 @@ class ControlClient {
         client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature) => typeof feature === "string") : []);
         client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
         client.sessionId = typeof reply.session === "string" && reply.session.length <= 64 ? reply.session : undefined;
+        client.standby = reply.standby === true;
+        client.standbyId = client.standby && typeof reply.standbyId === "string" ? reply.standbyId : undefined;
         clearTimeout(timer);
         resolve(client);
       });
@@ -33777,6 +33786,7 @@ var TERMINAL_CLOSES = {
   4401: "the hub refused the control token",
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused "${peerId}": the id is reserved or malformed, or this process is not an owned launch of that peer (start it with ahub jcode)`,
+  4405: "detached by the person",
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
   4430: "this Claude launch ended; start a new session with ahub claude, or use a plain session with hub_inbox",
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session"
@@ -33833,6 +33843,10 @@ var inbox = [];
 var hub;
 var detached;
 var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
+var offlineToolResult = (suffix = "") => {
+  const result = text5(`${offline()}${suffix}`);
+  return detached === "detached by the person" ? { ...result, isError: true } : result;
+};
 var pendingQueued;
 var QUEUED_COUNTED = Symbol("queuedCounted");
 var HELD_HINT_INCLUDED = Symbol("heldHintIncluded");
@@ -33947,6 +33961,7 @@ async function connectLoop() {
         role: toolsMode || sessionJoin ? "tools" : "peer",
         peer: peerId,
         ...toolsMode || sessionJoin ? {} : { channel, channelEvidence },
+        ...!toolsMode && !sessionJoin ? { retainStandby: true, clientPid: process.pid } : {},
         ...sessionJoin ? { session: sessionJoin.label } : {},
         ...process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {},
         ...executionCwd !== undefined ? { cwd: executionCwd } : {},
@@ -33954,6 +33969,12 @@ async function connectLoop() {
         ...process.env.AGENTHUB_PROJECT_DIR ? { projectRoot: projectRoot2 } : {}
       });
       client.onPush = (msg) => {
+        if (msg.t === "peer_attached") {
+          standingBy = false;
+          detached = undefined;
+          log(`connected to hub as "${peerId}"`);
+          return;
+        }
         if (msg.t === "queued") {
           if (!channel && !toolsMode && Number.isSafeInteger(msg.important) && Number.isSafeInteger(msg.queued) && msg.important >= 0 && msg.queued >= msg.important)
             pendingQueued = { queued: msg.queued, important: msg.important };
@@ -33976,9 +33997,9 @@ async function connectLoop() {
       };
       hub = client;
       attempt = -1;
-      standingBy = false;
-      detached = undefined;
-      log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles` : `connected to hub as "${peerId}"`);
+      standingBy = client.standby;
+      detached = client.standby ? `standing by for a person to hand over "${peerId}"` : undefined;
+      log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles` : client.standby ? `standing by: a person can take over "${peerId}" from this session` : `connected to hub as "${peerId}"`);
       if (listedTools !== undefined)
         reannounce(client).catch(() => {});
       code = await new Promise((r) => {
@@ -34110,7 +34131,7 @@ async function callTool(req, signal) {
   }
   if (name === "hub_delivery_done" && channel) {
     if (!hub)
-      return text5(offline());
+      return offlineToolResult();
     const a = args ?? {};
     const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
     if (result.outcome === "unknown")
@@ -34168,12 +34189,12 @@ ${polling}` : body);
       Object.defineProperty(result, QUEUED_COUNTED, { value: true });
     if (heldHint || metadataWarning)
       Object.defineProperty(result, HELD_HINT_INCLUDED, { value: true });
-    return result;
+    return detached === "detached by the person" ? { ...result, isError: true } : result;
   }
   if (name === "hub_send") {
     const { text: body, to, reply_to } = args ?? {};
     if (!hub)
-      return text5(`${offline()} Message not sent.`);
+      return offlineToolResult(" Message not sent.");
     const res = await hub.request({ t: "send", body, to, reply_to });
     if (!res.ok)
       return text5(`not sent: ${res.error}`);
@@ -34186,7 +34207,7 @@ ${polling}` : body);
   }
   if (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) {
     if (!hub)
-      return text5(offline());
+      return offlineToolResult();
     if (name === "hub_invoke" && !hub.features.includes("invocation"))
       return { ...text5("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
     if (name === "hub_ask" && !hub.features.includes("questions"))

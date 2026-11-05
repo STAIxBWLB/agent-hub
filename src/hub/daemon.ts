@@ -201,7 +201,7 @@ import { negotiateProtocol, protocolWindow } from "./protocol-window.ts";
 import { attachEvent, originOf, type Origin } from "./provenance.ts";
 import { mintSessionId, sessionGate } from "./session-identity.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
-import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter } from "./peers.ts";
+import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter, type PeerTakeoverClaim } from "./peers.ts";
 import { ClaudeTodoSource, DoingTracker, readAiTitle, DOING_STUB, SESSION_TITLE_HINT, sessionTitleText, sessionTitleBindings, unnamedSessionLabel, type DoingKind, type PeerDoing, type TitleCursor } from "./peer-doing.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
@@ -803,6 +803,15 @@ interface Client {
   /** agent-hub#1036: this connection is a distinct session; `peer` is the id the daemon minted for it (`<peer>~<origin>`), never a bus peer. */
   session?: true;
   launchId?: string;
+  /** Display-only retained standby id; peer operations stay fenced until ownsSocket confirms attachment. */
+  standbyId?: string;
+  retainStandby?: boolean;
+  peerGeneration?: string | number;
+  detachedByPerson?: boolean;
+  channel?: boolean;
+  channelEvidence?: "development-channel-launch" | "inherited-marker" | "launch-unverified" | "unknown" | "unreported";
+  clientPid?: number;
+  cwd?: string;
   externalOwner?: { owner: PeerAdapter; launchId: string; generation?: string };
   toolsOwner?: { owner: PeerAdapter; launchId: string; generation: string; cwd: string };
   tail?: () => void;
@@ -1293,9 +1302,15 @@ export async function startDaemon(opts: DaemonOptions) {
         sock.data.watch?.();
         const peer = sock.data.peer ? bus.peers.get(sock.data.peer) : undefined;
         if (isWsPeer(peer)) {
+          const wasOwner = peer.ownsSocket(sock);
           if (sock.data.peer && executionOwners.get(sock.data.peer)?.socket === sock) revokeTerminalExecution(sock.data.peer);
           peer.detach(sock);
           if (!!sock.data.peer && !!definitionOf(sock.data.peer)?.attach?.admission && peer.state === "offline" && !peer.claiming && sock.data.kimiAdmission === kimiAdmissionId) clearKimiAdmission();
+          if (wasOwner && !stopping && !recoveryActive() && membershipAllowed(peer.id) && recoveryPeerAllowed(peer.id)) {
+            const claim = peer.takeover(undefined, socket => channelTakeoverAdmission(peer.id, socket as Sock));
+            if (claim) startPeerTakeover(peer, claim);
+          }
+          writeStatus();
         }
       },
     },
@@ -3652,6 +3667,59 @@ export async function startDaemon(opts: DaemonOptions) {
     executionOwners.delete(peer); executionRoots.delete(peer);
     worktreeFacts.delete(peer); worktreeProjections.delete(peer);
   }
+  function refreshChannelExecutionOwner(peer: PeerAdapter, socket: Sock): void {
+    revokeTerminalExecution(peer.id);
+    if (!declarations[peer.id] || !isFixedBuiltinDefinition(definitionOf(peer.id)) || definitionOf(peer.id)?.transport !== "claude-channel") return;
+    const launch = readClaudeLaunchProof(opts.stateDir, peer.id, instanceId);
+    try {
+      const root = resolveExecutionCwd(peer.id, declarations, config.roles[peer.id] ?? [], adapterCatalog);
+      if (root !== opts.cwd && launch?.privateRecord && launch.launchId === socket.data.launchId && launch.executionCwd === root
+        && typeof socket.data.cwd === "string" && realPath(socket.data.cwd) === root) {
+        executionRoots.set(peer.id, root);
+        executionOwners.set(peer.id, { owner: peer, cwd: root, socket, launchId: launch.launchId, generation: peer.sessionGeneration });
+      }
+    } catch { /* Unknown or changed worktree evidence never grants owner isolation. */ }
+  }
+  function channelTakeoverAdmission(peerId: string, socket: Sock): boolean {
+    if (socket.readyState !== WebSocket.OPEN || stopping || recoveryActive() || bus.isRecoveryHeld || rosterChanging === peerId
+      || requestedPeerStops.has(peerId) || starting.has(peerId) || !recoveryPeerAllowed(peerId) || !membershipAllowed(peerId)) return false;
+    if (definitionOf(peerId)?.transport !== "claude-channel") return true;
+    if (socket.data.launchId !== undefined && claudeLaunchProof.helloLaunch(peerId, socket.data.launchId) === "refuse") return false;
+    if (declarations[peerId] && (config.roles[peerId]?.includes("implementer") || config.roles[peerId]?.includes("verifier"))) {
+      try {
+        const root = resolveExecutionCwd(peerId, declarations, config.roles[peerId] ?? [], adapterCatalog);
+        const launch = readClaudeLaunchProof(opts.stateDir, peerId, instanceId);
+        if (root === opts.cwd || !launch?.privateRecord || launch.launchId !== socket.data.launchId || launch.executionCwd !== root
+          || typeof socket.data.cwd !== "string" || realPath(socket.data.cwd) !== root) return false;
+      } catch { return false; }
+    }
+    return true;
+  }
+  function startPeerTakeover(peer: PeerAdapter, claim: PeerTakeoverClaim): void {
+    const peerId = peer.id, socket = claim.socket as Sock;
+    socket.data.peerGeneration = claim.generation;
+    if (!channelTakeoverAdmission(peerId, socket)) {
+      socket.close(4000, "peer takeover is unavailable while the hub or roster is changing");
+      return;
+    }
+    preparedSessionRoles.delete(peerId);
+    preparedSessionRoleIdentities.delete(peerId);
+    refreshChannelExecutionOwner(peer, socket);
+    writeStatus();
+    void ensurePreface(peerId).then(() => {
+      if (!claim.isCurrent()) return;
+      if (!channelTakeoverAdmission(peerId, socket)) {
+        socket.close(4000, "peer takeover is unavailable while the hub or roster is changing");
+        return;
+      }
+      refreshChannelExecutionOwner(peer, socket);
+      if (!claim.isCurrent() || !channelTakeoverAdmission(peerId, socket)) return;
+      if (!claim.attach()) return;
+      writeStatus();
+    }).catch(() => {
+      if (claim.isCurrent()) socket.close(4000, "peer takeover preface is unavailable; retry after the hub recovers");
+    });
+  }
   function currentExecutionOwner(peer: string, fresh = false) {
     const bound = executionOwners.get(peer);
     if (bound && isExternalInstance(peer)) {
@@ -5928,7 +5996,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; const reviewObserverHoldNote = reviewObserverSessionIdentityHoldNote(id); return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(reviewObserverHoldNote ? { reviewObserverHoldNote } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) ? { ...(p.claiming ? { claiming: true } : {}), ...(definitionOf(id)?.transport === "claude-channel" && p.attached ? { attachMode: p.attachMode, attachEvidence: p.attachEvidence } : {}) } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; const reviewObserverHoldNote = reviewObserverSessionIdentityHoldNote(id); return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(reviewObserverHoldNote ? { reviewObserverHoldNote } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(includeAttentionItems && p?.standbySessions?.length ? { standbySessions: p.standbySessions } : {}), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) ? { ...(p.claiming ? { claiming: true } : {}), ...(definitionOf(id)?.transport === "claude-channel" && p.attached ? { attachMode: p.attachMode, attachEvidence: p.attachEvidence } : {}) } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -9728,42 +9796,58 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!peer) bus.add((peer = new WsPeer(c.peer)));
         if (!isWsPeer(peer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
         const ws = peer;
-        if (msg.standby === true && ws.standbyHeld(msg.channel === false)) return sock.close(4000, "another session holds or is claiming this peer");
-        // Without pushes it stands by, as a replaced session does, and never strands a channel session's deliveries.
-        if (msg.channel === false && ws.channelHeld) return sock.close(4000, "a session with channel pushes holds this peer");
-        preparedSessionRoles.delete(c.peer); // an external transport has no receipt for this daemon's native preamble
-        preparedSessionRoleIdentities.delete(c.peer);
         const channelEvidence = ["development-channel-launch", "inherited-marker", "launch-unverified", "unknown"].includes(msg.channelEvidence) ? msg.channelEvidence : msg.channelEvidence === undefined ? "unreported" : "unknown";
-        ws.claim(sock, msg.channel === false, channelEvidence);
-        if (declarations[c.peer] && isFixedBuiltinDefinition(definitionOf(c.peer)) && definitionOf(c.peer)?.transport === "claude-channel") {
-          revokeTerminalExecution(c.peer);
-          const launch = readClaudeLaunchProof(opts.stateDir, c.peer, instanceId);
-          try {
-            const root = resolveExecutionCwd(c.peer, declarations, config.roles[c.peer] ?? [], adapterCatalog);
-            if (root !== opts.cwd && launch?.privateRecord && launch.launchId === c.launchId && launch.executionCwd === root && typeof msg.cwd === "string" && realPath(msg.cwd) === root) {
-              executionRoots.set(c.peer, root);
-              executionOwners.set(c.peer, { owner: ws, cwd: root, socket: sock, launchId: launch.launchId, generation: ws.sessionGeneration });
-            }
-          } catch { /* Unknown or changed worktree evidence never grants owner isolation. */ }
+        c.retainStandby = msg.retainStandby === true;
+        sock.data.retainStandby = c.retainStandby;
+        sock.data.channel = msg.channel !== false;
+        sock.data.channelEvidence = channelEvidence;
+        sock.data.launchId = c.launchId;
+        sock.data.protocol = c.protocol;
+        if (typeof msg.cwd === "string" && msg.cwd.length <= 4096) sock.data.cwd = msg.cwd;
+        const clientPid = Number.isSafeInteger(msg.clientPid) && msg.clientPid > 0 && msg.clientPid <= 2_147_483_647 ? msg.clientPid as number : undefined;
+        sock.data.clientPid = clientPid;
+        const pushOverPullOnly = msg.channel !== false && ws.attached && ws.pullOnly && !ws.claiming;
+        const hasLiveHolder = ws.attached || ws.claiming;
+        if (c.retainStandby && hasLiveHolder && !pushOverPullOnly) {
+          const retained = ws.retainStandby(sock, clientPid);
+          if (!retained) return sock.close(4403, "too many standby sessions for this peer");
+          c.standbyId = retained.id;
+          writeStatus();
+        } else {
+          if (msg.standby === true && ws.standbyHeld(msg.channel === false)) return sock.close(4000, "another session holds or is claiming this peer");
+          // Without pushes it stands by, as a replaced session does, and never strands a channel session's deliveries.
+          if (msg.channel === false && ws.channelHeld) return sock.close(4000, "a session with channel pushes holds this peer");
+          preparedSessionRoles.delete(c.peer); // an external transport has no receipt for this daemon's native preamble
+          preparedSessionRoleIdentities.delete(c.peer);
+          ws.claim(sock, msg.channel === false, channelEvidence);
+          sock.data.peerGeneration = ws.sessionGeneration;
+          refreshChannelExecutionOwner(ws, sock);
+          if (kimiPull) { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; c.kimiAdmission = kimiAdmissionId; }
+          if (definitionOf(c.peer)?.transport === "claude-channel") logPermissionStart(c.peer);
+          writeStatus(); // the claim has to be visible before the preface, or a standing-by session takes the id back
+          void ensurePreface(c.peer).finally(() => {
+            if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);
+            // Important work queued while no session held the id gets its nudge now (#398); a push session ignores it.
+            const important = ws.owns(sock) ? bus.queuedImportant(c.peer!) : 0;
+            if (important) ws.notifyQueued({ queued: bus.queued(c.peer!), important });
+          });
         }
-        if (kimiPull) { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; c.kimiAdmission = kimiAdmissionId; }
-        if (definitionOf(c.peer)?.transport === "claude-channel") logPermissionStart(c.peer);
-        writeStatus(); // the claim has to be visible before the preface, or a standing-by session takes the id back
-        void ensurePreface(c.peer).finally(() => {
-          if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);
-          // Important work queued while no session held the id gets its nudge now (#398); a push session ignores it.
-          const important = ws.owns(sock) ? bus.queuedImportant(c.peer!) : 0;
-          if (important) ws.notifyQueued({ queued: bus.queued(c.peer!), important });
-        });
       }
       // #604 PR B: one attach event per admitted peer or tools hello, with the same fields an envelope's `origin` carries. A refused hello returned above and writes none.
       if (c.role === "peer" || c.role === "tools") event(attachEvent({ role: c.role, peer: c.peer, launchId: c.launchId, ...(c.session ? { session: true } : {}) }));
-      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: c.protocol, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, features: DAEMON_FEATURES, ...(c.session ? { session: c.peer } : {}) });
+      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: c.protocol, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, features: DAEMON_FEATURES,
+        ...(c.session ? { session: c.peer } : {}), ...(c.standbyId ? { standby: true, standbyId: c.standbyId } : {}) });
     }
     const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
       && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
     if (stopping && !committedSourceProof && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: "hub is stopping" });
+    if (c.role === "peer" && c.detachedByPerson) return void reply({ t: msg.t, ok: false, error: "detached by the person" });
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
+    if (c.role === "peer" && c.peer) {
+      const currentPeer = bus.peers.get(c.peer);
+      if (c.standbyId && currentPeer?.ownsSocket?.(sock) !== true) return void reply({ t: msg.t, ok: false, error: "peer is standing by; a person must request takeover" });
+      if (c.peerGeneration !== undefined && currentPeer?.sessionGeneration !== c.peerGeneration) return void reply({ t: msg.t, ok: false, error: "peer session is no longer current" });
+    }
     if (c.externalOwner && !currentExternalTools(c)) return void reply({ ok: false, error: "external instance launch or execution root changed" });
     if (c.toolsOwner && !currentImplementerTools(c)) return void reply({ ok: false, error: "Claude child generation or execution root changed" });
     if (c.session) {
@@ -10702,6 +10786,24 @@ export async function startDaemon(opts: DaemonOptions) {
           }
         }
         return void reply({ t: "status", status: current });
+      }
+      case "peer_takeover": {
+        if (c.role !== "console") return void reply({ t: "peer_takeover", ok: false, error: "peer takeover is a person-only command" });
+        if (Object.keys(msg).some(key => !["t", "rid", "peer", "standbyId"].includes(key))
+          || typeof msg.peer !== "string" || !PEER_ID.test(msg.peer)
+          || msg.standbyId !== undefined && (typeof msg.standbyId !== "string" || msg.standbyId.length > 64 || /[\p{Cc}\p{Cf}]/u.test(msg.standbyId))) {
+          return void reply({ t: "peer_takeover", ok: false, error: "peer takeover needs a peer id and optional live standby id" });
+        }
+        const peerId = msg.peer as PeerId;
+        if (stopping || recoveryActive() || rosterChanging === peerId || requestedPeerStops.has(peerId) || starting.has(peerId)
+          || !membershipAllowed(peerId) || !recoveryPeerAllowed(peerId)) {
+          return void reply({ t: "peer_takeover", ok: false, error: "peer takeover is unavailable while the hub, peer or roster is changing" });
+        }
+        const peer = bus.peers.get(peerId), claim = peer?.takeover?.(msg.standbyId as string | undefined, socket => channelTakeoverAdmission(peerId, socket as Sock));
+        if (!peer || !claim) return void reply({ t: "peer_takeover", ok: false, error: "no eligible standby session is available; inspect ahub status and reconnect the intended standby session" });
+        revokeTerminalExecution(peerId);
+        startPeerTakeover(peer, claim);
+        return void reply({ t: "peer_takeover", ok: true, outcome: "requested", standbyId: claim.standbyId });
       }
       case "cli_audit_ack": {
         if (c.role !== "console") return void reply({ ok: false, error: "cli_audit_ack is a console command" });

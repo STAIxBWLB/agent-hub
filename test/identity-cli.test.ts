@@ -223,6 +223,71 @@ test("stop CLI validates its peer, prints the result and guides an older hub upg
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
 
+test("peer takeover CLI is person-only and reports only the requested handoff", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  mkdirSync(stateDir);
+  const standbyId = "452ad7d7-3430-4b2c-b5be-56d96b54ea36", requests: any[] = [], hellos: any[] = [];
+  let unsupported = false;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("unexpected"); },
+    websocket: { message(ws, raw) {
+      const msg = JSON.parse(String(raw));
+      if (msg.t === "hello") { hellos.push(msg); ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, ok: true, cwd: root, protocol: PROTOCOL, features: unsupported ? [] : ["peer_takeover"] })); return; }
+      requests.push(msg);
+      const reply = unsupported ? { ok: false, error: 'this hub does not know "peer_takeover"' } : { ok: true, outcome: "requested", standbyId: msg.standbyId ?? standbyId };
+      ws.send(JSON.stringify({ t: "reply", rid: msg.rid, ...reply }));
+    } } });
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
+  writeFileSync(join(stateDir, "control-token"), "fixture-token");
+  try {
+    for (const args of [["peer"], ["peer", "takeover"], ["peer", "takeover", "bad peer"], ["peer", "takeover", "pi", "extra"]]) {
+      const result = await cli(root, args);
+      expect(result.code).toBe(1); expect(result.stderr).toContain("usage: ahub peer takeover");
+    }
+    expect(requests).toHaveLength(0); expect(hellos).toHaveLength(0);
+    const selected = await cli(root, ["peer", "takeover", "claude", standbyId]);
+    expect(selected).toEqual({ code: 0, stdout: "claude: old session detached; standby attachment requested\n", stderr: "" });
+    expect(requests[0]).toMatchObject({ t: "peer_takeover", peer: "claude", standbyId });
+    const oldest = await cli(root, ["peer", "takeover", "claude", "--json"]);
+    expect(oldest.code).toBe(0); expect(JSON.parse(oldest.stdout)).toMatchObject({ ok: true, outcome: "requested", standbyId });
+    expect(requests[1]).toMatchObject({ t: "peer_takeover", peer: "claude" }); expect(requests[1].standbyId).toBeUndefined();
+    expect(hellos.every(message => message.role === "console")).toBe(true);
+    unsupported = true;
+    const old = await cli(root, ["peer", "takeover", "claude"]);
+    expect(old.code).toBe(1); expect(old.stderr).toContain("upgrade and restart the running hub");
+    const ordinaryAgent = await cli(root, ["peer", "takeover", "pi"], { AGENTHUB_PEER_ID: "codex" });
+    expect(ordinaryAgent.code).toBe(1); expect(ordinaryAgent.stderr).toContain("cannot run ahub peer takeover");
+    for (const args of [["--live-test", "peer", "takeover", "pi"], ["--live-test", "peer", "--json", "takeover", "pi"], ["--live-test", "peer", "--color=never", "takeover", "pi"]]) {
+      const result = await cli(root, args, { AGENTHUB_PEER_ID: "codex" });
+      expect(result.code).toBe(1); expect(result.stderr).toContain("live-test cannot write person-attributed content");
+    }
+    expect(classifyPeerCommand("peer", ["takeover", "pi"])).toBe("console");
+    expect(liveTestRefusal("peer", ["takeover", "pi"])).toBe(true);
+  } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+test("peer takeover CLI warns that a disconnected request may already have started", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  mkdirSync(stateDir);
+  const requests: any[] = [];
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("unexpected"); },
+    websocket: { message(ws, raw) {
+      const msg = JSON.parse(String(raw));
+      if (msg.t === "hello") { ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, ok: true, cwd: root, protocol: PROTOCOL, features: ["peer_takeover"] })); return; }
+      requests.push(msg);
+      ws.close(1011, "fixture transport closed");
+    } } });
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
+  writeFileSync(join(stateDir, "control-token"), "fixture-token");
+  try {
+    const result = await cli(root, ["peer", "takeover", "claude"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("inspect ahub status before retrying; takeover may already have started");
+    expect(requests.filter(message => message.t === "peer_takeover")).toHaveLength(1);
+  } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
 test("the human stop CLI leaves a real daemon's local peer offline and the hub running (#278)", async () => {
   const root = project(), stateDir = join(root, ".agenthub/state");
   const model = startFakeModelServer();

@@ -44,6 +44,14 @@ Authority is role-scoped: the person retains decisions requiring judgment or con
 
 Native tools keep their vendor permission and execution boundaries. The local worker applies path and permission checks to its tools, and runs command execution through a host-supported sandbox; the hub does not sandbox vendor-native tools or claim all ACP commands are isolated. This avoids confusing a hub permission mode with execution confinement ([#39](https://github.com/STAIxBWLB/agent-hub/issues/39), [#270](https://github.com/STAIxBWLB/agent-hub/issues/270)).
 
+Channel takeover keeps the same separation: optional adapter-owned takeover and
+socket-ownership ports hold transport state, while the daemon supplies person
+admission and current roster/launch/generation fences. A live standby has no peer
+tool or delivery authority. Its public connection id is not a native conversation
+id and cannot release observer provenance or establish execution isolation. A
+person takeover detaches ownership without terminating the process, and normal
+delivery uncertainty remains independent ([#1174](https://github.com/STAIxBWLB/agent-hub/issues/1174)).
+
 ## Console presentation surfaces
 
 The floating pet belongs to acon Mini (#1012). The compatibility command

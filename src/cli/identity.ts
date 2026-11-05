@@ -38,7 +38,9 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     // #1053: an answer is the person's choice, recorded as the person's; an agent that could run it through `--live-test` would answer its own hub_ask as the person. Any operand answers (the set, a pick, --other); a bare listing stays allowed.
     || (command === "answer" && args.some(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")))
     // #1054: a receipt is the person's record that they read a result and clears their unread need; no delegation, live-test or otherwise, may write one. A plain listing stays allowed.
-    || (command === "results" && args.some(arg => arg === "--read" || arg.startsWith("--read=") || arg === "--read-all" || arg === "--unread-last"));
+    || (command === "results" && args.some(arg => arg === "--read" || arg.startsWith("--read=") || arg === "--read-all" || arg === "--unread-last"))
+    // A takeover is a person-authored lifecycle decision; never let an agent delegate it through --live-test.
+    || command === "peer";
 }
 
 export type CliIdentity =
@@ -192,6 +194,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
 
 /** No argument text is included: notices and refusal logs must not copy task text or credentials. */
 export function cliCommandLabel(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): string {
+  if (command === "peer") return args[0] === "takeover" ? "peer takeover" : "peer";
   if (command === "backlog") return ["list", "add", "pull", "pull-ready", "split", "return", "plan", "pin", "undo"].includes(args[0] ?? "") ? `backlog ${args[0]}` : "backlog";
   if (command === "board" && args[0] === "import") return "board import";
   // #508: the registry's two forms are named in the audit and in a refusal, never their operands (a path or a URL can carry a secret).

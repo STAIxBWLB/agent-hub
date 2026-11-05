@@ -244,8 +244,8 @@
     {
       "id": "roster-late-attach",
       "file": "src/hub/daemon.ts",
-      "search": "          if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);",
-      "replacement": "          if (sock.readyState === WebSocket.OPEN) ws.attach(sock);",
+      "search": "            if (sock.readyState === WebSocket.OPEN && membershipAllowed(c.peer!)) ws.attach(sock);",
+      "replacement": "            if (sock.readyState === WebSocket.OPEN) ws.attach(sock);",
       "testFile": "test/roster.test.ts",
       "testName": "a late preface completion cannot attach an off-roster claimant (#315)"
     },

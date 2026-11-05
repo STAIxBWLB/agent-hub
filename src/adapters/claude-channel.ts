@@ -116,6 +116,7 @@ const TERMINAL_CLOSES: Record<number, string> = {
   4401: "the hub refused the control token",
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused "${peerId}": the id is reserved or malformed, or this process is not an owned launch of that peer (start it with ahub jcode)`,
+  4405: "detached by the person",
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
   4430: "this Claude launch ended; start a new session with ahub claude, or use a plain session with hub_inbox",
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session",
@@ -187,6 +188,10 @@ const inbox: string[] = []; // pushes that failed; drained by hub_inbox
 let hub: ControlClient | undefined;
 let detached: string | undefined; // why this server stopped reconnecting; tool calls report it
 const offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
+const offlineToolResult = (suffix = "") => {
+  const result = text(`${offline()}${suffix}`);
+  return detached === "detached by the person" ? { ...result, isError: true } : result;
+};
 /**
  * The hub's advisory `queued` nudge (issue #398): important work waiting in this pull-only session's queue.
  * Surfaced on the next tool result; the pull itself still happens only through hub_inbox.
@@ -302,12 +307,19 @@ async function connectLoop(): Promise<void> {
         catch { /* A removed native cwd revokes root evidence, never the messaging connection. */ }
       }
       const client = await ControlClient.connect(stateDir, { role: toolsMode || sessionJoin ? "tools" : "peer", peer: peerId, ...(toolsMode || sessionJoin ? {} : { channel, channelEvidence }),
+        ...(!toolsMode && !sessionJoin ? { retainStandby: true, clientPid: process.pid } : {}),
         ...(sessionJoin ? { session: sessionJoin.label } : {}),
         ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
         ...(executionCwd !== undefined ? { cwd: executionCwd } : {}),
         ...(!toolsMode && standingBy ? { standby: true } : {}),
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
       client.onPush = (msg) => {
+        if (msg.t === "peer_attached") {
+          standingBy = false;
+          detached = undefined;
+          log(`connected to hub as "${peerId}"`);
+          return;
+        }
         if (msg.t === "queued") {
           // Advisory counts for a pull-only session (issue #398); surfaced by withPendingHint on the next tool result.
           if (!channel && !toolsMode && Number.isSafeInteger(msg.important) && Number.isSafeInteger(msg.queued) && msg.important >= 0 && msg.queued >= msg.important) pendingQueued = { queued: msg.queued, important: msg.important };
@@ -327,9 +339,10 @@ async function connectLoop(): Promise<void> {
       };
       hub = client;
       attempt = -1;
-      standingBy = false;
-      detached = undefined;
-      log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles` : `connected to hub as "${peerId}"`);
+      standingBy = client.standby;
+      detached = client.standby ? `standing by for a person to hand over "${peerId}"` : undefined;
+      log(sessionJoin ? `connected to hub as the distinct session "${client.sessionId ?? "?"}", not as "${peerId}": it can send and read, and holds none of ${peerId}'s roles`
+        : client.standby ? `standing by: a person can take over "${peerId}" from this session` : `connected to hub as "${peerId}"`);
       // The tool list depends on the connected hub (its lifecycle): when it differs from what the host last listed,
       // ask the host to list it again (#490).
       if (listedTools !== undefined) void reannounce(client).catch(() => {});
@@ -455,7 +468,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     } catch { return deny("hub permission unavailable"); }
   }
   if (name === "hub_delivery_done" && channel) {
-    if (!hub) return text(offline());
+    if (!hub) return offlineToolResult();
     const a = args ?? {};
     const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
     if (result.outcome === "unknown") return text(typeof result.error === "string" ? result.error : "Write outcome unknown. Inspect the delivery before another write; call again only if it is absent, with the same delivery id and generation.");
@@ -493,11 +506,11 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     const result = text(polling ? `${body}\n${polling}` : body);
     if (counted) Object.defineProperty(result, QUEUED_COUNTED, { value: true });
     if (heldHint || metadataWarning) Object.defineProperty(result, HELD_HINT_INCLUDED, { value: true });
-    return result;
+    return detached === "detached by the person" ? { ...result, isError: true } : result;
   }
   if (name === "hub_send") {
     const { text: body, to, reply_to } = (args ?? {}) as { text?: string; to?: string[]; reply_to?: string };
-    if (!hub) return text(`${offline()} Message not sent.`);
+    if (!hub) return offlineToolResult(" Message not sent.");
     const res = await hub.request({ t: "send", body, to, reply_to });
     if (!res.ok) return text(`not sent: ${res.error}`);
     if (res.recorded) return text("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
@@ -506,7 +519,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     return text(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
   }
   if (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) {
-    if (!hub) return text(offline());
+    if (!hub) return offlineToolResult();
     // #445 C2: a daemon that predates invocations would answer with a generic unknown-operation error; say what is missing instead.
     if (name === "hub_invoke" && !hub.features.includes("invocation")) return { ...text("error: this hub does not support invocations; restart it with the current agent-hub release (ahub restart)"), isError: true };
     // #1053: a hub that predates questions would answer "unknown operation"; say what is missing, and what to do meanwhile.

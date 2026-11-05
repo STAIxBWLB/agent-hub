@@ -77,6 +77,195 @@ for (const compatibility of ["no hello launch", "no launch record", "different d
   await settle(f, next, compatibility);
 });
 
+test("a retained standby stays fenced until a person hands it over; the selected socket then owns the peer", async () => {
+  const f = await fixture();
+  const owner = await f.connect({ retainStandby: true, clientPid: 101 });
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "owner attached");
+  const standby = await f.connect({ retainStandby: true, clientPid: 202 });
+  const welcome = standby.messages.find(row => row.t === "welcome");
+  expect(welcome?.standby).toBe(true);
+  expect(typeof welcome?.standbyId).toBe("string");
+  expect(owner.closed()).toBeUndefined();
+  const status = await f.console_.request({ t: "status" });
+  expect(status.status.peers.claude.standbySessions).toEqual([
+    { id: welcome.standbyId, pid: 202, since: expect.any(Number) },
+  ]);
+  const blocked = await standby.request({ t: "task", op: "hub_task_list", args: {} });
+  expect(blocked.ok).toBe(false);
+  expect(blocked.error).toContain("standing by");
+  const agentAttempt = await owner.request({ t: "peer_takeover", peer: "claude", standbyId: welcome.standbyId });
+  expect(agentAttempt.ok).toBe(false);
+  expect(agentAttempt.error).toContain("person-only");
+
+  const wrong = await f.console_.request({ t: "peer_takeover", peer: "claude", standbyId: "not-the-live-id" });
+  expect(wrong.ok).toBe(false);
+  expect(owner.closed()).toBeUndefined();
+  const requested = await f.console_.request({ t: "peer_takeover", peer: "claude", standbyId: welcome.standbyId });
+  expect(requested).toMatchObject({ ok: true, outcome: "requested", standbyId: welcome.standbyId });
+  await until(() => owner.closed() !== undefined, "old owner detached");
+  expect(owner.closed()).toBe(4405);
+  await until(() => standby.messages.some(row => row.t === "peer_attached"), "selected standby attached");
+  const admitted = await standby.request({ t: "task", op: "hub_task_list", args: {} });
+  expect(admitted.ok).toBe(true);
+  expect(f.daemon.bus.stateOf("claude")).toBe("idle");
+});
+
+test("takeover keeps an accepted old-owner delivery uncertain and never replays it to the standby", async () => {
+  const f = await fixture();
+  const owner = await f.connect({ retainStandby: true });
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "owner attached");
+  const standby = await f.connect({ retainStandby: true });
+  const standbyId = standby.messages.find(row => row.t === "welcome")?.standbyId;
+  const body = "accepted work stays uncertain across owner takeover";
+  expect((await f.console_.request({ t: "send", body, to: ["claude"] })).ok).toBe(true);
+  await until(() => owner.messages.some(row => row.t === "deliver" && row.envs?.some((env: any) => env.body === body)), "delivery reached old owner");
+  const delivery = owner.messages.find(row => row.t === "deliver" && row.envs?.some((env: any) => env.body === body));
+  const oldGeneration = delivery.generation;
+  expect((await owner.request({ t: "delivery_receipt", deliveryId: delivery.deliveryId, generation: oldGeneration, state: "accepted" })).ok).toBe(true);
+  expect(f.daemon.bus.queueShow(delivery.deliveryId)?.state).toBe("accepted");
+
+  expect((await f.console_.request({ t: "peer_takeover", peer: "claude", standbyId })).ok).toBe(true);
+  await until(() => standby.messages.some(row => row.t === "peer_attached"), "standby attached");
+  const held = f.daemon.bus.queueShow(delivery.deliveryId);
+  expect(held).toMatchObject({ state: "needs_review", reason: "peer disconnected before delivery settlement" });
+  expect(held?.state).not.toBe("completed");
+  expect(standby.messages.some(row => row.t === "deliver" && row.envs?.some((env: any) => env.body === body))).toBe(false);
+
+  const lateReceipt = await standby.request({ t: "delivery_receipt", deliveryId: delivery.deliveryId, generation: oldGeneration, state: "accepted" });
+  const lateCompletion = await standby.request({ t: "delivery_complete", deliveryId: delivery.deliveryId, generation: oldGeneration });
+  expect(lateReceipt.ok).toBe(false);
+  expect(lateCompletion.ok).toBe(false);
+  expect(f.daemon.bus.queueShow(delivery.deliveryId)?.state).toBe("needs_review");
+  expect(f.daemon.bus.queueList("claude", true).some(row => row.id === delivery.deliveryId && row.state === "completed")).toBe(false);
+});
+
+test("a naturally departing owner promotes the oldest live retained standby", async () => {
+  const f = await fixture();
+  const owner = await f.connect({ retainStandby: true });
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "owner attached");
+  const first = await f.connect({ retainStandby: true, clientPid: 301 });
+  const second = await f.connect({ retainStandby: true, clientPid: 302 });
+  const firstId = first.messages.find(row => row.t === "welcome")?.standbyId;
+  const secondId = second.messages.find(row => row.t === "welcome")?.standbyId;
+  expect(typeof firstId).toBe("string");
+  expect(typeof secondId).toBe("string");
+  owner.socket.close();
+  await until(() => first.messages.some(row => row.t === "peer_attached"), "oldest standby auto-attached");
+  expect(second.messages.some(row => row.t === "peer_attached")).toBe(false);
+  const status = await f.console_.request({ t: "status" });
+  expect(status.status.peers.claude.standbySessions.map((row: { id: string }) => row.id)).toEqual([secondId]);
+});
+
+test("a disconnected standby is removed and an exact stale id cannot detach its owner", async () => {
+  const f = await fixture();
+  const owner = await f.connect({ retainStandby: true });
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "owner attached");
+  const standby = await f.connect({ retainStandby: true });
+  const id = standby.messages.find(row => row.t === "welcome")?.standbyId;
+  standby.socket.close();
+  await until(() => standby.closed() !== undefined, "standby disconnected");
+  const status = await f.console_.request({ t: "status" });
+  expect(status.status.peers.claude.standbySessions).toBeUndefined();
+  const result = await f.console_.request({ t: "peer_takeover", peer: "claude", standbyId: id });
+  expect(result.ok).toBe(false);
+  expect(owner.closed()).toBeUndefined();
+  expect(f.daemon.bus.stateOf("claude")).toBe("idle");
+});
+
+test("a standby whose managed Claude launch became stale cannot take over the current owner", async () => {
+  const f = await fixture();
+  writeFileSync(join(f.stateDir, "claude-launch.json"), JSON.stringify({ instanceId: f.instanceId, launchId: "recorded-launch" }));
+  const owner = await f.connect({ retainStandby: true, launchId: "recorded-launch" });
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "owner attached");
+  const standby = await f.connect({ retainStandby: true, launchId: "recorded-launch" });
+  const id = standby.messages.find(row => row.t === "welcome")?.standbyId;
+  writeFileSync(join(f.stateDir, "claude-launch.json"), JSON.stringify({ instanceId: f.instanceId, launchId: "new-launch" }));
+  const result = await f.console_.request({ t: "peer_takeover", peer: "claude", standbyId: id });
+  expect(result.ok).toBe(false);
+  expect(result.error).toContain("standby");
+  expect(owner.closed()).toBeUndefined();
+  expect(standby.closed()).toBeUndefined();
+  expect(f.daemon.bus.stateOf("claude")).toBe("idle");
+});
+
+test("takeover skips the oldest stale launch and promotes the next eligible live standby", async () => {
+  const f = await fixture();
+  const owner = await f.connect({ retainStandby: true });
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "owner attached");
+  const stale = await f.connect({ retainStandby: true, launchId: "stale-launch" });
+  const eligible = await f.connect({ retainStandby: true, launchId: "current-launch" });
+  const staleId = stale.messages.find(row => row.t === "welcome")?.standbyId;
+  const eligibleId = eligible.messages.find(row => row.t === "welcome")?.standbyId;
+  writeFileSync(join(f.stateDir, "claude-launch.json"), JSON.stringify({ instanceId: f.instanceId, launchId: "current-launch" }));
+
+  const result = await f.console_.request({ t: "peer_takeover", peer: "claude" });
+  expect(result).toMatchObject({ ok: true, outcome: "requested", standbyId: eligibleId });
+  await until(() => eligible.messages.some(row => row.t === "peer_attached"), "eligible standby attached");
+  expect(owner.closed()).toBe(4405);
+  expect(stale.messages.some(row => row.t === "peer_attached")).toBe(false);
+  const status = await f.console_.request({ t: "status" });
+  expect(status.status.peers.claude.standbySessions.map((row: { id: string }) => row.id)).toEqual([staleId]);
+});
+
+test("a selected standby that disconnects during its preface cannot attach later", async () => {
+  let block = false, releaseCurrent!: () => void, markEntered!: () => void;
+  let gate = Promise.resolve(), entered = Promise.resolve();
+  const memory = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    if (new URL(req.url).pathname === "/api/health") return Response.json({ status: "ok", version: "13.25.1" });
+    if (new URL(req.url).pathname === "/api/context/inject" && block) { markEntered(); await gate; }
+    return new Response("# claude-mem status\n\nThis project has no memory yet.\n");
+  } }); cleanup.push(() => memory.stop(true));
+  const f = await fixture(`http://127.0.0.1:${memory.port}`);
+  const owner = await f.connect({ retainStandby: true });
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "owner attached");
+  const standby = await f.connect({ retainStandby: true });
+  const id = standby.messages.find(row => row.t === "welcome")?.standbyId;
+  gate = new Promise<void>(resolve => { releaseCurrent = resolve; });
+  entered = new Promise<void>(resolve => { markEntered = resolve; });
+  block = true;
+  const handover = f.console_.request({ t: "peer_takeover", peer: "claude", standbyId: id });
+  await entered;
+  standby.socket.close();
+  await until(() => standby.closed() !== undefined, "selected standby disconnected");
+  releaseCurrent();
+  await handover;
+  await until(() => f.daemon.bus.stateOf("claude") === "offline", "no stale standby attached");
+  expect(standby.messages.some(row => row.t === "peer_attached")).toBe(false);
+  expect(f.daemon.bus.peers.get("claude")?.ownsSocket?.(standby.socket)).toBe(false);
+  expect(owner.closed()).toBe(4405);
+});
+
+test("a newer claim fences a selected standby's asynchronous preface", async () => {
+  let block = false, releaseCurrent!: () => void, markEntered!: () => void;
+  let gate = Promise.resolve(), entered = Promise.resolve();
+  const memory = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    if (new URL(req.url).pathname === "/api/health") return Response.json({ status: "ok", version: "13.25.1" });
+    if (new URL(req.url).pathname === "/api/context/inject" && block) { markEntered(); await gate; }
+    return new Response("# claude-mem status\n\nThis project has no memory yet.\n");
+  } }); cleanup.push(() => memory.stop(true));
+  const f = await fixture(`http://127.0.0.1:${memory.port}`);
+  const owner = await f.connect({ retainStandby: true });
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "owner attached");
+  const standby = await f.connect({ retainStandby: true });
+  const id = standby.messages.find(row => row.t === "welcome")?.standbyId;
+  gate = new Promise<void>(resolve => { releaseCurrent = resolve; });
+  entered = new Promise<void>(resolve => { markEntered = resolve; });
+  block = true;
+  const handover = f.console_.request({ t: "peer_takeover", peer: "claude", standbyId: id });
+  await entered;
+  const newer = await f.connect();
+  await until(() => (f.daemon.bus.peers.get("claude") as any).claiming, "newer claim recorded");
+  releaseCurrent();
+  await handover;
+  await until(() => f.daemon.bus.stateOf("claude") === "idle", "newer claim attached");
+  expect(standby.messages.some(row => row.t === "peer_attached")).toBe(false);
+  expect(standby.closed()).toBe(4000);
+  expect(newer.closed()).toBeUndefined();
+  expect(f.daemon.bus.peers.get("claude")?.ownsSocket?.(standby.socket)).toBe(false);
+  await settle(f, newer, "newer claim kept after stale preface");
+  expect(owner.closed()).toBe(4405);
+});
+
 test("#551 two valid sessions: standby retries across 61 seconds of logical backoff never displace a busy owner", async () => {
   const f = await fixture();
   writeFileSync(join(f.stateDir, "claude-launch.json"), JSON.stringify({ instanceId: f.instanceId, launchId: "valid-launch" }));

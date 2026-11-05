@@ -3150,6 +3150,38 @@ them while the hub was down does not keep the short list (#490). A status probe
 that is unavailable right after a restart is retried, then the list is
 announced anyway.
 
+### Hand a peer to a standby session (#1174)
+
+`ahub status` lists live standby connections with their connection identity and
+reported PID when available. From the person's terminal, request a handover:
+
+```sh
+ahub peer takeover claude
+```
+
+The Peers panel in `ahub console` offers the same takeover action with `o`. An explicit
+console selection stays bound to the displayed standby id; the CLI's peer-only
+form chooses the oldest eligible live standby. The result reports that a claim
+was requested. Refresh status to confirm attachment. If no eligible standby
+remains, the command refuses without detaching the current owner.
+
+Use `ahub peer takeover claude <standby-id>` to select the exact connection shown
+by status. If a request times out, inspect status before retrying; the handover
+may already have started.
+
+This detaches the old hub connection, not its native process. The old plugin's
+next hub tool explains that the person detached it; it cannot reconnect and take
+the peer back. Unconfirmed deliveries follow their normal settlement rules, and
+takeover itself never marks them completed. A reported PID or connection UUID is
+not native session or permission evidence. Agent and delegated live-test writes
+are refused by the same person-only path.
+
+A previous plugin may display a generic terminal-admission refusal after takeover;
+run `ahub setup` and restart that plugin for the specific person-detachment text.
+With an older daemon the plugin keeps the prior standby reconnect behavior, and
+an unsupported takeover request names the unavailable operation. No live account
+or native process handover is certified by the fixture tests.
+
 ### Replaced or ended Claude sessions (#551)
 
 A replaced session says it is standing by. Its reconnect requests cannot reclaim

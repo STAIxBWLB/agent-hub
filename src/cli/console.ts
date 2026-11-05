@@ -16,6 +16,7 @@ import { activeNotice, consoleFooterRows } from "./console-state.ts";
 import { pasteFlow, questionRows } from "./console-question.ts";
 import { characterAttentionLine } from "./attention.ts";
 import { projectRoomStatus } from "../rooms/status.ts";
+import { LIVE_TEST_PERSON_REFUSAL } from "./identity.ts";
 
 export interface ConsoleTerminal {
   columns: number; rows: number; isTTY: boolean; isRaw?: boolean;
@@ -369,6 +370,29 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!active) return;
       if (result.ok === false) notice(String(result.error ?? "the answer was refused"));
       else notify(state, `answered ${action.set}`, Date.now(), "success");
+      await refresh(); draw(); return;
+    }
+    if (action.type === "peer_takeover") {
+      if (options.liveTest) { notice(LIVE_TEST_PERSON_REFUSAL); draw(); return; }
+      let result: any;
+      try { result = await client.request({ t: "peer_takeover", peer: action.peer, standbyId: action.standbyId }, 5000); }
+      catch {
+        notice("peer takeover result is unconfirmed; inspect ahub status before retrying; takeover may already have started");
+        await refresh(); draw(); return;
+      }
+      if (!active) return;
+      const transportError = String(result.error ?? "");
+      if (result.ok === false && (transportError === "hub connection closed" || transportError === "hub request could not be sent" || /^no answer from the hub within \d+ s$/.test(transportError))) {
+        notice("peer takeover result is unconfirmed; inspect ahub status before retrying; takeover may already have started");
+        await refresh(); draw(); return;
+      }
+      if (result.ok !== true) notice(String(result.error ?? "peer takeover was refused"));
+      else if (result.outcome !== "requested" || result.standbyId !== action.standbyId) notice("peer takeover result was not confirmed; refresh ahub status");
+      else {
+        const message = `${action.peer}: old session detached; standby attachment requested`;
+        stream({ text: message, peer: action.peer, kind: "peer_takeover", tone: "attention" });
+        notify(state, message, Date.now(), "attention");
+      }
       await refresh(); draw(); return;
     }
     if (action.type === "permit") {
