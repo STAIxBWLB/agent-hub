@@ -489,6 +489,7 @@ test("incoming person accept/discard are local settled metadata, never admission
 
 test("a dispatching application without any broker stored ACK expires at its durable handoff deadline", async () => {
   const f = await pair(), q = await queued(f, chat(), { ackTimeoutMs: 100, ttlMs: 1000 }), deadline = f.now() + 100;
+  expect(q.outgoing.ackDeadline).toBe(deadline);
   expect(q.outgoing).toMatchObject({ state: "dispatching", ackDeadline: deadline });
   f.advance(99); expect(f.owner.expireApplications("work")).toEqual([]);
   f.advance(1);
