@@ -3,6 +3,7 @@ import { lstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BasePeer, type OwnedToolsLaunch } from "../hub/peers.ts";
+import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import { frame, type Envelope } from "../hub/envelope.ts";
 import { realPath } from "../hub/project.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES } from "../hub/hub-tools.ts";
@@ -142,12 +143,12 @@ export class ClaudeImplementerPeer extends BasePeer {
     this.command = command; this.binding = binding; this.setState("idle");
   }
   async stop(reason = "Claude implementer stopped before settlement"): Promise<void> { return this.cancel(reason, "offline"); }
-  protected override onWatchdog(): void { void this.cancel("Claude implementer watchdog timeout", "idle").catch(() => {}); }
-  private settle(state: "completed" | "failed_safe" | "needs_review", reason?: string): void {
+  protected override onWatchdog(): void { void this.cancel("Claude implementer watchdog timeout", "idle", "timeout").catch(() => {}); }
+  private settle(state: "completed" | "failed_safe" | "needs_review", reason?: string, failureCause?: DeliveryFailureCause): void {
     const id = this.deliveryId; this.deliveryId = undefined;
-    if (id) this.delivery({ id, state, ...(reason ? { reason } : {}) });
+    if (id) this.delivery({ id, state, ...(reason ? { reason } : {}), ...(failureCause ? { failureCause } : {}) });
   }
-  private cancel(reason: string, next: "idle" | "offline"): Promise<void> {
+  private cancel(reason: string, next: "idle" | "offline", failureCause?: DeliveryFailureCause): Promise<void> {
     if (this.stopping) {
       if (next === "offline") this.stoppingTarget = "offline";
       return this.stopping;
@@ -155,7 +156,7 @@ export class ClaudeImplementerPeer extends BasePeer {
     this.stoppingTarget = next;
     ++this.generation; this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined; this.abort?.abort(); this.clearWatchdog();
     discardFailureTrace(this.failureTrace); this.failureTrace = undefined;
-    this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);
+    this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason, failureCause);
     if (this.owned || this.running) this.setState("busy");
     const work: Promise<void> = Promise.resolve().then(async () => {
       if (this.owned) await this.owned.stop(); // Retain handle/busy if group cleanup fails.

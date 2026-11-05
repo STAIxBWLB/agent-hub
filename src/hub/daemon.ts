@@ -2552,7 +2552,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const handedOver = row.outcome === "queued" && !bus.queueIds(row.target).includes(row.id);
       if (row.outcome === "queued" && !handedOver) withdrawInvocation(row, "expired", "the target did not receive it before the deadline; nothing ran");
       else {
-        if (row.class !== "read" || invocations.relay(row.id)) bus.holdInvocation(row.id, "invocation result deadline passed; outcome is uncertain", row.target);
+        if (row.class !== "read" || invocations.relay(row.id)) bus.holdInvocation(row.id, "invocation result deadline passed; outcome is uncertain", row.target, "timeout");
         finishInvocation(row, row.class === "read" && !invocations.relay(row.id) ? "timeout" : "needs_review", { reason: row.class === "read" && !invocations.relay(row.id) ? "the target received it but gave no result before the deadline; it may still run" : "the target received it but gave no result before the deadline; check it by hand" });
       }
     }
@@ -5949,7 +5949,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const peerIds = byKind(statusPeerIds(taskNeeds));
     const queueBackpressure = tasks.queuePressureStatus(peerIds);
     const crashLines = crashView();
+    const deliveryFailures = bus.failedDeliveryCounts();
     const view = {
+    ...(deliveryFailures ? { deliveryFailures } : {}),
     ...(queueBackpressure ? { queueBackpressure } : {}),
     ...(crashLines.length ? { crash: crashLines } : {}),
     projectId,
@@ -7943,6 +7945,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const privateDelivery = originals.some((env) => env.private || publicOnly && env.refs?.task && (()=>{const task=board.get(Number(env.refs!.task));return !task || tasks.isPii(task);})());
     return {
       id: row.id, peer: row.peer, state: row.state, revision: row.revision,
+      ...(row.failureCause ? { failureCause: row.failureCause } : {}),
       ...roomChat.evidence(row.peer, row.id),
       ...(detail && bus.deliveryResolution(row.id) ? { resolvedBy: bus.deliveryResolution(row.id) } : {}),
       ...(!membershipAllowed(row.peer) ? { rostered: false, holdReason: "off roster" } : {}),
@@ -10041,7 +10044,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "peer" || !isWsPeer(peer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId) || !["accepted", "needs_review", "failed_safe"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
         if (msg.state === "failed_safe" && (!peer.pullOnly || bus.queueShow(msg.deliveryId)?.state !== "dispatching")) return void reply({ ok: false, error: "safe failure requires an unseen push to a pull-only session" });
         const reason = typeof msg.reason === "string" ? sanitize(msg.reason).replace(/\s+/g, " ").trim().slice(0, 300) : "";
-        bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state !== "accepted" ? { reason: reason || "Claude bridge could not confirm notification delivery" } : {}) });
+        bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state !== "accepted" ? { reason: reason || "Claude bridge could not confirm notification delivery", failureCause: msg.state === "failed_safe" ? "adapter refused" : "push error" } : {}) });
         return void reply({ ok: true });
       }
       case "inbox": {

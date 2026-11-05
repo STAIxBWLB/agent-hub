@@ -1566,16 +1566,16 @@ var init_reviewer_print = __esm(() => {
       this.setState("offline");
     }
     onWatchdog() {
-      this.abortReview("review watchdog timeout");
+      this.abortReview("review watchdog timeout", "timeout");
     }
-    abortReview(reason) {
+    abortReview(reason, failureCause) {
       const generation = ++this.generation, batch = this.batch, preparation = this.preparation;
       this.reviewing = undefined;
       this.reviewMcpClose?.();
       this.receipt = undefined;
       this.clearWatchdog();
       preparation?.abort.abort();
-      this.settle("needs_review", reason);
+      this.settle("needs_review", reason, failureCause);
       (async () => {
         if (preparation)
           await preparation.done.catch(() => {});
@@ -1909,11 +1909,11 @@ ${facts}` : ""}`;
           } catch {}
       }
     }
-    settle(state, reason) {
+    settle(state, reason, failureCause) {
       const id = this.activeDeliveryId;
       this.activeDeliveryId = undefined;
       if (id)
-        this.delivery({ id, state, ...reason ? { reason } : {} });
+        this.delivery({ id, state, ...reason ? { reason } : {}, ...failureCause ? { failureCause } : {} });
     }
     async kill() {
       this.reviewing = undefined;
@@ -3670,8 +3670,8 @@ ${renderDigest(envs, false)}` }] });
       this.activeLegacy = undefined;
       const durable = !!this.activeDeliveryId;
       if (this.activeDeliveryId)
-        this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout" });
-      this.settleSteers("needs_review", "ACP turn watchdog timeout");
+        this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout", failureCause: "timeout" });
+      this.settleSteers("needs_review", "ACP turn watchdog timeout", "timeout");
       this.activeDeliveryId = undefined;
       this.notify("session/cancel", { sessionId: this.sessionId });
       this.turn++;
@@ -3726,11 +3726,11 @@ ${renderDigest(envs, false)}` }] });
         this.delivery({ id: deliveryId, state: "accepted" });
       }
     }
-    settleSteers(state, reason) {
+    settleSteers(state, reason, failureCause) {
       const ids = this.steerIds;
       this.steerIds = [];
       for (const id of ids)
-        this.delivery({ id, state, ...state === "needs_review" ? { reason: reason ?? "steered turn did not complete normally" } : {} });
+        this.delivery({ id, state, ...state === "needs_review" ? { reason: reason ?? "steered turn did not complete normally", ...failureCause ? { failureCause } : {} } : {} });
     }
     acceptDelivery() {
       if (!this.activeDeliveryId || this.deliveryAccepted)
@@ -4126,7 +4126,7 @@ var init_codex_appserver = __esm(() => {
       return new Promise((resolve, reject) => {
         let invalidated = false;
         const retiredAtCancel = new Set;
-        const invalidate = (reason) => {
+        const invalidate = (reason, failureCause) => {
           if (invalidated)
             return;
           invalidated = true;
@@ -4135,7 +4135,7 @@ var init_codex_appserver = __esm(() => {
               retiredAtCancel.add(turn);
           envs = [];
           if (deliveryId)
-            this.delivery({ id: deliveryId, state: "needs_review", reason });
+            this.delivery({ id: deliveryId, state: "needs_review", reason, ...failureCause ? { failureCause } : {} });
           reject(new Error(reason));
         };
         this.pending.set(id, {
@@ -4212,10 +4212,10 @@ ${renderDigest(envs, false)}`;
           clearTimeout(timer);
           this.steers.delete(id);
         };
-        const fail = (e) => {
+        const fail = (e, failureCause) => {
           settle();
           if (deliveryId)
-            this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
+            this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message, ...failureCause ? { failureCause } : {} });
           reject(e);
         };
         this.pending.set(id, {
@@ -4228,7 +4228,7 @@ ${renderDigest(envs, false)}`;
             timer = setTimeout(() => {
               const pending = this.pending.get(id);
               this.pending.delete(id);
-              pending?.reject(new Error("steer unanswered: RPC timeout"));
+              pending?.reject(new Error("steer unanswered: RPC timeout"), "timeout");
             }, this.opts.steerTimeoutMs ?? 1e4);
             timer.unref?.();
           } : undefined,
@@ -4290,21 +4290,21 @@ ${renderDigest(envs, false)}`;
       for (const turnId of known)
         this.retireTurn(turnId);
       for (const pending of pendingStarts)
-        pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed");
+        pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed", "timeout");
       this.activeTurns.clear();
       this.unboundAccepted = false;
       for (const ids of this.turnDeliveries.values())
         for (const id of ids)
-          this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
+          this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout", failureCause: "timeout" });
       for (const id of this.unboundDeliveries)
-        this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
+        this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout", failureCause: "timeout" });
       this.turnDeliveries.clear();
       this.unboundDeliveries.clear();
       this.injected = undefined;
       this.answering = [];
       this.lastAnswer = "";
       this.deltas.clear();
-      this.abandonSteers("turn went silent");
+      this.abandonSteers("turn went silent", "timeout");
       if (this.unidentifiedCancellation)
         this.setState("offline");
       else
@@ -4316,11 +4316,11 @@ ${renderDigest(envs, false)}`;
       if (this.link?.up.readyState === WebSocket.OPEN)
         this.link.up.send(JSON.stringify({ method: "turn/interrupt", id: this.nextId--, params: { threadId: this.threadId, turnId } }));
     }
-    abandonSteers(reason) {
+    abandonSteers(reason, failureCause) {
       for (const id of this.steers) {
         const p = this.pending.get(id);
         this.pending.delete(id);
-        p?.reject(new Error(`steer unanswered: ${reason}`));
+        p?.reject(new Error(`steer unanswered: ${reason}`), failureCause);
       }
     }
     endSteers(turnId) {
@@ -8044,14 +8044,14 @@ var init_pi = __esm(() => {
       if (!snapshot.idle)
         this.clearWatchdog();
     }
-    async stop(reason) {
+    async stop(reason, failureCause) {
       if (reason !== undefined)
         this.requestedStopReason = reason;
       this.rosterEpoch++;
       this.terminalOwnerObservation = undefined;
       this.stopping = true;
       for (const id of this.activeDeliveryIds)
-        this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement" });
+        this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement", ...failureCause ? { failureCause } : {} });
       this.activeDeliveryIds.clear();
       const settling = this.abortTools();
       let unsettled;
@@ -8734,11 +8734,11 @@ var init_pi = __esm(() => {
       this.opts.log?.(`[${this.id}] approval turn abort unsupported; Pi goes offline. Restart with ahub pi and settle the held delivery after inspecting prior work.`);
       await this.terminateFailedTurn(new ApprovalWaitStop(reason));
     }
-    async terminateFailedTurn(error) {
+    async terminateFailedTurn(error, failureCause) {
       const envs = this.activeEnvs.slice(), reply = this.currentReply;
       this.stopping = true;
       try {
-        await this.stop();
+        await this.stop(undefined, failureCause);
         if (this.activeEnvs.length)
           this.fail(error);
       } catch (stopError) {
@@ -8762,7 +8762,7 @@ var init_pi = __esm(() => {
         this.touch();
         return;
       }
-      this.terminateFailedTurn(new Error("Pi run became inactive before agent_settled"));
+      this.terminateFailedTurn(new Error("Pi run became inactive before agent_settled"), "timeout");
     }
   };
 });
@@ -13604,7 +13604,7 @@ var init_local_worker = __esm(() => {
     onWatchdog() {
       this.endRouteTurn(this.labelTurnId, "failed");
       if (this.activeDeliveryId)
-        this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn watchdog timeout" });
+        this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn watchdog timeout", failureCause: "timeout" });
       this.activeDeliveryId = undefined;
       this.turn++;
       clearTimeout(this.budgetTimer);
@@ -14317,15 +14317,15 @@ var init_claude_implementer = __esm(() => {
       return this.cancel(reason, "offline");
     }
     onWatchdog() {
-      this.cancel("Claude implementer watchdog timeout", "idle").catch(() => {});
+      this.cancel("Claude implementer watchdog timeout", "idle", "timeout").catch(() => {});
     }
-    settle(state, reason) {
+    settle(state, reason, failureCause) {
       const id = this.deliveryId;
       this.deliveryId = undefined;
       if (id)
-        this.delivery({ id, state, ...reason ? { reason } : {} });
+        this.delivery({ id, state, ...reason ? { reason } : {}, ...failureCause ? { failureCause } : {} });
     }
-    cancel(reason, next) {
+    cancel(reason, next, failureCause) {
       if (this.stopping) {
         if (next === "offline")
           this.stoppingTarget = "offline";
@@ -14340,7 +14340,7 @@ var init_claude_implementer = __esm(() => {
       this.clearWatchdog();
       discardFailureTrace(this.failureTrace);
       this.failureTrace = undefined;
-      this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);
+      this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason, failureCause);
       if (this.owned || this.running)
         this.setState("busy");
       const work = Promise.resolve().then(async () => {

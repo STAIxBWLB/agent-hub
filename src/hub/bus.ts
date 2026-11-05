@@ -1,3 +1,4 @@
+import { isDeliveryFailureCause, type DeliveryFailureCause } from "./delivery-failure.ts";
 import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { remoteEnvelope, appendNote, DIGEST, frame, HUB, USER, isInvocationKind, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
@@ -227,7 +228,7 @@ export class Bus {
   }
 
   /** Hold the existing delivery rather than cancelling native work or replaying an uncertain effect. */
-  holdInvocation(id: string, reason: string, target?: PeerId): void {
+  holdInvocation(id: string, reason: string, target?: PeerId, failureCause?: DeliveryFailureCause): void {
     const delivery = this.invocationDeliveries.get(id), row = delivery && this.journal?.get(delivery);
     if (!row || !this.journal) {
       this.storageError = "uncertain invocation delivery evidence unavailable; inspect the invocation ledger before recovery";
@@ -235,7 +236,7 @@ export class Bus {
       this.onQueues?.();
       return;
     }
-    this.journal.transition(row.id, "needs_review", reason);
+    this.journal.transition(row.id, "needs_review", reason, undefined, failureCause ?? row.failureCause ?? "turn aborted");
     this.activeDeliveries.delete(row.id);
     this.recoveryHeldPeers.add(row.peer);
     this.onQueues?.();
@@ -398,7 +399,7 @@ export class Bus {
           if (owner !== peer.id) continue;
           const row = this.journal.get(deliveryId);
           if (row && row.originals.some((e) => envs.some((incoming) => incoming.id === e.id))) {
-            this.deliveryReceipt(peer.id, { id: deliveryId, state: "needs_review", reason: "adapter reported delivery failure without safe-failure evidence" });
+            this.deliveryReceipt(peer.id, { id: deliveryId, state: "needs_review", reason: "adapter reported delivery failure without safe-failure evidence", failureCause: failure?.failureCause ?? "turn aborted" });
           }
         }
       } else if (!remoteId(peer.id) && envs.some(env => env.kind === "invocation")) {
@@ -411,7 +412,7 @@ export class Bus {
       if (this.closed) return;
       if (this.peers.get(peer.id) !== peer) return;
       if (peer.state === "offline" && this.journal) {
-        for (const [id, owner] of [...this.activeDeliveries]) if (owner === peer.id) this.uncertain(peer.id, id, "peer disconnected before delivery settlement");
+        for (const [id, owner] of [...this.activeDeliveries]) if (owner === peer.id) this.uncertain(peer.id, id, "peer disconnected before delivery settlement", "peer offline");
       }
       this.emit({ t: "state", peer: peer.id, state: this.stateOf(peer.id) });
       void this.drain(peer.id);
@@ -649,6 +650,13 @@ export class Bus {
     return ids.flatMap((p) => (this.queues.get(p) ?? []).map((e) => ({ id: e.id, peer: p, state: "queued" as const, revision: 0, createdAt: e.ts, updatedAt: e.ts, originals: [e], out: [e] })));
   }
 
+  /** Metadata only: status must not hydrate or sort retained delivery payloads. */
+  failedDeliveryCounts(): Record<string, number> | undefined {
+    if (this.closed || this.storageError || !this.journal) return undefined;
+    try { return this.journal.unresolvedFailedCounts(); }
+    catch { this.storageError = "delivery journal unavailable"; return undefined; }
+  }
+
   queueShow(id: string): JournalDelivery | undefined { return this.journal?.get(id) ?? this.queueList().find((d) => d.id === id); }
 
   heldDeliveryHints(peer: string, includeAccepted = false) {
@@ -680,7 +688,7 @@ export class Bus {
         if (!current || current.peer !== row.peer || current.state !== "accepted" || current.revision !== row.revision) continue;
         let updated: JournalDelivery;
         try {
-          updated = this.journal.transition(row.id, "needs_review", ACCEPTED_SETTLE_TIMEOUT_REASON, row.revision);
+          updated = this.journal.transition(row.id, "needs_review", ACCEPTED_SETTLE_TIMEOUT_REASON, row.revision, "timeout");
         } catch (error) {
           if (error instanceof Error && /stale delivery revision/.test(error.message)) continue;
           this.storageError = "delivery journal unavailable";
@@ -872,7 +880,7 @@ export class Bus {
     if (this.peers.get(peer)?.remoteRoom !== undefined && receipt.state === "failed_safe") {
       // A signed recipient NACK is a terminal known refusal, not a failed native
       // turn eligible for poison retries. It records no recipient read evidence.
-      this.journal.transition(id, "failed", receipt.reason ?? "remote recipient refused safely");
+      this.journal.transition(id, "failed", receipt.reason ?? "remote recipient refused safely", undefined, "adapter refused");
       this.activeDeliveries.delete(id);
       if (this.remoteTransport.get(id)?.peer === peer) this.remoteTransport.delete(id);
       for (const env of before?.originals ?? []) { this.attempts.delete(`${peer}:${env.id}`); this.remoteQueueExpires.get(peer)?.delete(env.id); }
@@ -889,7 +897,15 @@ export class Bus {
     const state: JournalDeliveryState = receipt.state === "accepted" ? "accepted" : receipt.state === "completed" ? "completed" : receipt.state === "failed_safe" ? "failed" : "needs_review";
     if (!remoteId(peer) && (state === "failed" || state === "needs_review")) this.deliveryFailed(peer);
     if (state === "completed" && !remoteId(peer)) this.journal.completeDelivered(id, peer, "adapter", receipt.reason);
-    else this.journal.transition(id, state, receipt.reason);
+    else {
+      let cause: DeliveryFailureCause | undefined;
+      if (state === "failed" || state === "needs_review") {
+        cause = isDeliveryFailureCause(receipt.failureCause) ? receipt.failureCause : undefined;
+        if (!cause && state === "failed") cause = this.stateOf(peer) === "offline" ? "peer offline" : "adapter refused";
+        if (!cause) cause = "turn aborted";
+      }
+      this.journal.transition(id, state, receipt.reason, undefined, cause);
+    }
     if (!remoteId(peer) && before?.state === "dispatching" && (state === "accepted" || state === "completed")) {
       this.memoryDelivery(peer, id, before.out, "delivered", before.originals);
       this.delivered(peer, before.originals, id);
@@ -1161,8 +1177,9 @@ export class Bus {
         const index = queue.findIndex(item => item.id === env.id);
         if (index >= 0) queue.splice(index, 1);
         const known = this.remoteQueueExpires.get(peer)?.has(env.id);
+        const failureCause: DeliveryFailureCause = known && this.remoteQueueRooms.has(peer) && this.remoteQueueMembers.has(peer) ? "timeout" : "push error";
         this.remoteQueueExpires.get(peer)?.delete(env.id);
-        this.pendingOutcomes.push({ id: crypto.randomUUID(), peer, state: "needs_review", createdAt: now, originals: [env], out: [env], reason: !known ? "remote queue expiry unavailable after restore" : !this.remoteQueueRooms.has(peer) ? "remote queue room binding unavailable after restore" : !this.remoteQueueMembers.has(peer) ? "remote queue member binding unavailable after restore" : "remote queue expired before recipient admission" });
+        this.pendingOutcomes.push({ id: crypto.randomUUID(), peer, state: "needs_review", createdAt: now, originals: [env], out: [env], failureCause, reason: !known ? "remote queue expiry unavailable after restore" : !this.remoteQueueRooms.has(peer) ? "remote queue room binding unavailable after restore" : !this.remoteQueueMembers.has(peer) ? "remote queue member binding unavailable after restore" : "remote queue expired before recipient admission" });
       }
       this.persist();
     } catch (error) {
@@ -1243,7 +1260,7 @@ export class Bus {
     if (env.to?.includes(peer) !== true) return false;
     const expiry = this.remoteQueueExpires.get(peer)?.get(env.id);
     if (expiry === undefined || expiry <= Date.now()) {
-      this.deliveryReceipt(peer, { id: deliveryId, state: "needs_review", reason: expiry === undefined ? "remote queue expiry unavailable after restore" : "remote queue expired before recipient admission" });
+      this.deliveryReceipt(peer, { id: deliveryId, state: "needs_review", failureCause: expiry === undefined ? "push error" : "timeout", reason: expiry === undefined ? "remote queue expiry unavailable after restore" : "remote queue expired before recipient admission" });
       return true;
     }
     const queue = this.queues.get(peer) ?? [], beforeQueue = [...queue];
@@ -1292,7 +1309,7 @@ export class Bus {
   }
 
   private holdRemoteDeliveryMetadata(peer: PeerId, row: JournalDelivery, reason: string): boolean {
-    try { this.journal!.transition(row.id, "needs_review", reason, row.revision); }
+    try { this.journal!.transition(row.id, "needs_review", reason, row.revision, row.failureCause ?? "push error"); }
     catch (error) {
       if (error instanceof Error && /stale delivery revision|unknown delivery|already has a person disposition/.test(error.message)) return false;
       this.storageError = "delivery journal unavailable";
@@ -1471,7 +1488,7 @@ export class Bus {
           const steerResult = this.journal ? peer.steer([env], deliveryId) : peer.steer([env]);
           steerResult.then(() => { this.delivered(id, [env]); }).catch(() => {
             this.deliveryFailed(id);
-            if (this.journal) this.journal.transition(deliveryId, "needs_review", "adapter steering outcome is uncertain");
+            if (this.journal) this.journal.transition(deliveryId, "needs_review", "adapter steering outcome is uncertain", undefined, "push error");
             this.activeDeliveries.delete(deliveryId);
             if (!this.journal) this.enqueue(id, env, true);
           }).finally(() => { this.steering--; });
@@ -1787,7 +1804,7 @@ export class Bus {
     if (!remoteId(id) && queue.length > this.opts.queueCap) {
       const victim = queue.findIndex((e) => e.priority !== "important");
       const [lost] = queue.splice(victim === -1 ? 0 : victim, 1);
-      if (this.journal) this.pendingOutcomes.push({ id: crypto.randomUUID(), peer: id, state: "failed", createdAt: Date.now(), originals: [lost!], out: [], reason: "queue capacity exceeded" });
+      if (this.journal) this.pendingOutcomes.push({ id: crypto.randomUUID(), peer: id, state: "failed", createdAt: Date.now(), originals: [lost!], out: [], reason: "queue capacity exceeded", failureCause: "adapter refused" });
       this.emit({ t: "overflow", env: lost!, peer: id });
     }
     if (remoteId(id) && !front) {
@@ -1817,9 +1834,9 @@ export class Bus {
     return Math.max(0, queue[0]!.ts + this.opts.batchMs - Date.now());
   }
 
-  private uncertain(peer: PeerId, deliveryId: string, reason: string): void {
+  private uncertain(peer: PeerId, deliveryId: string, reason: string, failureCause: DeliveryFailureCause = "push error"): void {
     const row = this.journal?.get(deliveryId);
-    if (row && ["dispatching", "accepted"].includes(row.state)) this.deliveryReceipt(peer, { id: deliveryId, state: "needs_review", reason });
+    if (row && ["dispatching", "accepted"].includes(row.state)) this.deliveryReceipt(peer, { id: deliveryId, state: "needs_review", reason, failureCause });
   }
 
   private async steerQueued(id: PeerId, env: Envelope): Promise<void> {

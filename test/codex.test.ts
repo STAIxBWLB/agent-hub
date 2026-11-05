@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { CodexPeer, type CodexOptions } from "../src/adapters/codex-appserver.ts";
 import { Bus } from "../src/hub/bus.ts";
+import type { DeliveryFailureCause } from "../src/hub/delivery-failure.ts";
 import { DIGEST, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { startFakeAppServer } from "./fakes/app-server.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -761,7 +762,7 @@ test("a known steer rejection after native completion remains failed_safe", asyn
 
 async function lateDurableSteerFixture(answer: "accepted" | "silent" | "held", options: Partial<CodexOptions> = {}) {
   const nativeTurns: string[] = [], wire: string[] = [], said: { body: string; opts: any }[] = [];
-  const receipts: { id: string; state: string; reason?: string }[] = [];
+  const receipts: { id: string; state: string; reason?: string; failureCause?: DeliveryFailureCause }[] = [];
   let turns = 0;
   let acceptSteer = () => {}, completeOriginal = () => {}, startOther = () => {};
   const fake = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
@@ -870,7 +871,7 @@ test("an unanswered durable steer stays pending past native completion and holds
     steer.expire(); await steer.result;
     expect(steer.error()).toBe("steer unanswered: RPC timeout");
     expect(steer.timers[0]!.cleared).toBe(true);
-    expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toEqual([{ id: "late-steer", state: "needs_review", reason: "steer unanswered: RPC timeout" }]);
+    expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toEqual([{ id: "late-steer", state: "needs_review", reason: "steer unanswered: RPC timeout", failureCause: "timeout" }]);
   } finally { try { await fixture.stop(); } finally { steer.restore(); } }
 });
 

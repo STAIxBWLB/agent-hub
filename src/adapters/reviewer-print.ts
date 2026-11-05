@@ -3,6 +3,7 @@ import { OwnedPrintChild, PrintChildCleanupError, type OwnedInputContext, type O
 import { randomUUID } from "node:crypto";
 import { HUB, frame, sanitize } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
+import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import type { Envelope } from "../hub/envelope.ts";
 import type { ReviewerMcpSession, ReviewerToolName } from "./reviewer-mcp.ts";
 
@@ -246,16 +247,16 @@ export class ReviewerPrintPeer extends BasePeer {
     this.setState("offline");
   }
 
-  protected override onWatchdog(): void { this.abortReview("review watchdog timeout"); }
+  protected override onWatchdog(): void { this.abortReview("review watchdog timeout", "timeout"); }
 
-  private abortReview(reason: "review watchdog timeout" | "review output limit exceeded" | "review policy changed"): void {
+  private abortReview(reason: "review watchdog timeout" | "review output limit exceeded" | "review policy changed", failureCause?: DeliveryFailureCause): void {
     const generation = ++this.generation, batch = this.batch, preparation = this.preparation;
     this.reviewing = undefined;
     this.reviewMcpClose?.();
     this.receipt = undefined;
     this.clearWatchdog();
     preparation?.abort.abort();
-    this.settle("needs_review", reason);
+    this.settle("needs_review", reason, failureCause);
     // Revoke first, then confirm both preparation and the model's whole group are gone before fallback.
     void (async () => {
       if (preparation) await preparation.done.catch(() => {});
@@ -490,10 +491,10 @@ export class ReviewerPrintPeer extends BasePeer {
     }
   }
 
-  private settle(state: "completed" | "failed_safe" | "needs_review", reason?: string): void {
+  private settle(state: "completed" | "failed_safe" | "needs_review", reason?: string, failureCause?: DeliveryFailureCause): void {
     const id = this.activeDeliveryId;
     this.activeDeliveryId = undefined;
-    if (id) this.delivery({ id, state, ...(reason ? { reason } : {}) });
+    if (id) this.delivery({ id, state, ...(reason ? { reason } : {}), ...(failureCause ? { failureCause } : {}) });
   }
 
   /** Revokes the verdict authority at once, then stops the child; on failure the handle is kept and the error thrown. */

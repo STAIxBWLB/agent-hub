@@ -266,7 +266,7 @@ export class LocalPeer extends BasePeer {
 
   protected override onWatchdog(): void {
     this.endRouteTurn(this.labelTurnId, "failed");
-    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn watchdog timeout" });
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn watchdog timeout", failureCause: "timeout" });
     this.activeDeliveryId = undefined;
     this.turn++;
     clearTimeout(this.budgetTimer); this.budgetTimer = undefined;

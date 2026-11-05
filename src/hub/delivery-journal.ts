@@ -11,6 +11,7 @@ import { heldDeliveryHints } from "./delivery-hints.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { parseRemotePeerId } from "../rooms/application.ts";
 import { validateDeferredHub } from "./deferred-hub.ts";
+import { isDeliveryFailureCause, type DeliveryFailureCause } from "./delivery-failure.ts";
 
 export type JournalDeliveryState =
   | "queued"
@@ -52,6 +53,7 @@ export interface JournalDelivery {
   originals: Envelope[];
   out: Envelope[];
   reason?: string;
+  failureCause?: DeliveryFailureCause;
   attempt?: number;
   previousId?: string;
 }
@@ -295,6 +297,11 @@ function validateBus(value: unknown, name = "bus"): BusSnapshot {
   if (b.journal !== undefined) fail("nested journal snapshot is invalid");
   return b as unknown as BusSnapshot;
 }
+function checkedFailureCause(value: unknown): DeliveryFailureCause | undefined {
+  if (value === undefined) return undefined;
+  if (!isDeliveryFailureCause(value)) fail("delivery.failureCause is invalid");
+  return value;
+}
 function validateDelivery(value: unknown, name = "delivery"): JournalDelivery {
   const d = obj(value, name);
   text(d.id, `${name}.id`, 256);
@@ -311,6 +318,7 @@ function validateDelivery(value: unknown, name = "delivery"): JournalDelivery {
     validateEnvelope(e, `${name}.out[${i}]`),
   );
   if (d.reason !== undefined) text(d.reason, `${name}.reason`, 1_000_000);
+  const failureCause = checkedFailureCause(d.failureCause);
   if (d.attempt !== undefined) integer(d.attempt, `${name}.attempt`, 0, 100);
   if (d.previousId !== undefined) text(d.previousId, `${name}.previousId`, 256);
   return {
@@ -323,6 +331,7 @@ function validateDelivery(value: unknown, name = "delivery"): JournalDelivery {
     originals,
     out,
     ...(d.reason === undefined ? {} : { reason: d.reason as string }),
+    ...(failureCause === undefined ? {} : { failureCause }),
     ...(d.attempt === undefined ? {} : { attempt: d.attempt as number }),
     ...(d.previousId === undefined
       ? {}
@@ -485,6 +494,8 @@ export class DeliveryJournal {
     this.db.run(
       `CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, peer TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, originals TEXT NOT NULL, out_json TEXT NOT NULL, reason TEXT, attempt INTEGER, previous_id TEXT)`,
     );
+    const deliveryColumns = this.db.query("PRAGMA table_info(deliveries)").all() as { name: string }[];
+    if (!deliveryColumns.some(column => column.name === "failure_cause")) this.db.run("ALTER TABLE deliveries ADD COLUMN failure_cause TEXT");
     this.db.run("CREATE TABLE IF NOT EXISTS review_input_sessions (project_id TEXT NOT NULL, peer TEXT NOT NULL, session_hash TEXT NOT NULL, input_hash TEXT, PRIMARY KEY(project_id,peer,session_hash))");
     this.db.run("CREATE TABLE IF NOT EXISTS review_input_incomplete_peers (project_id TEXT NOT NULL, peer TEXT NOT NULL, PRIMARY KEY(project_id,peer))");
     this.db.run("CREATE TABLE IF NOT EXISTS review_input_incomplete_sessions (project_id TEXT NOT NULL, peer TEXT NOT NULL, session_hash TEXT NOT NULL, PRIMARY KEY(project_id,peer,session_hash))");
@@ -839,7 +850,7 @@ export class DeliveryJournal {
 
     const now = Date.now();
     const update = this.db.query(
-      "UPDATE deliveries SET state = 'needs_review', revision = revision + 1, updated_at = ?, reason = COALESCE(reason, 'daemon stopped during delivery') WHERE project_id = ? AND id = ? AND state IN ('dispatching', 'accepted')",
+      "UPDATE deliveries SET state = 'needs_review', revision = revision + 1, updated_at = ?, reason = COALESCE(reason, 'daemon stopped during delivery'), failure_cause = COALESCE(failure_cause, 'turn aborted') WHERE project_id = ? AND id = ? AND state IN ('dispatching', 'accepted')",
     );
     const active = this.db.query("SELECT id FROM deliveries WHERE project_id = ? AND state IN ('dispatching', 'accepted')").all(this.projectId) as { id: string }[];
     for (const row of active) if (!resumable.has(row.id)) update.run(now, this.projectId, row.id);
@@ -1237,7 +1248,7 @@ export class DeliveryJournal {
       for (const d of deliveries)
         this.db
           .query(
-            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id, failure_cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .run(
             d.id,
@@ -1252,6 +1263,7 @@ export class DeliveryJournal {
             d.reason ?? null,
             d.attempt ?? null,
             d.previousId ?? null,
+            checkedFailureCause(d.failureCause) ?? null,
           );
       this.refreshReviewInputCoverage(true);
       this.harden();
@@ -1303,7 +1315,7 @@ export class DeliveryJournal {
         this.writeQueueMetadata(bus, revision, trackQueuePressure);
         this.db
           .query(
-            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id, failure_cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .run(
             delivery.id,
@@ -1318,6 +1330,7 @@ export class DeliveryJournal {
             delivery.reason ?? null,
             delivery.attempt ?? null,
             delivery.previousId ?? null,
+            checkedFailureCause(delivery.failureCause) ?? null,
           );
         this.harden();
         return { ...delivery, revision, updatedAt: now };
@@ -1340,7 +1353,7 @@ export class DeliveryJournal {
       const updatedAt = input.updatedAt ?? Date.now();
       this.db
         .query(
-          "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id, failure_cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           input.id,
@@ -1355,6 +1368,7 @@ export class DeliveryJournal {
           input.reason ?? null,
           input.attempt ?? null,
           input.previousId ?? null,
+          checkedFailureCause(input.failureCause) ?? null,
         );
       this.pruneTerminal(input.state, input.id);
       return { ...input, revision, updatedAt };
@@ -1409,7 +1423,7 @@ export class DeliveryJournal {
       if (!row || row.peer !== peer || !["needs_review", "dispatching", "accepted"].includes(row.state) || row.originals.length !== 1 || row.originals[0]?.to?.includes(peer) !== true) throw new Error("remote delivery is not unresolved for this peer");
       if (row.revision !== expectedRevision) throw new Error(`stale delivery revision for ${deliveryId}`);
       if (this.db.query("SELECT 1 FROM resolution_history WHERE project_id=? AND delivery_id=? LIMIT 1").get(this.projectId, deliveryId)) throw new Error("remote delivery already has a person disposition");
-      const failed = this.transition(deliveryId, "failed", reason, expectedRevision);
+      const failed = this.transition(deliveryId, "failed", reason, expectedRevision, "adapter refused");
       this.pruneTerminal("failed", "");
       return failed;
     });
@@ -1426,9 +1440,11 @@ export class DeliveryJournal {
     state: JournalDeliveryState,
     reason?: string,
     expectedRevision?: number,
+    failureCause?: DeliveryFailureCause,
   ): JournalDelivery {
     this.ensureOpen();
     if (!STATES.has(state)) throw new Error("invalid delivery state");
+    checkedFailureCause(failureCause);
     return this.transaction(() => {
       const old = this.get(id);
       if (!old) throw new Error(`unknown delivery ${id}`);
@@ -1439,9 +1455,9 @@ export class DeliveryJournal {
       const revision = this.bump();
       this.db
         .query(
-          "UPDATE deliveries SET state = ?, revision = ?, updated_at = ?, reason = ? WHERE id = ? AND project_id = ?",
+          "UPDATE deliveries SET state = ?, revision = ?, updated_at = ?, reason = ?, failure_cause = ? WHERE id = ? AND project_id = ?",
         )
-        .run(state, revision, Date.now(), reason ?? null, id, this.projectId);
+        .run(state, revision, Date.now(), reason ?? null, failureCause ?? old.failureCause ?? null, id, this.projectId);
       this.refreshReviewInputCoverage(true);
       this.pruneTerminal(state, id);
       return this.get(id)!;
@@ -1494,6 +1510,12 @@ export class DeliveryJournal {
     this.ensureOpen();
     const rows = this.db.query("SELECT DISTINCT peer FROM deliveries WHERE project_id = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY peer").all(this.projectId) as { peer: unknown }[];
     return rows.map(row => text(row.peer, "delivery peer", 256));
+  }
+  /** Status counts unresolved failures without reading envelope payloads or terminal history. */
+  unresolvedFailedCounts(): Record<string, number> {
+    this.ensureOpen();
+    const rows = this.db.query("SELECT d.peer,COUNT(*) AS n FROM deliveries d WHERE d.project_id=? AND d.state='failed' AND NOT EXISTS (SELECT 1 FROM resolution_history r WHERE r.project_id=d.project_id AND r.delivery_id=d.id) GROUP BY d.peer").all(this.projectId) as { peer: unknown; n: unknown }[];
+    return Object.fromEntries(rows.map(row => [text(row.peer, "delivery peer", 256), integer(row.n, "unresolved failed count")]));
   }
   /** The queue needs a current revision, not the recovery snapshot's payloads. */
   revision(): number {
@@ -1789,7 +1811,7 @@ export class DeliveryJournal {
       for (const row of snapshot.deliveries)
         this.db
           .query(
-            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO deliveries (id, project_id, peer, state, revision, created_at, updated_at, originals, out_json, reason, attempt, previous_id, failure_cause) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .run(
             row.id,
@@ -1804,6 +1826,7 @@ export class DeliveryJournal {
             row.reason ?? null,
             row.attempt ?? null,
             row.previousId ?? null,
+            checkedFailureCause(row.failureCause) ?? null,
           );
       for (const raw of reviewInputProvenance.holds) {
         const hold = reviewInputHold(raw, "snapshot review input");
@@ -1845,6 +1868,7 @@ function parseDelivery(row: Record<string, unknown>): JournalDelivery {
     originals: JSON.parse(String(row.originals)),
     out: JSON.parse(String(row.out_json)),
     ...(row.reason == null ? {} : { reason: String(row.reason) }),
+    ...(row.failure_cause == null ? {} : { failureCause: row.failure_cause }),
     ...(row.attempt == null ? {} : { attempt: Number(row.attempt) }),
     ...(row.previous_id == null ? {} : { previousId: String(row.previous_id) }),
   });
