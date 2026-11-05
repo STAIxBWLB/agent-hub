@@ -1420,6 +1420,7 @@ export class Bus {
 
   /** Publication outcome distinguishes a policy drop from an empty audience. */
   publishResult(env: Envelope): PublishResult {
+    if (this.closed) return { targets: [] };
     env = this.reviewResponse(env);
     if (this.storageError) throw new Error("delivery journal unavailable");
     if (this.seen.has(env.id) || this.deferredHub.has(env.id)) return { targets: [] };
@@ -1437,6 +1438,7 @@ export class Bus {
   }
 
   private publishNow(env: Envelope): PublishResult {
+    if (this.closed) return { targets: [] };
     if (this.storageError) throw new Error("delivery journal unavailable");
     if (this.seen.has(env.id)) return { targets: [] };
     const rooms = this.checkRemotePublication(env);
