@@ -7,6 +7,7 @@ Scope: quota and native context readings, checkpoints, pause, handoff and resume
 - A reading has its own timestamp. Numbers that arrive through a file (`claude-usage.json`) carry the file's `at`; a window whose `resetsAt` has passed says nothing any more.
 - On resume the notice is published before the peer is released, so it leads the first delivery.
 - The coordinator only lifts its own pauses: `manualPaused` in the daemon keeps a `ahub pause` in place, and `ahub resume` refuses while a budget record is open.
+- `Bus.pause` and `Bus.resume` are transient and write no bus snapshot (#1204): the bus's `paused` set is not in `BusSnapshot`. Each owner persists and re-applies its own pause (`budget_pauses` for a budget record, `setManualPaused` for `ahub pause`, `conductorHolds` for a conductor hold); never restore a pause from the bus snapshot or add a `persist()` back for one.
 - The status line tee must never fail or slow the render: no throw, original command run with the same stdin, 5 s cap.
 
 - Keep native context occupancy (`src/hub/context-window.ts`, readers in `src/adapters/definitions/native-context.ts`) separate from quota accounting; never use Codex's accumulated `total` as occupancy or estimate Pi counters. Host code reads quota and context only through `readNativeQuota` (`budget.ts`) and `readNativeContext` on the resolved definition's declared `budget.reader` / `budget.context`; no declared reader is unknown, never an empty reading (rule: `adapters.md`).
