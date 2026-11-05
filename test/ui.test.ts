@@ -427,7 +427,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
     const $=get;
     const badge=text=>el('span',text),dot=()=>el('span'),peerDot={};
     const empty=(target,text)=>target.append(el('p',text));
-    const peerOptions=()=>{},restoreDraft=()=>{},renderTaskProgress=()=>{},renderApprovals=()=>{},renderBench=()=>{},renderWorktrees=()=>{},renderMemory=()=>{},renderSettings=()=>{},refreshRelativeTimes=()=>{},refreshStreamEmpty=()=>{};
+    const peerOptions=()=>{},restoreDraft=()=>{},renderTaskProgress=()=>{},renderApprovals=()=>{},renderBench=()=>{},renderResults=()=>{},renderWorktrees=()=>{},renderMemory=()=>{},renderSettings=()=>{},refreshRelativeTimes=()=>{},refreshStreamEmpty=()=>{};
     ${actions}
     ${controls}
     ${sync}

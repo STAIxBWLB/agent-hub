@@ -459,6 +459,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <section id="schedules-section" aria-labelledby="schedules-title" data-view="agents" hidden><div class="section-head"><h2 id="schedules-title">Schedules</h2><span id="schedule-count" class="meta"></span></div><div id="schedules"></div></section>
 <section id="rooms-section" aria-labelledby="rooms-title" data-view="agents" data-empty="true" hidden><div class="section-head"><h2 id="rooms-title">Rooms</h2><span id="room-count" class="meta"></span></div><div id="rooms"></div></section>
 <section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
+<section id="results-section" aria-labelledby="results-title" data-view="agents" hidden><div class="section-head"><h2 id="results-title">Results</h2><span id="results-count" class="meta"></span></div><div id="results"></div></section>
 <section aria-labelledby="permissions-title" data-view="agents" hidden><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
 <section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div>
 <div id="usage-content" class="content">
@@ -1929,6 +1930,7 @@ function render(snapshot) {
     }
   });
   renderBench(snapshot.bench);
+  renderResults(snapshot.results);
   renderWorktrees(snapshot.worktrees);
   renderMemory(snapshot.memory, snapshot.memorySync);
   renderSettings(snapshot.settings, snapshot.roster);
@@ -2448,6 +2450,35 @@ let streamFilter = '';
 function applyStreamFilter(node) { node.hidden = streamFilter !== '' && node.dataset.kind !== streamFilter; }
 function refreshStreamEmpty() { const has = $('stream').querySelector('.event:not([hidden])') !== null, any = $('stream').querySelector('.event') !== null; $('stream-empty').hidden = has || !any; }
 // #251: benchmark runs on this machine and arm comparisons per suite. Every bar carries its number as text.
+/* #1054 T6: unread results, the runs a person started that settled and have not been seen. The snapshot only READS them: building this list never marks one read (a poll is not a person
+   looking). A receipt is a person's click: Mark read (one), Mark all read, or Mark last unread again (relights the result read last; it lives here and in `ahub results --unread-last`, never in
+   the acon inbox, because a read item leaves the inbox). The title is `<peer>: <outcome word>` and the detail is what the hub built at display (a stub when private, nothing when the request is no
+   longer held); text is set with textContent only. The acon seeing rule (focus, visibility, a second in view) is the shell's and is not here: this panel's marks are explicit clicks. */
+function renderResults(results) {
+  const unread = results && Array.isArray(results.unread) ? results.unread : [];
+  const more = results && Number.isSafeInteger(results.moreUnread) ? results.moreUnread : 0;
+  $('results-count').textContent = results ? unread.length + more + ' unread' : '';
+  update('results', results === undefined ? null : results, (target) => {
+    if (results === undefined) return empty(target, 'Results are shown to the person on a current snapshot.');
+    const tools = el('div', undefined, 'row-head');
+    if (unread.length) tools.append(button('Mark all read', {action: 'results_read_all'}));
+    if (results.canUnread) tools.append(button('Mark last unread again', {action: 'results_unread_last'}));
+    if (!unread.length) target.append(el('p', 'Nothing unread.', 'meta'));
+    for (const item of unread) {
+      const block = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+      head.append(el('span', String(item.title), 'label'));
+      head.append(badge(String(item.outcome), item.outcome === 'done' ? 'ok' : item.outcome === 'failed' ? 'err' : 'warn'));
+      const stamp = el('span'); if (item.settledAt) { stamp.dataset.ts = String(item.settledAt); stamp.title = time(item.settledAt); stamp.textContent = 'settled ' + rel(item.settledAt); } else stamp.textContent = ''; head.append(stamp);
+      if (Number.isFinite(item.ms)) head.append(el('span', Math.round(item.ms / 1000) + 's', 'meta'));
+      head.append(button('Mark read', {action: 'result_seen', id: String(item.id)}));
+      block.append(head);
+      if (item.detail && (item.detail.kind === 'head' || item.detail.kind === 'stub') && typeof item.detail.text === 'string') block.append(el('p', item.detail.text, 'meta'));
+      target.append(block);
+    }
+    if (more > 0) target.append(el('p', more + ' older unread; run ahub results --unread to list them all.', 'meta'));
+    target.append(tools);
+  });
+}
 /* #1057: the worktree shelf. A panel refresh reads nothing from GitHub: the rows come from the hub's cached facts, and only the explicit 'Refresh PR states' button asks it to read PR states. Removal is never a button: the panel shows the command to run in a terminal. */
 function renderWorktrees(shelf) {
   const live = shelf && Array.isArray(shelf.live) ? shelf.live : [], settled = shelf && Array.isArray(shelf.settled) ? shelf.settled : [];
