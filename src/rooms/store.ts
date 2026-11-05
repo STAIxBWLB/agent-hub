@@ -478,7 +478,7 @@ export class RoomStore {
       if (isTerminal(row.state) ? !validOutcome(row.state, row.reason, row.peer)
         : row.state === "needs_review" && row.reason !== null ? !PERMANENT_OUTGOING_REFUSALS.includes(row.reason)
           : row.reason !== null) fail("corrupt");
-      if (row.disposition !== null && (row.state !== "needs_review" || !["completed", "retry", "discard"].includes(row.disposition))) fail("corrupt");
+      if (row.disposition !== null && (row.state !== "needs_review" && !isTerminal(row.state) || !["completed", "retry", "discard"].includes(row.disposition))) fail("corrupt");
       if (row.late_outcome !== null
         ? !validOutcome(row.late_outcome, row.late_reason, row.peer)
           || row.state !== "needs_review" && (row.state !== row.late_outcome || row.reason !== row.late_reason)
@@ -1151,19 +1151,21 @@ export class RoomStore {
     this.db.query("DELETE FROM application_attempts WHERE room=? AND delivery_id NOT IN (SELECT delivery_id FROM application_outbox WHERE room=?)").run(room, room);
   }
   /** Local disposition follows a successful person Bus resolution; it is never remote completion proof. */
-  disposeApplication(name: string, deliveryId: string, action: "completed" | "retry" | "discard", current?: () => boolean): RoomOutgoing | undefined {
+  disposeApplication(name: string, deliveryId: string, action: "completed" | "retry" | "discard", authoritative: true, current: () => boolean): RoomOutgoing | undefined {
     assertCurrent(current);
     const state = this.get(name); if (!state) return undefined;
+    if (authoritative !== true) fail("untrusted");
     if (!boundedId(deliveryId) || !["completed", "retry", "discard"].includes(action)) fail("invalid");
     return this.transaction(() => {
       assertCurrent(current);
       const row = this.db.query<OutgoingRow, [string, string]>("SELECT * FROM application_outbox WHERE room=? AND delivery_id=?").get(state.current.room, deliveryId);
-      if (!row || row.state !== "needs_review") return undefined;
+      if (!row || !["dispatching", "accepted", "needs_review", "completed", "failed_safe"].includes(row.state)) return undefined;
       if (row.disposition !== null) { if (row.disposition !== action) fail("state_changed"); return outgoing(row); }
-      this.db.query("UPDATE application_outbox SET disposition=? WHERE digest=?").run(action, row.digest);
+      const nextState = row.state === "dispatching" || row.state === "accepted" ? "needs_review" : row.state;
+      this.db.query("UPDATE application_outbox SET state=?,disposition=? WHERE room=? AND delivery_id=?").run(nextState, action, row.room, row.delivery_id);
       this.db.query("DELETE FROM outbox WHERE room=? AND digest IN (SELECT digest FROM application_attempts WHERE room=? AND delivery_id=?)").run(row.room, row.room, row.delivery_id);
       this.pruneOutgoingHistory(state.current.room);
-      return outgoing({ ...row, disposition: action });
+      return outgoing({ ...row, state: nextState, disposition: action });
     });
   }
   expireApplications(name: string): RoomOutgoing[] {

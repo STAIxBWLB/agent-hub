@@ -2,9 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { RoomLink } from "../src/rooms/link.ts";
-import { RoomStore, type RoomStoredReceipt } from "../src/rooms/store.ts";
-import { encodeRoomMessage } from "../src/rooms/application.ts";
+import { RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
+import { RoomStore, type RoomState, type RoomStoredReceipt } from "../src/rooms/store.ts";
+import { decodeRoomMessage, encodeRoomMessage } from "../src/rooms/application.ts";
 import { canonicalBytes, createInvite, createJoin, createRoomEpoch, decodeFrame, openFrame, sealFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, generateHubIdentity, sha256 } from "../src/rooms/crypto.ts";
 
@@ -78,7 +78,7 @@ test("queued presence rechecks exposure at actual send and stop clears queue_ful
 });
 
 
-async function durableTransport() {
+async function durableTransport(application?: RoomLinkApplication) {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-receipt-")); roots.push(root);
   const owner = await RoomStore.open({ stateDir: join(root, "owner") }), guest = await RoomStore.open({ stateDir: join(root, "guest") });
   stores.push(owner, guest);
@@ -92,18 +92,23 @@ async function durableTransport() {
   const roster = await owner.enroll("work", request);
   await guest.install({ name: "work", broker: roster.broker, wire: roster.wire, expectedDigest: null });
 
-  const sent: Uint8Array[] = [];
-  const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (wire: Uint8Array) => { sent.push(Uint8Array.from(wire)); }, close() {} },
+  const sent: Uint8Array[] = [], ackReceiptProofs: { digest: string; receipt?: RoomStoredReceipt }[] = [];
+  const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (wire: Uint8Array) => {
+    const copy = Uint8Array.from(wire); sent.push(copy);
+    const control = JSON.parse(new TextDecoder().decode(copy)) as { type?: string; digest?: string };
+    if (control.type === "received" && control.digest) ackReceiptProofs.push({ digest: control.digest, receipt: guest.receiptStored("work", control.digest) });
+  }, close() {} },
     generation: 1, room: roster.current.room, broker: roster.broker, phase: "ready", roster: { digest: roster.current.digest },
     outbound: [] as { wire: Uint8Array; digest: string; requestReply: boolean }[], outboundBytes: 0, frameSent: false, retryAttempt: 0,
     pendingPresenceReplies: new Set<string>(), presenceAsked: false, receiptSends: new Map(), requestPresenceReply: false,
     queue: [], queuedBytes: 0, handshake: undefined, frameRetry: undefined as ReturnType<typeof setTimeout> | undefined };
-  const link = new RoomLink({ store: guest, name: "work" });
+  const link = new RoomLink({ store: guest, name: "work", ...(application ? { application } : {}) });
   const internal = link as unknown as { running: boolean; generation: number; session: unknown;
     queueFrame(session: unknown, wire: Uint8Array, digest: string): void; storedFrame(session: unknown, digest: string): void;
-    retireFrame(session: unknown, frame: ReturnType<typeof decodeFrame>, digest: string): void; restoreReceipts(session: unknown): void };
+    retireFrame(session: unknown, frame: ReturnType<typeof decodeFrame>, digest: string): void; restoreReceipts(session: unknown): void;
+    receiveFrame(session: unknown, bytes: Uint8Array, local: RoomState): Promise<void> };
   internal.running = true; internal.generation = 1; internal.session = session;
-  return { owner, guest, link, internal, session, sent, roster: roster.current };
+  return { owner, guest, link, internal, session, sent, ackReceiptProofs, roster: roster.current };
 }
 
 async function admittedChat(f: Awaited<ReturnType<typeof durableTransport>>, body = "incoming chat") {
@@ -189,5 +194,45 @@ test("more than eight sequential stored receipts do not leak transport slots", a
       expect(f.guest.outbox("work")).toHaveLength(0);
     }
     expect(f.sent).toHaveLength(9);
+  } finally { f.link.stop(); }
+});
+
+test("receiveFrame commits a durable application receipt before ACK and sends the signed receipt after it", async () => {
+  let delivered: { digest: string; sender: string } | undefined;
+  const host: RoomLinkApplication = {
+    members() {},
+    async receive(context, input) {
+      if (input.message?.type !== "chat") throw new Error("expected a received room chat");
+      const incoming = await context.store.applicationIncoming(context.name, input.digest, context.current);
+      if (!incoming.primary || !context.store.claimApplication(context.name, input.digest, context.current)) throw new Error("expected primary room application claim");
+      context.store.finishApplication(context.name, input.digest, "completed", "admitted", context.current);
+      const receipt = context.store.applicationReceipt(context.name, input.digest);
+      if (!receipt) throw new Error("expected durable terminal application receipt");
+      delivered = { digest: input.digest, sender: input.sender };
+      await context.link.publishApplication(receipt, input.sender, undefined, context.current);
+    },
+    async online() {},
+    stored() {},
+  };
+  const f = await durableTransport(host);
+  try {
+    const application = crypto.randomUUID();
+    const wire = await sealFrame({ epoch: f.roster, identity: f.owner.identity, recipients: [f.guest.identity.public.fingerprint],
+      plaintext: encodeRoomMessage({ v: 1, type: "chat", envelope: { id: application, trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: "foreground receive", ts: Date.now() } }),
+      sequence: f.owner.sequence });
+    const chatDigest = encodeBase64url(await sha256(wire));
+    await f.internal.receiveFrame(f.session, wire, f.guest.get("work")!);
+
+    expect(delivered).toEqual({ digest: chatDigest, sender: f.owner.identity.public.fingerprint });
+    expect(f.sent).toHaveLength(2);
+    expect(JSON.parse(new TextDecoder().decode(f.sent[0]!))).toEqual({ v: 1, type: "received", digest: chatDigest });
+    expect(f.ackReceiptProofs).toHaveLength(1);
+    expect(f.ackReceiptProofs[0]?.digest).toBe(chatDigest);
+    expect(dispatchingReceipt(f.ackReceiptProofs[0]?.receipt)).toMatchObject({ state: "dispatching", receiptFor: chatDigest });
+
+    const verified = await openFrame({ wire: f.sent[1]!, identity: f.owner.identity, current: f.owner.get("work")!.current, replay: f.owner.replay });
+    expect(verified.status).toBe("accepted");
+    if (verified.status !== "accepted") throw new Error("expected a verified signed receipt frame");
+    expect(decodeRoomMessage(verified.plaintext)).toMatchObject({ type: "receipt", frame: chatDigest, application });
   } finally { f.link.stop(); }
 });

@@ -5964,6 +5964,13 @@ transport settlement still proves admission rather than native execution.
 An application awaiting local admission may instead ACK after its crypto inbox
 entry commits durably. Later admission uses the same durable receipt outbox;
 the waiting chat does not pin broker capacity.
+Pauses and lifecycle/recovery holds also block resends. A pause after local
+enqueue retains the same delivery id and original expiry. Missing local durable
+intent after restart is held as `needs_review`; inspect the delivery named by
+`ahub queue show` before choosing a disposition.
+Restart and inbound-receipt recovery apply any previously recorded person
+disposition before automatic settlement. A known signed transport outcome remains
+evidence alongside the decision; it does not undo the person's disposition.
 Capacity refusal of one incoming chat retains that pending chat while allowing
 later packets and receipts through; a later online or person-disposition event
 rechecks admission. Merely reading room status applies no disposition.

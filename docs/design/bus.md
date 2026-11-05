@@ -125,8 +125,9 @@ recorded in the rooms spec.
 ## Room application retry and settlement (#1204 T2)
 
 Room sends retain one immutable application id and original queue expiry across
-fresh ciphertext attempts. Receiver admission remains exactly once per application
-id. A typed refusal before durable enqueue requeues the original without uncertainty
+fresh ciphertext attempts. Receiver admission keeps the existing application-id
+dedupe horizon (30 days / 10,000 identities with settled-first eviction).
+A typed refusal before durable enqueue requeues the original without uncertainty
 or poison retry accounting. Online readiness and the ACK deadline trigger retries;
 the ACK deadline is not a terminal disposition. Queue TTL or a permanent refusal
 ends automatic sending. A remote uncertainty row does not block later queued work.
@@ -137,6 +138,17 @@ their existing ids rather than treating transport loss as native consumption. A
 late authenticated recipient receipt can settle an unresolved remote hold once,
 with an ids-only event. Person dispositions, stale adapters and changed membership
 remain authoritative; native delivery and task-offer read evidence are unaffected.
+
+Roster, pause, lifecycle and global recovery fences also apply to resends. A
+readiness loss after durable enqueue retains that delivery's id and original TTL;
+confirmed precommit absence can requeue. A restored active journal row with no
+matching row in an intact RoomStore becomes `needs_review` for inspection and is
+never replayed from missing evidence. Metadata settlement and quarantine remain
+available while sending is held.
+Authoritative Bus person dispositions are reconciled into RoomStore before
+startup replay and incoming receipt processing. A local transport result may
+remain as evidence beside that disposition, but cannot override it or restart
+sending. Status reads remain read-only.
 
 A completed inbound admission commits its signed receipt ciphertext to the local
 RoomStore outbox before transport ACK of the chat. Pending receipts replay on

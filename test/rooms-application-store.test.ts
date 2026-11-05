@@ -376,8 +376,8 @@ test("person disposition frees uncertain outbox capacity without claiming signed
   expect(f.owner.applicationOutbox("work", true)).toHaveLength(1);
   const count = () => (f.owner as any).db.query("SELECT COUNT(*) AS n FROM outbox").get().n;
   expect(count()).toBe(1);
-  expect(() => f.owner.disposeApplication("work", q.input.deliveryId, "completed", () => false)).toThrow("state_changed");
-  expect(f.owner.disposeApplication("work", q.input.deliveryId, "completed")).toMatchObject({ state: "needs_review", disposition: "completed" });
+  expect(() => f.owner.disposeApplication("work", q.input.deliveryId, "completed", true, () => false)).toThrow("state_changed");
+  expect(f.owner.disposeApplication("work", q.input.deliveryId, "completed", true, () => true)).toMatchObject({ state: "needs_review", disposition: "completed" });
   expect(count()).toBe(0); expect(f.owner.applicationOutbox("work", true)).toEqual([]);
   const late = await receipt(f.guest, f.owner, { v: 1, type: "receipt", frame: q.outgoing.digest, application: q.envelope.id, peer: "claude", outcome: "completed", reason: "admitted" });
   expect(f.owner.applyApplicationReceipt("work", late)).toMatchObject({ state: "needs_review", disposition: "completed", lateReceipt: { outcome: "completed", reason: "admitted" } });
@@ -387,6 +387,23 @@ test("person disposition frees uncertain outbox capacity without claiming signed
   const restored = await opened(f.clock, directory);
   expect(restored.applicationOutbox("work")[0]).toMatchObject({ state: "needs_review", disposition: "completed", lateReceipt: { outcome: "completed", reason: "admitted" } });
   expect(restored.applicationOutbox("work", true)).toEqual([]);
+});
+
+test("authoritative person disposition flags active rows and preserves signed terminal rows across reopen", async () => {
+  const f = await pair(), active = await queued(f), dir = locations.get(f.owner)!;
+  expect(f.owner.disposeApplication("work", active.input.deliveryId, "completed", true, () => true)).toMatchObject({ state: "needs_review", disposition: "completed" });
+  expect(f.owner.outbox("work")).toEqual([]);
+  const terminal = await queued(f);
+  const signed = await receipt(f.guest, f.owner, { v: 1, type: "receipt", frame: terminal.frameDigest, application: terminal.envelope.id, peer: "claude", outcome: "completed", reason: "admitted" });
+  expect(f.owner.applyApplicationReceipt("work", signed)).toMatchObject({ state: "completed", reason: "admitted" });
+  expect(f.owner.disposeApplication("work", terminal.input.deliveryId, "discard", true, () => true)).toMatchObject({ state: "completed", reason: "admitted", disposition: "discard" });
+  f.owner.close();
+  const restored = await opened(f.clock, dir);
+  expect(restored.applicationOutbox("work")).toMatchObject([
+    expect.objectContaining({ deliveryId: active.input.deliveryId, state: "needs_review", disposition: "completed" }),
+    expect.objectContaining({ deliveryId: terminal.input.deliveryId, state: "completed", reason: "admitted", disposition: "discard" }),
+  ]);
+  expect(restored.outbox("work")).toEqual([]);
 });
 
 test("incoming person accept/discard are local settled metadata, never admission or a signed receipt", async () => {

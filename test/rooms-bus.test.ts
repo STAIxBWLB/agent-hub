@@ -264,6 +264,26 @@ test("a typed room not-sent outcome requeues the original without consuming retr
   expect(bus.snapshot(false).attempts[`${remote}:${env.id}`]).toBeUndefined();
 });
 
+test("positive not-sent requeue is allowed under global recovery hold and waits for release", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
+  const env = newEnvelope("user", "requeue while held", { to: [remote] });
+  let first = true;
+  target.accepted = async (_envs, id) => {
+    if (first) {
+      first = false;
+      bus.setRecoveryHold(true);
+      expect(bus.requeueRemoteNotSent(target, id!)).toBe(true);
+    } else target.onDelivery?.({ id: id!, state: "completed" });
+  };
+  await target.start(); bus.publish(env);
+  await until(() => journal.list(remote).some(row => row.state === "queued") && !bus.hasInFlight(remote));
+  expect(journal.list(remote)).toContainEqual(expect.objectContaining({ state: "queued", originals: [env] }));
+  expect(target.batches).toHaveLength(1);
+  bus.setRecoveryHold(false);
+  await until(() => journal.list(remote).some(row => row.state === "completed" && row.originals.some(original => original.id === env.id)));
+  expect(target.batches).toHaveLength(2);
+});
+
 test("authenticated room outbox proof resumes the same row without local delivery evidence", async () => {
   const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
   target.accepted = async (_envs, id) => target.onDelivery?.({ id: id!, state: "needs_review" });
@@ -305,6 +325,96 @@ test("resume keeps an active journal state when the Store proof reports a differ
   expect(journal.get(dispatching.id)?.state).toBe("dispatching");
   target.onDelivery?.({ id: dispatching.id, state: "completed" });
   expect(journal.get(dispatching.id)?.state).toBe("completed");
+});
+
+test("remote resume waits for current roster, pause, lifecycle and recovery admission", async () => {
+  for (const fence of ["roster", "pause", "lifecycle", "recovery"] as const) {
+    let rostered = true, lifecycleHeld = false;
+    const { bus, journal } = fixture({ rostered: () => rostered, deliveryHeld: () => lifecycleHeld });
+    const target = new Peer(remote, room); bus.add(target);
+    target.accepted = async (_envs, id) => target.onDelivery?.({ id: id!, state: "needs_review" });
+    await target.start();
+    const env = newEnvelope("user", `resume fence ${fence}`, { to: [remote] }); bus.publish(env);
+    await until(() => journal.list(remote).some(row => row.state === "needs_review" && row.originals.some(original => original.id === env.id)) && !bus.hasInFlight(remote));
+    const row = journal.list(remote).find(item => item.originals.some(original => original.id === env.id))!;
+
+    if (fence === "roster") rostered = false;
+    else if (fence === "pause") bus.pause(remote);
+    else if (fence === "lifecycle") lifecycleHeld = true;
+    else bus.setRecoveryHold(true);
+    expect(bus.remoteSendAllowed(target)).toBe(false);
+    expect(bus.resumeRemotePending(target, row.id, "dispatching", () => true)).toBe(false);
+    expect(bus.remoteDeliveryEnvelope(target, row.id)?.id).toBe(env.id);
+    expect(journal.get(row.id)).toMatchObject({ state: "needs_review", originals: [env] });
+    expect(journal.resolution(row.id)).toBeUndefined();
+
+    if (fence === "roster") rostered = true;
+    else if (fence === "pause") bus.resume(remote);
+    else if (fence === "lifecycle") lifecycleHeld = false;
+    else bus.setRecoveryHold(false);
+    expect(bus.remoteSendAllowed(target)).toBe(true);
+    expect(bus.resumeRemotePending(target, row.id, "dispatching", () => true)).toBe(true);
+    target.onDelivery?.({ id: row.id, state: "completed" });
+    expect(journal.get(row.id)?.state).toBe("completed");
+  }
+});
+
+test("restored missing-intent hold ignores live precommit rows and drains the next FIFO row", async () => {
+  const { root, bus, journal } = fixture(), target = new Peer(remote, room), sending = deferred();
+  target.accepted = async () => { await sending.promise; };
+  bus.add(target); await target.start();
+  const first = newEnvelope("user", "live before Store commit", { to: [remote] }); bus.publish(first);
+  await until(() => journal.list(remote).some(row => row.state === "dispatching" && row.originals.some(env => env.id === first.id)));
+  const row = journal.list(remote).find(item => item.originals.some(env => env.id === first.id))!;
+  const next = newEnvelope("user", "next FIFO message", { to: [remote] }); bus.publish(next);
+  expect(bus.holdRemoteMissingIntent(target, row.id, () => true)).toBe(false);
+  expect(journal.get(row.id)?.state).toBe("dispatching");
+
+  const instanceId = journal.instanceId;
+  bus.closeJournal();
+  const restoredJournal = new DeliveryJournal({ file: join(root, "hub.db"), projectRoot: root, projectId: "rooms", instanceId });
+  const restored = new Bus({ batchMs: 0, journal: restoredJournal }); buses.push(restored);
+  const resumed = new Peer(remote, room); restored.add(resumed); await resumed.start();
+  expect(restored.holdRemoteMissingIntent(resumed, row.id, () => true)).toBe(true);
+  expect(restoredJournal.get(row.id)).toMatchObject({ state: "needs_review", reason: `room durable intent unavailable after restart; inspect ahub queue show ${row.id}` });
+  await until(() => restoredJournal.list(remote).some(item => item.state === "completed" && item.originals.some(env => env.id === next.id)));
+  expect(resumed.batches.map(batch => batch.map(env => env.id))).toEqual([[next.id]]);
+  sending.resolve();
+});
+
+test("known-not-sent missing-intent fallback requires the current active delivery owner", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room), sending = deferred();
+  target.accepted = async () => { await sending.promise; };
+  bus.add(target); await target.start();
+  const env = newEnvelope("user", "no Store intent", { to: [remote] }); bus.publish(env);
+  await until(() => journal.list(remote).some(row => row.state === "dispatching" && row.originals.some(original => original.id === env.id)));
+  const row = journal.list(remote).find(item => item.originals.some(original => original.id === env.id))!;
+  expect(bus.holdRemoteMissingIntent(target, row.id, () => true, "known-not-sent")).toBe(true);
+  expect(journal.get(row.id)).toMatchObject({ state: "needs_review", reason: `room not-sent checkpoint unavailable; inspect ahub queue show ${row.id}` });
+  expect(bus.hasInFlight(remote)).toBe(true); // The delivery call is still unwinding, but its journal pointer is no longer active.
+  sending.resolve(); await until(() => !bus.hasInFlight(remote));
+});
+
+test("restored orphan hold does not block or clear a different active remote delivery", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room), sending = deferred();
+  target.accepted = async (_envs, id) => { await sending.promise; target.onDelivery?.({ id: id!, state: "completed" }); };
+  bus.add(target); await target.start();
+  const live = newEnvelope("user", "different live id", { to: [remote] }); bus.publish(live);
+  await until(() => journal.list(remote).some(row => row.state === "dispatching" && row.originals.some(env => env.id === live.id)));
+  const liveRow = journal.list(remote).find(row => row.originals.some(env => env.id === live.id))!;
+  const orphan = newEnvelope("user", "restored orphan id", { to: [remote] });
+  const orphanId = `restored:${crypto.randomUUID()}`;
+  journal.createDelivery({ id: orphanId, peer: remote, state: "accepted", createdAt: Date.now(), originals: [orphan], out: [orphan] });
+
+  expect(bus.holdRemoteMissingIntent(target, orphanId, () => true)).toBe(true);
+  expect(journal.get(orphanId)).toMatchObject({ state: "needs_review", reason: `room durable intent unavailable after restart; inspect ahub queue show ${orphanId}` });
+  expect(journal.get(liveRow.id)?.state).toBe("dispatching");
+  expect(bus.hasInFlight(remote)).toBe(true);
+  expect(bus.remotePendingIds(room)).toContain(live.id);
+  expect(bus.remotePendingIds(room)).not.toContain(orphan.id);
+
+  sending.resolve();
+  await until(() => journal.get(liveRow.id)?.state === "completed" && !bus.hasInFlight(remote));
 });
 
 test("terminal receipts clear remote transport ownership after an out-of-drain resume", async () => {

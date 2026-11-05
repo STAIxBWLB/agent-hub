@@ -663,7 +663,7 @@ export class RoomLink {
         catch (error) {
           // An explicit atomic refusal plus absent durable intent is positive not-sent evidence.
           if (error instanceof RoomStoreError && ["limit", "invalid", "untrusted", "state_changed"].includes(error.code)
-            && !this.options.store.applicationOutbox(this.options.name, true).some(row => row.deliveryId === metadata.deliveryId)) throw new RoomNotSentError();
+            && !this.options.store.applicationOutbox(this.options.name).some(row => row.deliveryId === metadata.deliveryId || row.application === metadata.application)) throw new RoomNotSentError();
           throw error;
         }
         frameDigest = record.frameDigest ?? record.digest;

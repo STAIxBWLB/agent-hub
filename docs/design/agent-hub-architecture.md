@@ -65,8 +65,9 @@ The message bus is separate from task state. `Bus` frames and routes envelopes; 
 
 Encrypted rooms are an optional message transport between project hubs. They do not federate task boards, roles, approvals, or memory; each receiving project makes its own local admission decision. This prevents a remote room membership from becoming local authority ([#446](https://github.com/STAIxBWLB/agent-hub/issues/446)).
 
-Room applications add bounded at-least-once sending with exactly-once receiver
-admission by immutable application id. Retry and restart retain the original queue
+Room applications add bounded at-least-once sending with receiver admission
+deduplicated by immutable application id under the existing retention and cap
+contract. Retry and restart retain the original queue
 TTL and revalidate current membership and privacy. ACK deadlines trigger resend;
 late signed recipient receipts may settle unresolved remote holds but never a
 person-disposed row. Receipt ciphertext is locally durable before chat transport

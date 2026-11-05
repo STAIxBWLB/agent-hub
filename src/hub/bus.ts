@@ -1222,7 +1222,7 @@ export class Bus {
   requeueRemoteNotSent(source: PeerAdapter, deliveryId: string): boolean {
     const peer = source.id;
     if (!parseRemotePeerId(peer) || this.peers.get(peer) !== source || !source.remoteRoom ||
-        !remoteFingerprint(source.remoteMember) || !this.journal || this.storageError || this.closed || this.recoveryHeld ||
+        !remoteFingerprint(source.remoteMember) || !this.journal || this.storageError || this.closed ||
         this.remoteQueueRooms.get(peer) !== source.remoteRoom || this.remoteQueueMembers.get(peer) !== source.remoteMember ||
         this.activeDeliveries.get(deliveryId) !== peer) return false;
     const row = this.journal.get(deliveryId);
@@ -1268,12 +1268,55 @@ export class Bus {
     return structuredClone(original);
   }
 
-  /** Resume the same delivery after the host revalidates its durable outbox proof. */
-  resumeRemotePending(source: PeerAdapter, deliveryId: string, state: "dispatching" | "accepted" | "needs_review", currentGuard: () => boolean): boolean {
+  /** Current host admission for sending remote work, separate from immutable room trust proof. */
+  remoteSendAllowed(source: PeerAdapter): boolean {
     const peer = source.id;
     if (!parseRemotePeerId(peer) || this.peers.get(peer) !== source || !source.remoteRoom || !remoteFingerprint(source.remoteMember) ||
         !this.journal || this.storageError || this.closed || this.recoveryHeld ||
         this.remoteQueueRooms.get(peer) !== source.remoteRoom || this.remoteQueueMembers.get(peer) !== source.remoteMember) return false;
+    try {
+      return this.isRostered(peer) && !this.paused.has(peer) && !this.manualPaused.has(peer) && this.opts.deliveryHeld?.(peer) !== true;
+    } catch { return false; }
+  }
+
+  /** Hold a remote row for human inspection when its durable Store intent is absent. */
+  holdRemoteMissingIntent(source: PeerAdapter, deliveryId: string, currentGuard: () => boolean, origin: "restored" | "known-not-sent" = "restored"): boolean {
+    if (origin !== "restored" && origin !== "known-not-sent") return false;
+    const peer = source.id;
+    if (!parseRemotePeerId(peer) || this.peers.get(peer) !== source || !source.remoteRoom || !remoteFingerprint(source.remoteMember) ||
+        !this.journal || this.storageError || this.closed ||
+        this.remoteQueueRooms.get(peer) !== source.remoteRoom || this.remoteQueueMembers.get(peer) !== source.remoteMember) return false;
+    const row = this.journal.get(deliveryId);
+    if (!row || row.peer !== peer || !["dispatching", "accepted"].includes(row.state) || row.originals.length !== 1 ||
+        row.originals[0]?.to?.includes(peer) !== true || this.journal.resolution(deliveryId)) return false;
+    if (origin === "known-not-sent") {
+      if (this.activeDeliveries.get(deliveryId) !== peer) return false;
+    } else if (origin === "restored") {
+      if (this.activeDeliveries.has(deliveryId) || this.remoteTransport.has(deliveryId)) return false;
+    }
+    try { if (currentGuard() !== true) return false; } catch { return false; }
+    const reason = origin === "restored"
+      ? `room durable intent unavailable after restart; inspect ahub queue show ${deliveryId}`
+      : `room not-sent checkpoint unavailable; inspect ahub queue show ${deliveryId}`;
+    try { this.journal.transition(deliveryId, "needs_review", reason, row.revision); }
+    catch (error) {
+      if (error instanceof Error && /stale delivery revision|remote delivery|person disposition/.test(error.message)) return false;
+      this.storageError = "delivery journal unavailable";
+      this.onQueues?.();
+      return false;
+    }
+    this.activeDeliveries.delete(deliveryId);
+    if (this.remoteTransport.get(deliveryId)?.peer === peer) this.remoteTransport.delete(deliveryId);
+    this.refreshRecoveryHold(peer);
+    this.onQueues?.();
+    void this.drain(peer);
+    return true;
+  }
+
+  /** Resume the same delivery after the host revalidates its durable outbox proof. */
+  resumeRemotePending(source: PeerAdapter, deliveryId: string, state: "dispatching" | "accepted" | "needs_review", currentGuard: () => boolean): boolean {
+    const peer = source.id;
+    if (!this.remoteSendAllowed(source)) return false;
     const row = this.journal.get(deliveryId), env = row?.originals[0], expiry = env && this.remoteQueueExpires.get(peer)?.get(env.id);
     if (!row || row.peer !== peer || !["dispatching", "accepted", "needs_review"].includes(row.state) || row.originals.length !== 1 || env?.to?.includes(peer) !== true || this.journal.resolution(deliveryId) || !env || expiry === undefined || expiry <= Date.now()) return false;
     if (state === "needs_review") return false;
@@ -1295,6 +1338,7 @@ export class Bus {
     this.remoteTransport.set(deliveryId, { peer, originals: row.originals });
     this.refreshRecoveryHold(peer);
     this.onQueues?.();
+    void this.drain(peer);
     return true;
   }
 
