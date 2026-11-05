@@ -122,6 +122,7 @@ export class RoomLink {
   private forcePresenceRequest = false;
   private republish?: ReturnType<typeof setTimeout>;
   private sendTail: Promise<void> = Promise.resolve();
+  private presencePublication?: Promise<void>;
   constructor(private readonly options: RoomLinkOptions) {}
 
   /** Advisory transport state without copying or decoding a room epoch for a status poll. */
@@ -293,11 +294,14 @@ export class RoomLink {
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
   }
+  private replaceablePresence(session: Session, requestReply: boolean): number {
+    return session.outbound.findIndex((frame, index) => frame.presence && (!frame.requestReply || requestReply) && (index > 0 || !session.frameSent && !session.frameRetry));
+  }
   private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void): void {
     this.current(session);
     // Only an unsent observation may be replaced. Never reorder an attempted frame.
     if (presence) {
-      const at = session.outbound.findIndex((frame, index) => frame.presence && (!frame.requestReply || requestReply) && (index > 0 || !session.frameSent && !session.frameRetry));
+      const at = this.replaceablePresence(session, requestReply);
       if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
     }
     if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
@@ -623,6 +627,10 @@ export class RoomLink {
     if (!session || session.phase !== "ready") fail("unavailable");
     const digest = this.current(session).current.digest;
     const allowed = () => this.publicationCurrent(session, digest) && current();
+    // Flush a deferred presence before reserving the application's sequence.
+    // Its ciphertext must precede the application in both FIFO and replay order.
+    await this.presencePublication?.catch(() => undefined);
+    if (this.republish || this.publishDirty) await this.publishPresence(true);
     return this.serialSend(async () => {
       if (!allowed()) fail("state_changed");
       if (message.type === "receipt") {
@@ -658,7 +666,7 @@ export class RoomLink {
       return frameDigest;
     });
   }
-  async publishPresence(): Promise<void> {
+  async publishPresence(flush = false): Promise<void> {
     const session = this.session;
     if (!session || session.phase !== "ready") return;
     if (this.publishing) { this.publishDirty = true; return; }
@@ -678,11 +686,19 @@ export class RoomLink {
       const peers = this.currentPresence(own.exposedPeers);
       const recipients = roomMembers(row.current).map(member => member.fingerprint).filter(member => member !== identity.public.fingerprint).sort();
       if (!recipients.length) return;
-      await this.serialSend(async () => {
+      const publication = this.serialSend(async () => {
         if (!this.publicationCurrent(session, row.current.digest)) return;
         const requestReply = !response && session.requestPresenceReply;
         const presenceKey = JSON.stringify([row.current.digest, recipients, peers, requestReply]);
         if (!response && !forceRequest && session.lastPresence === presenceKey) return;
+        if (!flush && this.replaceablePresence(session, requestReply) >= 0) {
+          // Replace the observation before doing crypto or a durable sequence write.
+          // The existing bounded next-turn refresh seals only the latest snapshot.
+          this.publishDirty = true;
+          if (response) this.replyPresence = true;
+          if (forceRequest) this.forcePresenceRequest = true;
+          return;
+        }
         const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers, ...(requestReply ? { requestReply: true } : {}) }), ...(session.ephemeral ? { ephemeral: true as const } : {}), sequence: this.options.store.sequence });
         if (!this.publicationCurrent(session, row.current.digest)) return;
         // Machine-local exposure can change during reserve/encryption/signing even
@@ -700,6 +716,8 @@ export class RoomLink {
           } : undefined);
         session.lastPresence = presenceKey; sent = true;
       });
+      this.presencePublication = publication;
+      await publication;
     } catch (error) {
       this.retry(session); // Existing bounded reconnect, never a self-polling refresh retry.
       throw error;
@@ -714,7 +732,7 @@ export class RoomLink {
         // Capture the target so stop/refresh cannot publish through a stale link.
         this.republish = setTimeout(() => {
           this.republish = undefined;
-          if (this.running && this.session === next && next.phase === "ready") void this.publishPresence().catch(() => this.retry(next));
+          if (this.running && this.session === next && next.phase === "ready") void this.publishPresence(true).catch(() => this.retry(next));
         }, 0);
         this.republish.unref?.();
       }
