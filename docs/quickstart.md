@@ -31,6 +31,12 @@ move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version.
 
+## Upgrading to 0.31.0
+
+TODO(agent): say what changes for a person who upgrades, or that nothing does until they use something new.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.31.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
 ## Upgrading to 0.30.0
 
 The hub now exact-pins `@staix/agent-mem` 0.20.1 (#1136). A setup receipt written by 0.20.1 can be v2, which 0.20.0 refuses to apply or undo; undo a setup with the release that wrote it.
