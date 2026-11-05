@@ -680,6 +680,10 @@ test("remote identity survives dispatch restart and refuses foreign re-enrollmen
   const persisted = first.journal.snapshot().bus;
   expect(persisted.queues[remote]).toEqual([]);
   expect(persisted.remoteQueueRooms).toEqual({ [remote]: room }); expect(persisted.remoteQueueMembers).toEqual({ [remote]: original });
+  // This legacy row predates a known enqueue deadline; its recipient binding stays intact.
+  const legacy = structuredClone(persisted);
+  delete legacy.remoteQueueExpires?.[remote]?.[old.id];
+  first.journal.persistBus(legacy, first.bus.manualPausedPeers());
   first.bus.closeJournal(); buses.splice(buses.indexOf(first.bus), 1);
   const journal = new DeliveryJournal({ file: join(first.root, "hub.db"), projectRoot: first.root, projectId: "rooms", instanceId: crypto.randomUUID() });
   const bus = new Bus({ journal, batchMs: 0 }); buses.push(bus);

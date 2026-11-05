@@ -1278,6 +1278,9 @@ exposed local peer's queue**. It does not mean native or model execution. Person
 views say **completed (admitted)**. Broker `stored` means accepted ciphertext
 only; a transport retirement ACK is not application completion.
 
+Schema5 retains a nullable canonical outgoing content hash. Cross-root reuse of
+a retained application requires matching content and peer/recipient, no disposition
+or permanent hold, and inherited creation/expiry times; legacy NULL refuses it.
 Schema5 of the private `rooms.db` migrates schema1 through 4 without replacing identity,
 pins, counters, floors or retained traffic. A receiver commits its crypto inbox,
 then application `pending -> dispatching` before publishing into the separate

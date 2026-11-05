@@ -125,7 +125,10 @@ recorded in the rooms spec.
 ## Room application retry and settlement (#1204 T2)
 
 Room sends retain one immutable application id and original queue expiry across
-fresh ciphertext attempts. Receiver admission keeps the existing application-id
+fresh ciphertext attempts. A distinct root delivery may reuse a retained application
+only with the same canonical content hash and peer/recipient tuple, no person
+disposition or permanent hold, and the original creation/expiry times. Legacy
+NULL content hashes refuse cross-root reuse. Receiver admission keeps the existing application-id
 dedupe horizon (30 days / 10,000 identities with settled-first eviction).
 This is exactly once within dedupe ceiling. Automatic resend can reach that
 ceiling after a settled identity is evicted, permitting duplicate admission under
