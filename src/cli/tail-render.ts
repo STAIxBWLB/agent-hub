@@ -2,6 +2,7 @@ import type { BusEvent } from "../hub/bus.ts";
 
 export function renderTailEvent(e: BusEvent): string {
   if (e.t === "state") return `  . ${e.peer} is ${e.state}`;
+  if (e.t === "remote_delivery_settled") return `  . remote delivery ${e.deliveryId} settled for ${e.peer} (${e.outcome})`;
   if (e.t === "undeliverable") return `  ! gave up delivering ${e.env.id} (from ${e.env.from}) to ${e.peer}`;
   if (e.t === "envelope" && e.env.from === "hub" && e.env.kind !== "chat") {
     return `${new Date(e.env.ts).toLocaleTimeString()} hub -> ${e.env.to?.join(",")} [${e.env.kind}${e.env.refs?.task ? ` #${e.env.refs.task}` : ""}]\n${e.env.body.split("\n")[0]!.replace(/^/, "    ")}`;

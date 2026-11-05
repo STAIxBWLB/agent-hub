@@ -1278,15 +1278,20 @@ exposed local peer's queue**. It does not mean native or model execution. Person
 views say **completed (admitted)**. Broker `stored` means accepted ciphertext
 only; a transport retirement ACK is not application completion.
 
-Schema3 of the private `rooms.db` migrates schema1/2 without replacing identity,
+Schema5 retains a nullable canonical outgoing content hash. Cross-root reuse of
+a retained application requires matching content and peer/recipient, no disposition
+or permanent hold, and inherited creation/expiry times; legacy NULL refuses it.
+Schema5 of the private `rooms.db` migrates schema1 through 4 without replacing identity,
 pins, counters, floors or retained traffic. A receiver commits its crypto inbox,
 then application `pending -> dispatching` before publishing into the separate
 Bus journal. A crash or failure in that cross-DB publication window becomes
-`needs_review`, with no automatic republish or fabricated receipt. Sender
-`dispatching`/`accepted` rows become `needs_review` at restart. A same-process
-reconnect drains never-handed offline queues once. A late signed receipt is kept
-as evidence on `needs_review` and shown with the person's disposition view; it
-never auto-settles. Known safe refusals retain the Bus's existing poison policy.
+`needs_review`, with no automatic receiver republish or fabricated receipt.
+Sender `dispatching`/`accepted` rows recover from validated durable intent under
+the same application and delivery ids, retaining their original queue expiry.
+A valid late signed receipt may settle an unresolved ordinary sender hold;
+invocation uncertainty remains person-settled. Person dispositions and invalidated
+recipient bindings remain authoritative. Signed
+remote safe refusals are terminal; native poison-envelope policy is unchanged.
 
 Signed seq/floors are the permanent primary replay protection. Duplicate seqs
 are retired without a second admission; a known identical completed application
@@ -1297,6 +1302,9 @@ oldest settled rows are evicted first. Pending, dispatching and unresolved
 `needs_review` are never evicted. An all-unsettled cap refuses with the room and
 count. Outside retention or after settled eviction, there is no historical
 app-id dedupe claim; an old signed frame is still refused by its seq floor.
+Automatic resend can reach this settled-eviction ceiling and repeat admission
+under a fresh ciphertext sequence: exactly once within dedupe ceiling. Pinning
+retryable identities or #737 receipt confirmation is the upgrade path.
 
 The trace high-water mark is kept for the tombstone retention (30 days / 10,000
 per room, settled rows evicted first); outside it there is no historical trace
@@ -1310,16 +1318,17 @@ Offline Bus queues count toward the 200-per-room ceiling before transport starts
 `hub_send` refuses beyond it. Original host deadlines survive handoff and restart.
 Unknown legacy deadlines fail closed to `needs_review`. Machine-local
 `rooms.ack_timeout_s` defaults to 600 (1..86,400); `rooms.queue_ttl_h` defaults to
-24 (1..168). A single deadline-driven host timer handles ack/queue expiry. No
-uncertain work is silently retried. Explicit terminal-history retries without
+24 (1..168). A single deadline-driven host timer handles ACK retries and queue
+expiry. Only validated durable sender intent is retried automatically; missing
+or corrupt local evidence remains held. Explicit terminal-history retries without
 recipient proof refuse; the person can author a fresh message deliberately.
 An expired or missing original enqueue deadline also refuses a person retry
 before any disposition is recorded; a retry never invents a fresh TTL.
 
 The ACK deadline starts at durable application handoff, before a broker `stored`
-reply, and is never extended by that reply. An unstored frame therefore becomes
-`needs_review` within the same ACK timeout instead of holding the peer for the
-queue TTL. Known pre-admission capacity or journal-unavailable refusals retain
+reply, and is never extended by that reply. Its expiry schedules another attempt
+under the same application id, without resetting the original queue TTL. Queue
+expiry or a permanent refusal ends automatic sending. Known pre-admission capacity or journal-unavailable refusals retain
 their pending plaintext for the next online/disposition retry without preventing
 later room packets and receipts from being processed. Status reads apply no
 disposition. Settled chat plaintext rows are pruned independently of presence
@@ -6489,17 +6498,27 @@ The current contract is recorded in [Task Board](../design/task-board.md#anchore
 
 The acon plugin uses `ActionMeta` and `host.ui.review` from the published DOM-free 0.1.3 contract as types only; there is no new runtime dependency or renderer. A private/PII view withholds text, and trusted package markers exclude quote/body content from logs, tails, incoming labels and memory capture without making a public task private. Recovery sections are optional for older snapshots. The owner's live document package-format confirmation remains a separate manual check; fixture and code evidence do not claim that confirmation.
 
-### Receipt publication ordering (#1204 T1)
+### Receipt publication ordering (#1204 T2)
 
-A chat ciphertext transport ACK follows its signed receipt's actual socket send.
-If another outbound frame is awaiting storage, the ACK is deferred outside the
-serial receive handler until that receipt reaches the wire, so stored controls
-can still progress. Stop/reconnect fences the deferred ACK. This is not durable
-receipt storage proof; #1204 T2 adds the stored-ACK and receipt-outbox guarantee.
+A chat ciphertext transport ACK follows the signed receipt ciphertext's local
+durable RoomStore outbox commit. The receipt replays after reconnect or restart
+until the broker confirms storage. Waiting for broker storage before the chat ACK
+would deadlock at capacity one. No receipt or native completion is inferred from
+socket send alone.
+ACK after durable local commit of either the receipt or the inbox entry.
+Deferred application admission retains the durable crypto inbox entry, ACKs the
+chat to free broker capacity, and later commits its final receipt to the same
+durable outbox when admission resumes.
 
 A session keeps its refresh request pending for every asked recipient until a
 validated presence from that member arrives. Later non-reply snapshots retain
 requestReply while anyone is pending; replies never carry requestReply. The set
 is bounded by the current roster and resets at reconnect or membership change.
 
-When a receipt is queued behind a confirmed queue_full head, T1 ACKs the chat to free broker capacity while retaining the receipt in bounded RAM; a crash or session loss before its send can lose it, and task #735's durable receipt outbox closes this exception.
+Room application retries preserve the application id, canonical delivery id and
+original queue TTL, using a fresh authenticated ciphertext sequence where needed.
+The ACK timeout schedules resend rather than uncertainty; queue expiry or a
+permanent refusal remains inspectable. A signed late receipt may settle an
+unresolved ordinary remote hold once without overriding a person disposition.
+Invocation uncertainty retains its person-only ledger hold. Receiver application
+deduplication, current identity/privacy fences and all caps remain.

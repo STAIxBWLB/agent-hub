@@ -6529,6 +6529,8 @@ export async function startDaemon(opts: DaemonOptions) {
           });
         }
       }
+    } else if (e.t === "remote_delivery_settled") {
+      log(`REMOTE DELIVERY SETTLED ${e.deliveryId} for ${e.peer} (${e.outcome})`);
     } else {
       // #1053: an `answer` envelope carries the person's answer text and a question-expiry notice names its set: neither body ever reaches hub.log.
       log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.kind === "answer" || e.env.refs?.question ? `[question ${e.env.refs?.question ?? "answer"}: body not logged]` : e.env.body.slice(0, 200)}`);

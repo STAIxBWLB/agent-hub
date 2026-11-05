@@ -116,12 +116,58 @@ slot until its matching ACK or the original TTL/grace bound expires. Only the
 pending replacement coalesces; a newer observation never refreshes the handed
 packet's deadline. Unsupported recipients never receive the new frame shape.
 
-Ordinary receipt publication preserves socket-send-before-chat-transport-ACK ordering via
-a per-session deferred fence outside the serial receive queue. A refresh request
+A refresh request
 remains on non-reply snapshots until all asked members supply validated presence;
 replies never request a reply. The bounded round resets on reconnect or roster
 change. The latest-per-sender crossing ceiling and its #736 upgrade path are
-recorded in the rooms spec; durable stored-ACK receipt recovery remains T2.
+recorded in the rooms spec.
 
-The confirmed queue_full escape and bounded-RAM crash/session-loss ceiling are
-recorded in the rooms spec; task #735 replaces that exception with durable receipts.
+## Room application retry and settlement (#1204 T2)
+
+Room sends retain one immutable application id and original queue expiry across
+fresh ciphertext attempts. A distinct root delivery may reuse a retained application
+only with the same canonical content hash and peer/recipient tuple, no person
+disposition or permanent hold, and the original creation/expiry times. Legacy
+NULL content hashes refuse cross-root reuse. Receiver admission keeps the existing application-id
+dedupe horizon (30 days / 10,000 identities with settled-first eviction).
+This is exactly once within dedupe ceiling. Automatic resend can reach that
+ceiling after a settled identity is evicted, permitting duplicate admission under
+a fresh ciphertext sequence. Pinning retryable identities or #737 receipt
+confirmation is the upgrade path.
+A typed refusal before durable enqueue requeues the original without uncertainty
+or poison retry accounting. Online readiness and the ACK deadline trigger retries;
+the ACK deadline is not a terminal disposition. Queue TTL or a permanent refusal
+ends automatic sending. An ordinary remote chat uncertainty row does not block later queued work.
+Invocation uncertainty retains its person-only ledger hold and is never automatically
+replayed or settled from late transport evidence. Active invocation receipts update
+only transport metadata, never native execution or task-offer read evidence.
+
+Each retry rechecks current room/member identity, exposure and privacy against the
+saved immutable application. A restart reconstructs active remote deliveries under
+their existing ids rather than treating transport loss as native consumption. A
+late authenticated recipient receipt can settle an unresolved remote hold once,
+with an ids-only event. Person dispositions, stale adapters and changed membership
+remain authoritative; native delivery and task-offer read evidence are unaffected.
+
+Roster, pause, lifecycle and global recovery fences also apply to resends. A
+readiness loss after durable enqueue retains that delivery's id and original TTL;
+confirmed precommit absence can requeue. A restored active journal row with no
+matching row in an intact RoomStore becomes `needs_review` for inspection and is
+never replayed from missing evidence. A failed payload-proof read never schedules
+an immediate retry: transient failures wait for an online or ACK-deadline wake,
+and permanently unavailable ciphertext is held for review with a metadata-only
+transition. Metadata settlement and quarantine remain available while sending is held.
+Authoritative Bus person dispositions are reconciled into RoomStore before
+startup replay and incoming receipt processing. A local transport result may
+remain as evidence beside that disposition, but cannot override it or restart
+sending. Status reads remain read-only.
+
+A completed inbound admission commits its signed receipt ciphertext to the local
+RoomStore outbox before transport ACK of the chat. Pending receipts replay on
+reconnect until broker storage confirmation. Waiting for broker storage before
+chat ACK would deadlock at capacity one. The durable outbox removes T1's RAM-loss
+exception; broker storage and transport ACK still do not prove native execution.
+ACK after durable local commit of either the receipt or the inbox entry.
+Deferred application admission may ACK its durable crypto inbox entry so it does
+not pin broker capacity; later admission commits and replays the same durable
+receipt path before retiring its local work.

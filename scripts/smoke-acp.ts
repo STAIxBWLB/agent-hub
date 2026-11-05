@@ -9,6 +9,7 @@ const peer = new AcpPeer("kimi", { cmd, cwd: process.cwd(), log: (l) => console.
 bus.add(peer);
 bus.tap((e) => {
   if (e.t === "state") console.log(`state ${e.peer} -> ${e.state}`);
+  else if (e.t === "remote_delivery_settled") console.log(`remote delivery ${e.deliveryId} settled for ${e.peer} (${e.outcome})`);
   else console.log(`${e.env.from} (hop ${e.env.hop}): ${e.env.body}`);
   if (e.t === "envelope" && e.env.from === "kimi") void peer.stop().then(() => process.exit(0));
 });

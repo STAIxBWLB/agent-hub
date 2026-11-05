@@ -7,13 +7,14 @@ import type { Database } from "bun:sqlite";
 import { Bus, type PublishResult } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { HUB, isInvocationKind, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { parseRouting } from "../src/hub/routing.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
-import { verifyPublicFrame, sealFrame, openFrame } from "../src/rooms/wire.ts";
-import type { RoomLink, RoomLinkApplication } from "../src/rooms/link.ts";
-import { RoomStore, RoomApplicationLimitError, ROOM_APPLICATION_RETENTION } from "../src/rooms/store.ts";
+import { authorizeRoomInvocation } from "../src/rooms/boundary.ts";
+import { verifyPublicFrame, sealFrame, openFrame, roomMembers } from "../src/rooms/wire.ts";
+import { RoomNotSentError, type RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
+import { RoomStore, RoomStoreError, RoomApplicationLimitError, ROOM_APPLICATION_RETENTION } from "../src/rooms/store.ts";
 import { encodeRoomMessage, decodeRoomMessage, type RoomMessage } from "../src/rooms/application.ts";
 import { encodeBase64url, sha256 } from "../src/rooms/crypto.ts";
 
@@ -65,6 +66,12 @@ interface Control {
   afterReceive?: (label: string, input: Parameters<RoomLinkApplication["receive"]>[1]) => void;
   afterSend?: (label: string, message: RoomMessage) => Promise<void>;
   policyVersion?: number;
+  failOutgoing?: string; failOutgoingCode?: "busy" | "state_changed"; countOutgoing?: string; outgoingReads?: number;
+  modelScreen?: boolean;
+  screenLabel?: "pii" | "clear";
+  screenHold?: boolean; screenEntered?: boolean; screenGate?: ReturnType<typeof deferred>;
+  holdOutgoing?: string; outgoingEntered?: boolean; outgoingGate?: ReturnType<typeof deferred>;
+  authorizeInvocation?: boolean;
   blockIncoming?: boolean; blockedApplication?: string; blockedAttempts?: number; hush?: string; holdNative?: string;
 }
 interface Hub {
@@ -82,8 +89,11 @@ async function hub(root: string, label: string, event: Signal, control: Control,
   const publish = bus.publishResult.bind(bus);
   bus.publishResult = env => { const result = publish(env); if (env.from.includes("@")) { control.afterPublication?.(label, env, result); event.notify(); } return result; };
   const routing = parseRouting('[local]\nfixed_model="fixture"\n');
-  chat = new RoomChat({ bus, cwd, now: () => control.now, routing: () => routing, piiPaths: () => [], senderPrivate: () => false, taskPrivate: () => false, modelScreenOn: () => false,
-    screen: async () => ({ label: "clear", ms: 0 }), policyVersion: () => control.policyVersion ?? 1,
+  chat = new RoomChat({ bus, cwd, now: () => control.now, routing: () => routing, piiPaths: () => [], senderPrivate: () => false, taskPrivate: () => false, modelScreenOn: () => control.modelScreen === true,
+    screen: async () => { if (control.screenHold) { control.screenEntered = true; event.notify(); await control.screenGate?.promise; } return { label: control.screenLabel ?? "clear", ms: 0 }; }, policyVersion: () => control.policyVersion ?? 1,
+    invocationAuthorization: (env, identity) => control.authorizeInvocation && isInvocationKind(env) ? authorizeRoomInvocation(env, "codex", {
+      invocation: env.id, capability: "command:probe", digest: `sha256:${"0".repeat(64)}`, class: "read", depth: 1, args: {},
+    }, identity.current) : undefined,
     roster: ids => { roster.clear(); roster.add("codex"); for (const id of ids) roster.add(id); event.notify(); }, changed: event.notify, notice: value => { notices.push({ ...value }); event.notify(); } });
   let ownedStore: RoomStore | undefined, ownedLink: RoomLink | undefined;
   const wrapped = new WeakSet<RoomStore>(), wrappedLinks = new WeakSet<RoomLink>(), members = chat.application.members;
@@ -91,6 +101,16 @@ async function hub(root: string, label: string, event: Signal, control: Control,
     ownedStore = context.store; ownedLink = context.link;
     if (!wrapped.has(context.store)) {
       wrapped.add(context.store);
+      const outgoingMessage = context.store.outgoingMessage.bind(context.store);
+      context.store.outgoingMessage = async (name, application, current) => {
+        if (control.countOutgoing === application) { control.outgoingReads = (control.outgoingReads ?? 0) + 1; event.notify(); }
+        if (control.failOutgoing === application) {
+          const code = control.failOutgoingCode ?? "busy"; control.failOutgoing = undefined;
+          throw new RoomStoreError(code);
+        }
+        if (control.holdOutgoing === application) { control.outgoingEntered = true; event.notify(); await control.outgoingGate?.promise; }
+        return outgoingMessage(name, application, current);
+      };
       const incoming = context.store.applicationIncoming.bind(context.store);
       context.store.applicationIncoming = async (name, digest, current) => {
         const entry = context.store.pendingInbox(name).find(row => row.digest === digest);
@@ -207,7 +227,7 @@ async function reverseBarrier(f: Mesh, body: string): Promise<void> {
   expect(f.a.peer.got.some(row => row.id === barrier.id)).toBe(true);
 }
 
-for (const state of ["dispatching", "accepted"] as const) test(`sender ${state} becomes needs_review on restart without retransmitting its sealed application`, async () => {
+for (const state of ["dispatching", "accepted"] as const) test(`sender ${state} resumes the same application after restart`, async () => {
   const f = await mesh(), env = newEnvelope("codex", `uncertain ${state}`, { to: ["codex@beta"] });
   if (state === "dispatching") { f.control.holdSender = f.owner; f.control.hold = true; }
   else f.control.afterPublication = (label, incoming) => { if (label === "beta" && incoming.id === env.id) throw new Error("fixture interrupted after durable local publication"); };
@@ -216,14 +236,136 @@ for (const state of ["dispatching", "accepted"] as const) test(`sender ${state} 
   const disconnectAt = f.brokerEvents.length;
   await f.a.close();
   await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender socket fenced");
-  f.control.hold = false; f.control.gate.release(); f.control.phase = "after";
+  f.control.hold = false; f.control.gate.release(); f.control.afterPublication = undefined; f.control.phase = "after";
   await f.restart("a");
-  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review" && f.a.bus.stateOf("codex@beta") === "idle", "sender restored uncertain");
-  await reverseBarrier(f, "restart transport barrier");
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)" && f.a.bus.stateOf("codex@beta") === "idle", "sender resumed active intent");
   const before = new Set(f.frames.filter(row => row.sender === f.owner && row.phase === "before").map(row => row.digest));
-  expect(f.frames.filter(row => row.sender === f.owner && row.phase === "after" && before.has(row.digest))).toEqual([]);
-  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(state === "dispatching" ? 0 : 1);
-  expect(f.a.journal.unresolved("codex@beta").some(row => row.originals.some(original => original.id === env.id) && row.state === "needs_review")).toBe(true);
+  expect(f.frames.some(row => row.sender === f.owner && row.phase === "after" && !before.has(row.digest))).toBe(true);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  expect(f.a.journal.unresolved("codex@beta").some(row => row.originals.some(original => original.id === env.id))).toBe(false);
+});
+
+test("restart reserves the oldest active Store delivery while its proof is still loading", async () => {
+  const f = await mesh(600), first = newEnvelope("user", "older active delivery", { to: ["codex@beta"] }), second = newEnvelope("user", "later queued delivery", { to: ["codex@beta"] });
+  f.control.holdSender = f.guest; f.control.hold = true;
+  let secondReceives = 0;
+  f.control.afterReceive = (label, input) => { if (label === "beta" && input.message?.type === "chat" && input.message.envelope.id === second.id) secondReceives++; };
+  f.a.bus.publish(first);
+  await f.event.wait(async () => (await outbound(f.a, first.id))?.state === "accepted" && f.control.entered, "oldest delivery is accepted with its receipt held");
+  const oldDeliveryId = String((await outbound(f.a, first.id))?.id);
+  const originalExpiry = f.a.store!.applicationOutbox("work").find(row => row.application === first.id)!.expiresAt;
+  f.a.bus.publish(second);
+  await f.event.wait(() => f.a.bus.pendingEnvelopes("codex@beta").some(env => env.id === second.id), "second delivery waits behind the accepted first");
+  f.control.holdOutgoing = first.id; f.control.outgoingGate = deferred(); f.control.phase = "after";
+  const disconnectAt = f.brokerEvents.length;
+  await f.a.close();
+  await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender fenced before restart");
+  await f.restart("a");
+  await f.event.wait(() => f.control.outgoingEntered === true && f.a.link?.connectionState === "online"
+    && f.frames.some(frame => frame.sender === f.owner && frame.ephemeral && frame.phase === "after"), "presence proceeds while active Store proof is held");
+  expect(f.a.bus.stateOf("codex@beta")).toBe("busy");
+  expect(f.a.bus.pendingEnvelopes("codex@beta").some(env => env.id === second.id)).toBe(true);
+  expect((await outbound(f.a, second.id))).toBeUndefined();
+  expect(secondReceives).toBe(0);
+  f.control.outgoingGate.release(); f.control.holdOutgoing = undefined;
+  f.control.hold = false; f.control.gate.release();
+  await f.event.wait(async () => (await outbound(f.a, first.id))?.state === "completed (admitted)", "oldest active delivery settles first");
+  await f.event.wait(async () => (await outbound(f.a, second.id))?.state === "completed (admitted)", "queued delivery follows the restored first");
+  expect(String((await outbound(f.a, first.id))?.id)).toBe(oldDeliveryId);
+  expect(f.a.store!.applicationOutbox("work").find(row => row.application === first.id)?.expiresAt).toBe(originalExpiry);
+  expect(f.b.peer.got.filter(row => row.id === first.id)).toHaveLength(1);
+  expect(f.b.peer.got.filter(row => row.id === second.id)).toHaveLength(1);
+  expect(secondReceives).toBeGreaterThan(0);
+});
+
+test("a receiver offline for fifteen minutes gets every queued message exactly once", async () => {
+  const f = await mesh(600), disconnectAt = f.brokerEvents.length;
+  await f.b.close();
+  await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.guest), "receiver transport offline");
+  const messages = ["offline message one", "offline message two", "offline message three"].map(body => newEnvelope("user", body, { to: ["codex@beta"] }));
+  for (const env of messages) expect(f.a.bus.publish(env)).toEqual(["codex@beta"]);
+  await f.event.wait(async () => (await outbound(f.a, messages[0]!.id))?.state === "accepted", "first ciphertext retained at broker");
+  f.control.now += 15 * 60_000;
+  f.a.chat.tick();
+  expect((await outbound(f.a, messages[0]!.id))?.state).not.toBe("needs_review");
+  await f.restart("b");
+  await f.event.wait(async () => (await Promise.all(messages.map(env => outbound(f.a, env.id)))).every(row => row?.state === "completed (admitted)"), "all offline messages admitted after receiver returns");
+  for (const env of messages) expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  expect(f.a.journal.unresolved("codex@beta").some(row => messages.some(env => row.originals.some(original => original.id === env.id)))).toBe(false);
+});
+
+test("a proven pre-durable not-sent result requeues until the room is online", async () => {
+  const f = await mesh(), env = newEnvelope("user", "not sent before durable queue", { to: ["codex@beta"] });
+  const link = f.a.link!, publishApplication = link.publishApplication.bind(link); let refused = false;
+  link.publishApplication = async (message, recipient, outgoing, current) => {
+    if (!refused) { refused = true; throw new RoomNotSentError(); }
+    return publishApplication(message, recipient, outgoing, current);
+  };
+  expect(f.a.bus.publish(env)).toEqual(["codex@beta"]);
+  await f.event.wait(() => refused && f.a.bus.pendingEnvelopes("codex@beta").some(row => row.id === env.id), "not-sent envelope requeued");
+  expect((await outbound(f.a, env.id))).toBeUndefined();
+  expect(f.a.journal.list("codex@beta").find(row => row.originals.some(original => original.id === env.id))?.state).toBe("queued");
+  await f.restart("a");
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "online wake retries requeued envelope");
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+});
+
+test("an atomic outbox capacity refusal requeues the original Bus envelope and retries after online", async () => {
+  const f = await mesh(), env = newEnvelope("user", "store capacity refusal before commit", { to: ["codex@beta"] });
+  const store = f.a.store!, queueApplication = store.queueApplication.bind(store); let refused = false;
+  store.queueApplication = async (name, wire, input, current) => {
+    if (!refused) { refused = true; throw new RoomStoreError("limit"); }
+    return queueApplication(name, wire, input, current);
+  };
+  f.a.bus.publish(env);
+  await f.event.wait(() => refused && f.a.bus.pendingEnvelopes("codex@beta").some(row => row.id === env.id), "atomic limit refusal safely requeued");
+  expect((await outbound(f.a, env.id))).toBeUndefined();
+  expect(f.a.journal.list("codex@beta").find(row => row.originals.some(original => original.id === env.id))?.state).toBe("queued");
+  await f.restart("a");
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "requeued envelope sends after online");
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+});
+
+test("an unclassified queue failure without a durable outbox row does not stay dispatching", async () => {
+  const f = await mesh(), env = newEnvelope("user", "unknown queue failure", { to: ["codex@beta"] });
+  const store = f.a.store!, queueApplication = store.queueApplication.bind(store); let failed = false;
+  store.queueApplication = async (name, wire, input, current) => {
+    if (!failed) { failed = true; throw new Error("unknown durable queue failure"); }
+    return queueApplication(name, wire, input, current);
+  };
+  f.a.bus.publish(env);
+  await f.event.wait(() => f.a.journal.list("codex@beta").some(row => row.state === "needs_review" && row.originals.some(original => original.id === env.id)), "unknown no-row failure is held for review");
+  const row = f.a.journal.list("codex@beta").find(item => item.originals.some(original => original.id === env.id))!;
+  expect(row.state).toBe("needs_review");
+  expect(f.a.store!.applicationOutbox("work").some(item => item.deliveryId === row.id)).toBe(false);
+  const later = newEnvelope("user", "later delivery passes failed queue head", { to: ["codex@beta"] });
+  f.a.bus.publish(later);
+  await f.event.wait(async () => (await outbound(f.a, later.id))?.state === "completed (admitted)", "unclassified failure does not block the remote FIFO");
+  expect(f.b.peer.got.filter(item => item.id === later.id)).toHaveLength(1);
+});
+
+test("sender restart holds a dispatching Bus row whose durable room intent never committed", async () => {
+  const f = await mesh(), env = newEnvelope("user", "orphaned Bus delivery has no room intent", { to: ["codex@beta"] });
+  const store = f.a.store!, queueApplication = store.queueApplication.bind(store); let failed = false;
+  store.queueApplication = async (name, wire, input, current) => {
+    if (!failed) { failed = true; throw new Error("unknown durable queue failure"); }
+    return queueApplication(name, wire, input, current);
+  };
+  const hold = f.a.bus.holdRemoteMissingIntent.bind(f.a.bus); let failHoldOnce = true;
+  f.a.bus.holdRemoteMissingIntent = (source, id, current) => {
+    if (failHoldOnce) { failHoldOnce = false; return false; }
+    return hold(source, id, current);
+  };
+  f.a.bus.publish(env);
+  await f.event.wait(() => f.a.journal.list("codex@beta").some(row => row.state === "dispatching" && row.originals.some(original => original.id === env.id))
+    && f.a.store!.applicationOutbox("work").every(row => row.application !== env.id), "failed Store hold leaves the Bus row active in memory");
+  f.a.bus.closeJournal(); // Simulate a controller crash before the active row can settle locally.
+  await f.a.close();
+  await f.restart("a");
+  await f.event.wait(() => f.a.journal.list("codex@beta").some(row => row.state === "needs_review" && row.reason?.includes("durable intent unavailable")
+    && row.originals.some(original => original.id === env.id)), "online startup reconciles the missing Store intent");
+  expect(f.a.store!.applicationOutbox("work").some(row => row.application === env.id)).toBe(false);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(0);
 });
 
 test("cross-database publication failure is quarantined and receiver restart never republishes it", async () => {
@@ -260,20 +402,295 @@ test("an exact sequence redelivery resends its signed receipt without a second l
   expect(f.a.journal.list("codex@beta").filter(row => row.originals.some(original => original.id === env.id) && row.state === "completed")).toHaveLength(1);
 });
 
-test("a late signed admission receipt is visible evidence and never auto-completes needs_review", async () => {
-  const f = await mesh(1), env = newEnvelope("codex", "late receipt evidence", { to: ["codex@beta"] });
-  f.control.afterPublication = (label, incoming) => { if (label === "beta" && incoming.id === env.id) { f.control.holdSender = f.guest; f.control.hold = true; } };
+test("a locally stored signed receipt replays after receiver restart before broker storage", async () => {
+  const f = await mesh(), env = newEnvelope("user", "receipt survives receiver restart", { to: ["codex@beta"] });
+  const oldReceiver = f.b.peer; let inboundDigest: string | undefined;
+  f.control.holdSender = f.guest; f.control.hold = true;
+  f.control.afterReceive = (label, input) => { if (label === "beta" && input.message?.type === "chat" && input.message.envelope.id === env.id) inboundDigest = input.digest; };
+  f.a.bus.publish(env);
+  await f.event.wait(() => !!inboundDigest && f.control.entered && f.b.store?.receiptStored("work", inboundDigest) !== undefined, "signed receipt durably stored before broker ACK");
+  expect(oldReceiver.got.filter(row => row.id === env.id)).toHaveLength(1);
+  await f.restart("b");
+  await f.event.wait(() => f.b.store?.receiptStored("work", inboundDigest!) !== undefined, "restarted receiver binds the durable receipt outbox");
+  expect(f.b.store!.receiptStored("work", inboundDigest!)).toBeDefined();
+  f.control.hold = false; f.control.gate.release(); f.b.link!.refresh(); f.event.notify();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "replayed receipt settles sender delivery");
+  await f.event.wait(() => f.b.store?.receiptStored("work", inboundDigest!) === undefined, "broker queue ACK retires the receiver receipt proof");
+  const receiverInstances = new Set([oldReceiver, f.b.peer]);
+  expect([...receiverInstances].reduce((count, peer) => count + peer.got.filter(row => row.id === env.id).length, 0)).toBe(1);
+  expect(f.b.store!.receiptStored("work", inboundDigest!)).toBeUndefined();
+});
+
+test("a signed TTL receipt reconciles when its store commit beats the Bus CAS and sender restart", async () => {
+  const f = await mesh(1), env = newEnvelope("user", "late receipt wins the TTL boundary race", { to: ["codex@beta"] });
+  const oldReceiver = f.b.peer; let inboundDigest: string | undefined;
+  f.control.holdSender = f.guest; f.control.hold = true;
+  f.control.afterReceive = (label, input) => { if (label === "beta" && input.message?.type === "chat" && input.message.envelope.id === env.id) inboundDigest = input.digest; };
+  f.a.bus.publish(env);
+  await f.event.wait(() => !!inboundDigest && f.control.entered && f.b.store?.receiptStored("work", inboundDigest) !== undefined, "signed receipt held after local commit");
+  const saved = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  const settle = f.a.bus.settleRemoteReceipt.bind(f.a.bus); let failOnce = true;
+  f.a.bus.settleRemoteReceipt = (source, id, outcome, reason, current) => {
+    if (failOnce) { failOnce = false; return false; }
+    return settle(source, id, outcome, reason, current);
+  };
+  f.control.now = saved.expiresAt + 1; // Receipt arrival races TTL before the timer has moved Bus to needs_review.
+  f.control.hold = false; f.control.gate.release();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "room store commits the late signed outcome");
+  const deliveryId = String((await outbound(f.a, env.id))?.id);
+  expect(f.a.journal.get(deliveryId)?.state).toBe("accepted");
+  await f.restart("a");
+  await f.event.wait(() => f.a.journal.get(deliveryId)?.state === "completed", "online reconciliation settles the saved signed outcome");
+  const receiverInstances = new Set([oldReceiver, f.b.peer]);
+  expect([...receiverInstances].reduce((count, peer) => count + peer.got.filter(row => row.id === env.id).length, 0)).toBe(1);
+  expect(f.b.store!.receiptStored("work", inboundDigest!)).toBeUndefined();
+});
+
+test("a Bus disposition survives sender restart before the Store flag and a late receipt", async () => {
+  const f = await mesh(1), env = newEnvelope("user", "discard survives the late signed receipt", { to: ["codex@beta"] });
+  f.control.holdSender = f.guest; f.control.hold = true;
   f.a.bus.publish(env);
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "recipient receipt held after broker storage");
-  await acknowledgementDeadline(f, f.a, env.id);
-  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "local ACK deadline reached");
-  f.control.hold = false; f.control.gate.release();
-  await f.event.wait(async () => (await outbound(f.a, env.id))?.lateReceipt === "completed (admitted)", "late signed evidence displayed");
-  expect(await outbound(f.a, env.id)).toMatchObject({ state: "needs_review", lateReceipt: "completed (admitted)" });
-  expect(f.a.journal.unresolved("codex@beta").some(row => row.originals.some(original => original.id === env.id) && row.state === "needs_review")).toBe(true);
+  const saved = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  f.control.now = saved.expiresAt + 1; f.a.chat.tick();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "room TTL creates a resolvable hold");
+  const held = await outbound(f.a, env.id), deliveryId = String(held?.id), journalRow = f.a.journal.get(deliveryId)!;
+  f.a.bus.resolveDelivery(deliveryId, journalRow.revision, "discard", "person discards before Store disposition callback");
+  expect(f.a.bus.remoteDisposition(deliveryId)).toBe("discard");
+  expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === deliveryId)?.disposition).toBeUndefined();
+  const phaseFrames = f.frames.filter(row => row.sender === f.owner && !row.ephemeral).length;
+  await f.a.close(); await f.restart("a");
+  await f.event.wait(() => f.a.store?.applicationOutbox("work").find(row => row.deliveryId === deliveryId)?.disposition === "discard", "bind reconciles the authoritative Bus disposition before sends");
+  f.control.hold = false; f.control.gate.release(); f.event.notify();
+  await f.event.wait(() => f.broker.stats().queuedFrames === 0, "late signed receipt transport retires");
+  expect(f.a.bus.remoteDisposition(deliveryId)).toBe("discard");
+  expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === deliveryId)).toMatchObject({ state: "needs_review", disposition: "discard" });
+  expect(f.frames.filter(row => row.sender === f.owner && !row.ephemeral).length).toBe(phaseFrames);
   expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
 });
 
+test("an uncertain invocation is not resumed after restart and person discard frees ordinary FIFO", async () => {
+  const f = await mesh(1), env = newEnvelope(HUB, "fixture invocation body", { to: ["codex@beta"], kind: "invocation" });
+  f.control.authorizeInvocation = true; f.control.holdSender = f.guest; f.control.hold = true;
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "invocation receipt held after local admission refusal");
+  const saved = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  const remote = (f.a.chat as unknown as { remotes: Map<string, { receipt(receipt: { id: string; state: "needs_review"; reason: string }): boolean }> }).remotes.get("codex@beta")!;
+  expect(remote.receipt({ id: saved.deliveryId, state: "needs_review", reason: "fixture invocation transport uncertainty" })).toBe(true);
+  await f.event.wait(() => f.a.journal.list("codex@beta").some(row => row.state === "needs_review" && row.originals.some(original => original.id === env.id)), "invocation transport becomes person-held");
+  const held = f.a.journal.list("codex@beta").find(row => row.originals.some(original => original.id === env.id))!;
+  const ownerFrames = f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length;
+  const disconnectAt = f.brokerEvents.length;
+  f.a.bus.closeJournal(); await f.a.close();
+  await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender fenced before invocation recovery");
+  f.control.phase = "after"; await f.restart("a");
+  await f.event.wait(() => f.a.bus.isHeld("codex@beta") && f.a.store?.applicationOutbox("work").some(row => row.deliveryId === held.id) === true, "invocation stays held without an automatic resend");
+  expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === held.id)?.state).toBe("accepted");
+  expect(f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length).toBe(ownerFrames);
+  const current = f.a.journal.get(held.id)!;
+  f.a.bus.resolveDelivery(held.id, current.revision, "discard", "person discards uncertain invocation");
+  f.a.chat.disposition("codex@beta", held.id, "discard");
+  await f.event.wait(() => f.a.store!.applicationOutbox("work").find(row => row.deliveryId === held.id)?.disposition === "discard", "person disposition reaches the Store");
+  f.control.hold = false; f.control.gate.release(); f.control.now = Date.now(); f.event.notify();
+  await f.event.wait(() => f.a.bus.stateOf("codex@beta") === "idle", "remote presence returns after its receipt is released");
+  const later = newEnvelope("user", "ordinary work after invocation discard", { to: ["codex@beta"] });
+  f.a.bus.publish(later);
+  await f.event.wait(async () => (await outbound(f.a, later.id))?.state === "completed (admitted)", "ordinary FIFO drains after invocation disposition");
+  expect(f.a.bus.remoteDisposition(held.id)).toBe("discard");
+  expect(f.b.peer.got.some(row => row.id === env.id)).toBe(false);
+  expect(f.b.peer.got.filter(row => row.id === later.id)).toHaveLength(1);
+});
+
+test("a terminal Store proof for a revoked recipient holds the old Bus tuple after restart", async () => {
+  const f = await mesh(600), env = newEnvelope("user", "receipt belongs to the old room member", { to: ["codex@beta"] });
+  f.control.holdSender = f.guest; f.control.hold = true;
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "signed receipt is held after broker storage");
+  const settle = f.a.bus.settleRemoteReceipt.bind(f.a.bus); let failOnce = true;
+  f.a.bus.settleRemoteReceipt = (source, id, outcome, reason, current) => {
+    if (failOnce) { failOnce = false; return false; }
+    return settle(source, id, outcome, reason, current);
+  };
+  f.control.hold = false; f.control.gate.release();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "signed Store outcome commits before its Bus CAS");
+  const deliveryId = String((await outbound(f.a, env.id))?.id), owner = f.a.store!, room = owner.get("work")!;
+  expect(f.a.journal.get(deliveryId)?.state).toBe("accepted");
+  await owner.rotate("work", roomMembers(room.current).filter(member => member.fingerprint !== f.guest), room.current.digest, () => true);
+  const ownerFrames = f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length;
+  const disconnectAt = f.brokerEvents.length;
+  f.a.bus.closeJournal(); // Preserve the accepted journal row while the room Store has a revoked roster.
+  await f.a.close();
+  await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old owner session fenced after revocation");
+  f.control.phase = "after"; await f.restart("a");
+  await f.event.wait(() => f.a.journal.get(deliveryId)?.state === "needs_review"
+    && f.a.journal.get(deliveryId)?.reason?.includes("recipient proof no longer current") === true, "restart quarantines the signed proof bound to the revoked member");
+  expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === deliveryId)).toMatchObject({ state: "completed", recipient: f.guest });
+  expect(f.a.journal.resolution(deliveryId)).toBeUndefined();
+  expect(f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length).toBe(ownerFrames);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+});
+
+test("a late signed admission receipt settles needs_review once", async () => {
+  const f = await mesh(1), env = newEnvelope("codex", "late receipt evidence", { to: ["codex@beta"] });
+  const settled: string[] = [];
+  f.a.bus.tap(event => { if (event.t === "remote_delivery_settled") settled.push(event.deliveryId); });
+  f.control.afterPublication = (label, incoming) => { if (label === "beta" && incoming.id === env.id) { f.control.holdSender = f.guest; f.control.hold = true; } };
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "recipient receipt held after broker storage");
+  const saved = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  f.control.now = saved.expiresAt + 1; f.a.chat.tick(); f.event.notify();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "local room TTL reached");
+  const later = newEnvelope("user", "later delivery passes needs_review", { to: ["codex@beta"] });
+  f.a.bus.publish(later);
+  await f.event.wait(() => f.b.peer.got.some(row => row.id === later.id), "later remote delivery does not wait for person disposition");
+  expect((await outbound(f.a, env.id))?.state).toBe("needs_review");
+  f.control.hold = false; f.control.gate.release();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.lateReceipt === "completed (admitted)", "late signed evidence displayed");
+  await f.event.wait(async () => (await outbound(f.a, later.id))?.state === "completed (admitted)", "later delivery receipt settles");
+  const settledRow = await outbound(f.a, env.id);
+  expect(settledRow).toMatchObject({ state: "completed (admitted)", lateReceipt: "completed (admitted)" });
+  expect(f.a.journal.unresolved("codex@beta").some(row => row.originals.some(original => original.id === env.id))).toBe(false);
+  expect(settled.filter(id => id === String(settledRow?.id))).toHaveLength(1);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+});
+
+test("a changed privacy proof cannot alter the body under a retained application id", async () => {
+  const f = await mesh(1), env = newEnvelope("user", "clear body before privacy policy changes", { to: ["codex@beta"] });
+  f.control.afterPublication = (label, incoming) => { if (label === "beta" && incoming.id === env.id) { f.control.holdSender = f.guest; f.control.hold = true; } };
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "original application and held receipt stored");
+  const initialFrames = f.frames.filter(row => row.sender === f.owner).length;
+  f.control.modelScreen = true; f.control.screenLabel = "pii";
+  await acknowledgementDeadline(f, f.a, env.id);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "changed privacy proof quarantines the immutable application");
+  expect(f.frames.filter(row => row.sender === f.owner)).toHaveLength(initialFrames);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  const saved = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  expect(saved).toMatchObject({ state: "needs_review", reason: "boundary_refused" });
+  expect(f.a.journal.get(saved.deliveryId)?.state).toBe("needs_review");
+  expect(f.a.store!.outbox("work").some(row => row.digest === saved.digest)).toBe(false);
+});
+
+test("a Bus pause during model screening has no room effect and sends the original once after resume", async () => {
+  const f = await mesh(), env = newEnvelope("user", "hold the proof while the Bus pauses", { to: ["codex@beta"] });
+  f.control.modelScreen = true; f.control.screenHold = true; f.control.screenGate = deferred();
+  const store = f.a.store!, queueApplication = store.queueApplication.bind(store); let queueCalls = 0;
+  store.queueApplication = async (name, wire, input, current) => { queueCalls++; return queueApplication(name, wire, input, current); };
+  try {
+    f.a.bus.publish(env);
+    await f.event.wait(() => f.control.screenEntered === true, "outbound proof reaches the model screen");
+    f.a.bus.pause("codex@beta");
+    f.control.screenHold = false; f.control.screenGate.release();
+    await f.event.wait(() => queueCalls === 0 && f.a.bus.pendingEnvelopes("codex@beta").some(row => row.id === env.id)
+      && f.a.journal.list("codex@beta").some(row => row.state === "queued" && row.originals.some(original => original.id === env.id)), "paused Bus requeues before any room outbox effect");
+    expect(f.a.store!.applicationOutbox("work").some(row => row.application === env.id)).toBe(false);
+    expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(0);
+    f.a.bus.resume("codex@beta");
+    await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "Bus resume sends the unchanged queued application");
+    expect(queueCalls).toBe(1);
+    expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  } finally { f.control.screenHold = false; f.control.screenGate.release(); f.a.bus.resume("codex@beta"); }
+});
+
+test("a pause after durable enqueue resumes the same Bus delivery without resetting its TTL", async () => {
+  const f = await mesh(), env = newEnvelope("user", "pause after durable room enqueue", { to: ["codex@beta"] });
+  const store = f.a.store!, queueApplication = store.queueApplication.bind(store); let queueCalls = 0;
+  store.queueApplication = async (name, wire, input, current) => {
+    queueCalls++;
+    const row = await queueApplication(name, wire, input, current);
+    if (queueCalls === 1) { f.a.bus.pause("codex@beta"); f.event.notify(); }
+    return row;
+  };
+  const framesBefore = f.frames.filter(row => row.sender === f.owner).length;
+  f.a.bus.publish(env);
+  await f.event.wait(() => {
+    const row = store.applicationOutbox("work").find(item => item.application === env.id);
+    const remotes = (f.a.chat as unknown as { remotes: Map<string, { waitingForReady?: Set<string> }> }).remotes;
+    return !!row && remotes.get("codex@beta")?.waitingForReady?.has(row.deliveryId) === true;
+  }, "durable Store intent waits behind the Bus pause");
+  const initial = store.applicationOutbox("work").find(row => row.application === env.id)!;
+  expect(f.a.journal.list("codex@beta").find(row => row.originals.some(original => original.id === env.id))?.state).toBe("dispatching");
+  expect(f.frames.filter(row => row.sender === f.owner)).toHaveLength(framesBefore);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(0);
+  f.a.bus.resume("codex@beta");
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "Bus resume publishes the retained application");
+  const settled = store.applicationOutbox("work").find(row => row.application === env.id)!;
+  expect(settled.deliveryId).toBe(initial.deliveryId);
+  expect(settled.expiresAt).toBe(initial.expiresAt);
+  expect(queueCalls).toBe(2);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+});
+
+test("a transient outgoing proof read waits for the ACK deadline instead of spinning", async () => {
+  const f = await mesh(600), env = newEnvelope("user", "transient outgoing proof read", { to: ["codex@beta"] });
+  f.control.holdSender = f.guest; f.control.hold = true;
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "original application accepted with receipt held");
+  const original = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  f.control.failOutgoing = env.id; f.control.countOutgoing = env.id; f.control.failOutgoingCode = "busy"; f.control.outgoingReads = 0;
+  const disconnectAt = f.brokerEvents.length; f.a.bus.closeJournal(); await f.a.close();
+  await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender fenced before proof retry");
+  const before = new Set(f.frames.filter(frame => frame.sender === f.owner).map(frame => frame.digest));
+  f.control.phase = "after"; await f.restart("a");
+  await f.event.wait(() => f.control.outgoingReads === 1, "one transient Store proof read fails");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(f.control.outgoingReads).toBe(1);
+  expect((await outbound(f.a, env.id))?.state).toBe("accepted");
+  await acknowledgementDeadline(f, f.a, env.id);
+  await f.event.wait(() => f.control.outgoingReads === 2 && f.frames.some(frame => frame.sender === f.owner && frame.phase === "after" && !frame.ephemeral && !before.has(frame.digest)), "ACK deadline is the next proof retry");
+  f.control.hold = false; f.control.gate.release();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "signed receipt settles the retry");
+  expect(f.a.store!.applicationOutbox("work").find(row => row.application === env.id)?.expiresAt).toBe(original.expiresAt);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+});
+
+test("a restored deferred proof read still settles to review at its original TTL", async () => {
+  const f = await mesh(600), env = newEnvelope("user", "deferred proof original TTL", { to: ["codex@beta"] });
+  f.control.holdSender = f.guest; f.control.hold = true;
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "original application accepted with receipt held");
+  const original = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  f.control.failOutgoing = env.id; f.control.countOutgoing = env.id; f.control.failOutgoingCode = "busy"; f.control.outgoingReads = 0;
+  const disconnectAt = f.brokerEvents.length; f.a.bus.closeJournal(); await f.a.close();
+  await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender fenced before deferred TTL");
+  f.control.phase = "after"; await f.restart("a");
+  await f.event.wait(() => f.control.outgoingReads === 1, "restored unowned proof read is deferred");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(f.a.journal.get(original.deliveryId)?.state).toBe("accepted");
+  f.control.now = original.expiresAt + 1; f.a.chat.tick();
+  await f.event.wait(() => f.a.journal.get(original.deliveryId)?.state === "needs_review", "Store TTL also holds the unowned Bus row");
+  expect(f.a.store!.applicationOutbox("work").find(row => row.deliveryId === original.deliveryId)).toMatchObject({ state: "needs_review", expiresAt: original.expiresAt });
+  expect(f.control.outgoingReads).toBe(1);
+  f.control.hold = false; f.control.gate.release();
+});
+
+test("a permanent stale outgoing proof is held once and does not block later FIFO work", async () => {
+  const f = await mesh(600), env = newEnvelope("user", "permanent stale outgoing proof", { to: ["codex@beta"] });
+  f.control.holdSender = f.guest; f.control.hold = true;
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.control.entered, "original application accepted with receipt held");
+  f.control.failOutgoing = env.id; f.control.failOutgoingCode = "state_changed";
+  const disconnectAt = f.brokerEvents.length; f.a.bus.closeJournal(); await f.a.close();
+  await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender fenced before stale proof check");
+  const ownerFrames = f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length;
+  f.control.phase = "after"; await f.restart("a");
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "permanent proof failure reaches review");
+  const held = await outbound(f.a, env.id), deliveryId = String(held?.id);
+  expect(f.a.journal.get(deliveryId)?.state).toBe("needs_review");
+  expect(f.a.journal.get(deliveryId)?.reason).toContain("proof unavailable");
+  const saved = f.a.store!.applicationOutbox("work").find(row => row.deliveryId === deliveryId)!;
+  expect(saved).toMatchObject({ state: "needs_review", reason: "boundary_refused" });
+  expect(f.a.store!.outbox("work").some(row => row.digest === saved.digest)).toBe(false);
+  expect(f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length).toBe(ownerFrames);
+  f.control.hold = false; f.control.gate.release();
+  await f.event.wait(() => f.a.bus.stateOf("codex@beta") === "idle", "recipient presence returns after the broker verification gate releases");
+  const later = newEnvelope("user", "later FIFO after stale proof hold", { to: ["codex@beta"] }); f.a.bus.publish(later);
+  await f.event.wait(() => f.b.peer.got.some(row => row.id === later.id), "later chat reaches the remote peer");
+  await f.event.wait(async () => (await outbound(f.a, later.id))?.state === "completed (admitted)", "later signed receipt completes");
+  expect((await outbound(f.a, env.id))?.state).toBe("needs_review");
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  expect(f.b.peer.got.filter(row => row.id === later.id)).toHaveLength(1);
+});
 
 for (const reconnect of ["blip", "restart"] as const) test(`an unchanged idle remote is rediscovered after ${reconnect} and a never-handed queue drains once`, async () => {
   const f = await mesh(); f.control.holdNative = "beta";
@@ -314,6 +731,30 @@ test("a pre-claim capacity block retains plaintext while a later signed receipt 
   expect(f.b.peer.got.filter(row => row.id === blocked.id)).toHaveLength(1); expect(receiver.pendingInbox("work")).toEqual([]);
 });
 
+test("a deferred inbound chat is ACKed after durable inbox storage and later sends its committed receipt", async () => {
+  const f = await mesh(), env = newEnvelope("user", "inbox commit precedes broker ACK", { to: ["codex@beta"] });
+  let receiptCommits = 0, receiptSent = 0;
+  f.control.blockIncoming = true; f.control.blockedApplication = env.id;
+  f.control.afterSend = async (label, message) => { if (label === "beta" && message.type === "receipt" && message.application === env.id) receiptSent++; };
+  f.a.bus.publish(env);
+  await f.event.wait(() => (f.control.blockedAttempts ?? 0) > 0 && f.b.store!.pendingInbox("work").some(row => row.plaintext !== undefined)
+    && f.broker.stats().queuedFrames === 0, "broker ACK follows durable inbox commit while admission is deferred");
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(0);
+  expect((await outbound(f.a, env.id))?.state).toBe("accepted");
+  f.control.blockIncoming = false;
+  const store = f.b.store!, queueReceipt = store.queueReceipt.bind(store); let receiptCommitted = false;
+  store.queueReceipt = async (name, inboundDigest, wire, options, current) => {
+    const row = await queueReceipt(name, inboundDigest, wire, options, current);
+    receiptCommitted = true;
+    return row;
+  };
+  await f.b.chat.retryPending("work");
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "deferred admission sends a signed receipt");
+  expect(receiptCommitted).toBe(true); expect(receiptSent).toBe(1);
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  expect(f.b.store!.pendingInbox("work")).toEqual([]);
+});
+
 test("discarding a person inbox entry frees shared application capacity and retries retained native work once", async () => {
   const f = await mesh(); let personReceiptSends = 0, nativeReceives = 0;
   const person = newEnvelope("codex", "person inbox capacity release", { to: ["user@beta"], priority: "status" });
@@ -348,7 +789,7 @@ test("discarding a person inbox entry frees shared application capacity and retr
   expect(f.b.notices.filter(row => row.code === "application_capacity")).toHaveLength(1);
 });
 
-test("only an actual inbox TTL purge retries capacity blocked work and late sender proof stays needs_review", async () => {
+test("only an actual inbox TTL purge retries blocked work, and its late receipt settles the sender row", async () => {
   const f = await mesh(); let personReceiptSends = 0, nativeReceives = 0;
   const person = newEnvelope("codex", "person inbox TTL capacity release", { to: ["user@beta"], priority: "status" });
   f.control.afterSend = async (label, message) => {
@@ -374,9 +815,11 @@ test("only an actual inbox TTL purge retries capacity blocked work and late send
   expect(f.b.notices.filter(row => row.code === "application_capacity")).toHaveLength(noticeCount);
   expect(f.b.store!.pendingInbox("work")).toHaveLength(1);
 
-  f.control.now = inbox.expiresAt + 1;
-  f.a.chat.tick(); // The sender's old ACK deadline is uncertainty, not a new completion.
-  await f.event.wait(async () => (await outbound(f.a, native.id))?.state === "needs_review", "native sender ACK deadline becomes uncertain");
+  const nativeOutbox = f.a.store!.applicationOutbox("work").find(row => row.application === native.id)!;
+  f.control.now = nativeOutbox.ackDeadline! + 1;
+  f.a.chat.tick(); // The ACK deadline triggers another attempt without a person disposition.
+  expect((await outbound(f.a, native.id))?.state).not.toBe("needs_review");
+  f.control.now = inbox.expiresAt + 1; f.a.chat.tick();
   const expiredItem = await f.b.commands.inboxShow(inbox.id, () => true);
   expect(expiredItem).toMatchObject({ state: "expired" }); expect(expiredItem).not.toHaveProperty("body");
   f.b.commands.expireInbox(); // Consume the committed purge signal left by show, even though no rows remain due.
@@ -384,8 +827,8 @@ test("only an actual inbox TTL purge retries capacity blocked work and late send
   await f.event.wait(() => nativeReceives === 2 && f.b.peer.got.some(row => row.id === native.id)
     && f.b.store!.pendingInbox("work").length === 0, "actual TTL purge retries the retained native chat once");
   expect(f.b.peer.got.filter(row => row.id === native.id)).toHaveLength(1);
-  await f.event.wait(async () => (await outbound(f.a, native.id))?.lateReceipt === "completed (admitted)", "late native admission proof retained");
-  expect(await outbound(f.a, native.id)).toMatchObject({ state: "needs_review", lateReceipt: "completed (admitted)" });
+  await f.event.wait(async () => (await outbound(f.a, native.id))?.state === "completed (admitted)", "late native admission proof settles the sender row");
+  expect(await outbound(f.a, native.id)).toMatchObject({ state: "completed (admitted)", lateReceipt: "completed (admitted)" });
   expect((await outbound(f.a, person.id))?.state).toBe("completed (inbox)");
   expect(personReceiptSends).toBe(1); // TTL purge drops local body without a new signed person outcome.
   expect(f.b.notices.filter(row => row.code === "application_capacity")).toHaveLength(noticeCount);
@@ -420,14 +863,17 @@ test("post-send policy divergence quarantines the outbox before a late receipt c
   } finally { sent.release(); f.control.hold = false; f.control.gate.release(); }
 });
 
-test("a frame held before broker storage reaches the local acknowledgement deadline", async () => {
+test("ACK timeout retries, and only the room TTL moves a frame held before broker storage to needs_review", async () => {
   const f = await mesh(1), env = newEnvelope("user", "not yet stored", { to: ["codex@beta"] });
   f.control.holdSender = f.owner; f.control.hold = true;
   try {
     f.a.bus.publish(env);
     await f.event.wait(() => f.control.entered, "wire verification held before stored reply");
     await acknowledgementDeadline(f, f.a, env.id);
-    await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "pre-stored acknowledgement deadline reached");
+    expect((await outbound(f.a, env.id))?.state).not.toBe("needs_review");
+    const saved = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+    f.control.now = saved.expiresAt + 1; f.a.chat.tick(); f.event.notify();
+    await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "original room TTL reached");
     expect(f.b.peer.got.some(row => row.id === env.id)).toBe(false);
     expect(f.a.journal.unresolved("codex@beta").some(row => row.state === "needs_review" && row.originals.some(item => item.id === env.id))).toBe(true);
   } finally { f.control.hold = false; f.control.gate.release(); }
@@ -474,8 +920,8 @@ test("a receipt behind rejected reconnect presence lets a cap-one broker release
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "accepted" && f.broker.stats().queuedFrames === 1, "actual application occupies the only broker slot");
   const eventsBefore = f.brokerEvents.length, framesBefore = f.frames.length;
   // Hold verification of beta's initial presence while its application is admitted.
-  // The chat cannot be ACKed through the ordinary receipt-send path while that
-  // presence owns beta's transport head, forcing the known-queue_full exception.
+  // Beta commits its signed receipt locally before ACKing the durable inbox frame;
+  // the receipt's broker storage can then wait behind reconnect presence at cap one.
   f.control.holdSender = f.guest; f.control.hold = true;
   try {
     await f.restart("b");
@@ -513,8 +959,8 @@ test("a discarded queue_full application is never retried when broker capacity r
   expect(f.a.store!.outbox("work").some(row => row.digest === target.digest)).toBe(true);
   const attemptsBeforeDiscard = f.frames.filter(frame => frame.sender === f.owner && frame.digest === target.digest).length;
   expect(attemptsBeforeDiscard).toBeGreaterThanOrEqual(2);
-  await acknowledgementDeadline(f, f.a, env.id);
-  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "refused application acknowledgement deadline reached");
+  f.control.now = target.expiresAt + 1; f.a.chat.tick(); f.event.notify();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "refused application original TTL reached");
   const row = (await outbound(f.a, env.id))!, id = String(row.id), before = f.a.journal.get(id)!;
   f.a.bus.resolveDelivery(id, before.revision, "discard", "person discards rejected room application");
   f.a.chat.tick();
@@ -672,7 +1118,8 @@ test("room status never reconciles person dispositions, while the explicit tick 
   try {
     f.a.bus.publish(env);
     await f.event.wait(() => f.control.entered, "recipient signed receipt held before clock advance");
-    await acknowledgementDeadline(f, f.a, env.id);
+    const saved = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+    f.control.now = saved.expiresAt + 1; f.a.chat.tick(); f.event.notify();
     await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "needs_review", "known uncertainty awaiting person");
     const row = (await outbound(f.a, env.id))!, id = String(row.id), before = f.a.journal.get(id)!;
     f.a.bus.resolveDelivery(id, before.revision, "discard", "person discards known uncertainty");
