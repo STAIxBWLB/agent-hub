@@ -19,7 +19,7 @@ export interface PublishResult {
 export interface AcceptedDeliveryExpiry { id: string; peer: PeerId; revision: number; notifyConductor: boolean }
 
 export class ReviewInputHandoffError extends Error {
-  constructor() { super("review input provenance unavailable; delivery remains queued"); this.name = "ReviewInputHandoffError"; }
+  constructor() { super("review input provenance unavailable; the message remains queued. Reconnect the peer, check ahub status for journal health, then retry hub_inbox."); this.name = "ReviewInputHandoffError"; }
 }
 
 export type BusEvent =

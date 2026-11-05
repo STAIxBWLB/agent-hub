@@ -999,6 +999,19 @@ test("off-roster pull retains its batch and preface until membership returns (#3
   } finally { bus.closeJournal(); await peer.stop(); }
 });
 
+test("review-input handoff refusal leaves the inbox queued and names recovery steps", async () => {
+  class PullPeer extends FakePeer { readonly pullOnly = true; }
+  const bus = new Bus({ batchMs: 0, beforeReviewInputHandoff: () => { throw new Error("session provenance unavailable"); } });
+  const peer = new PullPeer("claude"); bus.add(peer); await peer.start();
+  const review = newEnvelope(HUB, "quote-bearing review", { to: [peer.id], kind: "review", refs: { reviewPackage: "reviewer-request-fixture" } });
+  bus.publish(review);
+  try {
+    expect(() => bus.pull(peer.id)).toThrow("Reconnect the peer, check ahub status for journal health, then retry hub_inbox");
+    expect(bus.queueIds(peer.id)).toEqual([review.id]);
+    expect(bus.storageError).toBeUndefined();
+  } finally { bus.closeJournal(); await peer.stop(); }
+});
+
 test("off-roster important messages cannot steer a busy peer (#315)", async () => {
   let on = true; const bus = new Bus({ batchMs: 0, rostered: () => on }), peer = new FakePeer("codex"); peer.canSteer = true; bus.add(peer); await peer.start(); peer.set("busy");
   try {
