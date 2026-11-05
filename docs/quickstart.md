@@ -37,6 +37,8 @@ The hub now exact-pins `@staix/agent-mem` 0.20.1 (#1136). A setup receipt writte
 
 Nothing else changes until you use something new. `ahub worktrees` lists the project's live and settled worktrees (settled: its PR merged or closed with no newer work, or quiet for `worktrees.quiet_days`, default 7), and `ahub worktrees tidy` previews which settled ones are safe to remove, with the reasons for each refused row; only you remove them, with `ahub worktrees tidy --confirm <fingerprint>` in your own terminal, which runs `git worktree remove` and `git branch -d` and never forces (#1057). The dashboard's Agents panel gets a Worktrees section with Park, Pin and "Refresh PR states", and an inbox alert fires above `worktrees.alert_over` (default 10). Pi and the local worker name their own session with `hub_set_title`; `ahub title <peer> <text...>` or the console's `t` editor replaces the name (#1157). A plan's `sources` must now name registered `src:<16 hex>` ids (`ahub source list`), or the proposal or acceptance is refused (#1151). Run agy with `AGY_CLI_DISABLE_AUTO_UPDATE=1`: without it agy replaced its own binary during a launch (#1140).
 
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.30.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
 ## Upgrading to 0.29.0
 
 Upgrade every `amem` that shares your memory home together with the hub: the hub now exact-pins `@staix/agent-mem` 0.20.0, and an `amem` 0.19.0 hook or CLI cannot drain 0.20.0's new hook spool records and can retire them after seven days (#1131). Formats, shards, candidates and indexes are unchanged.

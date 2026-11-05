@@ -433,3 +433,41 @@ test("#433 tagged failed-origin wait is shown as waiting and retains its fresh-s
   expect(operationLines(op, undefined, 0)).toContain("  alpha  started  (restored:codex waiting:failed)");
   expect(nextActions(op)).toContain(`bun ${MAIN} recovery dispose ${ID} --fresh-session codex --reason <text>`);
 });
+
+// #718 (#1179): `ahub upgrade` upgrades one project's daemon and not the global CLI or the plugin, so a completed upgrade ends with the step when the host says either is older.
+const STEP = ["ahub upgrade does not update the global CLI or the shared Claude plugin.", "The global CLI is older than the daemon this upgrade installs (0.6.0): run `bun add -g @staix/agent-hub@0.6.0` and then `ahub setup` yourself."];
+const done = (over: Partial<RecoveryOperation> = {}) => operation({ phase: "completed", step: "completed", updatedAt: 9, ...over });
+
+test("#718 a completed upgrade ends with the step under the 'completed' line, once, through the plan screen and the operation screen", async () => {
+  const afterCompleted = async (op: RecoveryOperation) => op.plan.version === "0.6.0" ? STEP : [];
+  const planned = screen(["a"]);
+  await planScreen(host({ read: () => done(), runner: () => 4242, afterCompleted }), planned.io);
+  expect(planned.out.slice(-3)).toEqual(["upgrade to 0.6.0 completed", ...STEP]);
+  expect(planned.out.filter(line => line === STEP[0])).toHaveLength(1);
+  const resumed = screen([]);
+  expect(await operationScreen(host({ read: () => done(), afterCompleted }), resumed.io, ID)).toBe("completed");
+  expect(resumed.out.slice(-3)).toEqual(["upgrade to 0.6.0 completed", ...STEP]);
+});
+
+test("#718 nothing is added when the host has nothing to say, when it throws, when the operation is a restart, or when the upgrade did not complete", async () => {
+  const quiet = screen([]);
+  await operationScreen(host({ read: () => done(), afterCompleted: () => [] }), quiet.io, ID);
+  expect(quiet.out.at(-1)).toBe("upgrade to 0.6.0 completed");
+  const none = screen([]);
+  await operationScreen(host({ read: () => done() }), none.io, ID);                      // a host without the hook (an older caller)
+  expect(none.out.at(-1)).toBe("upgrade to 0.6.0 completed");
+  const broken = screen([]);
+  expect(await operationScreen(host({ read: () => done(), afterCompleted: () => { throw new Error("claude is not installed"); } }), broken.io, ID)).toBe("completed");
+  expect(broken.out.at(-1)).toBe("upgrade to 0.6.0 completed");                          // advice never fails an upgrade
+  const rejected = screen([]);
+  expect(await operationScreen(host({ read: () => done(), afterCompleted: async () => { throw new Error("probe timed out"); } }), rejected.io, ID)).toBe("completed");
+  const restart = screen([]);
+  await operationScreen(host({ read: () => done({ plan: { ...plan(), kind: "restart" } }), afterCompleted: () => STEP }), restart.io, ID);
+  expect(restart.out.join("\n")).not.toContain("does not update the global CLI");     // a restart installs nothing
+  const blocked = screen(["q"]);
+  await operationScreen(host({ read: () => operation({ phase: "blocked" }), afterCompleted: () => STEP }), blocked.io, ID);
+  expect(blocked.out.join("\n")).not.toContain("does not update the global CLI");
+  const cancelled = screen([]);
+  await operationScreen(host({ read: () => operation({ phase: "cancelled" }), afterCompleted: () => STEP }), cancelled.io, ID);
+  expect(cancelled.out.join("\n")).not.toContain("does not update the global CLI");
+});

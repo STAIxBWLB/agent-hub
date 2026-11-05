@@ -91,7 +91,7 @@ import { childEnv, personEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, recordRecoveryDelegation, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
-import { runtimeVersionWarnings } from "./runtime-version-warning.ts";
+import { globalUpdateAdvice, runtimeVersionWarnings } from "./runtime-version-warning.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { readRecoveryPresentationFlags } from "./upgrade-presentation-flags.ts";
 import { renderOperation, renderBlocked, renderSummary, type RecoveryPresentationOptions } from "./upgrade-presentation.ts";
@@ -720,12 +720,23 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
     runner: recoveryRunner,
     live: (op) => liveProjects(op, makeRecoveryDriver(undefined, delegatedPeer, undefined, conductorPeer).inspect),
     endInspection: recoveryEndInspection,
+    afterCompleted: (op) => globalUpdateLines(op.plan.version),
     endPeer: (planned, peer) => endPlannedPeer(planned, peer),
     runnerStoppable: (id) => signedRunner(id) !== undefined,
     stopRunner: (id) => stopSignedRunner(id),
     entry: join(import.meta.dir, "main.js"),
     version: VERSION,
   };
+}
+
+/**
+ * #718 (#1179): the step for the global CLI and the shared Claude plugin, when either is older than the daemon `target` installs. The plugin version comes from the same `claude plugin list`
+ * probe `ahub doctor` reads (10 s, no shell); a missing `claude`, a failure or an unreadable list is an unknown plugin, which is never a claim. The CLI is this process, or, when an older CLI handed the
+ * upgrade to this release's own coordinator (`AGENTHUB_UPGRADE_HANDOVER=1`), the older one that started it. Advice only: nothing here can fail an upgrade.
+ */
+function globalUpdateLines(target: string): string[] {
+  return globalUpdateAdvice({ target, cli: VERSION, handedOver: process.env.AGENTHUB_UPGRADE_HANDOVER === "1", packageRoot: join(import.meta.dir, "..", ".."),
+    probe: () => spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8", timeout: 10_000 }) });
 }
 
 async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
@@ -802,7 +813,11 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     writeOperation(id, operation);
   } else operation = createOperation(plan, sourceRoot, undefined, delegatedPeer ? { peer: delegatedPeer, command: kind } : undefined);
   if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
-  else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
+  else {
+    spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
+    // #718: the upgrade is only scheduled here, but the step is already known: the CLI and the plugin are compared with the daemon this upgrade installs. Never in --json, which stays the raw document.
+    if (kind === "upgrade") printRecovery(globalUpdateLines(plan.version));
+  }
 }
 
 /** Strict person command: recorded identity only, no session or terminal overrides. */

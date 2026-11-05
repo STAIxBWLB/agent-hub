@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { init } from "../src/cli/init.ts";
+import { globalUpdateStep } from "../scripts/lib/release-plan.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 
 // #787 P3b through the real path: a started daemon with its default committed-docs reader, the person's real `ahub sdlc authorize-release`
@@ -53,6 +54,7 @@ test("the real tag run refuses until the person authorizes through the real daem
   write("src/covered.ts", "release source\n");
   write("package.json", `{\n  "name": "fixture",\n  "version": "${VERSION}"\n}\n`);
   write("README.md", `Status: ${VERSION}, control protocol 13.\n`);
+  write("docs/quickstart.md", `Fixture\n\n## Upgrading to ${VERSION}\n\n${globalUpdateStep(VERSION)}\n\n## Upgrading to 0.1.0\n\nFirst.\n`);   // #718: the release note the preflight requires
   write("CHANGELOG.md", `# Changelog\n\n## Unreleased\n\n## ${VERSION}\n\n- a change\n\n## 0.1.0\n\n- first\n`);
   write(`docs/verification/2026-10-27-${VERSION}.md`, `# ${VERSION}\n\nDone.\n`);
   git("add", "-A"); git("commit", "-qm", "release: prepare");

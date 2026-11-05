@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { AGENT_TODO, realRun, releaseTag, tagPreflight, tagPushArgv, type Cmd, type TagPorts } from "../scripts/lib/release-plan.ts";
+import { AGENT_TODO, globalUpdateStep, realRun, releaseTag, tagPreflight, tagPushArgv, type Cmd, type TagPorts } from "../scripts/lib/release-plan.ts";
 
 // #787 P3b: the guarded tag. Every git operation runs in a scratch repository whose only remote is a bare directory on this disk, so a push
 // can only ever reach that directory. The person's consent is a port the test controls: nothing here calls `ahub sdlc authorize-release`.
@@ -19,7 +19,7 @@ const gitIn = (cwd: string) => (...args: string[]) => {
 const DOCS = ["README.md", "docs/security.md", "docs/operations.md", "docs/quickstart.md", "docs/agent-notes/example.md"];
 
 /** main at a merged release: v0.1.0, work, then release/0.2.0 merged with a merge commit, pushed to the bare remote. */
-function released(options: { squash?: boolean; todo?: boolean; staleStamp?: boolean; changelog?: boolean; skipReport?: boolean } = {}) {
+function released(options: { squash?: boolean; todo?: boolean; staleStamp?: boolean; changelog?: boolean; skipReport?: boolean; quickstart?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-release-tag-")), work = join(dir, "work"), remote = join(dir, "remote.git");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(work); mkdirSync(remote);
@@ -36,6 +36,7 @@ function released(options: { squash?: boolean; todo?: boolean; staleStamp?: bool
   write("src/covered.ts", "release source\n");
   write("package.json", `{\n  "name": "fixture",\n  "version": "${VERSION}"\n}\n`);
   write("README.md", `Status: ${VERSION}, control protocol 13.\n`);
+  write("docs/quickstart.md", `Fixture\n\n${options.quickstart ?? `## Upgrading to ${VERSION}\n\n${globalUpdateStep(VERSION)}\n`}\n## Upgrading to 0.1.0\n\nFirst.\n`);   // #718: the release note, with the global CLI and plugin step the preflight requires
   write("CHANGELOG.md", `# Changelog\n\n## Unreleased\n\n${options.changelog === false ? "" : `## ${VERSION}\n\n- a change\n\n`}## 0.1.0\n\n- first\n`);
   if (!options.skipReport) write(`docs/verification/2026-10-27-${VERSION}.md`, options.todo ? `# ${VERSION}\n\n${AGENT_TODO}: fill\n` : `# ${VERSION}\n\nDone.\n`);
   git("add", "."); git("commit", "-qm", "release: prepare");
@@ -113,6 +114,16 @@ const preflight = (r: ReturnType<typeof released>, version = VERSION) => {
 test("preflight accepts a prepared release", () => {
   expect(preflight(released())).toBe("ok");
 }, 20_000);
+
+// #718 (#1179): a release whose upgrade note drops the global CLI and plugin step cannot be tagged.
+test("preflight refuses a release whose Upgrading note has no global CLI and plugin step, names the fix, and refuses an unfilled TODO(agent) in it", () => {
+  const missing = preflight(released({ quickstart: `## Upgrading to ${VERSION}\n\nNothing changes until you use something new.\n` }));
+  expect(missing).toContain(`docs/quickstart.md at HEAD has no "Upgrading to ${VERSION}" section with the global CLI and plugin step`);
+  expect(missing).toContain(`bun add -g @staix/agent-hub@${VERSION}`);
+  expect(preflight(released({ quickstart: `## Upgrading to 0.1.1\n\n${globalUpdateStep("0.1.1")}\n` }))).toContain("has no \"Upgrading to 0.2.0\" section");   // another version's step does not count
+  expect(preflight(released({ quickstart: `## Upgrading to ${VERSION}\n\nbun add -g @staix/agent-hub@${VERSION} only, no setup\n` }))).toContain("global CLI and plugin step");   // both halves are required
+  expect(preflight(released({ quickstart: `## Upgrading to ${VERSION}\n\n${AGENT_TODO}: say what changes.\n\n${globalUpdateStep(VERSION)}\n` }))).toContain(`still has ${AGENT_TODO} markers`);
+}, 40_000);
 
 test("preflight refuses a branch other than main", () => {
   const branch = released(); branch.git("checkout", "-qb", "elsewhere");
