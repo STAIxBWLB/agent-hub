@@ -6489,17 +6489,26 @@ The current contract is recorded in [Task Board](../design/task-board.md#anchore
 
 The acon plugin uses `ActionMeta` and `host.ui.review` from the published DOM-free 0.1.3 contract as types only; there is no new runtime dependency or renderer. A private/PII view withholds text, and trusted package markers exclude quote/body content from logs, tails, incoming labels and memory capture without making a public task private. Recovery sections are optional for older snapshots. The owner's live document package-format confirmation remains a separate manual check; fixture and code evidence do not claim that confirmation.
 
-### Receipt publication ordering (#1204 T1)
+### Receipt publication ordering (#1204 T2)
 
-A chat ciphertext transport ACK follows its signed receipt's actual socket send.
-If another outbound frame is awaiting storage, the ACK is deferred outside the
-serial receive handler until that receipt reaches the wire, so stored controls
-can still progress. Stop/reconnect fences the deferred ACK. This is not durable
-receipt storage proof; #1204 T2 adds the stored-ACK and receipt-outbox guarantee.
+A chat ciphertext transport ACK follows the signed receipt ciphertext's local
+durable RoomStore outbox commit. The receipt replays after reconnect or restart
+until the broker confirms storage. Waiting for broker storage before the chat ACK
+would deadlock at capacity one. No receipt or native completion is inferred from
+socket send alone.
+ACK after durable local commit of either the receipt or the inbox entry.
+Deferred application admission retains the durable crypto inbox entry, ACKs the
+chat to free broker capacity, and later commits its final receipt to the same
+durable outbox when admission resumes.
 
 A session keeps its refresh request pending for every asked recipient until a
 validated presence from that member arrives. Later non-reply snapshots retain
 requestReply while anyone is pending; replies never carry requestReply. The set
 is bounded by the current roster and resets at reconnect or membership change.
 
-When a receipt is queued behind a confirmed queue_full head, T1 ACKs the chat to free broker capacity while retaining the receipt in bounded RAM; a crash or session loss before its send can lose it, and task #735's durable receipt outbox closes this exception.
+Room application retries preserve the application id, canonical delivery id and
+original queue TTL, using a fresh authenticated ciphertext sequence where needed.
+The ACK timeout schedules resend rather than uncertainty; queue expiry or a
+permanent refusal remains inspectable. A signed late receipt may settle an
+unresolved remote hold once without overriding a person disposition. Receiver
+application deduplication, current identity/privacy fences and all caps remain.

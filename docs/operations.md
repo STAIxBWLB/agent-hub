@@ -5904,8 +5904,7 @@ On `queue_full`, the link retains the sealed frame and retries with exponential
 backoff from 250 ms to at most 30 s. Applications stay in the existing local
 outbox, and later sequences wait for broker storage acceptance. Stop/refresh
 clears connection timers. The broker storage ACK remains transport metadata;
-application receipts, current acknowledgement deadlines and uncertainty rules
-remain unchanged until the T2 delivery work. No layer cap is raised.
+application receipt and retry rules are described below. No layer cap is raised.
 
 
 A hub uses the ephemeral bit only after the broker advertises it to that
@@ -5943,10 +5942,13 @@ peer queue. Native/model execution is independent. Incoming messages remain
 untrusted text and grant no local task, role, approval, tool or control authority.
 
 Offline queues are capped at 200 per room. In untracked config.local.json, optional
-`rooms.ack_timeout_s` defaults to 600 and `rooms.queue_ttl_h` to 24. A restart,
-expired deadline or uncertain publication leaves `needs_review`. It is not
-replayed automatically. A late signed receipt is visible as evidence in queue
-inspection; the person's disposition is still required. Old text cannot be
+`rooms.ack_timeout_s` defaults to 600 and `rooms.queue_ttl_h` to 24. The ACK
+deadline schedules another attempt under the same application id, while the
+original queue TTL stays fixed. Active sends resume after restart. Only queue
+expiry or a permanent refusal ends automatic sending; a remote `needs_review`
+row does not hold the rest of that peer's queue. A valid late signed receipt can
+settle an unresolved remote row once, with an ids-only event. The person's prior
+disposition is never overridden. Old text cannot be
 retried to a replacement fingerprint reusing a label. An unproved terminal retry
 refuses and requires a deliberately authored new message.
 An expired or missing original enqueue deadline likewise refuses retry without
@@ -5955,6 +5957,13 @@ recording a successful disposition. Send a new message deliberately instead.
 The ACK timeout starts when the application is handed to the room link, even if
 the broker never confirms storage. A reconnect or restart requests fresh signed
 presence from the other hub without waiting for its peer state to change.
+The receiver commits receipt ciphertext to its local durable outbox before
+transport-ACKing an admitted chat, then replays the receipt until broker storage
+confirmation. This stays safe at broker capacity one and across receiver restart;
+transport settlement still proves admission rather than native execution.
+An application awaiting local admission may instead ACK after its crypto inbox
+entry commits durably. Later admission uses the same durable receipt outbox;
+the waiting chat does not pin broker capacity.
 Capacity refusal of one incoming chat retains that pending chat while allowing
 later packets and receipts through; a later online or person-disposition event
 rechecks admission. Merely reading room status applies no disposition.

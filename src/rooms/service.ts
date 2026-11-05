@@ -11,7 +11,7 @@ import { RoomStore, RoomStoreError, RoomApplicationLimitError, type RoomOutgoing
 import { RoomPolicy } from "./policy.ts";
 import { RemotePeer } from "./remote-peer.ts";
 import { parseRemotePeerId, roomReceiptReasonText, type RoomMessage, type RoomReceiptReason, type RoomChatEnvelope } from "./application.ts";
-import { RoomApplicationDeferredError, type RoomLink, type RoomLinkApplication, type RoomLinkContext, type RoomLinkState, type RoomPresencePeer } from "./link.ts";
+import { RoomApplicationDeferredError, RoomNotSentError, type RoomLink, type RoomLinkApplication, type RoomLinkContext, type RoomLinkState, type RoomPresencePeer } from "./link.ts";
 
 export interface RoomInvocationIdentity { room: string; member: string; epoch: string; current: () => boolean }
 export interface RoomInvocationIngress {
@@ -60,6 +60,7 @@ export class RoomChat {
   private statusTargets = new Map<string, string[] | null>();
   private readonly remotes = new Map<string, RemotePeer>();
   private readonly outgoing = new Map<string, { binding: Binding; row: RoomOutgoing }>();
+  private readonly resuming = new Set<string>();
   private evidenceCache?: Map<string, { peer: string; roomState: string; disposition?: string; lateReceipt?: string; refusalReason?: string }>;
   private timer?: ReturnType<typeof setTimeout>;
   private stopped = false;
@@ -75,19 +76,31 @@ export class RoomChat {
     this.application = {
       members: context => { if (context.current()) this.bind(context.store, context.name, context.link); },
       receive: (context, input) => this.receive(context, input),
-      online: async context => { if (context.current()) { this.bind(context.store, context.name, context.link); this.bindings.get(context.name)!.online = true; this.refreshTargets(); this.refreshOutgoing(this.bindings.get(context.name)!); this.queueChanged(); } },
+      online: async context => { if (context.current()) {
+        this.bind(context.store, context.name, context.link);
+        const binding = this.bindings.get(context.name)!; binding.online = true;
+        this.refreshTargets(); this.refreshOutgoing(binding); this.queueChanged();
+        this.wakeRemotes(binding);
+        this.reconcileSignedOutcomes(binding);
+        void this.resumeActive(binding);
+      } },
+      receiptTtlMs: context => { if (!context.current()) throw new Error("room: state_changed"); return this.policy.timing().ttlMs; },
       stored: (context, input) => {
         if (!context.current()) return;
         const row = context.store.markApplicationStored(context.name, input.digest, input.seq);
         if (row) this.outcome(this.bindings.get(context.name)!, row);
+        const binding = this.bindings.get(context.name); if (binding) this.wakeRemotes(binding);
       },
-      capacityChanged: context => { if (context.current()) this.capacityChanged(); },
+      capacityChanged: context => { if (context.current()) { const binding = this.bindings.get(context.name); if (binding) this.wakeRemotes(binding); this.capacityChanged(); } },
       gap: (context, input) => {
         if (context.current()) this.options.notice?.({ code: "sequence_gap", room: context.store.get(context.name)!.current.room, sender: input.sender, count: input.count });
       },
     };
   }
   private now(): number { return this.options.now?.() ?? Date.now(); }
+  private wakeRemotes(binding: Binding): void {
+    for (const [id, remote] of this.remotes) if (this.targets.get(id)?.binding === binding) remote.wake();
+  }
   metrics(name: string, room?: string): RoomMetrics | null {
     const binding = this.bindings.get(name);
     if (this.stopped || !binding || this.metricsSince === null || room !== undefined && binding.room !== room) return null;
@@ -177,22 +190,30 @@ export class RoomChat {
             const binding = selected.binding;
             if (!current()) throw new Error("room: state_changed");
             const timing = this.policy.timing(), remaining = expiresAt - this.now();
-            if (remaining <= 0) throw new Error("room: expired");
+            const retained = binding.store.applicationOutbox(binding.name, true).find(row => row.deliveryId === deliveryId);
+            if (remaining <= 0) throw retained ? new Error("room: expired") : new RoomNotSentError();
             try {
               await binding.link.publishApplication({ v: 1, type: "chat", envelope: env }, target.member, {
                 deliveryId, application: env.id, remotePeer: id, recipient: target.member, peer: target.peer,
-                ackTimeoutMs: timing.ackTimeoutMs, ttlMs: Math.min(remaining, timing.ttlMs),
+                ackTimeoutMs: retained?.ackTimeoutMs ?? timing.ackTimeoutMs,
+                ttlMs: retained ? retained.expiresAt - retained.createdAt : Math.min(remaining, timing.ttlMs),
               }, current);
               this.count(binding, "outbound", withheld === true);
-            } catch (error) { binding.store.quarantineOutgoing(binding.name, deliveryId); throw error; }
+            }
             finally { this.refreshOutgoing(binding); this.queueChanged(); }
-          }, quarantine: deliveryId => {
+          }, notSent: deliveryId => this.options.bus.requeueRemoteNotSent(remote!, deliveryId),
+          queued: deliveryId => {
+            const selected = this.targets.get(id);
+            if (!selected || selected.member !== target.member || selected.peer !== target.peer || selected.binding.store.get(selected.binding.name)?.current.room !== room) return undefined;
+            try { return selected.binding.store.applicationOutbox(selected.binding.name, true).some(row => row.deliveryId === deliveryId && (row.state === "dispatching" || row.state === "accepted")); }
+            catch { return undefined; }
+          }, quarantine: (deliveryId, reason) => {
             const selected = this.targets.get(id);
             const cached = [...this.outgoing.values()].filter(value => value.row.deliveryId === deliveryId && value.row.remotePeer === id && value.row.recipient === target.member).map(value => value.binding);
             const bindings = [...new Set([...(selected?.member === target.member && selected.peer === target.peer ? [selected.binding] : []), ...cached])];
             for (const binding of bindings) try {
               if (binding.store.get(binding.name)?.current.room !== room) continue;
-              const row = binding.store.quarantineOutgoing(binding.name, deliveryId);
+              const row = binding.store.quarantineOutgoingPermanent(binding.name, deliveryId, reason);
               if (row && row.remotePeer === id && row.recipient === target.member) { this.outcome(binding, row); return; }
             } catch { /* A retained old binding may already be closed after an explicit rejoin. */ }
           }, now: () => this.now(),
@@ -247,7 +268,7 @@ export class RoomChat {
     // A new roster digest still clears it in bind(), before target reconstruction.
     if (!this.valid(binding)) {
       try { for (const row of binding.store.applicationOutbox(name, true)) if (row.state === "dispatching" || row.state === "accepted") {
-        const unknown = binding.store.quarantineOutgoing(name, row.deliveryId); if (unknown) this.outcome(binding, unknown);
+        const unknown = binding.store.quarantineOutgoingPermanent(name, row.deliveryId, "boundary_refused"); if (unknown) this.outcome(binding, unknown);
       } } catch { for (const [key, row] of this.outgoing) if (row.binding === binding) this.outgoing.delete(key); }
     }
     this.refreshTargets();
@@ -263,9 +284,34 @@ export class RoomChat {
   }
   private outcome(binding: Binding, row: RoomOutgoing): void {
     const remote = this.remotes.get(row.remotePeer);
-    if (row.lateReceipt) this.options.bus.noteLateRemoteReceipt(row.remotePeer, row.deliveryId, row.lateReceipt.outcome);
+    if ((row.state === "completed" || row.state === "failed_safe") && remote && !row.disposition) this.settleStoredOutcome(binding, remote, row);
     else if (!row.disposition) remote?.receipt({ id: row.deliveryId, state: row.state === "dispatching" ? "needs_review" : row.state, reason: row.state === "completed" ? `room ${completedText(row.reason)}` : row.state === "failed_safe" ? roomReceiptReasonText(row.reason ?? "invalid_message") : row.state === "accepted" ? "room broker accepted ciphertext" : "room acknowledgement expired or outcome uncertain" });
     this.refreshOutgoing(binding); this.queueChanged(); this.options.changed?.();
+  }
+  private settleStoredOutcome(binding: Binding, remote: RemotePeer, row: RoomOutgoing): boolean {
+    if ((row.state !== "completed" && row.state !== "failed_safe") || row.disposition) return false;
+    const outcome = row.lateReceipt?.outcome ?? row.state;
+    const reason = row.lateReceipt?.reason ?? row.reason ?? (outcome === "completed" ? "admitted" : "boundary_refused");
+    const target = this.targets.get(row.remotePeer), state = binding.store.get(binding.name);
+    const current = () => this.valid(binding) && target?.binding === binding && target.member === row.recipient
+      && target.peer === row.peer && state?.current.room === binding.room
+      && binding.store.get(binding.name)?.current.digest === state?.current.digest;
+    const settled = this.options.bus.settleRemoteReceipt(remote, row.deliveryId, outcome,
+      outcome === "completed" ? `room ${completedText(reason)}` : `room ${roomReceiptReasonText(reason)}`, current);
+    if (settled) remote.settled(row.deliveryId);
+    return settled;
+  }
+  /** Reconcile a signed store commit that may have preceded a process crash or Bus CAS. */
+  private reconcileSignedOutcomes(binding: Binding): void {
+    if (!binding.online || !this.valid(binding)) return;
+    try {
+      for (const row of binding.store.applicationOutbox(binding.name)) {
+        if ((row.state === "completed" || row.state === "failed_safe") && !row.disposition) {
+          const remote = this.remotes.get(row.remotePeer);
+          if (remote) this.settleStoredOutcome(binding, remote, row);
+        }
+      }
+    } catch { /* The next authenticated online edge retries the signed outcome reconciliation. */ }
   }
   private rate(from: string, member: string, target: string, body: string): boolean {
     const config = this.options.limits?.() ?? PROJECT_LIMITS, key = JSON.stringify(config);
@@ -367,8 +413,8 @@ export class RoomChat {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined; if (this.stopped || !this.bindings.size) return;
     let next = this.options.bus.nextRemoteExpiry();
-    for (const { row } of this.outgoing.values()) if ((row.state === "dispatching" || row.state === "accepted") && !row.disposition) {
-      const due = Math.min(row.expiresAt, row.ackDeadline ?? Infinity); next = next === undefined ? due : Math.min(next, due);
+    for (const { binding, row } of this.outgoing.values()) if ((row.state === "dispatching" || row.state === "accepted") && !row.disposition) {
+      const due = Math.min(row.expiresAt, binding.online ? row.ackDeadline ?? Infinity : Infinity); next = next === undefined ? due : Math.min(next, due);
     }
     if (next === undefined) return;
     this.timer = setTimeout(() => { this.timer = undefined; try { this.tick(); } catch { this.stop(); } }, Math.max(1, Math.min(2_147_483_647, next - this.now())));
@@ -380,11 +426,48 @@ export class RoomChat {
     for (const binding of this.bindings.values()) if (this.valid(binding)) {
       try {
         for (const row of binding.store.expireApplications(binding.name)) this.outcome(binding, row);
+        if (binding.online) {
+          const due = binding.store.dueApplicationRetries(binding.name);
+          this.refreshOutgoing(binding);
+          for (const row of due) this.launchResume(binding, row);
+        }
         this.reconcileDispositions(binding);
       }
       catch { binding.online = false; for (const [key, entry] of this.outgoing) if (entry.binding === binding) this.outgoing.delete(key); }
     }
     void this.retryPending(); this.queueChanged();
+  }
+  private async resumeActive(binding: Binding): Promise<void> {
+    if (!binding.online || !this.valid(binding)) return;
+    try {
+      for (const row of binding.store.applicationOutbox(binding.name, true)) {
+        if (row.state === "dispatching" || row.state === "accepted") this.launchResume(binding, row);
+      }
+    } catch { /* The next authenticated online edge will retry durable rows. */ }
+  }
+  private launchResume(binding: Binding, row: RoomOutgoing): void {
+    const key = `${binding.name}:${row.deliveryId}`;
+    if (this.resuming.has(key)) return;
+    this.resuming.add(key);
+    void this.resumeApplication(binding, row).catch(() => undefined).finally(() => { this.resuming.delete(key); this.queueChanged(); });
+  }
+  private async resumeApplication(binding: Binding, row: RoomOutgoing): Promise<void> {
+    const remote = this.remotes.get(row.remotePeer);
+    const original = remote && this.options.bus.remoteDeliveryEnvelope(remote, row.deliveryId);
+    if (!remote || !original || !binding.online || !this.valid(binding) || row.disposition || row.expiresAt <= this.now()) return;
+    const target = this.targets.get(row.remotePeer), state = binding.store.get(binding.name);
+    const current = () => this.valid(binding) && binding.online && this.targets.get(row.remotePeer)?.binding === binding
+      && this.targets.get(row.remotePeer)?.member === row.recipient && this.targets.get(row.remotePeer)?.peer === row.peer
+      && binding.store.get(binding.name)?.current.room === state?.current.room
+      && binding.store.get(binding.name)?.current.digest === state?.current.digest
+      && row.expiresAt > this.now() && !row.disposition;
+    if (!target || !state || target.binding !== binding || !current()) return;
+    const saved = await binding.store.outgoingMessage(binding.name, row.application, current);
+    if (!saved || saved.type !== "chat" || saved.envelope.id !== row.application || saved.envelope.to !== row.peer || !current()) return;
+    const resumeState = row.state === "accepted" ? "accepted" : "dispatching";
+    if (!this.options.bus.resumeRemotePending(remote, row.deliveryId, resumeState, current)) return;
+    await remote.resume(original, row.deliveryId, row.expiresAt, saved.envelope);
+    this.refreshOutgoing(binding); this.queueChanged();
   }
   /** Global byte capacity can be freed by another room. This is event-coalesced, never polled. */
   private capacityChanged(): void {

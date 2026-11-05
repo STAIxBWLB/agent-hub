@@ -1,8 +1,15 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { RoomLink } from "../src/rooms/link.ts";
-import type { RoomStore } from "../src/rooms/store.ts";
-import { canonicalBytes, createRoomEpoch, decodeFrame, openFrame, sealFrame } from "../src/rooms/wire.ts";
+import { RoomStore } from "../src/rooms/store.ts";
+import { encodeRoomMessage } from "../src/rooms/application.ts";
+import { canonicalBytes, createInvite, createJoin, createRoomEpoch, decodeFrame, openFrame, sealFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, generateHubIdentity, sha256 } from "../src/rooms/crypto.ts";
+
+const roots: string[] = [], stores: RoomStore[] = [];
+afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 async function transport() {
   const owner = await generateHubIdentity(), guest = await generateHubIdentity();
@@ -67,82 +74,114 @@ test("queued presence rechecks exposure at actual send and stop clears queue_ful
 });
 
 
-async function receiptForIncoming(f: Awaited<ReturnType<typeof transport>>) {
-  const application = crypto.randomUUID();
-  const incoming = await sealFrame({ epoch: f.epoch, identity: f.guest, recipients: [f.owner.public.fingerprint],
-    plaintext: canonicalBytes({ v: 1, type: "chat", envelope: { id: application, trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "normal", body: "incoming chat", ts: 1 } }),
-    sequence: { reserve: async () => "1", isCurrent: () => true } });
-  const digest = encodeBase64url(await sha256(incoming));
-  const receiptDigest = await f.link.publishApplication({ v: 1, type: "receipt", frame: digest, application, peer: "codex", outcome: "completed", reason: "admitted" }, f.guest.public.fingerprint);
-  return { frame: decodeFrame(incoming), digest, receiptDigest };
+async function durableTransport() {
+  const root = mkdtempSync(join(tmpdir(), "ahub-room-receipt-")); roots.push(root);
+  const owner = await RoomStore.open({ stateDir: join(root, "owner") }), guest = await RoomStore.open({ stateDir: join(root, "guest") });
+  stores.push(owner, guest);
+  const initial = await createRoomEpoch({ owner: owner.identity, members: [{ ...owner.identity.public, label: "owner", exposedPeers: ["codex"] }] });
+  await owner.install({ name: "work", broker: "ws://127.0.0.1:1/", wire: initial.wire, expectedDigest: null });
+  const token = await createInvite({ epoch: initial.epoch, owner: owner.identity, broker: initial.broker, expiresAt: Date.now() + 600000 });
+  await owner.saveInvite("work", token);
+  const request = await createJoin({ invite: token, identity: guest.identity, label: "guest", exposedPeers: ["codex"] });
+  guest.savePendingJoin("work", { invite: token, request });
+  const roster = await owner.enroll("work", request);
+  await guest.install({ name: "work", broker: roster.broker, wire: roster.wire, expectedDigest: null });
+
+  const sent: Uint8Array[] = [];
+  const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (wire: Uint8Array) => { sent.push(Uint8Array.from(wire)); }, close() {} },
+    generation: 1, room: roster.current.room, broker: roster.broker, phase: "ready", roster: { digest: roster.current.digest },
+    outbound: [] as { wire: Uint8Array; digest: string; requestReply: boolean }[], outboundBytes: 0, frameSent: false, retryAttempt: 0,
+    pendingPresenceReplies: new Set<string>(), presenceAsked: false, receiptSends: new Map(), requestPresenceReply: false,
+    queue: [], queuedBytes: 0, handshake: undefined, frameRetry: undefined as ReturnType<typeof setTimeout> | undefined };
+  const link = new RoomLink({ store: guest, name: "work" });
+  const internal = link as unknown as { running: boolean; generation: number; session: unknown;
+    queueFrame(session: unknown, wire: Uint8Array, digest: string): void; storedFrame(session: unknown, digest: string): void;
+    retireFrame(session: unknown, frame: ReturnType<typeof decodeFrame>, digest: string): void; restoreReceipts(session: unknown): void };
+  internal.running = true; internal.generation = 1; internal.session = session;
+  return { owner, guest, link, internal, session, sent, roster: roster.current };
 }
 
-test("an inbound chat transport ACK waits for its queued receipt to reach the wire", async () => {
-  const f = await transport();
+async function admittedChat(f: Awaited<ReturnType<typeof durableTransport>>, body = "incoming chat") {
+  const application = crypto.randomUUID();
+  const wire = await sealFrame({ epoch: f.roster, identity: f.owner.identity, recipients: [f.guest.identity.public.fingerprint],
+    plaintext: encodeRoomMessage({ v: 1, type: "chat", envelope: { id: application, trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body, ts: Date.now() } }),
+    sequence: f.owner.sequence });
+  const digest = encodeBase64url(await sha256(wire));
+  const opened = await openFrame({ wire, identity: f.guest.identity, current: f.guest.get("work")!.current, replay: f.guest.replay });
+  expect(opened.status).toBe("accepted");
+  const incoming = await f.guest.applicationIncoming("work", digest);
+  expect(incoming.primary).toBe(true);
+  expect(f.guest.claimApplication("work", digest)).toBe(true);
+  f.guest.finishApplication("work", digest, "completed", "admitted");
+  return { wire, digest, frame: decodeFrame(wire), message: f.guest.applicationReceipt("work", digest)! };
+}
+
+async function queueDurableReceipt(f: Awaited<ReturnType<typeof durableTransport>>, incoming: Awaited<ReturnType<typeof admittedChat>>) {
+  const digest = await f.link.publishApplication(incoming.message, f.owner.identity.public.fingerprint);
+  return { digest, stored: f.guest.receiptStored("work", incoming.digest)! };
+}
+
+test("receipt commit is visible in the durable store before the chat transport ACK", async () => {
+  const f = await durableTransport();
   try {
-    const incoming = await receiptForIncoming(f);
+    const incoming = await admittedChat(f), receipt = await queueDurableReceipt(f, incoming);
+    expect(receipt.stored).toMatchObject({ digest: receipt.digest, state: "dispatching", kind: "receipt", receiptFor: incoming.digest });
+    expect(f.guest.outbox("work")).toContainEqual(expect.objectContaining({ digest: receipt.digest, kind: "receipt", wire: receipt.stored.wire }));
     f.internal.retireFrame(f.session, incoming.frame, incoming.digest);
-    expect(f.sent).toHaveLength(1); // The unrelated head is still waiting for broker storage.
-    f.internal.storedFrame(f.session, f.digest);
-    await Promise.resolve(); // The actual receipt send resolves its fence; ACK is scheduled outside serial receive.
-    expect(f.sent).toHaveLength(3);
-    expect(decodeFrame(f.sent[0]!).type).toBe("frame");
-    expect(encodeBase64url(await sha256(f.sent[1]!))).toBe(incoming.receiptDigest);
-    const receipt = await openFrame({ wire: f.sent[1]!, identity: f.guest, current: f.epoch, replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
-    expect(receipt.status).toBe("accepted");
-    if (receipt.status === "accepted") expect(JSON.parse(new TextDecoder().decode(receipt.plaintext))).toMatchObject({ type: "receipt", frame: incoming.digest });
-    expect(JSON.parse(new TextDecoder().decode(f.sent[2]!))).toEqual({ v: 1, type: "received", digest: incoming.digest });
+    expect(JSON.parse(new TextDecoder().decode(f.sent.at(-1)!))).toEqual({ v: 1, type: "received", digest: incoming.digest });
+    expect(f.guest.receiptStored("work", incoming.digest)?.wire).toEqual(receipt.stored.wire);
   } finally { f.link.stop(); }
 });
 
-test("a queued receipt fence cannot transport ACK through a stopped session", async () => {
-  const f = await transport();
+test("a stopped session cannot ACK past its retained durable receipt", async () => {
+  const f = await durableTransport();
   try {
-    const incoming = await receiptForIncoming(f);
-    f.internal.retireFrame(f.session, incoming.frame, incoming.digest);
-    f.internal.storedFrame(f.session, f.digest); // The receipt is physically sent, but its ACK callback has not run.
+    const incoming = await admittedChat(f), receipt = await queueDurableReceipt(f, incoming);
     f.link.stop();
-    await Promise.resolve();
-    expect(f.sent).toHaveLength(2);
-    expect(encodeBase64url(await sha256(f.sent[1]!))).toBe(incoming.receiptDigest);
+    expect(() => f.internal.retireFrame(f.session, incoming.frame, incoming.digest)).toThrow();
     expect(f.sent.some(wire => JSON.parse(new TextDecoder().decode(wire)).type === "received")).toBe(false);
+    expect(f.guest.receiptStored("work", incoming.digest)).toMatchObject({ digest: receipt.digest, state: "dispatching", wire: receipt.stored.wire });
+    expect(f.guest.outbox("work")).toContainEqual(expect.objectContaining({ digest: receipt.digest, kind: "receipt" }));
   } finally { f.link.stop(); }
 });
 
-
-test("confirmed queue_full releases an inbound chat ACK while retaining its queued receipt", async () => {
-  const f = await transport();
+test("cap one ACKs after receipt commit and sends the unchanged sealed receipt when capacity returns", async () => {
+  const f = await durableTransport();
   try {
-    const incoming = await receiptForIncoming(f);
+    const head = await sealFrame({ epoch: f.roster, identity: f.guest.identity, recipients: [f.owner.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "chat" }), sequence: f.guest.sequence });
+    await f.guest.enqueue("work", head);
+    const headDigest = encodeBase64url(await sha256(head));
+    f.internal.queueFrame(f.session, head, headDigest);
+    expect(f.session.outbound).toHaveLength(1);
+    const incoming = await admittedChat(f), receipt = await queueDurableReceipt(f, incoming);
     f.internal.retireFrame(f.session, incoming.frame, incoming.digest);
-    expect(f.sent).toHaveLength(1);
-    expect(f.session.outbound.map(frame => frame.digest)).toEqual([f.digest, incoming.receiptDigest]);
-    f.internal.backoffFrame(f.session, f.digest); // A confirmed refusal of the head creates the T1 exception.
-    expect(f.session.frameRetry).toBeDefined();
-    expect(f.sent).toHaveLength(2);
-    expect(JSON.parse(new TextDecoder().decode(f.sent[1]!))).toEqual({ v: 1, type: "received", digest: incoming.digest });
-    expect(f.session.outbound.map(frame => frame.digest)).toEqual([f.digest, incoming.receiptDigest]);
-    expect(encodeBase64url(await sha256(f.session.outbound[1]!.wire))).toBe(incoming.receiptDigest);
-    f.internal.storedFrame(f.session, f.digest); // Capacity returns; the retained receipt now reaches the wire.
-    await Promise.resolve();
+    expect(JSON.parse(new TextDecoder().decode(f.sent.at(-1)!))).toEqual({ v: 1, type: "received", digest: incoming.digest });
+    expect(f.sent).toHaveLength(2); // The head frame and transport ACK; the receipt waits for capacity.
+    expect(f.session.outbound.map(frame => frame.digest)).toEqual([headDigest]);
+    f.guest.markStored("work", headDigest);
+    f.internal.storedFrame(f.session, headDigest);
+    f.internal.restoreReceipts(f.session);
     expect(f.sent).toHaveLength(3);
-    expect(encodeBase64url(await sha256(f.sent[2]!))).toBe(incoming.receiptDigest);
-    expect(f.sent.filter(wire => JSON.parse(new TextDecoder().decode(wire)).type === "received")).toHaveLength(1);
-    expect(f.session.receiptSends.size).toBe(0);
+    expect(encodeBase64url(await sha256(f.sent[2]!))).toBe(receipt.digest);
+    expect(f.sent[2]).toEqual(receipt.stored.wire);
+    expect(f.guest.receiptStored("work", incoming.digest)?.wire).toEqual(receipt.stored.wire);
   } finally { f.link.stop(); }
 });
 
-test("background receipt sends release deferred ACK slots without an incoming retirement", async () => {
-  const f = await transport();
+test("more than eight sequential stored receipts do not leak transport slots", async () => {
+  const f = await durableTransport();
   try {
-    f.internal.storedFrame(f.session, f.digest);
     for (let n = 0; n < 9; n++) {
-      const frame = encodeBase64url(await sha256(new TextEncoder().encode(`background-${n}`)));
-      const digest = await f.link.publishApplication({ v: 1, type: "receipt", frame,
-        application: crypto.randomUUID(), peer: "codex", outcome: "completed", reason: "admitted" }, f.guest.public.fingerprint);
-      expect(f.session.receiptSends.size).toBe(0);
-      f.internal.storedFrame(f.session, digest);
+      const incoming = await admittedChat(f, `incoming chat ${n}`), receipt = await queueDurableReceipt(f, incoming);
+      expect(f.sent).toHaveLength(n + 1);
+      expect(encodeBase64url(await sha256(f.sent[n]!))).toBe(receipt.digest);
+      f.guest.markStored("work", receipt.digest);
+      f.internal.storedFrame(f.session, receipt.digest);
+      expect(f.guest.acknowledgeReceipt("work", receipt.digest)).toBe(true);
+      expect(f.session.outbound).toHaveLength(0);
+      expect(f.guest.outbox("work")).toHaveLength(0);
     }
-    expect(f.sent).toHaveLength(10);
+    expect(f.sent).toHaveLength(9);
   } finally { f.link.stop(); }
 });

@@ -6,6 +6,7 @@ import { Bus, type BusEvent, type BusSnapshot } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { newEnvelope, replyAudience, type Envelope, type PeerState } from "../src/hub/envelope.ts";
+import { renderTailEvent } from "../src/cli/tail-render.ts";
 
 const roots: string[] = [], buses: Bus[] = [];
 afterEach(() => { for (const bus of buses.splice(0)) bus.closeJournal(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -143,16 +144,182 @@ test("missing old remote deadlines fail closed without guessing a newly attached
   expect(bus.queueIds(remote)).toEqual([]);
 });
 
-test("late signed evidence for a known recipient never auto-completes needs_review", () => {
-  const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
+test("late signed room receipt settles only its current unresolved row and emits an IDs-only event", () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room), events: BusEvent[] = []; bus.add(target); bus.tap(event => events.push(event));
   const env = newEnvelope("user", "known recipient", { to: [remote] }); bus.publish(env);
   const deadline = bus.snapshot(false).remoteQueueExpires![remote]![env.id]!; bus.expireRemoteQueues(deadline);
   const row = journal.unresolved(remote)[0]!;
+  expect(bus.remoteDeliveryEnvelope(target, row.id)).toEqual(env);
   expect(bus.noteLateRemoteReceipt(remote, row.id, "completed")).toBe(true);
   expect(journal.get(row.id)).toMatchObject({ state: "needs_review", reason: "late signed completed receipt: remote queue admitted; remains needs_review" });
   expect(bus.noteLateRemoteReceipt("kimi@hub-a", row.id, "completed")).toBe(false);
-  expect(bus.noteLateRemoteReceipt(remote, row.id, "failed_safe")).toBe(true); expect(journal.get(row.id)?.state).toBe("needs_review");
+  expect(bus.settleRemoteReceipt(target, row.id, "completed", "late signed room receipt: recipient admitted", () => false)).toBe(false);
+  expect(bus.settleRemoteReceipt(new Peer(remote, room), row.id, "completed", "late signed room receipt: recipient admitted", () => true)).toBe(false);
+  expect(journal.get(row.id)?.state).toBe("needs_review");
+  expect(bus.settleRemoteReceipt(target, row.id, "completed", "late signed room receipt: recipient admitted", () => true)).toBe(true);
+  expect(journal.get(row.id)).toMatchObject({ state: "completed", reason: "late signed room receipt: recipient admitted" });
+  expect(events).toContainEqual({ t: "remote_delivery_settled", peer: remote, deliveryId: row.id, outcome: "completed" });
+  expect(renderTailEvent(events.at(-1)!)).toBe(`  . remote delivery ${row.id} settled for ${remote} (completed)`);
+  expect(bus.settleRemoteReceipt(target, row.id, "completed", "late signed room receipt: recipient admitted", () => true)).toBe(false);
   expect(bus.queueIds(remote)).toEqual([]); expect(target.batches).toEqual([]);
+});
+
+test("a signed terminal receipt settles an active dispatching or accepted remote row once", async () => {
+  for (const state of ["dispatching", "accepted"] as const) {
+    const { bus, journal } = fixture(), target = new Peer(remote, room), events: BusEvent[] = [], held = deferred();
+    let delivered = 0;
+    bus.add(target); bus.tap(event => events.push(event)); bus.onDelivered = () => { delivered++; };
+    target.accepted = async (_envs, id) => {
+      if (state === "accepted") target.onDelivery?.({ id: id!, state: "accepted" });
+      await held.promise;
+    };
+    await target.start();
+    const env = newEnvelope("user", `active ${state}`, { to: [remote] }); bus.publish(env);
+    await until(() => journal.list(remote).some(row => row.state === state));
+    const row = journal.list(remote).find(row => row.state === state)!;
+    expect(bus.settleRemoteReceipt(target, row.id, "completed", "signed room receipt before bus acknowledgement tick", () => true)).toBe(true);
+    expect(journal.get(row.id)?.state).toBe("completed");
+    expect(bus.settleRemoteReceipt(target, row.id, "completed", "duplicate signed room receipt", () => true)).toBe(false);
+    expect(events.filter(event => event.t === "remote_delivery_settled" && event.deliveryId === row.id)).toHaveLength(1);
+    expect(delivered).toBe(0); expect(journal.offerRead(remote, env.id)).toBe(false);
+    held.resolve(); await until(() => !bus.hasInFlight(remote));
+  }
+});
+
+test("late signed evidence for a known recipient never auto-completes needs_review", () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
+  const env = newEnvelope("user", "evidence only", { to: [remote] }); bus.publish(env);
+  bus.expireRemoteQueues(bus.snapshot(false).remoteQueueExpires![remote]![env.id]!);
+  const row = journal.unresolved(remote)[0]!;
+  expect(bus.noteLateRemoteReceipt(remote, row.id, "completed")).toBe(true);
+  expect(journal.get(row.id)?.state).toBe("needs_review");
+  expect(bus.noteLateRemoteReceipt(remote, row.id, "failed_safe")).toBe(true);
+  expect(journal.get(row.id)?.state).toBe("needs_review");
+});
+
+test("late room receipts refuse person-disposed, stale-instance, foreign-member and native rows", () => {
+  const disposed = fixture(), a = new Peer(remote, room); disposed.bus.add(a);
+  const env = newEnvelope("user", "disposed", { to: [remote] }); disposed.bus.publish(env);
+  disposed.bus.expireRemoteQueues(disposed.bus.snapshot(false).remoteQueueExpires![remote]![env.id]!);
+  const row = disposed.journal.unresolved(remote)[0]!;
+  disposed.journal.resolve(row.id, row.revision, "discard", "person disposed");
+  expect(disposed.bus.settleRemoteReceipt(a, row.id, "completed", "late signed room receipt", () => true)).toBe(false);
+
+  const stale = fixture(), old = new Peer(remote, room); stale.bus.add(old);
+  const staleEnv = newEnvelope("user", "stale", { to: [remote] }); stale.bus.publish(staleEnv);
+  stale.bus.expireRemoteQueues(stale.bus.snapshot(false).remoteQueueExpires![remote]![staleEnv.id]!);
+  const staleRow = stale.journal.unresolved(remote)[0]!;
+  const current = new Peer(remote, room); stale.bus.add(current);
+  expect(stale.bus.remoteDeliveryEnvelope(old, staleRow.id)).toBeUndefined();
+  expect(stale.bus.settleRemoteReceipt(old, staleRow.id, "completed", "late signed room receipt", () => true)).toBe(false);
+
+  const foreign = fixture(), original = new Peer(remote, room); foreign.bus.add(original);
+  const foreignEnv = newEnvelope("user", "foreign", { to: [remote] }); foreign.bus.publish(foreignEnv);
+  foreign.bus.expireRemoteQueues(foreign.bus.snapshot(false).remoteQueueExpires![remote]![foreignEnv.id]!);
+  const foreignRow = foreign.journal.unresolved(remote)[0]!;
+  const otherMember = new Peer(remote, room, undefined, "b".repeat(64));
+  expect(() => foreign.bus.add(new Peer(remote, room, undefined, "b".repeat(64)))).toThrow("remote queued member binding changed");
+  expect(foreign.bus.settleRemoteReceipt(otherMember, foreignRow.id, "completed", "late signed room receipt", () => true)).toBe(false);
+  expect(foreign.journal.get(foreignRow.id)?.state).toBe("needs_review");
+
+  const native = fixture(), roomPeer = new Peer(remote, room); native.bus.add(roomPeer);
+  const nativeEnv = newEnvelope("user", "native", { to: [remote] }); native.bus.publish(nativeEnv);
+  native.bus.expireRemoteQueues(native.bus.snapshot(false).remoteQueueExpires![remote]![nativeEnv.id]!);
+  const nativeRow = native.journal.unresolved(remote)[0]!;
+  const nativePeer = new Peer(remote); native.bus.add(nativePeer);
+  expect(native.bus.settleRemoteReceipt(nativePeer, nativeRow.id, "completed", "late signed room receipt", () => true)).toBe(false);
+  expect(native.journal.get(nativeRow.id)?.state).toBe("needs_review");
+});
+
+test("a remote needs_review row does not hold later messages for that peer", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
+  target.accepted = async (_envs, id) => target.onDelivery?.({ id: id!, state: target.batches.length === 1 ? "needs_review" : "completed" });
+  await target.start();
+  const first = newEnvelope("user", "uncertain first", { to: [remote] }); bus.publish(first);
+  await until(() => journal.unresolved(remote).some(row => row.state === "needs_review") && !bus.hasInFlight(remote));
+  const second = newEnvelope("user", "later work", { to: [remote] }); bus.publish(second);
+  await until(() => journal.list(remote).some(row => row.state === "completed" && row.originals.some(env => env.id === second.id)));
+  expect(target.batches.map(batch => batch.map(env => env.id))).toEqual([[first.id], [second.id]]);
+  expect(journal.unresolved(remote).some(row => row.state === "needs_review")).toBe(true);
+});
+
+test("a typed room not-sent outcome requeues the original without consuming retry budget or deadline", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
+  const env = newEnvelope("user", "safe retry", { to: [remote] }); bus.publish(env);
+  const deadline = bus.snapshot(false).remoteQueueExpires![remote]![env.id]!;
+  let first = true, requeuedDeadline: number | undefined;
+  target.accepted = async (_envs, id) => {
+    if (first) {
+      first = false;
+      target.set("offline");
+      expect(bus.requeueRemoteNotSent(target, id!)).toBe(true);
+      requeuedDeadline = bus.snapshot(false).remoteQueueExpires![remote]![env.id];
+      setTimeout(() => target.set("idle"), 0);
+    } else target.onDelivery?.({ id: id!, state: "completed" });
+  };
+  await target.start(); await until(() => journal.list(remote).some(row => row.state === "completed"));
+  expect(target.batches).toHaveLength(2);
+  expect(requeuedDeadline).toBe(deadline);
+  expect(journal.list(remote).filter(row => row.state === "needs_review")).toEqual([]);
+  expect(bus.snapshot(false).attempts[`${remote}:${env.id}`]).toBeUndefined();
+});
+
+test("authenticated room outbox proof resumes the same row without local delivery evidence", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
+  target.accepted = async (_envs, id) => target.onDelivery?.({ id: id!, state: "needs_review" });
+  await target.start();
+  const env = newEnvelope("user", "room retry", { to: [remote] }); bus.publish(env);
+  await until(() => journal.unresolved(remote).some(row => row.state === "needs_review"));
+  const row = journal.unresolved(remote)[0]!, expiry = bus.snapshot(false).remoteQueueExpires![remote]![env.id]!;
+  let delivered = 0; bus.onDelivered = () => { delivered++; };
+  expect(bus.remoteDeliveryEnvelope(target, row.id)?.id).toBe(env.id);
+  expect(bus.resumeRemotePending(target, row.id, "dispatching", () => false)).toBe(false);
+  expect(bus.resumeRemotePending(target, row.id, "dispatching", () => true)).toBe(true);
+  expect(journal.get(row.id)).toMatchObject({ state: "dispatching", id: row.id });
+  expect(bus.snapshot(false).remoteQueueExpires![remote]![env.id]).toBe(expiry);
+  target.onDelivery?.({ id: row.id, state: "completed" });
+  expect(journal.get(row.id)?.state).toBe("completed");
+  expect(delivered).toBe(0); expect(journal.offerRead(remote, env.id)).toBe(false);
+  expect(bus.queueIds(remote)).toEqual([]);
+});
+
+test("terminal receipts clear remote transport ownership after an out-of-drain resume", async () => {
+  for (const outcome of ["failed_safe", "needs_review"] as const) {
+    const { bus, journal } = fixture(), target = new Peer(remote, room);
+    target.accepted = async (_envs, id) => target.onDelivery?.({ id: id!, state: "needs_review" });
+    bus.add(target); await target.start();
+    const first = newEnvelope("user", `resumed ${outcome}`, { to: [remote] }); bus.publish(first);
+    await until(() => journal.list(remote).some(row => row.state === "needs_review") && !bus.hasInFlight(remote));
+    const row = journal.list(remote).find(item => item.originals.some(env => env.id === first.id))!;
+    target.set("offline");
+    expect(bus.resumeRemotePending(target, row.id, "dispatching", () => true)).toBe(true);
+    expect(bus.remotePendingIds(room)).toContain(first.id);
+    target.onDelivery?.({ id: row.id, state: outcome });
+    expect(bus.hasInFlight(remote)).toBe(false);
+    expect(bus.remotePendingIds(room)).not.toContain(first.id);
+
+    const second = newEnvelope("user", `next after ${outcome}`, { to: [remote] }); bus.publish(second);
+    target.set("idle");
+    await until(() => journal.list(remote).some(item => item.state === "needs_review" && item.originals.some(env => env.id === second.id)) && !bus.hasInFlight(remote));
+    const next = journal.list(remote).find(item => item.originals.some(env => env.id === second.id))!;
+    target.set("offline");
+    expect(bus.resumeRemotePending(target, next.id, "dispatching", () => true)).toBe(true);
+    expect(bus.hasInFlight(remote)).toBe(true);
+    target.onDelivery?.({ id: next.id, state: "completed" });
+    expect(journal.get(next.id)?.state).toBe("completed");
+    expect(bus.hasInFlight(remote)).toBe(false);
+    expect(bus.remotePendingIds(room)).not.toContain(second.id);
+  }
+});
+
+test("a late signed refusal settles the remote row as failed and emits only its ids", () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room), events: BusEvent[] = []; bus.add(target); bus.tap(event => events.push(event));
+  const env = newEnvelope("user", "known refusal", { to: [remote] }); bus.publish(env);
+  bus.expireRemoteQueues(bus.snapshot(false).remoteQueueExpires![remote]![env.id]!);
+  const row = journal.unresolved(remote)[0]!;
+  expect(bus.settleRemoteReceipt(target, row.id, "failed_safe", "late signed room refusal", () => true)).toBe(true);
+  expect(journal.get(row.id)).toMatchObject({ state: "failed", reason: "late signed room refusal" });
+  expect(events).toContainEqual({ t: "remote_delivery_settled", peer: remote, deliveryId: row.id, outcome: "failed_safe" });
 });
 
 

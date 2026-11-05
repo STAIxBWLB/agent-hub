@@ -358,6 +358,20 @@ export async function sealFrame(input: {
   if (fresh !== true) fail("state_changed");
   return wire;
 }
+/** Read a retained local send for resealing, never receiver admission or replay evidence. */
+export async function openOwnFrame(input: { wire: Uint8Array; identity: HubIdentity; epoch: VerifiedEpoch }): Promise<Uint8Array> {
+  await assertRoomCryptoReady();
+  const frame = decodeFrame(input.wire), current = state(input.epoch), sender = input.identity.public;
+  const member = current.roster.members.find(value => value.fingerprint === sender.fingerprint);
+  if (frame.ephemeral || frame.room !== input.epoch.room || frame.epoch !== input.epoch.epoch || frame.sender !== sender.fingerprint
+    || !member || member.signingKey !== sender.signingKey || member.agreementKey !== sender.agreementKey
+    || frame.recipients.some(recipient => !current.roster.members.some(value => value.fingerprint === recipient))) fail("untrusted");
+  await verifyFrameSignature(frame, member);
+  const plaintext = await decryptEpoch({ key: current.key, purpose: "frame", context: frameContext(input.epoch, frame.sender), aad: frameAad(frame),
+    nonce: decodeBase64url(frame.nonce, 12), ciphertext: decodeBase64url(frame.ciphertext) });
+  if (plaintext.length > ROOM_WIRE_LIMITS.plaintext) fail("limit");
+  return plaintext;
+}
 export type FrameOpenResult = { status: "accepted"; plaintext: Uint8Array; gap: string } | { status: "duplicate" | "stale" };
 export async function openFrame(input: {
   wire: Uint8Array; identity: HubIdentity; current: VerifiedEpoch;

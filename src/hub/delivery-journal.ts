@@ -1361,6 +1361,36 @@ export class DeliveryJournal {
       return completed;
     });
   }
+  /** A signed room receipt settles its matching remote row without native read evidence. */
+  completeRemoteReceipt(deliveryId: string, peer: string, expectedRevision: number, reason: string): JournalDelivery {
+    this.ensureOpen(); text(deliveryId, "delivery id", 256); text(peer, "delivery peer", 256);
+    integer(expectedRevision, "observed revision"); text(reason, "delivery completion reason", 1_000_000);
+    if (!parseRemotePeerId(peer)) throw new Error("invalid remote receipt peer");
+    return this.transaction(() => {
+      const row = this.get(deliveryId);
+      if (!row || row.peer !== peer || !["needs_review", "dispatching", "accepted"].includes(row.state) || row.originals.length !== 1 || row.originals[0]?.to?.includes(peer) !== true) throw new Error("remote delivery is not unresolved for this peer");
+      if (row.revision !== expectedRevision) throw new Error(`stale delivery revision for ${deliveryId}`);
+      if (this.db.query("SELECT 1 FROM resolution_history WHERE project_id=? AND delivery_id=? LIMIT 1").get(this.projectId, deliveryId)) throw new Error("remote delivery already has a person disposition");
+      const completed = this.transition(deliveryId, "completed", reason, expectedRevision);
+      this.pruneTerminal("completed", "");
+      return completed;
+    });
+  }
+  /** A signed room refusal is terminal transport evidence, not a person or native retry. */
+  failRemoteReceipt(deliveryId: string, peer: string, expectedRevision: number, reason: string): JournalDelivery {
+    this.ensureOpen(); text(deliveryId, "delivery id", 256); text(peer, "delivery peer", 256);
+    integer(expectedRevision, "observed revision"); text(reason, "delivery refusal reason", 1_000_000);
+    if (!parseRemotePeerId(peer)) throw new Error("invalid remote receipt peer");
+    return this.transaction(() => {
+      const row = this.get(deliveryId);
+      if (!row || row.peer !== peer || !["needs_review", "dispatching", "accepted"].includes(row.state) || row.originals.length !== 1 || row.originals[0]?.to?.includes(peer) !== true) throw new Error("remote delivery is not unresolved for this peer");
+      if (row.revision !== expectedRevision) throw new Error(`stale delivery revision for ${deliveryId}`);
+      if (this.db.query("SELECT 1 FROM resolution_history WHERE project_id=? AND delivery_id=? LIMIT 1").get(this.projectId, deliveryId)) throw new Error("remote delivery already has a person disposition");
+      const failed = this.transition(deliveryId, "failed", reason, expectedRevision);
+      this.pruneTerminal("failed", "");
+      return failed;
+    });
+  }
   /** Exact immutable offer id, independent of queue snapshots or generic completed rows. */
   offerRead(peer: string, envelopeId: string): boolean {
     this.ensureOpen(); text(peer, "offer read peer", 256); text(envelopeId, "offer read envelope", 256);
