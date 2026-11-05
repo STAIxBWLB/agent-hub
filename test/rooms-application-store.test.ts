@@ -563,7 +563,7 @@ test("schema3 migrates v2 handoff deadlines conservatively and never infers rece
     const frame = await hash(wire), directory = locations.get(f.owner)!; f.owner.close();
     const legacy = new Database(join(directory, "rooms.db"));
     try {
-      legacy.exec("DROP TABLE receipt_outbox; DROP TABLE application_attempts; DROP TABLE person_inbox; ALTER TABLE inbox DROP COLUMN received_at; ALTER TABLE inbox DROP COLUMN receipt_reserve; PRAGMA user_version=2;");
+      legacy.exec("ALTER TABLE application_outbox DROP COLUMN content_hash; DROP TABLE receipt_outbox; DROP TABLE application_attempts; DROP TABLE person_inbox; ALTER TABLE inbox DROP COLUMN received_at; ALTER TABLE inbox DROP COLUMN receipt_reserve; PRAGMA user_version=2;");
       legacy.query("UPDATE application_outbox SET ack_deadline=?").run(previous === "missing" ? null : q.outgoing.createdAt + (previous === "late" ? 1000 : 50));
     } finally { legacy.close(); }
     const restored = await opened(f.clock, directory);
