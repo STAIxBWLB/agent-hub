@@ -231,15 +231,27 @@ A second round, after the first sample showed the convention did not decide trun
 | `config-reload.ts` `v.length > 16_384=16_384` (in `openValue`) | operational | contract |
 | `config-reload.ts` `v.length > 1024=1024` (in `openValue`) | safety floor | contract |
 
-### Calibration after the 44 relabels (#739): the bar is not met, no baseline key is labelled
+#### Three omissions found by the second sample: to contract (3)
 
-A blind 80-sample (seed 739101) was drawn from the 365 decided `src/hub` bounds and truncations of the relabelled file and read with only the convention above, the committed labels hidden: **56 of 80 (70.0%), below the 85% bar**. By shape: bounds 36 of 44 (82%), truncations 20 of 36 (56%). The convention decides bounds but not truncations. Of the 16 truncation misses, the file labels a truncation by what it is used for and the convention does not say so:
+The first list of argument bounds missed three that the convention (line 1) already covers; found when the blind reader labelled them contract.
 
-| What the truncation is | Decided in the file | Majority |
-| --- | ---: | ---: |
-| shortened id or hash for display (`commit.slice(0, 12)`, `sha256.slice(0, 16)`, `instanceId.slice(0, 8)`) | 23: 18 contract, 4 operational, 1 safety floor | 78% |
-| the hub's own list or report cut to N (`pending.slice(0, 64)`, `history.slice(-5)`) | 20: 16 operational, 3 safety floor, 1 contract | 80% |
-| error or message text into a log line or a notice (`error.message.slice(0, 120)`, `title.slice(0, 100)`) | 45: 28 safety floor, 17 operational | 62% |
-| other | 57: 31 operational, 15 safety floor, 11 contract | 54% |
+| Key | Old | New | Why |
+| --- | --- | --- | --- |
+| `workflow.ts` `p.criteria.length > 32=32` (in `criteriaReceipt`) | operational | contract | the `criteria` argument of `hub_sdlc_record` (schema `maxItems: 32`) |
+| `workflow.ts` `c.refs.length > 8=8` (in `<anonymous>`) | operational | contract | the `refs` of one criterion of `hub_sdlc_record` (schema `maxItems: 8`) |
+| `claude-launch-proof.ts` `row.launchId.length > 128=128` (in `readClaudeLaunchProof`) | operational | contract | the `launchId` control field, the same bound that `daemon.ts` `onMessage` already labels contract |
 
-The 8 bound misses are display caps the file calls safety floor (`pool.walk > 16`, `paths > 20`, `guarded > 200`, `held rows >= 32`) and a gap in this change's own application: the `config-reload.ts` bounds on the shape of the person's config (`table`, `text`, `peers`, `openValue` strings and lists) fall under line 4 of the convention and were left out of the 44. So baseline labelling waits for a ruling on truncations and on those five config bounds.
+### Calibration of the `src/hub` convention (#739)
+
+The population is the 365 decided `src/hub` bounds and truncations (`hub-tools.ts` excluded). Each round is a blind 80-sample read with only the convention, the committed labels hidden.
+
+| Round | Seed | File state | Agreement | Bounds | Truncations |
+| --- | --- | --- | ---: | ---: | ---: |
+| 1 | 739101 | after the first 44 relabels, lines 1 to 4 only | 56 of 80 (70.0%) | 36 of 44 (82%) | 20 of 36 (56%) |
+| 2 | 739202 | after 47 more relabels, lines 1 to 7 | 71 of 80 (88.8%) | 42 of 47 (89%) | 29 of 33 (88%) |
+
+Round 2 clears the 85% bar. It is **in-sample in one respect**: lines 5 to 7 and the 47 relabels were written after round 1's misses, so the sample measures whether the convention now decides what it was extended to decide, not an independent reader. A fresh seed drawn from the relabelled file is the check that matters, and it was drawn only after the relabels were applied.
+
+Round 2's nine misses: three are keys the first list left out (`workflow.ts` criteria 32, criterion refs 8 and `claude-launch-proof.ts` launchId 128, relabelled contract above); `check-runner.ts` `lines.slice(-40)` (a cut of a subprocess's output, which line 7 calls safety floor, labelled by me operational) and `version.stdout.trim().slice(0, 80)` (the converse); `daemon.ts` `schedules pass failed: ...message.slice(0, 160)` and `tasks.ts` `task.title.slice(0, 120)` (a memory title from the task's own title, where whether the origin is outside the hub is a judgement); `execution-budget.ts` `input.id.length > 200` and `delivery-hints.ts` `held.rows.length > 32`. The remaining disagreements are about where text originates, and line 7 is the place to sharpen if a later sample falls short.
+
+No baseline key is labelled in this change. That is #741.
