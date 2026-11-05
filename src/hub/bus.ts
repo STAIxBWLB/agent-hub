@@ -187,6 +187,8 @@ export class Bus {
   private reviewScopeRevision = -1;
   private readonly reviewScopeCache = new Map<string, boolean>();
   private readonly lastDelivery = new Map<PeerId, { out: Envelope[]; originals: Envelope[] }>();
+  /** Latest inbox handout; kept separately so it cannot replace a pushed invocation's answer parent. */
+  private readonly lastPulled = new Map<PeerId, { out: Envelope[]; originals: Envelope[] }>();
   private readonly failureStreak = new Map<PeerId, number>();
   private readonly lastFailure = new Map<PeerId, string>();
   private readonly attempts = new Map<string, number>(); // `${peer}:${envelope id}` -> failed deliveries
@@ -310,20 +312,27 @@ export class Bus {
       if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;
       // #445 C2: an answer to an invocation is found by what the peer was handed, never by how the answer is addressed, so a headless agent whose final answer is
       // normally shared with every peer cannot leak it. It is the invocation's answer when it names the request itself (an adapter may report its delivery complete before
-      // it answers, so the receipt cannot decide), or when it names nothing while that invocation's own delivery is still the peer's open turn. Once that turn has ended,
-      // `lastDelivery` still holds the request until the next delivery replaces it, and a later message from the peer is an ordinary message: it must be published.
-      const handed = this.lastDelivery.get(peer.id)?.out ?? [];
-      const named = opts?.inReplyTo?.id !== undefined && handed.some((e) => e.id === opts.inReplyTo!.id); // an invocation is delivered alone, so the only envelope in `handed` to name is its request (or the preface that rode with it)
-      if (this.onAnswer && handed.some((e) => e.kind === "invocation") && (named || opts?.inReplyTo?.id === undefined && this.invocationTurnOpen(peer.id))) {
+      // it answers, so the receipt cannot decide), or when it names nothing while that invocation's own pushed delivery is still the peer's open turn. A pull updates
+      // current-input provenance separately, so it never replaces this answer parent; after the invocation turn ends, a later unnamed message is ordinary.
+      const pushed = this.lastDelivery.get(peer.id), pulled = this.lastPulled.get(peer.id), parentId = opts?.inReplyTo?.id;
+      const namedPush = parentId !== undefined && pushed?.out.some(e => e.id === parentId);
+      const namedPull = parentId !== undefined && pulled?.out.some(e => e.id === parentId);
+      const pushedInvocation = pushed?.out.some(e => e.kind === "invocation") === true;
+      const pulledInvocation = pulled?.out.some(e => e.kind === "invocation") === true;
+      const answerParent = namedPush && pushedInvocation ? pushed
+        : namedPull && pulledInvocation ? pulled
+          : parentId === undefined && pushedInvocation && this.invocationTurnOpen(peer.id) ? pushed
+            : undefined;
+      if (this.onAnswer && answerParent && (namedPush || namedPull || parentId === undefined && this.invocationTurnOpen(peer.id))) {
         let taken = false;
-        try { taken = this.onAnswer(peer.id, text, handed) === true; } catch { taken = true; } // a throwing host never turns a callee's answer into a broadcast
+        try { taken = this.onAnswer(peer.id, text, answerParent.out) === true; } catch { taken = true; } // a throwing host never turns a callee's answer into a broadcast
         if (taken) return;
       }
       const { priority, body } = parseMarker(text);
       if (!body) return;
       // What the peer was handed differs from what it stands for once a delivery was condensed; both the audience
       // and the priority ceiling are about what it stands for.
-      const last = this.lastDelivery.get(peer.id);
+      const last = (parentId !== undefined && namedPush ? pushed : parentId !== undefined && namedPull ? pulled : pulled ?? pushed);
       const answers = opts?.inReplyTo?.id !== undefined && last?.out.some((e) => e.id === opts.inReplyTo!.id);
       const originals = answers ? last!.originals : undefined;
       // `digest` in the audience stands for the condensed delivery even when a steer, not the digest, is the parent.
@@ -1179,6 +1188,7 @@ export class Bus {
 
   private clearReviewProvenance(peer: PeerId): void {
     this.reviewParents.delete(peer);
+    this.resetLastDelivery(peer);
     for (const [id, source] of this.reviewResponses) if (source.peer === peer) this.reviewResponses.delete(id);
   }
 
@@ -1188,7 +1198,7 @@ export class Bus {
    */
   reviewResponse(env: Envelope, parentId?: string): Envelope {
     if (env.from === HUB) return env;
-    const active = this.lastDelivery.get(env.from)?.originals ?? [];
+    const active = this.lastPulled.get(env.from)?.originals ?? this.lastDelivery.get(env.from)?.originals ?? [];
     const parent = parentId ? active.find(item => item.id === parentId && isReviewObserverExcluded(item)) : active.find(isReviewObserverExcluded);
     const known = this.reviewResponses.get(env.id);
     let durableScope: string | undefined;
@@ -1358,7 +1368,7 @@ export class Bus {
    * everything its turn holds, and a steered one would become what the answer names instead of the request.
    */
   private invocationTurnOpen(peer: PeerId): boolean {
-    if (!this.journal) return this.stateOf(peer) === "busy" && (this.lastDelivery.get(peer)?.out ?? []).some((e) => e.kind === "invocation");
+    if (!this.journal) return this.stateOf(peer) === "busy" && [...(this.lastDelivery.get(peer)?.out ?? []), ...(this.lastPulled.get(peer)?.out ?? [])].some((e) => e.kind === "invocation");
     for (const [deliveryId, owner] of this.activeDeliveries) {
       if (owner === peer && this.journal.get(deliveryId)?.out.some((e) => e.kind === "invocation")) return true;
     }
@@ -1367,11 +1377,11 @@ export class Bus {
 
   /** The envelopes most recently handed to a peer, used to distinguish a received request from an unread queue. */
   lastDeliveredTo(peer: PeerId): Envelope[] {
-    return this.lastDelivery.get(peer)?.out ?? [];
+    return this.lastPulled.get(peer)?.out ?? this.lastDelivery.get(peer)?.out ?? [];
   }
 
   /** A confirmed new native session invalidates only this session's current-input cache; durable named-parent rows remain. */
-  resetLastDelivery(peer: PeerId): void { this.lastDelivery.delete(peer); }
+  resetLastDelivery(peer: PeerId): void { this.lastDelivery.delete(peer); this.lastPulled.delete(peer); }
 
   /**
    * Take back an envelope that has not been delivered yet (a request that has expired). True when it was removed from a
@@ -1701,7 +1711,7 @@ export class Bus {
       this.memoryDelivery(id, deliveryId, out, "rendered", batch);
       this.memoryDelivery(id, deliveryId, out, "delivered", batch);
     }
-    this.lastDelivery.set(id, { out, originals: batch });
+    this.lastPulled.set(id, { out, originals: batch });
     this.rememberReviewParents(id, batch, false);
     if (batch.length) { try { this.onPulled?.(id, batch); } catch { /* metadata observation cannot change a committed inbox result */ } }
     this.failureStreak.delete(id); this.lastFailure.delete(id); // read, as a completed push receipt clears them
@@ -1780,6 +1790,7 @@ export class Bus {
           }
           this.remember(out);
         }
+        this.lastPulled.delete(id);
         this.lastDelivery.set(id, { out, originals: delivery });
         for (const env of delivery) if (env.kind === "invocation") this.invocationDeliveries.set(env.id, deliveryId);
         if (remoteId(id)) this.remoteTransport.set(deliveryId, { peer: id, originals: delivery });

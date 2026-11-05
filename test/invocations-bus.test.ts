@@ -100,6 +100,41 @@ test("an answer to a delivery that holds an invocation is offered to the host fi
   expect(f.bus.queueIds("pi")).toEqual([]); expect(f.bus.queueIds("codex")).toEqual([]);
 });
 
+test("a nonempty inbox pull cannot replace the pushed invocation answer parent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-bus-invocation-pull-parent-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i" });
+  const bus = new Bus({ batchMs: 0, journal }), callee = new Recorder("kimi"), other = new Recorder("pi");
+  const answers: { text: string; ids: string[] }[] = [], published: string[] = [];
+  for (const peer of [callee, other]) { bus.add(peer); await peer.start(); }
+  bus.onAnswer = (_peer, text, handed) => { answers.push({ text, ids: handed.map(env => env.id) }); return true; };
+  let deliveryId = "";
+  callee.deliver = async (envs: Envelope[], id?: string) => { callee.batches.push(envs); deliveryId = id ?? ""; callee.force("busy"); };
+  try {
+    const req = request("kimi"); bus.publish(req);
+    for (let i = 0; i < 100 && !callee.batches.length; i++) await Bun.sleep(5);
+    expect(callee.batches[0]).toEqual([req]); expect(deliveryId).not.toBe("");
+
+    const extra = chat("kimi", "ordinary pull during invocation"); bus.publish(extra);
+    expect(bus.pull("kimi")?.map(env => env.id)).toEqual([extra.id]);
+    expect(bus.lastDeliveredTo("kimi").map(env => env.id)).toEqual([extra.id]);
+    bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") published.push(event.env.body); });
+    callee.onMessage!("implicit invocation answer", {});
+    callee_say(callee, "named invocation answer", req);
+
+    expect(answers).toEqual([
+      { text: "implicit invocation answer", ids: [req.id] },
+      { text: "named invocation answer", ids: [req.id] },
+    ]);
+    expect(published).toEqual([]); expect(other.batches).toEqual([]);
+    expect(journal.get(deliveryId)?.state).toBe("dispatching");
+    bus.deliveryReceipt("kimi", { id: deliveryId, state: "completed" }); callee.force("idle");
+    const nextPush = chat("kimi", "push after the inbox pull"); bus.publish(nextPush);
+    for (let i = 0; i < 100 && callee.batches.length < 2; i++) { await Bun.sleep(5); if (callee.state === "idle") callee.force("idle"); }
+    expect(callee.batches[1]?.map(env => env.id)).toEqual([nextPush.id]);
+    expect(bus.lastDeliveredTo("kimi").map(env => env.id)).toEqual([nextPush.id]);
+  } finally { bus.closeJournal(); await Promise.all([callee.stop(), other.stop()]); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("an answer the host does not take flows on as an ordinary message", async () => {
   const f = await answering({ host: () => false });
   callee_say(f.callee, "ordinary answer", f.req, ["pi"]);
