@@ -925,3 +925,30 @@ test("#734 AC6: a sync whose pass outlasts the bound answers within it with the 
   const after = await task(a.person, "hub_task_handoff_sync");                                           // the pass that was held finished; a new sync completes
   expect(body(after)).toMatchObject({ synced: true }); expect(body(after).syncing).toBeUndefined();
 }, 60_000);
+
+// A target that accepts the connection and then answers the state request with ok: false (a refusal, or what `request` resolves to on a timeout) is not an answer: the list must not read it as reachable.
+const refusingTarget = (b: Project, answer: (msg: any) => Record<string, unknown>) => {
+  const server = Bun.serve<undefined>({ port: 0, hostname: "127.0.0.1", fetch(req, srv) { return srv.upgrade(req) ? undefined : new Response("no", { status: 400 }); },
+    websocket: { message(ws, raw) {
+      const msg = JSON.parse(String(raw));
+      if (msg.t === "hello") ws.send(JSON.stringify({ t: "welcome", ok: true, rid: msg.rid, projectId: msg.projectId, instanceId: msg.instanceId, cwd: msg.projectRoot, features: ["task_handoff"] }));
+      else ws.send(JSON.stringify({ rid: msg.rid, t: msg.t, ...answer(msg) }));
+    } } });
+  cleanup.push(() => server.stop(true));
+  holdStatus(b, status => ({ ...status, controlPort: server.port }));
+};
+
+test("#734 AC6: a catch-up reply with ok: false is a recorded failure with its cause, one log line, and the target reads unreachable, not reachable", async () => {
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000, handoffLogWindowMs: 3_600_000 } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" })).ok).toBe(true);
+  refusingTarget(b, () => ({ ok: false, error: "the handoff state request was refused" }));
+  const first = body(await task(a.person, "hub_task_handoff_sync"));
+  expect(first.synced).toBe(true);                                                                          // the pass ran to its end; what it learned is in the list
+  expect(first.handoffs[0]).toMatchObject({ reach: "unreachable" }); expect(String(first.handoffs[0].cause)).toContain("no answer to the state request");
+  expect(String(first.handoffs[0].cause)).toContain("ahub status");
+  await task(a.person, "hub_task_handoff_sync");                                                            // a second failed pass in the same window writes no second line
+  const lines = logOf(a).split("\n").filter(line => line.includes(`handoff catch-up of ${b.id} failed: no answer to the state request`));
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).not.toContain("refused");                                                                // the target's own words never reach the log
+}, 60_000);

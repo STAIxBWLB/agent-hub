@@ -4514,13 +4514,17 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!descriptor) { handoffLog(remote, "not running", `handoff catch-up of ${remote} skipped: its hub is not running`); continue; }
         if (!descriptor.features?.includes("task_handoff")) { handoffLog(remote, "too old for handoffs", `handoff catch-up of ${remote} skipped: its hub is too old for handoffs`); continue; }
         const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
+        let answered = true;
         try {
           for (const chunk of handoffChunks(ids)) {
             if (stopping) return;
             const reply = await client.request({ t: "task_handoff_states", projectId, tasks: chunk }, 5000);
-            if (reply.ok && Array.isArray(reply.states)) tasks.handoffCaughtUp(remote, reply.states);
+            // `request` resolves {ok: false} on a timeout or a dropped connection, and a target may refuse: neither throws, and neither is an answer. Name it (fixed phrase, never the target's text) and stop this target's chunks.
+            if (!reply.ok || !Array.isArray(reply.states)) { answered = false; break; }
+            tasks.handoffCaughtUp(remote, reply.states);
           }
         } finally { client.close(); }
+        if (!answered) { handoffLog(remote, "no answer to the state request: check `ahub status` in that project", `handoff catch-up of ${remote} failed: no answer to the state request (asked again at the next pass; check \`ahub status\` in that project)`); continue; }
         handoffFailures.delete(remote);   // this target answered: whatever failed before is over
       } catch (error) { const failure = handoffConnectFailure(error, { id: remote, root: remote }); handoffLog(remote, failure.cause, `handoff catch-up of ${remote} failed: ${failure.cause} (asked again at the next pass)`); }
     }
@@ -5023,10 +5027,11 @@ export async function startDaemon(opts: DaemonOptions) {
         tasks.handoffSyncAuthority(by);
         // The pass asks its targets one after another (3 s to connect and 5 s per chunk each), so with several slow or down targets it can outlast the caller's control timeout. Wait for it at most
         // the bound, then answer with the list as it is and say the pass is still running: it goes on in the background, and a generic "no answer from the hub" would name neither cause nor step.
-        const pass = handoffCatchUp(undefined, true).then(() => true as const, () => true as const);
+        const pass = handoffCatchUp(undefined, true).then(() => true as const, (error: unknown) => { log(`handoff sync failed: ${error instanceof Error ? error.name : "error"} (see this log; \`ahub task handoff --list\` shows each target)`); return "failed" as const; });
         let timer: ReturnType<typeof setTimeout> | undefined;
         const done = await Promise.race([pass, new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), opts.handoffSyncBoundMs ?? 20_000); })]);
         clearTimeout(timer);
+        if (done === "failed") return JSON.stringify({ handoffs: handoffListView(), synced: false, cause: "the catch-up pass failed: see hub.log, then run `ahub task handoff --sync` again" });
         if (done) return JSON.stringify({ handoffs: handoffListView(), synced: true });
         const pending = new Set(board.handoffOutboundOpen().filter(row => handoffCatchUpRow(row, Date.now())).map(row => row.remoteProject)).size;
         return JSON.stringify({ handoffs: handoffListView(), synced: false, syncing: true, pending });
