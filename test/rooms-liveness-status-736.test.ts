@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { projectRoomStatus } from "../src/rooms/status.ts";
+import { projectRoomStatus, type RoomStatusPeer } from "../src/rooms/status.ts";
 import { encodeBase64url } from "../src/rooms/crypto.ts";
 import { runRoomCommand } from "../src/cli/room.ts";
 
@@ -13,7 +13,7 @@ async function capture(run: (lines: string[]) => Promise<void>): Promise<string>
 }
 
 test("room liveness status keeps native state while displaying signed offline and unknown presence", async () => {
-  const peers = [{ id: "codex@guest", state: "busy", presence: "offline" }, { id: "kimi@guest", state: "offline", presence: "unknown" }];
+  const peers: RoomStatusPeer[] = [{ id: "codex@guest", state: "busy", presence: "offline" }, { id: "kimi@guest", state: "offline", presence: "unknown" }];
   expect(projectRoomStatus([{ ...base, remotePeers: peers }])[0]?.remotePeers).toEqual(peers);
   const output = await capture(async () => {
     await runRoomCommand(["status", "work"], async () => ({ ok: true, rooms: [{ ...base, remotePeers: peers }] }));

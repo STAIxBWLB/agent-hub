@@ -366,6 +366,7 @@ export class RoomChat {
     if (!binding || binding.store !== store || binding.link !== link || !state || !this.valid(binding)) return;
     const member = roomMembers(state.current).find(row => row.fingerprint === value.member);
     if (!member) return;
+    if (value.restored && binding.observedAt.has(value.member)) return;
     for (const peer of member.exposedPeers) binding.states.delete(`${peer}@${member.label}`);
     for (const peer of value.peers) if (member.exposedPeers.includes(peer.id)) binding.states.set(`${peer.id}@${member.label}`, peer.state);
     const now = this.presenceNow();

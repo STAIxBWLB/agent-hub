@@ -2,14 +2,19 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startBroker, type BrokerRuntime } from "../src/broker/server.ts";
-import { RoomLink, type RoomPresencePeer } from "../src/rooms/link.ts";
+import { startBroker, type BrokerPorts, type BrokerRuntime } from "../src/broker/server.ts";
+import { RoomLink, type RoomPresencePeer, type RoomLinkApplication } from "../src/rooms/link.ts";
 import { RoomStore } from "../src/rooms/store.ts";
-import { createInvite, createJoin, createRoomEpoch } from "../src/rooms/wire.ts";
+import { canonicalBytes, createInvite, createJoin, createRoomEpoch, decodeFrame, openFrame, sealFrame, verifyPublicFrame } from "../src/rooms/wire.ts";
 
+import { encodeBase64url, sha256 } from "../src/rooms/crypto.ts";
+import { FakeBrokerClient } from "./fakes/broker-client.ts";
+
+const clients: FakeBrokerClient[] = [];
 const roots: string[] = [], stores: RoomStore[] = [], links: RoomLink[] = [], brokers: BrokerRuntime[] = [];
 afterEach(async () => {
   await Promise.all(links.splice(0).map(link => link.stop()));
+  for (const client of clients.splice(0)) client.close();
   for (const broker of brokers.splice(0)) await broker.stop();
   for (const store of stores.splice(0)) store.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -25,11 +30,11 @@ function bounded<T>(promise: Promise<T>): Promise<T> {
     promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
   });
 }
-async function fixture(third = false) {
+async function fixture(third = false, ports?: BrokerPorts) {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-liveness-")); roots.push(root);
   const opened = async (name: string) => { const store = await RoomStore.open({ stateDir: join(root, name) }); stores.push(store); return store; };
   const owner = await opened("owner"), guest = await opened("guest");
-  const broker = await startBroker({ stateDir: join(root, "broker"), port: 0, owners: [owner.identity.public.fingerprint] }); brokers.push(broker);
+  const broker = await startBroker({ stateDir: join(root, "broker"), port: 0, owners: [owner.identity.public.fingerprint] }, ports); brokers.push(broker);
   const created = await createRoomEpoch({ owner: owner.identity, members: [{ ...owner.identity.public, label: "owner", exposedPeers: ["codex"] }] });
   await owner.install({ name: "work", broker: broker.publicUrl, wire: created.wire, expectedDigest: null });
   const enroll = async (store: RoomStore, label: string) => {
@@ -40,11 +45,12 @@ async function fixture(third = false) {
     return owner.enroll("work", request);
   };
   let joined = await enroll(guest, "guest");
-  if (third) joined = await enroll(await opened("absent"), "absent");
+  const observer = third ? await opened("absent") : undefined;
+  if (observer) { joined = await enroll(observer, "absent"); await observer.install({ name: "work", broker: broker.publicUrl, wire: joined.wire, expectedDigest: null }); }
   await guest.install({ name: "work", broker: broker.publicUrl, wire: joined.wire, expectedDigest: null });
-  return { owner, guest, broker };
+  return { owner, guest, broker, observer };
 }
-function linked(store: RoomStore, extra: { presence?: () => readonly { id: string; state: string }[]; onPresence?: (value: { member: string; peers: readonly RoomPresencePeer[]; restored?: true }) => void; refreshMs?: number; now?: () => number } = {}) {
+function linked(store: RoomStore, extra: { presence?: () => readonly { id: string; state: string }[]; onPresence?: (value: { member: string; peers: readonly RoomPresencePeer[]; restored?: true }) => void; refreshMs?: number; now?: () => number; application?: RoomLinkApplication } = {}) {
   const online = signal();
   const link = new RoomLink({ store, name: "work", ...extra, onState: state => { if (state === "online") online.resolve(); } }); links.push(link);
   return { link, online: () => bounded(online.promise) };
@@ -221,4 +227,106 @@ test("stop preserves an attempted presence when its queue_full timer expires dur
   } finally {
     releaseSeal.resolve(); await stopped; f.owner.sequence.reserve = reserve;
   }
+});
+
+test("idle request reaches connected C after A's crossed broadcast reply replaces its blocked request", async () => {
+  let observe: ((wire: Uint8Array) => Promise<void>) | undefined;
+  const f = await fixture(true, { verifyFrame: async input => {
+    const proof = await verifyPublicFrame(input); await observe?.(input.wire); return proof;
+  } });
+  const cStore = f.observer!;
+  const stored = new Set<string>(), storageWaiters = new Map<string, { resolve: () => void }>(), firstStored = signal(), converged = signal();
+  const waitStored = (digest: string) => {
+    if (stored.has(digest)) return Promise.resolve();
+    const waiter = signal(); storageWaiters.set(digest, waiter); return bounded(waiter.promise);
+  };
+  const application: RoomLinkApplication = { members() {}, receive: async () => {}, online: async () => {}, stored(_context, input) {
+    stored.add(input.digest); firstStored.resolve(); storageWaiters.get(input.digest)?.resolve();
+  } };
+  let clock = 0;
+  const a = linked(f.owner, { refreshMs: 100, now: () => clock, application, presence: () => [{ id: "codex", state: "idle" }], onPresence: value => {
+    if (value.member === cStore.identity.public.fingerprint) converged.resolve();
+  } });
+  const b = linked(f.guest, { refreshMs: 100, now: () => 0, presence: () => [{ id: "kimi", state: "idle" }] });
+  await a.link.start(); await a.online(); await bounded(firstStored.promise);
+  const c = await FakeBrokerClient.connect(f.broker.publicUrl, cStore.get("work")!.current.room, { "x-agent-hub-ephemeral": "1" }); clients.push(c);
+  await c.authenticate(cStore.identity);
+  const durable: string[] = [];
+  for (let n = 0; n < 8; n++) {
+    const digest = await a.link.publishApplication({ v: 1, type: "chat", envelope: {
+      id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "kimi", kind: "chat", priority: "status", body: `durable C backlog ${n}`, ts: Date.now(),
+    } }, cStore.identity.public.fingerprint);
+    await waitStored(digest); durable.push(digest);
+  }
+  // C is authenticated and already holds the first durable frame without ACK;
+  // the other seven durable rows precede every later ephemeral observation.
+  const blocked = await c.take("frame");
+  expect(encodeBase64url(await sha256(blocked))).toBe(durable[0]);
+  const requested = signal<string>(), replied = signal<string>();
+  observe = async wire => {
+    const frame = decodeFrame(wire);
+    if (frame.sender !== f.owner.identity.public.fingerprint) return;
+    const opened = await openFrame({ wire, identity: cStore.identity, current: cStore.get("work")!.current,
+      replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
+    if (opened.status !== "accepted") throw new Error("expected authenticated A presence");
+    const payload = JSON.parse(new TextDecoder().decode(opened.plaintext)) as { type: string; requestReply?: boolean };
+    if (payload.type !== "presence") return;
+    const digest = encodeBase64url(await sha256(wire));
+    if (payload.requestReply === true) requested.resolve(digest); else replied.resolve(digest);
+  };
+  clock = 100;
+  const requestDigest = await bounded(requested.promise); await waitStored(requestDigest);
+  const internal = a.link as unknown as { session?: { pendingPresenceReplies: Set<string> } };
+  expect(internal.session?.pendingPresenceReplies.has(cStore.identity.public.fingerprint)).toBe(true);
+  await b.link.start(); await b.online();
+  const replyDigest = await bounded(replied.promise); await waitStored(replyDigest);
+  expect(replyDigest).not.toBe(requestDigest);
+  expect(internal.session?.pendingPresenceReplies.has(cStore.identity.public.fingerprint)).toBe(true);
+  for (let n = 0; n < durable.length; n++) {
+    const wire = n === 0 ? blocked : await c.take("frame");
+    expect(encodeBase64url(await sha256(wire))).toBe(durable[n]);
+    await c.ack(durable[n]!);
+  }
+  const readPresence = async () => {
+    const wire = await c.take("frame"), frame = decodeFrame(wire);
+    const opened = await openFrame({ wire, identity: cStore.identity, current: cStore.get("work")!.current,
+      replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
+    if (opened.status !== "accepted") throw new Error("expected authenticated presence at C");
+    return { wire, frame, payload: JSON.parse(new TextDecoder().decode(opened.plaintext)) as { type: string; requestReply?: boolean } };
+  };
+  let responses = 0;
+  const replyToRequest = async (input: Awaited<ReturnType<typeof readPresence>>) => {
+    if (input.payload.requestReply !== true) return;
+    responses++;
+    c.send(await sealFrame({ epoch: cStore.get("work")!.current, identity: cStore.identity, recipients: [input.frame.sender], ephemeral: true,
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "kimi", state: "idle" }] }), sequence: cStore.sequence }));
+    await c.take("stored");
+  };
+  let crossedReply: Awaited<ReturnType<typeof readPresence>> | undefined;
+  for (let n = 0; n < 3; n++) {
+    const incoming = await readPresence();
+    if (incoming.frame.sender === f.owner.identity.public.fingerprint) { crossedReply = incoming; break; }
+    await replyToRequest(incoming); await c.ack(encodeBase64url(await sha256(incoming.wire)));
+  }
+  expect(crossedReply).toBeDefined();
+  expect(encodeBase64url(await sha256(crossedReply!.wire))).toBe(replyDigest);
+  expect(crossedReply!.payload.requestReply).toBeUndefined();
+  expect(internal.session?.pendingPresenceReplies.has(cStore.identity.public.fingerprint)).toBe(true);
+  await c.ack(replyDigest);
+  // No reconnect, C bootstrap, local peer change or explicit publish can recover
+  // this request: only A's next idle timer is now allowed to advance.
+  observe = undefined; clock = 200;
+  for (let n = 0; n < 3; n++) {
+    const incoming = await readPresence();
+    if (incoming.frame.sender === f.owner.identity.public.fingerprint) {
+      expect(incoming.payload.requestReply).toBe(true);
+      await replyToRequest(incoming); await c.ack(encodeBase64url(await sha256(incoming.wire))); break;
+    }
+    await replyToRequest(incoming); await c.ack(encodeBase64url(await sha256(incoming.wire)));
+  }
+  await bounded(converged.promise);
+  expect(internal.session?.pendingPresenceReplies.has(cStore.identity.public.fingerprint)).toBe(false);
+  expect(responses).toBeLessThanOrEqual(2); // B request plus exactly one A refresh.
+  expect(a.link.connectionState).toBe("online"); expect(b.link.connectionState).toBe("online");
+  expect(f.owner.pendingInbox("work")).toEqual([]);
 });

@@ -65,7 +65,7 @@ async function side(root: string, label: string, signal: Signal) {
   return result;
 }
 
-type Mesh = { root: string; broker: BrokerRuntime; a: Side; b: Side; signal: Signal; brokerEvents: { event: string; member?: string }[]; verifiedSenders: string[] };
+type Mesh = { root: string; broker: BrokerRuntime; a: Side; b: Side; signal: Signal; brokerEvents: { event: string; member?: string }[]; verifiedSenders: string[]; readyKeys: string[][] };
 const meshes: Mesh[] = [];
 afterEach(async () => {
   for (const fixture of meshes.splice(0).reverse()) {
@@ -78,7 +78,7 @@ async function roomCommand(side: Side, action: string, input: unknown) {
 }
 async function mesh(options: { legacy?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-presence-aging-736-")), signal = signals();
-  const brokerEvents: Mesh["brokerEvents"] = [], verifiedSenders: string[] = [];
+  const brokerEvents: Mesh["brokerEvents"] = [], verifiedSenders: string[] = [], readyKeys: string[][] = [];
   const broker = await startBroker({ stateDir: join(root, "broker"), port: 0 }, {
     log: (event, ids) => { brokerEvents.push({ event, ...(ids.member ? { member: ids.member } : {}) }); signal.notify(); },
     verifyFrame: async input => { const proof = await verifyPublicFrame(input); verifiedSenders.push(proof.sender); signal.notify(); return proof; },
@@ -90,11 +90,17 @@ async function mesh(options: { legacy?: boolean } = {}) {
         const headers = Object.fromEntries(Object.entries(socketOptions.headers ?? {}).filter(([name]) => name.toLowerCase() !== "x-agent-hub-ephemeral"));
         super(url, { ...socketOptions, headers });
       } else super(url, socketOptions);
+      this.addEventListener("message", event => {
+        try {
+          const message = JSON.parse(new TextDecoder().decode(event.data)) as Record<string, unknown>;
+          if (message.type === "ready") readyKeys.push(Object.keys(message).sort());
+        } catch { /* RoomLink handles non-ready transport messages. */ }
+      });
     }
   };
   try {
     const a = await side(root, "alpha", signal), b = await side(root, "beta", signal);
-    const fixture = { root, broker, a, b, signal, brokerEvents, verifiedSenders }; meshes.push(fixture);
+    const fixture = { root, broker, a, b, signal, brokerEvents, verifiedSenders, readyKeys }; meshes.push(fixture);
     await roomCommand(a, "create", { name: "work", broker: broker.publicUrl, label: "alpha" });
     await roomCommand(a, "expose", { name: "work", peers: ["codex"] });
     const invite = await roomCommand(a, "invite", { name: "work" });
@@ -135,6 +141,8 @@ test("a legacy broker without ephemeral support preserves signed presence and re
   const f = await mesh({ legacy: true });
   expect(f.a.link!.livenessTracked).toBe(false);
   expect(f.b.link!.livenessTracked).toBe(false);
+  expect(f.readyKeys.length).toBeGreaterThan(0);
+  for (const keys of f.readyKeys) expect(keys).toEqual(["digest", "epoch", "member", "room", "type", "v"]);
   f.a.setNow(1_010_000);
   f.a.chat.tick();
 
@@ -150,6 +158,10 @@ test("restored presence cannot renew freshness, and local clock rollback fails c
   f.a.setNow(1_000_000);
   f.a.chat.presence(f.a.store!, "work", f.a.link!, currentPresence);
   expect(f.a.bus.stateOf("codex@beta")).toBe("idle");
+  f.a.chat.presence(f.a.store!, "work", f.a.link!, { member: betaMember, peers: [{ id: "codex", state: "offline" }] });
+  f.a.chat.presence(f.a.store!, "work", f.a.link!, { ...currentPresence, restored: true });
+  expect(f.a.chat.peers("work").find(row => row.id === "codex@beta")?.presence).toBe("offline");
+  f.a.chat.presence(f.a.store!, "work", f.a.link!, currentPresence);
 
   f.a.setNow(1_000_001);
   f.a.chat.presence(f.a.store!, "work", f.a.link!, { ...currentPresence, restored: true });

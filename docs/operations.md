@@ -5976,6 +5976,50 @@ chat stays usable; upgrade the broker to avoid offline presence retention.
 The supporting broker withholds ephemeral frames from older member hubs; they
 must upgrade to see upgraded hubs' presence. Chat wire shapes remain unchanged. See [wire compatibility](design/bus.md#room-wire-compatibility-1204-t1).
 
+### Room liveness and graceful stop (#1204 T3)
+
+On an ephemeral-capable broker, idle hubs request fresh signed presence every
+30 seconds. After three missed periods (90 seconds), room presence becomes
+`unknown`, including `user@label`, and the remote transport is unavailable until
+fresh validated presence arrives. Saved presence after restart is not fresh.
+The optional room advisory presence is separate from native peer state; neither
+an offline observation nor expiry stops the other person's agent process.
+
+With a legacy broker, status says `liveness not tracked (broker without ephemeral)`.
+Upgrade the broker to enable periodic refresh and aging. Legacy connections keep
+identical-snapshot dedupe and ordinary state-change publication, with no
+periodic refresh or freshness expiry. Older clients may ignore the new advisory
+status fields. Full capability advertisement remains #1204 T4.
+
+A graceful room stop immediately fences new publications and attempts one signed
+offline snapshot behind an already attempted FIFO frame, bounded to two seconds
+before disconnect. Durable sends and receipts remain for recovery. If that
+attempt fails or the broker is blocked, supporting recipients expire their last
+observation through aging. A crash has the same aging fallback. A legacy broker
+has no such expiry guarantee.
+
+### Inspect outstanding work before rotating an epoch (#1204 T3)
+
+Before an epoch-changing owner `expose`, `invite --accept`, `revoke` or an
+existing-room `join --roster`, the person preview prints sorted outstanding
+sealed delivery ids, without message text. It excludes work still queued only
+in the local Bus. The operation rechecks the exact id set and roster digest
+with link application publication quiesced; if either changed, obtain a fresh
+preview rather than reuse the old confirmation.
+
+The epoch commit quarantines old active sealed intents and removes their
+sendable ciphertext. Their local delivery becomes `needs_review` with reason
+`epoch rotated`, also named by `ahub room status team`. Inspect each id with
+`ahub queue show <delivery-id>` and choose a person disposition. Rotation does
+not assert completion, cancel a native turn or replay old ciphertext. Existing
+terminal results and person dispositions remain unchanged. T2 already fences
+the crash gap between the Store commit and local journal update.
+
+If the command says `epoch rotated but delivery journal holds are unavailable`,
+the epoch has committed and old ciphertext is fenced. Inspect `ahub room status`
+and the affected queue ids before taking further action; do not assume the
+command rolled the roster back.
+
 ## Screened room chat (#446 X4)
 
 After joining and confirming fingerprints, expose each receiving native peer with

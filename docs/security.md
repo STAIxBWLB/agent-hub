@@ -179,6 +179,26 @@ completion authority. Old brokers receive the legacy frame shape. The broker wit
 hubs until they upgrade; chat
 frames remain compatible. See [room wire compatibility](design/bus.md#room-wire-compatibility-1204-t1).
 
+Room liveness (#1204 T3) is advisory availability, never native execution or
+process ownership proof. Periodic refresh and three-period expiry run only after
+broker ephemeral negotiation. A legacy broker reports liveness untracked, with
+no periodic refresh or aging. Unknown room presence adds no native `PeerState`
+value or authority. Freshness uses validated local observations only; restored
+presence and rolled-back clocks cannot renew it, and status remains read-only.
+Graceful stop fences publications synchronously and attempts one signed offline
+frame in FIFO order within two seconds; durable intents/receipts remain, and
+failure relies on supporting recipients' aging rather than remote process stop.
+
+Before a person changes a room epoch, an ids-only preview binds already sealed
+unresolved Store intents and the roster digest. The final commit rechecks both
+with link publication quiesced. Old active intents are quarantined atomically
+using the existing `boundary_refused` reason and schema, with sendable ciphertext
+removed. T3's local Bus `needs_review` cause is the fixed `epoch rotated` text;
+no body enters that reason. Bus-only queued work, terminal results and person
+dispositions are unchanged. T2's existing crash-gap quarantine remains the
+recovery boundary. No completion, replay, cancellation, new wire codec or new
+native authority follows from the preview, rotation or liveness metadata.
+
 ## What is not defended
 
 - **A malicious local process running as you.** It can read the control token, `hub.db`, the project and your home directory without the hub's help. The token keeps web pages and other users out, not your own processes.
