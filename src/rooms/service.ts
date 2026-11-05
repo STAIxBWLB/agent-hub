@@ -317,7 +317,9 @@ export class RoomChat {
     if (this.stopped) return;
     const binding = this.bindings.get(name);
     if (!binding || binding.store !== store || binding.link !== link) return;
-    binding.online = state === "online";
+    // Application.online promotes readiness after membership and inbox recovery finish.
+    // A raw socket-online notification must not start the same recovery twice.
+    if (state !== "online") binding.online = false;
     // A transport blip does not revoke the last authenticated signed state.
     // A new roster digest still clears it in bind(), before target reconstruction.
     if (!this.valid(binding)) {

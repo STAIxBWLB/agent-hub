@@ -682,9 +682,10 @@ test("a permanent stale outgoing proof is held once and does not block later FIF
   expect(saved).toMatchObject({ state: "needs_review", reason: "boundary_refused" });
   expect(f.a.store!.outbox("work").some(row => row.digest === saved.digest)).toBe(false);
   expect(f.frames.filter(frame => frame.sender === f.owner && !frame.ephemeral).length).toBe(ownerFrames);
+  f.control.hold = false; f.control.gate.release();
+  await f.event.wait(() => f.a.bus.stateOf("codex@beta") === "idle", "recipient presence returns after the broker verification gate releases");
   const later = newEnvelope("user", "later FIFO after stale proof hold", { to: ["codex@beta"] }); f.a.bus.publish(later);
   await f.event.wait(() => f.b.peer.got.some(row => row.id === later.id), "later chat reaches the remote peer");
-  f.control.hold = false; f.control.gate.release();
   await f.event.wait(async () => (await outbound(f.a, later.id))?.state === "completed (admitted)", "later signed receipt completes");
   expect((await outbound(f.a, env.id))?.state).toBe("needs_review");
   expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
