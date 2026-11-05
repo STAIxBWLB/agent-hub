@@ -81,9 +81,12 @@ export function upgradeSection(quickstart: string, version: string): string | un
   const rest = quickstart.slice(heading.index + heading[0].length), next = /^## /m.exec(rest);
   return next ? rest.slice(0, next.index) : rest;
 }
-/** Whether that section carries the step for exactly this version: the install command and `ahub setup`, both in it. */
+/**
+ * Whether that section carries the step for exactly this version: the install command and `ahub setup`, both in it. The version must end where the command's argument does: `0.31.0` is not
+ * satisfied by `0.31.0-beta.1`, `0.31.01` or `0.31.0.1`, so a stable release can never ship an instruction that installs something else. A sentence's own full stop after the version is not part of it.
+ */
 export const hasGlobalUpdateStep = (section: string | undefined, version: string): boolean =>
-  section !== undefined && section.includes(`bun add -g @staix/agent-hub@${version}`) && /`ahub setup`/.test(section);
+  section !== undefined && new RegExp(`bun add -g @staix/agent-hub@${version.replaceAll(/[.+]/g, "\\$&")}(?![0-9A-Za-z+-]|\\.[0-9A-Za-z])`).test(section) && /`ahub setup`/.test(section);
 
 /**
  * Gives docs/quickstart.md its "## Upgrading to <version>" section when it has none, above the previous one, and adds the step to a section that lacks it. Idempotent: a section that already has the

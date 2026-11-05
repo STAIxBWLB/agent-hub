@@ -117,6 +117,26 @@ test("ensureUpgradeNote creates the note above the newest one, completes a note 
   expect(hasGlobalUpdateStep(upgradeSection(last, "0.2.0"), "0.2.0")).toBe(true);
   expect(hasGlobalUpdateStep(upgradeSection(`## Upgrading to 0.2.0\n\n${globalUpdateStep("0.1.9")}\n`, "0.2.0"), "0.2.0")).toBe(false);
   expect(hasGlobalUpdateStep(undefined, "0.2.0")).toBe(false);
+  // the version must end where the command's argument does (review of PR #1201): a prerelease, a longer patch number or a fourth component is another package
+  for (const other of ["0.2.0-beta.1", "0.2.0-rc.1+build", "0.2.01", "0.2.0.1", "0.2.0+meta"]) {
+    expect(hasGlobalUpdateStep(`## Upgrading to 0.2.0\n\nbun add -g @staix/agent-hub@${other} then \`ahub setup\`\n`, "0.2.0")).toBe(false);
+  }
+  // ... and what follows a correct command may be punctuation, a backtick, a space or the end of the section
+  for (const after of ["`", " ", ". ", ",", ")", "\n", ".\n"]) expect(hasGlobalUpdateStep(`bun add -g @staix/agent-hub@0.2.0${after}and then \`ahub setup\``, "0.2.0")).toBe(true);
+  expect(hasGlobalUpdateStep("run bun add -g @staix/agent-hub@0.2.0\n\n`ahub setup`", "0.2.0")).toBe(true);   // the end of a line
+  expect(hasGlobalUpdateStep("`ahub setup` after bun add -g @staix/agent-hub@0.2.0", "0.2.0")).toBe(true);   // the end of the section
+  expect(hasGlobalUpdateStep("bun add -g @staix/agent-hub@0.2.0and then `ahub setup`", "0.2.0")).toBe(false);   // a version run into a word is not the version
+  // the dots and the plus of a version are literal characters, not a pattern: 0x2x0 is not 0.2.0, and 1.0.0build.5 is not 1.0.0+build.5
+  expect(hasGlobalUpdateStep("bun add -g @staix/agent-hub@0x2x0 then `ahub setup`", "0.2.0")).toBe(false);
+  expect(hasGlobalUpdateStep("bun add -g @staix/agent-hub@1.0.0+build.5 then `ahub setup`", "1.0.0+build.5")).toBe(true);
+  expect(hasGlobalUpdateStep("bun add -g @staix/agent-hub@1.0.0build.5 then `ahub setup`", "1.0.0+build.5")).toBe(false);
+  expect(hasGlobalUpdateStep(`bun add -g @staix/agent-hub@0.2.0-beta.1 and bun add -g @staix/agent-hub@0.2.0 then \`ahub setup\``, "0.2.0")).toBe(true);   // a correct command elsewhere in the section still counts
+  expect(hasGlobalUpdateStep("bun add -g @staix/agent-hub@1.0.0-rc.1 then `ahub setup`", "1.0.0-rc.1")).toBe(true);   // a prerelease target matches itself exactly
+  expect(hasGlobalUpdateStep("bun add -g @staix/agent-hub@1.0.0-rc.10 then `ahub setup`", "1.0.0-rc.1")).toBe(false);
+  // an incorrect command is replaced by completing the note: the correct one is appended after it
+  const wrong = ensureUpgradeNote("## Upgrading to 0.2.0\n\nbun add -g @staix/agent-hub@0.2.0-beta.1 then `ahub setup`\n", "0.2.0");
+  expect(wrong).toContain(globalUpdateStep("0.2.0"));
+  expect(hasGlobalUpdateStep(upgradeSection(wrong, "0.2.0"), "0.2.0")).toBe(true);
   // 0.2.0 must not match 0.2.01 or 10.2.0 (the heading is exact, the dots are literal)
   expect(upgradeSection("## Upgrading to 10.2.0\n\nx\n", "0.2.0")).toBeUndefined();
   expect(upgradeSection("## Upgrading to 0x2x0\n\nx\n", "0.2.0")).toBeUndefined();
