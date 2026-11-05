@@ -153,6 +153,8 @@ test("legacy held rows stay append-only and a session release does not certify o
   try {
     db.query("CREATE TABLE review_input_holds (project_id TEXT NOT NULL, peer TEXT NOT NULL, session_hash TEXT NOT NULL, input_hash TEXT NOT NULL, PRIMARY KEY(project_id,peer))").run();
     db.query("INSERT INTO review_input_holds(project_id,peer,session_hash,input_hash) VALUES('p','claude',?,?)").run(sessionHash, inputHash);
+    const review = newEnvelope("hub", "legacy review awaiting disposition", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-v1-legacy" } });
+    journal.createDelivery({ id: "v1-legacy-review", peer: "claude", state: "needs_review", createdAt: review.ts, originals: [review], out: [review] });
     db.query("UPDATE delivery_meta SET review_input_version=0,review_input_complete=0,review_input_coverage_complete=0,review_input_count=0,review_input_digest='',review_input_instance_id='' WHERE project_id='p'").run();
     journal.close();
     const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i2" });
