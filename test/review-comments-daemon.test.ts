@@ -422,7 +422,7 @@ test("recovery refuses a target without review input state when a native session
   } finally { await f.stop(); }
 });
 
-test("an ordinary inbox input replaces an unknown unbound hold in this daemon run", async () => {
+test("an unidentified earlier SID stays held across ordinary inbox and push input", async () => {
   const f = await fixture();
   try {
     const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "stable session review context" });
@@ -436,13 +436,16 @@ test("an ordinary inbox input replaces an unknown unbound hold in this daemon ru
     f.daemon.bus.publish(newEnvelope("user", "ordinary inbox input", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
     expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
     const afterInbox = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary inbox replaces unknown input", kind: "finding" } });
-    expect(afterInbox.ok).toBe(true);
+    expect(afterInbox.ok).toBe(false); // Ruling #728: an anonymous handout cannot release an earlier positive SID.
 
     const ordinaryAck = waitForDelivery(f.owner);
     f.daemon.bus.publish(newEnvelope("user", "ordinary push input", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
     await ordinaryAck;
     const afterPush = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary push remains available", kind: "finding" } });
-    expect(afterPush.ok).toBe(true);
+    expect(afterPush.ok).toBe(false);
+    const unidentified = await f.person.request({ t: "status" });
+    expect(unidentified.status.peers.codex.reviewObserverHoldNote).toContain("held: session unidentified, earlier review input");
+    expect(unidentified.status.peers.codex.reviewObserverHoldNote).toContain("reconnect");
 
     Object.defineProperty(f.owner, "nativeSession", { value: "confirmed-new-native-session" });
     const newIdentity = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "confirmed new SID is clean", kind: "finding" } });

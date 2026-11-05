@@ -118,7 +118,18 @@ function hostVariables(names: string[], ports: Record<string, unknown>): any {
   }
   visit(ast); expect(declarations.size).toBe(names.length);
   const code = names.map(name => `const ${name} = ${declarations.get(name)};`).join("\n");
-  return runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(code) + `\n({${names.join(",")}});`, ports);
+  // Extracted closures create DTOs in a different realm. Re-home the host-created hold
+  // literal without dropping own descriptors; the real journal still validates every field.
+  const journal = ports.journal;
+  const vmPorts = journal instanceof DeliveryJournal ? { ...ports, journal: new Proxy(journal, {
+    get(target, key) {
+      if (key === "holdReviewInput") return (value: unknown) => target.holdReviewInput(
+        value !== null && typeof value === "object" ? Object.create(Object.prototype, Object.getOwnPropertyDescriptors(value)) : value);
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) } : ports;
+  return runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(code) + `\n({${names.join(",")}});`, vmPorts);
 }
 
 test("#625 session binding reads the plain nativeSession port, preserves empty strings and keeps host Claude proof", () => {
@@ -208,7 +219,7 @@ test("first stable SID binding clears only the peer marker and preserves other-s
   const ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
   const reviewObserverSessionBindings = new Map(), currentDaemonReviewObserverHolds = new Map(), restoredPullOnlyReviewHolds = new Map();
   const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
-    bus, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
+    bus, journal, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
     currentReviewObserverInputs, pendingReviewObserverInputs,
     ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs, reviewObserverSessionBindings,
     currentDaemonReviewObserverHolds, restoredPullOnlyReviewHolds, ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap(),
@@ -273,7 +284,7 @@ test("first stable SID binding persists a current RAM quote before clearing its 
   const pendingReviewObserverInputs = new Map(), ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
   const reviewObserverSessionBindings = new Map(), currentDaemonReviewObserverHolds = new Map(), restoredPullOnlyReviewHolds = new Map();
   const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
-    bus, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
+    bus, journal, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
     currentReviewObserverInputs, pendingReviewObserverInputs, ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs,
     reviewObserverSessionBindings, currentDaemonReviewObserverHolds, restoredPullOnlyReviewHolds,
     ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap(),
@@ -333,7 +344,7 @@ test("a changed SID persists an unbound RAM quote before clearing its peer marke
   const pendingReviewObserverInputs = new Map(), ordinaryReviewObserverInputs = new Map(), stagedSessionlessOrdinaryInputs = new Map();
   const reviewObserverSessionBindings = new Map([[peer.id, oldSessionHash]]), currentDaemonReviewObserverHolds = new Map([[peer.id, oldSessionHash]]), restoredPullOnlyReviewHolds = new Map();
   const host = hostVariables(["contextSession", "reviewObserverHash", "reviewObserverStableSessionHash", "bindUnboundReviewInputToSession", "bindReviewObserverSessionHash", "resetReviewObserverSessionIfChanged"], {
-    bus, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
+    bus, journal, isWsPeer, definitionOf, claudeSession: () => ({}), createHash,
     currentReviewObserverInputs, pendingReviewObserverInputs, ordinaryReviewObserverInputs, stagedSessionlessOrdinaryInputs,
     reviewObserverSessionBindings, currentDaemonReviewObserverHolds, restoredPullOnlyReviewHolds,
     ownedObserverInputs: new Map(), localObserverSessionIds: new WeakMap(),
