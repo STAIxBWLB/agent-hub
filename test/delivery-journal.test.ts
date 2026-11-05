@@ -98,6 +98,8 @@ test("review input provenance is ID-only, snapshot-restorable and session-scoped
     source.journal.close();
     reopenedSource = new DeliveryJournal({ file: join(source.dir, "hub.db"), projectRoot: source.dir, projectId: "p", instanceId: "i2" });
     expect(reopenedSource.reviewInputState(hold.peer, hold.sessionHash)).toEqual({ state: "held", inputHash: hold.inputHash });
+    const unresolvedReview = newEnvelope("hub", "legacy review still awaiting disposition", { kind: "review", to: ["new-peer"], refs: { reviewPackage: "reviewer-request-legacy" } });
+    reopenedSource.createDelivery({ id: "legacy-review-unsettled", peer: "new-peer", state: "needs_review", createdAt: unresolvedReview.ts, originals: [unresolvedReview], out: [unresolvedReview] });
     const snapshot = reopenedSource.snapshot();
     expect(snapshot.reviewInputProvenance?.holds).toEqual([hold]);
     expect(Object.keys(snapshot.reviewInputProvenance!.holds[0]!)).toEqual(["peer", "sessionHash", "inputHash"]);
@@ -107,8 +109,9 @@ test("review input provenance is ID-only, snapshot-restorable and session-scoped
     target.clearReviewInput(hold.peer, hold.sessionHash);
     expect(target.hasReviewInputState()).toBe(false);
     expect(target.reviewInputState(hold.peer, hold.sessionHash)).toEqual({ state: "clean" });
-    expect(target.reviewInputState(hold.peer)).toEqual({ state: "unknown" });
-    expect(target.snapshot().reviewInputProvenance?.holds).toEqual([{ ...hold, inputHash: null }]);
+    expect(target.reviewInputState(hold.peer)).toEqual({ state: "clean" }); // Complete coverage makes absence clean after N3 prunes NULL receipts.
+    expect(target.snapshot().reviewInputProvenance?.holds).toEqual([]);
+    expect((target as unknown as { db: Database }).db.query("SELECT 1 FROM review_input_sessions WHERE project_id='p' AND input_hash IS NULL LIMIT 1").get()).toBeNull();
 
     const legacyTargetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-review-input-"));
     const legacyTarget = new DeliveryJournal({ file: join(legacyTargetDir, "hub.db"), projectRoot: legacyTargetDir, projectId: "p", instanceId: "legacy", operationId: "restore-legacy" });
@@ -119,6 +122,7 @@ test("review input provenance is ID-only, snapshot-restorable and session-scoped
       expect(legacyTarget.hasReviewInputState()).toBe(true);
       legacyTarget.clearReviewInput("new-peer", "d".repeat(64)); // A positive ordinary ACK confirms only this session.
       expect(legacyTarget.reviewInputState("new-peer", "d".repeat(64))).toEqual({ state: "clean" });
+      expect(legacyTarget.reviewInputEvidence("new-peer")).toMatchObject({ retainedSessionHold: false, retainedPeerSessionHold: false });
       expect(legacyTarget.reviewInputState("old-peer", "e".repeat(64))).toEqual({ state: "unknown" });
     } finally { legacyTarget.close(); rmSync(legacyTargetDir, { recursive: true, force: true }); }
   } finally { source.journal.close(); reopenedSource?.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
@@ -150,6 +154,8 @@ test("legacy held rows stay append-only and a session release does not certify o
   try {
     db.query("CREATE TABLE review_input_holds (project_id TEXT NOT NULL, peer TEXT NOT NULL, session_hash TEXT NOT NULL, input_hash TEXT NOT NULL, PRIMARY KEY(project_id,peer))").run();
     db.query("INSERT INTO review_input_holds(project_id,peer,session_hash,input_hash) VALUES('p','claude',?,?)").run(sessionHash, inputHash);
+    const review = newEnvelope("hub", "legacy review awaiting disposition", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-v1-legacy" } });
+    journal.createDelivery({ id: "v1-legacy-review", peer: "claude", state: "needs_review", createdAt: review.ts, originals: [review], out: [review] });
     db.query("UPDATE delivery_meta SET review_input_version=0,review_input_complete=0,review_input_coverage_complete=0,review_input_count=0,review_input_digest='',review_input_instance_id='' WHERE project_id='p'").run();
     journal.close();
     const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i2" });
@@ -217,6 +223,9 @@ test("corrupt review provenance reopens as unknown while ordinary journal operat
     const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i2" });
     expect(reopened.get("ordinary-row")).toMatchObject({ state: "queued", peer: "codex" });
     expect(reopened.reviewInputState("claude", sessionHash)).toEqual({ state: "unknown" });
+    expect(reopened.reviewInputEvidence("claude", sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: false });
+    expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_corrupt" });
+    expect(reopened.reviewInputHealth().nextStep).toContain("review-input provenance");
     expect(reopened.hasReviewInputState()).toBe(true);
     expect(() => reopened.snapshot()).toThrow("inputHash is invalid");
     const transport = reopened.transportSnapshot();
@@ -237,6 +246,47 @@ test("review provenance digests bind the completeness flags", () => {
     expect(journal.reviewInputState("claude", "a".repeat(64))).toEqual({ state: "unknown" });
     db.query("UPDATE delivery_meta SET review_input_complete=1,review_input_coverage_complete=0 WHERE project_id='p'").run();
     expect(journal.reviewInputState("claude", "a".repeat(64))).toEqual({ state: "unknown" });
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("reopened incomplete provenance is corrupt and cannot release peer or session holds", () => {
+  const { dir, journal } = open(), peer = "claude", sessionHash = "a".repeat(64), inputHash = "b".repeat(64);
+  try {
+    journal.holdReviewInput({ peer, sessionHash, inputHash });
+    journal.markReviewInputIncomplete(peer);
+    (journal as unknown as { writeReviewInputProvenance(complete: boolean, coverageComplete: boolean): void }).writeReviewInputProvenance(false, true);
+    journal.close();
+
+    const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "incomplete-reopened" });
+    const reopenedDb = (reopened as unknown as { db: Database }).db;
+    try {
+      expect(reopened.reviewInputEvidence(peer, sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: false });
+      expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_incomplete" });
+      expect(() => reopened.clearReviewInputIncomplete(peer)).toThrow("provenance is incomplete");
+      expect(() => reopened.clearReviewInput(peer, sessionHash)).toThrow("provenance is incomplete");
+      expect(reopenedDb.query("SELECT input_hash FROM review_input_sessions WHERE project_id='p' AND peer=? AND session_hash=?").get(peer, sessionHash)).toMatchObject({ input_hash: inputHash });
+      expect(reopenedDb.query("SELECT peer FROM review_input_incomplete_peers WHERE project_id='p' AND peer=?").get(peer)).toMatchObject({ peer });
+    } finally { reopened.close(); }
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("reopened bad provenance digest stays corrupt after restart marks completeness false", () => {
+  const { dir, journal } = open(), peer = "claude", sessionHash = "a".repeat(64), inputHash = "b".repeat(64);
+  const db = (journal as unknown as { db: Database }).db;
+  try {
+    journal.holdReviewInput({ peer, sessionHash, inputHash });
+    db.query("UPDATE delivery_meta SET review_input_digest=? WHERE project_id='p'").run("0".repeat(64));
+    journal.close();
+
+    const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "bad-digest-reopened" });
+    const reopenedDb = (reopened as unknown as { db: Database }).db;
+    try {
+      expect(reopenedDb.query("SELECT review_input_complete FROM delivery_meta WHERE project_id='p'").get()).toMatchObject({ review_input_complete: 0 });
+      expect(reopened.reviewInputEvidence(peer, sessionHash)).toMatchObject({ provenance: "corrupt", sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: false });
+      expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_corrupt" });
+      expect(() => reopened.clearReviewInputIncomplete(peer)).toThrow("integrity mismatch");
+      expect(() => reopened.clearReviewInput(peer, sessionHash)).toThrow("integrity mismatch");
+    } finally { reopened.close(); }
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -271,6 +321,293 @@ test("unbound identities and explicit incomplete markers stay scoped and fail cl
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("verified input clears only its own peer marker and selected session evidence", () => {
+  const { dir, journal } = open(), sessionA = "a".repeat(64), sessionB = "b".repeat(64), incompleteSession = "e".repeat(64), hashA = "c".repeat(64), hashB = "d".repeat(64);
+  try {
+    journal.markReviewInputIncomplete("claude");
+    journal.markReviewInputIncomplete("codex");
+    journal.holdReviewInput({ peer: "codex", sessionHash: sessionA, inputHash: hashA });
+    journal.holdReviewInput({ peer: "codex", sessionHash: sessionB, inputHash: hashB });
+    journal.markReviewInputIncomplete("codex", incompleteSession);
+    expect(journal.reviewInputEvidence("claude")).toMatchObject({ incompletePeer: true, retainedPeerSessionHold: false });
+    journal.clearReviewInputIncomplete("claude"); // New native SID confirmation has no stable session receipt to clear.
+    expect(journal.reviewInputEvidence("claude")).toMatchObject({ provenance: "available", incompletePeer: false, sessionState: "clean", retainedPeerSessionHold: false });
+    expect(journal.reviewInputEvidence("codex", sessionA)).toMatchObject({ incompletePeer: true, sessionState: "unknown", retainedSessionHold: true, retainedPeerSessionHold: true });
+    expect(journal.reviewInputEvidence("codex", sessionB)).toMatchObject({ incompletePeer: true, sessionState: "unknown", retainedSessionHold: true, retainedPeerSessionHold: true });
+    expect(journal.reviewInputEvidence("codex", "f".repeat(64))).toMatchObject({ incompletePeer: true, sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: true });
+    expect(journal.reviewInputEvidence("codex")).toMatchObject({ incompletePeer: true, sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: true });
+    expect(journal.snapshot().reviewInputProvenance?.holds).toEqual([
+      { peer: "codex", sessionHash: sessionA, inputHash: hashA },
+      { peer: "codex", sessionHash: sessionB, inputHash: hashB },
+    ]);
+
+    journal.clearReviewInput("codex", sessionA); // Verified ordinary input releases its own marker and SID.
+    expect(journal.reviewInputState("codex", sessionA)).toEqual({ state: "clean" });
+    expect(journal.reviewInputEvidence("codex", sessionB)).toMatchObject({ incompletePeer: false, sessionState: "held", retainedSessionHold: true, retainedPeerSessionHold: true });
+    expect(journal.reviewInputState("codex", sessionB)).toEqual({ state: "held", inputHash: hashB });
+    expect(journal.reviewInputEvidence("codex", incompleteSession)).toMatchObject({ incompleteSession: true, sessionState: "unknown" });
+    journal.markReviewInputIncomplete("agy", incompleteSession);
+    expect(journal.reviewInputEvidence("agy", incompleteSession)).toMatchObject({ incompleteSession: true, sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: true });
+    expect(journal.reviewInputEvidence("pi", "f".repeat(64))).toMatchObject({ retainedPeerSessionHold: false });
+    expect(journal.reviewInputHealth()).toMatchObject({ state: "incomplete", cause: "incomplete_markers" });
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("legacy coverage ignores queued review work but retains handed accepted work", () => {
+  for (const state of ["queued", "accepted"] as const) {
+    const source = open(), targetDir = mkdtempSync(join(tmpdir(), `ahub-legacy-${state}-`));
+    const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: `legacy-${state}` });
+    try {
+      const review = newEnvelope("hub", `${state} review request`, { kind: "review", to: ["claude"], refs: { task: "1", reviewPackage: `reviewer-request-${state}` } });
+      source.journal.createDelivery({ id: `${state}-review`, peer: "claude", state, createdAt: review.ts, originals: [review], out: [review] });
+      const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+      expect(target.importSnapshot(legacySnapshot, `legacy-${state}`)).toBe(true);
+      const evidence = target.reviewInputEvidence("claude", "a".repeat(64));
+      expect(evidence.coverageComplete).toBe(state === "queued");
+      expect(evidence.sessionState).toBe(state === "queued" ? "clean" : "unknown");
+    } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+  }
+});
+
+test("legacy coverage retains a handed host-stamped review response until it settles", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-response-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-response" });
+  try {
+    const response = newEnvelope("codex", "review response", { kind: "chat", refs: { reviewResponse: "reviewer-request-7" } });
+    const row = source.journal.createDelivery({ id: "review-response", peer: "claude", state: "accepted", createdAt: response.ts, originals: [response], out: [response] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-review-response")).toBe(true);
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.transition(row.id, "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
+test("legacy coverage waits for its captured rows but not new guarded review deliveries", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-captured-review-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-captured" });
+  try {
+    const priorReview = newEnvelope("hub", "pre-upgrade review", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-before-upgrade" } });
+    const prior = source.journal.createDelivery({ id: "pre-upgrade-review", peer: "claude", state: "accepted", createdAt: priorReview.ts, originals: [priorReview], out: [priorReview] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-captured-review")).toBe(true);
+    target.transition(prior.id, "queued"); // A captured handoff remains uncertain if a manual retry queues it again.
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.transition(prior.id, "accepted");
+    target.clearReviewInput("claude", "a".repeat(64));
+
+    const currentReview = newEnvelope("hub", "current guarded review", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-current" } });
+    target.holdReviewInput({ peer: "claude", sessionHash: "b".repeat(64), inputHash: "c".repeat(64) });
+    target.createDelivery({ id: "current-review", peer: "claude", state: "accepted", createdAt: currentReview.ts, originals: [currentReview], out: [currentReview] });
+
+    target.transition(prior.id, "completed");
+    expect(target.reviewInputEvidence("claude", "b".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "held", retainedSessionHold: true });
+    expect(target.get("current-review")?.state).toBe("accepted");
+    expect((target as unknown as { db: Database }).db.query("SELECT 1 FROM review_input_sessions WHERE project_id='p' AND input_hash IS NULL LIMIT 1").get()).toBeNull();
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
+test("legacy retry descendants stay in coverage across reopen and snapshot import", () => {
+  const source = open(), activeDir = mkdtempSync(join(tmpdir(), "ahub-legacy-retry-active-")), importedDir = mkdtempSync(join(tmpdir(), "ahub-legacy-retry-imported-"));
+  const active = new DeliveryJournal({ file: join(activeDir, "hub.db"), projectRoot: activeDir, projectId: "p", instanceId: "legacy-active" });
+  let reopened: DeliveryJournal | undefined;
+  const imported = new DeliveryJournal({ file: join(importedDir, "hub.db"), projectRoot: importedDir, projectId: "p", instanceId: "legacy-imported" });
+  try {
+    const review = newEnvelope("hub", "pre-upgrade retry review", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-retry-reopen" } });
+    const parent = source.journal.createDelivery({ id: "legacy-retry-parent", peer: "claude", state: "needs_review", createdAt: review.ts, originals: [review], out: [review] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(active.importSnapshot(legacySnapshot, "legacy-retry-parent-import")).toBe(true);
+    const importedParent = active.get(parent.id)!;
+    active.resolve(importedParent.id, importedParent.revision, "retry", "retry handed legacy review");
+    const childId = "legacy-retry-parent:retry:1";
+    expect(active.get(childId)?.state).toBe("queued");
+    expect(active.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    const retrySnapshot = active.snapshot();
+    active.close();
+
+    reopened = new DeliveryJournal({ file: join(activeDir, "hub.db"), projectRoot: activeDir, projectId: "p", instanceId: "legacy-reopened" });
+    expect(reopened.get(childId)?.state).toBe("queued");
+    expect(reopened.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    expect(imported.importSnapshot(retrySnapshot, "legacy-retry-child-import")).toBe(true);
+    expect(imported.get(childId)?.state).toBe("queued");
+    expect(imported.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+
+    reopened.transition(childId, "completed");
+    expect(reopened.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+    imported.transition(childId, "completed");
+    expect(imported.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { source.journal.close(); active.close(); reopened?.close(); imported.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(activeDir, { recursive: true, force: true }); rmSync(importedDir, { recursive: true, force: true }); }
+});
+
+test("import recaptures guarded reviews during legacy coverage until explicit disposition", () => {
+  const oldSource = open(), sourceDir = mkdtempSync(join(tmpdir(), "ahub-legacy-recapture-source-")), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-recapture-target-"));
+  const source = new DeliveryJournal({ file: join(sourceDir, "hub.db"), projectRoot: sourceDir, projectId: "p", instanceId: "legacy-source" });
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-reopened" });
+  const bSession = "b".repeat(64), bInput = "c".repeat(64);
+  try {
+    const aReview = newEnvelope("hub", "pre-upgrade A", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-A" } });
+    oldSource.journal.createDelivery({ id: "legacy-a", peer: "claude", state: "accepted", createdAt: aReview.ts, originals: [aReview], out: [aReview] });
+    const { reviewInputProvenance: _oldProvenance, ...oldSnapshot } = oldSource.journal.snapshot();
+    expect(source.importSnapshot(oldSnapshot, "legacy-source-import")).toBe(true); // This journal captures only A.
+
+    const bReview = newEnvelope("hub", "new guarded B", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-B" } });
+    source.holdReviewInput({ peer: "claude", sessionHash: bSession, inputHash: bInput });
+    source.createDelivery({ id: "legacy-b", peer: "claude", state: "accepted", createdAt: bReview.ts, originals: [bReview], out: [bReview] });
+    const reopenedSnapshot = source.snapshot(); // Coverage remains incomplete and B's positive SID hold is portable.
+    expect(target.importSnapshot(reopenedSnapshot, "legacy-reopened-import")).toBe(true); // Reopen recaptures A and B.
+
+    source.transition("legacy-a", "completed");
+    expect(source.reviewInputEvidence("claude", bSession)).toMatchObject({ coverageComplete: true, sessionState: "held", retainedSessionHold: true });
+    expect(source.get("legacy-b")?.state).toBe("accepted");
+
+    target.transition("legacy-a", "completed");
+    expect(target.reviewInputEvidence("claude", "d".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.transition("legacy-b", "needs_review"); // A timeout still leaves B's imported legacy candidate unsettled.
+    expect(target.reviewInputEvidence("claude", "d".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    const b = target.get("legacy-b")!;
+    target.resolve(b.id, b.revision, "completed", "person confirmed B disposition");
+    expect(target.reviewInputEvidence("claude", bSession)).toMatchObject({ coverageComplete: true, sessionState: "held", retainedSessionHold: true, retainedPeerSessionHold: true });
+    expect(target.reviewInputState("claude", bSession)).toEqual({ state: "held", inputHash: bInput });
+  } finally { oldSource.journal.close(); source.close(); target.close(); rmSync(oldSource.dir, { recursive: true, force: true }); rmSync(sourceDir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
+test("captured terminal review receipts survive pruning until all legacy candidates settle", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-candidate-prune-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-prune", terminalHistoryLimit: () => 1 });
+  try {
+    for (const id of ["legacy-a", "legacy-b"]) {
+      const review = newEnvelope("hub", `pre-upgrade ${id}`, { kind: "review", to: ["claude"], refs: { reviewPackage: `reviewer-request-${id}` } });
+      source.journal.createDelivery({ id, peer: "claude", state: "accepted", createdAt: review.ts, originals: [review], out: [review] });
+    }
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-candidate-prune")).toBe(true);
+    const filler = newEnvelope("user", "terminal filler");
+    target.createDelivery({ id: "terminal-filler", peer: "other", state: "failed", createdAt: filler.ts, originals: [filler], out: [] });
+
+    target.transition("legacy-a", "completed");
+    expect(target.get("legacy-a")?.state).toBe("completed");
+    expect(target.get("terminal-filler")).toBeUndefined(); // Pruning selected eligible history while retaining captured evidence.
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+
+    target.transition("legacy-b", "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
+test("a rolled-back legacy retry does not leave a phantom RAM candidate", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-candidate-rollback-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-rollback" });
+  try {
+    const review = newEnvelope("hub", "pre-upgrade review", { kind: "review", to: ["claude"], refs: { reviewPackage: "reviewer-request-rollback" } });
+    const prior = source.journal.createDelivery({ id: "legacy-retry", peer: "claude", state: "needs_review", createdAt: review.ts, originals: [review], out: [review] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-candidate-rollback")).toBe(true);
+
+    expect(() => target.transaction(() => {
+      target.resolve(prior.id, prior.revision, "retry", "retry legacy review");
+      throw new Error("outer transaction rollback");
+    })).toThrow("outer transaction rollback");
+    expect(target.get(prior.id)?.state).toBe("needs_review");
+    expect(target.get("legacy-retry:retry:1")).toBeUndefined();
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+
+    target.transition(prior.id, "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
+test("an unreadable legacy candidate scan retries once the journal advances", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-candidate-read-retry-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-candidate-read-retry" });
+  const targetDb = (target as unknown as { db: Database }).db;
+  const originalQuery = targetDb.query.bind(targetDb);
+  let failedCandidateScan = false;
+  try {
+    for (const id of ["legacy-a", "legacy-b"]) {
+      const review = newEnvelope("hub", `pre-upgrade ${id}`, { kind: "review", to: ["claude"], refs: { reviewPackage: `reviewer-request-${id}` } });
+      source.journal.createDelivery({ id, peer: "claude", state: "accepted", createdAt: review.ts, originals: [review], out: [review] });
+    }
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    targetDb.query = ((sql: string) => {
+      if (!failedCandidateScan && sql.includes("JOIN deliveries d ON d.project_id=? AND d.id=fence.value")) {
+        failedCandidateScan = true;
+        throw new Error("fixture candidate scan failure");
+      }
+      return originalQuery(sql);
+    }) as typeof targetDb.query;
+    expect(target.importSnapshot(legacySnapshot, "legacy-candidate-read-retry")).toBe(true);
+    targetDb.query = originalQuery as typeof targetDb.query;
+    expect(failedCandidateScan).toBe(true);
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+
+    target.transition("legacy-a", "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.transition("legacy-b", "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { targetDb.query = originalQuery as typeof targetDb.query; source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
+test("an outer prune rollback restores the incomplete candidate cache", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-candidate-prune-rollback-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-prune-rollback", terminalHistoryLimit: () => 0 });
+  const targetDb = (target as unknown as { db: Database }).db;
+  const originalQuery = targetDb.query.bind(targetDb);
+  let failedCandidateScan = false;
+  try {
+    for (const id of ["legacy-a", "legacy-b"]) {
+      const review = newEnvelope("hub", `pre-upgrade ${id}`, { kind: "review", to: ["claude"], refs: { reviewPackage: `reviewer-request-${id}` } });
+      source.journal.createDelivery({ id, peer: "claude", state: "accepted", createdAt: review.ts, originals: [review], out: [review] });
+    }
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    targetDb.query = ((sql: string) => {
+      if (!failedCandidateScan && sql.includes("JOIN deliveries d ON d.project_id=? AND d.id=fence.value")) {
+        failedCandidateScan = true;
+        throw new Error("fixture candidate scan failure");
+      }
+      return originalQuery(sql);
+    }) as typeof targetDb.query;
+    expect(target.importSnapshot(legacySnapshot, "legacy-candidate-prune-rollback")).toBe(true);
+    targetDb.query = originalQuery as typeof targetDb.query;
+    targetDb.query("CREATE TRIGGER fail_legacy_candidate_prune BEFORE DELETE ON deliveries WHEN OLD.id='legacy-a' BEGIN SELECT RAISE(ABORT, 'fixture outer prune failure'); END").run();
+
+    expect(() => target.completeDelivered("legacy-a", "claude", "pull")).toThrow("fixture outer prune failure");
+    expect(target.get("legacy-a")?.state).toBe("accepted");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    targetDb.query("DROP TRIGGER fail_legacy_candidate_prune").run();
+
+    target.transition("legacy-a", "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.transition("legacy-b", "completed");
+    expect(target.reviewInputEvidence("claude", "a".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+  } finally { targetDb.query = originalQuery as typeof targetDb.query; source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
+test("legacy coverage completes after its final review delivery settles and prunes NULL clean receipts", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-coverage-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-target" });
+  try {
+    const review = newEnvelope("hub", "review request", { kind: "review", to: ["claude"], refs: { task: "1", reviewPackage: "reviewer-request-1" } });
+    const row = source.journal.createDelivery({ id: "legacy-review", peer: "claude", state: "needs_review", createdAt: review.ts, originals: [review], out: [review] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-review-coverage")).toBe(true);
+    expect(target.reviewInputEvidence("claude", "e".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.clearReviewInput("claude", "f".repeat(64)); // Legacy confirmation stays explicit while old review work is unsettled.
+    const targetDb = (target as unknown as { db: Database }).db;
+    expect(targetDb.query("SELECT input_hash FROM review_input_sessions WHERE project_id='p' AND peer='claude' AND session_hash=?").get("f".repeat(64))).toMatchObject({ input_hash: null });
+    const addClean = targetDb.query("INSERT INTO review_input_sessions(project_id,peer,session_hash,input_hash) VALUES('p',?,?,NULL)");
+    for (let index = 0; index < 4095; index++) addClean.run(`legacy-peer-${index}`, index.toString(16).padStart(64, "0"));
+    (target as unknown as { writeReviewInputProvenance(complete: boolean, coverageComplete: boolean): void }).writeReviewInputProvenance(true, false);
+    expect(targetDb.query("SELECT COUNT(*) AS n FROM review_input_sessions WHERE project_id='p' AND input_hash IS NULL").get()).toMatchObject({ n: 4096 });
+
+    target.transition(row.id, "completed");
+    expect(target.reviewInputEvidence("claude", "e".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+    expect(targetDb.query("SELECT 1 FROM review_input_sessions WHERE project_id='p' AND input_hash IS NULL LIMIT 1").get()).toBeNull();
+    expect(target.get(row.id)?.state).toBe("completed"); // Settlement is observed, never replayed.
+    expect(() => target.holdReviewInput({ peer: "new-peer", sessionHash: "a".repeat(64), inputHash: "b".repeat(64) })).not.toThrow();
+    expect(target.reviewInputHealth()).toMatchObject({ state: "healthy", cause: null });
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+});
+
 test("closed observer cleanup compare-and-deletes only the matching session receipt", () => {
   const { dir, journal } = open(), peer = "claude", sessionA = "a".repeat(64), sessionB = "c".repeat(64), hashA = "b".repeat(64), hashB = "d".repeat(64);
   try {
@@ -285,7 +622,9 @@ test("closed observer cleanup compare-and-deletes only the matching session rece
     journal.clearReviewInput(peer, sessionB);
     expect(journal.forgetClosedObserverInput(peer, sessionB, hashB)).toBe(false);
     expect(journal.reviewInputState(peer, sessionB)).toEqual({ state: "clean" });
-    expect(journal.forgetClosedObserverInput(peer, sessionB, null)).toBe(true);
+    expect(journal.forgetClosedObserverInput(peer, sessionB, null)).toBe(false); // N3 already pruned the NULL receipt; absence is clean.
+    expect(journal.reviewInputState(peer, sessionB)).toEqual({ state: "clean" });
+    expect((journal as unknown as { db: Database }).db.query("SELECT 1 FROM review_input_sessions WHERE project_id='p' AND peer=? AND session_hash=?").get(peer, sessionB)).toBeNull();
     expect(journal.hasReviewInputState()).toBe(false);
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });

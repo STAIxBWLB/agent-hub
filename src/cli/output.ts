@@ -5,7 +5,7 @@ import { boardColumns, type BoardPeerInput } from "../ui/task-board.ts";
 import { peerStyle } from "../ui/peer-palette.ts";
 import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
-import { backendLabel, memorySyncLine } from "./status-lines.ts";
+import { backendLabel, memorySyncLine, reviewInputHealthLine } from "./status-lines.ts";
 import { ownerIsolationText } from "./role-holders.ts";
 import { schedulePeriodText, scheduleWhen } from "../hub/schedules.ts";
 import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
@@ -34,7 +34,7 @@ export interface StatusOutput {
   taskWip?: Record<string, { wip: number; wipLimit: number; active?: number; reviewWait?: number; reserved?: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
   ownerIsolation?: Record<string, boolean>; ownerIsolationNotes?: Record<string, string>;
-  tasks?: Record<string, number>; personRun?: number[]; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[];
+  tasks?: Record<string, number>; personRun?: number[]; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; reviewInputHealth?: { state?: string; cause?: string | null }; crash?: string[];
 }
 /** `peers`: one note per peer that shows no number, and why (no quota, nothing read yet); absent from an older hub. */
 export interface BudgetOutput { budget: Record<string, any>; gate?: number; peers?: { peer: string; kind?: string; note: string }[] }
@@ -262,6 +262,10 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (text) out.push(...detail(`${id} owner isolation`, text, columns, isolated ? undefined : "attention"));
   }
   if (data.deliveryError) out.push(...detail("delivery storage", `${data.deliveryError}; dispatch is stopped`, columns, "failure"));
+  if (data.reviewInputHealth) {
+    const health = reviewInputHealthLine(data.reviewInputHealth);
+    if (health) out.push(...detail("review input provenance", health, columns, data.reviewInputHealth.state === "corrupt" ? "failure" : "attention"));
+  }
   for (const pending of data.permissionDefaults ?? []) out.push(...detail("permission default", `${pending.peer}: never-ask from ${pending.source}, stays ask until a person confirms in ahub console`, columns, "attention"));
   for (const crash of data.crash ?? []) out.push(...detail("crash recovery", crash, columns, "attention"));
   for (const warning of data.isolatedChecks?.orphans ?? []) out.push(...detail("isolated check warning", warning, columns, "attention"));
@@ -282,6 +286,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (p.flowRoles) out.push(...detail(`${id} flow roles`, p.flowRoles.join(", ") || "none", columns));
     if (p.catalogRoles) { out.push(...detail(`${id} catalog roles`, Array.isArray(p.catalogRoles.value) ? p.catalogRoles.value.join(", ") || "none" : "unconfirmed", columns)); if (p.catalogRoles.pending !== undefined) out.push(...detail(`${id} pending roles`, p.catalogRoles.pending.join(", ") || "none", columns, "attention")); }
     if (p.liveAccepted?.length) { settling = true; out.push(...detail("settling", p.liveAccepted.map((v: string) => shortId(v, columns, full)).join(", "), columns, "attention")); }
+    if (typeof p.reviewObserverHoldNote === "string" && p.reviewObserverHoldNote) out.push(...detail(`${id} review input`, p.reviewObserverHoldNote, columns, "attention"));
     if (p.heldRows?.length) {
       for (const row of p.heldRows) out.push(...detail("held", `${id}: needs_review ${shortId(row.id, columns, full)}; from ${row.senders.join(",")}; kind ${row.kinds.join(",")}; age ${duration(Math.max(0, now - row.createdAt))}${row.context ? `; ${row.context}` : ""}; ahub queue show ${row.id}`, columns, "failure"));
     } else if (p.heldBy) {

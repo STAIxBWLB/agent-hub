@@ -9,9 +9,11 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { Board } from "../src/hub/board.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { WsPeer } from "../src/adapters/channel-peer.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { DOING_STUB } from "../src/hub/peer-doing.ts";
 import { renderHeldHint } from "../src/hub/delivery-hints.ts";
+import { renderStatus } from "../src/cli/output.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 import { claudeStateFile } from "../src/hub/claude-state.ts";
@@ -391,6 +393,10 @@ test("a consumed review package stays excluded for the same native session acros
     const named = await f.peer.request({ t: "task", op: "hub_remember", args: { task: f.task, text: "named review task remains scoped", kind: "finding" } });
     expect(named.ok).toBe(false);
 
+    const piHold = waitForDelivery(piAfterRestart);
+    f.daemon.bus.publish(newEnvelope("hub", "RECOVERY_FEATURE_FLOOR_REVIEW", { to: ["pi"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:recovery-feature-floor" } }));
+    await piHold;
+
     const status = await f.person.request({ t: "status" });
     const prepared = await f.person.request({ t: "recovery", op: "prepare", operationId: "review-observer-restart", expectedInstanceId: status.status.instanceId, targetFeatures: DAEMON_FEATURES });
     expect(prepared.ok).toBe(true);
@@ -416,7 +422,7 @@ test("recovery refuses a target without review input state when a native session
   } finally { await f.stop(); }
 });
 
-test("ordinary inbox and push ACKs cannot clear a prior hold for an unbound session, while a confirmed new SID is clean", async () => {
+test("an unidentified earlier SID stays held across ordinary inbox and push input", async () => {
   const f = await fixture();
   try {
     const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "stable session review context" });
@@ -429,14 +435,17 @@ test("ordinary inbox and push ACKs cannot clear a prior hold for an unbound sess
     Object.defineProperty(f.owner, "nativeSession", { value: undefined });
     f.daemon.bus.publish(newEnvelope("user", "ordinary inbox input", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
     expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
-    const afterInbox = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "inbox cannot prove same native identity", kind: "finding" } });
-    expect(afterInbox.ok).toBe(false);
+    const afterInbox = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary inbox replaces unknown input", kind: "finding" } });
+    expect(afterInbox.ok).toBe(false); // Ruling #728: an anonymous handout cannot release an earlier positive SID.
 
     const ordinaryAck = waitForDelivery(f.owner);
     f.daemon.bus.publish(newEnvelope("user", "ordinary push input", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
     await ordinaryAck;
-    const afterPush = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "push ACK cannot prove same native identity", kind: "finding" } });
+    const afterPush = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary push remains available", kind: "finding" } });
     expect(afterPush.ok).toBe(false);
+    const unidentified = await f.person.request({ t: "status" });
+    expect(unidentified.status.peers.codex.reviewObserverHoldNote).toContain("held: session unidentified, earlier review input");
+    expect(unidentified.status.peers.codex.reviewObserverHoldNote).toContain("reconnect");
 
     Object.defineProperty(f.owner, "nativeSession", { value: "confirmed-new-native-session" });
     const newIdentity = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "confirmed new SID is clean", kind: "finding" } });
@@ -452,27 +461,160 @@ test("a new native session with a complete store and no prior hold can remember 
   } finally { await f.stop(); }
 });
 
-test("review input without a stable session is refused, then held for the recorded session across restart", async () => {
+test("a real sessionless WsPeer may receive review input, remains held across restart, then releases on ordinary pull", async () => {
   const f = await fixture(undefined, true);
   try {
-    Object.defineProperty(f.owner, "nativeSession", { value: undefined });
+    const attachSessionlessPeer = () => {
+      f.daemon.bus.peers.delete("codex");
+      const peer = new WsPeer("codex");
+      const socket = { readyState: WebSocket.OPEN, data: { protocol: 2 }, send: () => {}, close: () => {} };
+      peer.claim(socket, true);
+      peer.attach(socket);
+      f.daemon.bus.add(peer);
+      expect("nativeSession" in peer).toBe(false);
+      return peer;
+    };
+    const firstPeer = attachSessionlessPeer();
+    firstPeer.nativeStarted("review-turn-a");
     const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "unbound handoff quote" });
     expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] })).delivery).toBe("queued");
-    let refusal: unknown;
-    try { f.daemon.bus.pull("codex"); } catch (error) { refusal = error; }
-    expect(refusal).toBeInstanceOf(Error);
-    expect((refusal as Error).message).toContain("review input provenance unavailable");
-    expect((refusal as Error).message).not.toContain("unbound handoff quote");
-    expect(f.daemon.bus.queued("codex")).toBeGreaterThan(0);
-    expect(f.owner.got).toEqual([]);
-
-    Object.defineProperty(f.owner, "nativeSession", { value: "recorded-native-session" });
     const delivered = f.daemon.bus.pull("codex");
     expect(delivered?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
-    const taskB = proposeOwnedTask(f.board, "codex", { title: "ordinary after confirmed review", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
-    await f.restartNative("recorded-native-session");
-    const held = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "confirmed prior hold survives restart", kind: "finding" } });
+    expect(f.owner.got).toEqual([]);
+    const taskB = proposeOwnedTask(f.board, "codex", { title: "ordinary after unbound review", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+    const held = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "unbound review remains held", kind: "finding" } });
     expect(held.ok).toBe(false);
+    f.daemon.bus.publish(newEnvelope("user", "ordinary input in held review turn", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.body === "ordinary input in held review turn")).toBe(true);
+    const sameTurn = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "same review turn remains held", kind: "finding" } });
+    expect(sameTurn.ok).toBe(false);
+    firstPeer.nativeStopped("review-turn-a");
+
+    await f.restartNative("");
+    Object.defineProperty(f.owner, "nativeSession", { value: undefined }); // the transport remains unbound after restart
+    const restartedPeer = attachSessionlessPeer();
+    expect("nativeSession" in restartedPeer).toBe(false);
+    restartedPeer.nativeStarted("review-continuation-turn");
+    const stillHeld = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "unbound restart remains held", kind: "finding" } });
+    expect(stillHeld.ok).toBe(false);
+    const status = await f.person.request({ t: "status" });
+    const olderTarget = DAEMON_FEATURES.filter(feature => feature !== "review_observer_input_state");
+    const recovery = await f.person.request({ t: "recovery", op: "inspect", expectedInstanceId: status.status.instanceId, targetFeatures: olderTarget });
+    expect(recovery).toMatchObject({ ok: false, error: expect.stringContaining("review_observer_input_state") });
+    f.daemon.bus.publish(newEnvelope("user", "ordinary input in restored review turn", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
+    const ordinary = f.daemon.bus.pull("codex");
+    expect(ordinary?.some(env => env.body === "ordinary input in restored review turn")).toBe(true);
+    const restoredSameTurn = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary input releases restored marker", kind: "finding" } });
+    expect(restoredSameTurn.ok).toBe(true);
+    const released = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary unbound input replaces review context", kind: "finding" } });
+    expect(released.ok).toBe(true);
+  } finally { await f.stop(); }
+});
+
+test("a positive session receipt stays sticky when a peer-level incomplete marker is restored", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    Object.defineProperty(f.owner, "nativeSession", { value: "positive-and-incomplete-session" });
+    const first = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "positive receipt review" });
+    expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [first.id] })).delivery).toBe("queued");
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
+
+    Object.defineProperty(f.owner, "nativeSession", { value: undefined });
+    const second = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "sessionless marker beside positive receipt" });
+    expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [second.id] })).delivery).toBe("queued");
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.reviewPackage !== undefined)).toBe(true);
+    const taskB = proposeOwnedTask(f.board, "codex", { title: "positive receipt task", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+
+    await f.restartNative("positive-and-incomplete-session");
+    const stillHeld = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "positive receipt remains held", kind: "finding" } });
+    expect(stillHeld.ok).toBe(false);
+    Object.defineProperty(f.owner, "nativeSession", { value: undefined });
+    const anonymousStatus = await f.person.request({ t: "status" });
+    expect(anonymousStatus.status.peers.codex.reviewObserverHoldNote).toContain("held: session unidentified, earlier review input");
+    expect(anonymousStatus.status.peers.codex.reviewObserverHoldNote).toContain("reconnect so the native session ID can be confirmed");
+    const renderedAnonymousStatus = renderStatus(anonymousStatus.status).flatMap(row => row.map(cell => cell.text)).join("\n");
+    expect(renderedAnonymousStatus).toContain("codex review input");
+    expect(renderedAnonymousStatus).toContain("reconnect so the native session ID can be confirmed");
+    f.daemon.bus.publish(newEnvelope("user", "ordinary inbox while SID is unidentified", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.body === "ordinary inbox while SID is unidentified")).toBe(true);
+    const stillHeldWithoutSid = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "prior positive SID hold remains unknown", kind: "finding" } });
+    expect(stillHeldWithoutSid.ok).toBe(false);
+    f.daemon.bus.publish(newEnvelope("user", "ordinary inbox cannot clear positive receipt", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
+    const stillHeldAfterPull = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "positive receipt survives ordinary pull", kind: "finding" } });
+    expect(stillHeldAfterPull.ok).toBe(false);
+
+    Object.defineProperty(f.owner, "nativeSession", { value: "confirmed-new-session" });
+    const released = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "confirmed SID change releases old receipt", kind: "finding" } });
+    expect(released.ok).toBe(true);
+  } finally { await f.stop(); }
+});
+
+test("a sessionless review handoff is refused when its incomplete marker cannot be stored", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    f.daemon.bus.peers.delete("codex");
+    const peer = new WsPeer("codex");
+    const socket = { readyState: WebSocket.OPEN, data: { protocol: 2 }, send: () => {}, close: () => {} };
+    peer.claim(socket, true); peer.attach(socket); f.daemon.bus.add(peer);
+    expect("nativeSession" in peer).toBe(false);
+    const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "blocked sessionless handoff quote" });
+    expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] })).delivery).toBe("queued");
+    const db = new Database(join(f.stateDir, "hub.db"));
+    try { db.run("CREATE TRIGGER reject_sessionless_review_marker BEFORE INSERT ON review_input_incomplete_peers BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END"); }
+    finally { db.close(); }
+
+    expect(() => f.daemon.bus.pull("codex")).toThrow(/review input provenance unavailable/);
+    expect(f.daemon.bus.queued("codex")).toBeGreaterThan(0);
+    const taskB = proposeOwnedTask(f.board, "codex", { title: "sessionless write failure task", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+    const held = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "failed marker write stays held", kind: "finding" } });
+    expect(held.ok).toBe(false);
+    expect(JSON.stringify(held)).not.toContain("blocked sessionless handoff quote");
+  } finally { await f.stop(); }
+});
+
+test("a real WsPeer stages same-turn ordinary release until the next turn and invalidates it on a new review", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    f.daemon.bus.peers.delete("codex");
+    const peer = new WsPeer("codex");
+    const socket = { readyState: WebSocket.OPEN, data: { protocol: 2 }, send: () => {}, close: () => {} };
+    peer.claim(socket, true); peer.attach(socket); f.daemon.bus.add(peer);
+    expect("nativeSession" in peer).toBe(false);
+    peer.nativeStarted("review-turn-one");
+    f.daemon.bus.publish(newEnvelope("hub", "SESSIONLESS_REVIEW_ONE", { to: ["codex"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:sessionless-turn-one" } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.reviewPackage === "review:sessionless-turn-one")).toBe(true);
+    const taskB = proposeOwnedTask(f.board, "codex", { title: "sessionless turn task", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+    expect((await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "review turn one remains held", kind: "finding" } })).ok).toBe(false);
+
+    f.daemon.bus.preface("codex", "presence during review context");
+    expect(f.daemon.bus.pull("codex")?.every(env => env.kind === "presence")).toBe(true);
+    expect((await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "presence does not replace review", kind: "finding" } })).ok).toBe(false);
+
+    f.daemon.bus.publish(newEnvelope("user", "ordinary replacement in held turn one", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.body === "ordinary replacement in held turn one")).toBe(true);
+    expect((await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "same turn still excluded", kind: "finding" } })).ok).toBe(false);
+
+    peer.nativeStopped("review-turn-one");
+    expect((await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "held through review turn finalization", kind: "finding" } })).ok).toBe(false);
+    peer.nativeStarted("ordinary-turn-two");
+    expect((await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "next turn is ordinary context", kind: "finding" } })).ok).toBe(true);
+
+    f.daemon.bus.publish(newEnvelope("hub", "SESSIONLESS_REVIEW_TWO", { to: ["codex"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:sessionless-turn-two" } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.reviewPackage === "review:sessionless-turn-two")).toBe(true);
+    f.daemon.bus.publish(newEnvelope("user", "ordinary replacement in held turn two", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.body === "ordinary replacement in held turn two")).toBe(true);
+    expect((await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "turn two remains excluded", kind: "finding" } })).ok).toBe(false);
+    f.daemon.bus.publish(newEnvelope("hub", "SESSIONLESS_REVIEW_THREE", { to: ["codex"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:sessionless-turn-three" } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.reviewPackage === "review:sessionless-turn-three")).toBe(true);
+    peer.nativeStopped("ordinary-turn-two");
+    peer.nativeStarted("ordinary-turn-three");
+    expect((await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "new quote invalidated the staged input", kind: "finding" } })).ok).toBe(false);
+    f.daemon.bus.publish(newEnvelope("user", "ordinary replacement in turn three", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.body === "ordinary replacement in turn three")).toBe(true);
+    expect((await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "turn three ordinary context", kind: "finding" } })).ok).toBe(true);
+    peer.onDoing?.("todo", "SESSIONLESS_NEXT_TURN_PROGRESS_CANARY");
+    expect((await f.person.request({ t: "status" })).status.peers.codex.doing.text).toBe("SESSIONLESS_NEXT_TURN_PROGRESS_CANARY");
   } finally { await f.stop(); }
 });
 
@@ -518,6 +660,27 @@ test("recovery refuses an old target when persisted review input state cannot be
     expect(result.ok).toBe(false);
     expect(String(result.error)).toContain("unknown");
     expect(String(result.error)).toMatch(/review_observer_input_state|review observer input/);
+  } finally { await f.stop(); }
+});
+
+test("status reports corrupt review-input provenance with bounded repair guidance", async () => {
+  const f = await fixture();
+  try {
+    const delivered = waitForDelivery(f.owner);
+    f.daemon.bus.publish(newEnvelope("hub", "REVIEW_HEALTH_QUOTE_CANARY", { to: ["codex"], kind: "review", priority: "important", refs: { task: String(f.task), reviewPackage: "review:health-fixture" } }));
+    await delivered;
+    const db = new Database(join(f.stateDir, "hub.db"));
+    try { db.query("UPDATE review_input_sessions SET input_hash='malformed' WHERE peer='codex' AND input_hash IS NOT NULL").run(); }
+    finally { db.close(); }
+
+    const status = await f.person.request({ t: "status" });
+    expect(status.status.reviewInputHealth).toMatchObject({ state: "corrupt", cause: "provenance_corrupt" });
+    const rendered = renderStatus(status.status).flatMap(row => row.map(cell => cell.text)).join("\n");
+    expect(rendered).toContain("review input provenance");
+    expect(rendered).toContain("provenance_corrupt");
+    expect(rendered).toContain("preserving delivery and task state");
+    expect(rendered).not.toContain("REVIEW_HEALTH_QUOTE_CANARY");
+    expect(rendered).not.toContain("hub.db");
   } finally { await f.stop(); }
 });
 
@@ -878,5 +1041,40 @@ test("an anchored approved hub_review latches its input until a new ordinary del
     await new Promise<void>(resolve => setImmediate(resolve));
     const allowed = await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary Task B note", kind: "finding" } });
     expect(allowed.ok).toBe(true);
+  } finally { await f.stop(); }
+});
+
+test("a sessionless anchored submission releases a staged ordinary replacement after its native turn ends", async () => {
+  const f = await fixture(undefined, true);
+  try {
+    rmSync(join(f.stateDir, claudeStateFile("claude-session", "claude")), { force: true });
+    f.daemon.bus.peers.delete("claude");
+    const reviewer = new WsPeer("claude"), socket = { readyState: WebSocket.OPEN, data: { protocol: 2 }, send: () => {}, close: () => {} };
+    reviewer.claim(socket, true); reviewer.attach(socket); f.daemon.bus.add(reviewer);
+    expect("nativeSession" in reviewer).toBe(false);
+    reviewer.nativeStarted("anchored-review-turn-one");
+    f.board.update(f.task, "user", "sessionless reviewer", { reviewer: "claude" });
+    const done = await f.peer.request({ t: "task", op: "hub_task_done", args: { id: f.task, summary: "Document ready", refs: { commit: f.head } } });
+    expect(done.ok).toBe(true);
+    expect(f.daemon.bus.pull("claude")?.some(env => env.kind === "review" && env.refs?.task === String(f.task))).toBe(true);
+
+    const finding = { id: "sessionless-latched-anchor", pass: "bugs", severity: "important", disposition: "fixed", path: "report.md", anchor: f.anchor };
+    const verdict = await f.conductor.request({ t: "task", op: "hub_review", args: { id: f.task, head: f.head, verdict: "approved", note: "fixed at the reviewed head", findings: [finding] } });
+    expect(verdict.ok).toBe(true);
+    const taskB = proposeOwnedTask(f.board, "claude", { title: "ordinary reviewer task", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+    expect((await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "anchored input remains held", kind: "finding" } })).ok).toBe(false);
+
+    f.daemon.bus.publish(newEnvelope("user", "ordinary input in anchored turn", { to: ["claude"], priority: "status", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("claude")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
+    expect((await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "same anchored turn stays held", kind: "finding" } })).ok).toBe(false);
+    f.daemon.bus.preface("claude", "presence does not replace anchored input");
+    expect(f.daemon.bus.pull("claude")?.every(env => env.kind === "presence")).toBe(true);
+    expect((await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "presence leaves anchor hold", kind: "finding" } })).ok).toBe(false);
+
+    reviewer.nativeStopped("anchored-review-turn-one");
+    expect((await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "held through final turn output", kind: "finding" } })).ok).toBe(false);
+    reviewer.nativeStarted("ordinary-review-turn-two");
+    const released = await f.conductor.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "ordinary input is current in next turn", kind: "finding" } });
+    expect(released.ok).toBe(true);
   } finally { await f.stop(); }
 });
