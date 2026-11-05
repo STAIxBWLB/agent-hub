@@ -65,6 +65,7 @@ export interface ReviewInputEvidence {
   incompleteSession: boolean;
   sessionState: "clean" | "held" | "unknown";
   retainedSessionHold: boolean;
+  retainedPeerSessionHold: boolean;
 }
 export type ReviewInputHealthCause = "legacy_coverage" | "incomplete_markers" | "provenance_incomplete" | "provenance_corrupt";
 export interface ReviewInputHealth {
@@ -910,7 +911,7 @@ export class DeliveryJournal {
       this.refreshReviewInputCoverage();
       const peer = text(peerValue, "review input peer", 256), sessionHash = sessionHashValue === undefined ? undefined : hashText(sessionHashValue, "review input session hash");
       const provenance = this.readReviewInputProvenance();
-      if (!provenance.complete) return { provenance: "corrupt", coverageComplete: false, incompletePeer: false, incompleteSession: false, sessionState: "unknown", retainedSessionHold: false };
+      if (!provenance.complete) return { provenance: "corrupt", coverageComplete: false, incompletePeer: false, incompleteSession: false, sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: false };
       const sessionState = this.reviewInputState(peer, sessionHash).state;
       return {
         provenance: "available",
@@ -919,9 +920,10 @@ export class DeliveryJournal {
         incompleteSession: sessionHash !== undefined && provenance.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash),
         sessionState,
         retainedSessionHold: sessionHash !== undefined && provenance.holds.some(row => row.peer === peer && row.sessionHash === sessionHash && row.inputHash !== null),
+        retainedPeerSessionHold: provenance.holds.some(row => row.peer === peer && row.inputHash !== null) || provenance.incompleteSessions.some(row => row.peer === peer),
       };
     } catch {
-      return { provenance: "corrupt", coverageComplete: false, incompletePeer: false, incompleteSession: false, sessionState: "unknown", retainedSessionHold: false };
+      return { provenance: "corrupt", coverageComplete: false, incompletePeer: false, incompleteSession: false, sessionState: "unknown", retainedSessionHold: false, retainedPeerSessionHold: false };
     }
   }
   /** Public-safe journal health; positive held receipts are normal, expected state. */
