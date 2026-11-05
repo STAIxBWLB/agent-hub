@@ -159,6 +159,8 @@ export const NOTES_KEPT = 10;
  * delivered as a whole (one envelope, or a digest) when the peer is idle and the queue is ready:
  * it holds an `important` envelope, or `batchMax` envelopes, or its oldest one has waited `batchMs`.
  */
+export const ROOM_PROOF_UNAVAILABLE_REASON = "room delivery proof unavailable; inspect ahub queue show";
+
 export class Bus {
   readonly peers = new Map<PeerId, PeerAdapter>();
   private readonly opts: BusOptions;
@@ -1305,25 +1307,32 @@ export class Bus {
     return true;
   }
 
-  /** Hold a remote row for human inspection when its durable Store intent is absent. */
-  holdRemoteMissingIntent(source: PeerAdapter, deliveryId: string, currentGuard: () => boolean, origin: "restored" | "known-not-sent" = "restored"): boolean {
-    if (origin !== "restored" && origin !== "known-not-sent") return false;
+  /** Hold a remote row for human inspection when its durable intent or delivery proof is unavailable. */
+  holdRemoteMissingIntent(source: PeerAdapter, deliveryId: string, currentGuard: () => boolean, origin: "restored" | "known-not-sent" | "proof-unavailable" = "restored"): boolean {
+    if (origin !== "restored" && origin !== "known-not-sent" && origin !== "proof-unavailable") return false;
     const peer = source.id;
     if (!parseRemotePeerId(peer) || this.peers.get(peer) !== source || !source.remoteRoom || !remoteFingerprint(source.remoteMember) ||
         !this.journal || this.storageError || this.closed ||
         this.remoteQueueRooms.get(peer) !== source.remoteRoom || this.remoteQueueMembers.get(peer) !== source.remoteMember) return false;
     const row = this.journal.get(deliveryId);
-    if (!row || row.peer !== peer || !["dispatching", "accepted"].includes(row.state) || row.originals.length !== 1 ||
+    if (!row || row.peer !== peer || !["dispatching", "accepted", ...(origin === "proof-unavailable" ? ["needs_review"] : [])].includes(row.state) || row.originals.length !== 1 ||
         row.originals[0]?.to?.includes(peer) !== true || this.journal.resolution(deliveryId)) return false;
+    if (origin === "proof-unavailable" && row.originals.some(isInvocationKind)) return false;
     if (origin === "known-not-sent") {
       if (this.activeDeliveries.get(deliveryId) !== peer) return false;
     } else if (origin === "restored") {
       if (this.activeDeliveries.has(deliveryId) || this.remoteTransport.has(deliveryId)) return false;
+    } else {
+      const activeOwner = this.activeDeliveries.get(deliveryId), transportOwner = this.remoteTransport.get(deliveryId)?.peer;
+      if (activeOwner !== undefined && activeOwner !== peer || transportOwner !== undefined && transportOwner !== peer) return false;
     }
     try { if (currentGuard() !== true) return false; } catch { return false; }
+    if (origin === "proof-unavailable" && row.state === "needs_review") return true;
     const reason = origin === "restored"
       ? `room durable intent unavailable after restart; inspect ahub queue show ${deliveryId}`
-      : `room not-sent checkpoint unavailable; inspect ahub queue show ${deliveryId}`;
+      : origin === "known-not-sent"
+        ? `room not-sent checkpoint unavailable; inspect ahub queue show ${deliveryId}`
+        : `${ROOM_PROOF_UNAVAILABLE_REASON} ${deliveryId}`;
     return this.holdRemoteDeliveryMetadata(peer, row, reason);
   }
 

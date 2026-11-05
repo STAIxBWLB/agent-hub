@@ -498,6 +498,28 @@ test("known-not-sent missing-intent fallback requires the current active deliver
   sending.resolve(); await until(() => !bus.hasInFlight(remote));
 });
 
+test("proof-unavailable hold accepts same-peer ownership idempotently but refuses invocation rows", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room), sending = deferred();
+  target.accepted = async () => { await sending.promise; };
+  bus.add(target); await target.start();
+  const env = newEnvelope("user", "proof unavailable", { to: [remote] }); bus.publish(env);
+  await until(() => journal.list(remote).some(row => row.state === "dispatching" && row.originals.some(original => original.id === env.id)));
+  const row = journal.list(remote).find(item => item.originals.some(original => original.id === env.id))!;
+  expect(bus.holdRemoteMissingIntent(target, row.id, () => true, "proof-unavailable")).toBe(true);
+  const held = journal.get(row.id)!;
+  expect(held).toMatchObject({ state: "needs_review", reason: `room delivery proof unavailable; inspect ahub queue show ${row.id}` });
+  journal.transition(row.id, "needs_review", "already held for another safe cause", held.revision);
+  const alreadyHeld = journal.get(row.id)!;
+  expect(bus.holdRemoteMissingIntent(target, row.id, () => true, "proof-unavailable")).toBe(true);
+  expect(journal.get(row.id)).toMatchObject({ state: "needs_review", reason: "already held for another safe cause", revision: alreadyHeld.revision });
+
+  const invocation = newEnvelope("hub", "unknown capability result", { to: [remote], kind: "invocation" });
+  const invocationRow = journal.createDelivery({ id: `invocation-${crypto.randomUUID()}`, peer: remote, state: "dispatching", createdAt: invocation.ts, originals: [invocation], out: [invocation] });
+  expect(bus.holdRemoteMissingIntent(target, invocationRow.id, () => true, "proof-unavailable")).toBe(false);
+  expect(journal.get(invocationRow.id)?.state).toBe("dispatching");
+  sending.resolve();
+});
+
 test("restored orphan hold does not block or clear a different active remote delivery", async () => {
   const { bus, journal } = fixture(), target = new Peer(remote, room), sending = deferred();
   target.accepted = async (_envs, id) => { await sending.promise; target.onDelivery?.({ id: id!, state: "completed" }); };

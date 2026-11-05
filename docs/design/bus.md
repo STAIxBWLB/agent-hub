@@ -153,8 +153,10 @@ Roster, pause, lifecycle and global recovery fences also apply to resends. A
 readiness loss after durable enqueue retains that delivery's id and original TTL;
 confirmed precommit absence can requeue. A restored active journal row with no
 matching row in an intact RoomStore becomes `needs_review` for inspection and is
-never replayed from missing evidence. Metadata settlement and quarantine remain
-available while sending is held.
+never replayed from missing evidence. A failed payload-proof read never schedules
+an immediate retry: transient failures wait for an online or ACK-deadline wake,
+and permanently unavailable ciphertext is held for review with a metadata-only
+transition. Metadata settlement and quarantine remain available while sending is held.
 Authoritative Bus person dispositions are reconciled into RoomStore before
 startup replay and incoming receipt processing. A local transport result may
 remain as evidence beside that disposition, but cannot override it or restart

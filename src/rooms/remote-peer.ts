@@ -72,6 +72,8 @@ export class RemotePeer extends BasePeer {
     this.update();
     try { this.ports.waiting?.(); } catch { /* A future real Bus callback will retry. */ }
   }
+  /** Consume an immediate resume token while retaining the active FIFO head. */
+  deferResume(deliveryId: string): void { this.waitingForReady.delete(deliveryId); }
   readyToResume(deliveryId: string): boolean {
     return this.waitingForReady.has(deliveryId) && this.head() === deliveryId && this.running && this.online && !this.blockedNotSent && this.ready();
   }
@@ -168,9 +170,10 @@ export class RemotePeer extends BasePeer {
     const current = () => {
       const ready = this.ready();
       if (!ready) readinessLost = true;
-      return this.running && this.online && this.generation === generation && ready && trusted();
+      return this.pending.has(deliveryId) && this.running && this.online && this.generation === generation && ready && trusted();
     };
     const result = await roomBoundary(env, { ...context, current });
+    if (!this.pending.has(deliveryId)) return;
     if (!current()) {
       if (!trusted()) { this.quarantine(deliveryId, "boundary_refused"); this.receipt({ id: deliveryId, state: "needs_review", reason: "room trust changed before publication" }); }
       else if (!this.running || !this.online || generation !== this.generation) this.notSent(deliveryId);
@@ -199,6 +202,7 @@ export class RemotePeer extends BasePeer {
     }
     try {
       await this.ports.send(view, deliveryId, expiresAt, () => current() && readRoomOutbound(result.proof) !== undefined, result.withheld);
+      if (!this.pending.has(deliveryId)) return;
       if (!trusted() && this.running && this.online && generation === this.generation) {
         this.quarantine(deliveryId, "boundary_refused"); this.receipt({ id: deliveryId, state: "needs_review", reason: "room trust changed during publication" });
         return;
@@ -211,6 +215,7 @@ export class RemotePeer extends BasePeer {
         return;
       }
     } catch (error) {
+      if (!this.pending.has(deliveryId)) return;
       if (error instanceof RoomNotSentError) {
         let retained: boolean | undefined;
         try { retained = this.ports.queued?.(deliveryId); } catch { retained = undefined; }
