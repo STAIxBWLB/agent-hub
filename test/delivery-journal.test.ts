@@ -294,6 +294,22 @@ test("verified input clears only its own peer marker and selected session eviden
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("legacy coverage ignores queued review work but retains handed accepted work", () => {
+  for (const state of ["queued", "accepted"] as const) {
+    const source = open(), targetDir = mkdtempSync(join(tmpdir(), `ahub-legacy-${state}-`));
+    const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: `legacy-${state}` });
+    try {
+      const review = newEnvelope("hub", `${state} review request`, { kind: "review", to: ["claude"], refs: { task: "1", reviewPackage: `reviewer-request-${state}` } });
+      source.journal.createDelivery({ id: `${state}-review`, peer: "claude", state, createdAt: review.ts, originals: [review], out: [review] });
+      const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+      expect(target.importSnapshot(legacySnapshot, `legacy-${state}`)).toBe(true);
+      const evidence = target.reviewInputEvidence("claude", "a".repeat(64));
+      expect(evidence.coverageComplete).toBe(state === "queued");
+      expect(evidence.sessionState).toBe(state === "queued" ? "clean" : "unknown");
+    } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
+  }
+});
+
 test("legacy coverage completes after its final review delivery settles and prunes NULL clean receipts", () => {
   const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-coverage-"));
   const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-target" });

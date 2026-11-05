@@ -675,26 +675,18 @@ export class DeliveryJournal {
     const digest = reviewInputDigest(instanceId, REVIEW_INPUT_VERSION, complete, coverageComplete, count, holds, incompletePeers, incompleteSessions);
     return { version: REVIEW_INPUT_VERSION, instanceId, complete, coverageComplete, count, digest, holds, incompletePeers, incompleteSessions };
   }
-  /** Legacy coverage can be completed only from the journal's durable queue and unsettled rows. */
+  /** Legacy coverage waits only for review deliveries that may already have been consumed. */
   private hasUnsettledReviewInput(): boolean {
-    // deliveries_pending indexes these states by project; LIMIT 1 makes this an existence probe.
+    // deliveries_pending indexes these states by project; queued work is not consumption evidence.
     const row = this.db.query(`SELECT 1 FROM deliveries d
-      WHERE d.project_id=? AND d.state IN ('queued','dispatching','accepted','needs_review')
+      WHERE d.project_id=? AND d.state IN ('dispatching','accepted','needs_review')
         AND EXISTS (SELECT 1 FROM json_each(d.originals) e
           WHERE json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
             AND json_type(e.value,'$.refs.reviewPackage')='text')
       LIMIT 1`).get(this.projectId);
-    if (row) return true;
-    // The snapshot itself is bounded by validateBus; this covers work not yet admitted to a delivery row.
-    return !!this.db.query(`SELECT 1 FROM delivery_meta m, json_each(m.bus_snapshot,'$.queues') q, json_each(q.value) e
-        WHERE m.project_id=? AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
-          AND json_type(e.value,'$.refs.reviewPackage')='text'
-      UNION ALL SELECT 1 FROM delivery_meta m, json_each(m.bus_snapshot,'$.deferredHub') e
-        WHERE m.project_id=? AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
-          AND json_type(e.value,'$.refs.reviewPackage')='text'
-      LIMIT 1`).get(this.projectId, this.projectId);
+    return !!row;
   }
-  /** Complete legacy coverage only after all pre-upgrade review work is settled; then NULL means clean by absence. */
+  /** Complete legacy coverage after every handed review delivery is settled; then NULL means clean by absence. */
   private refreshReviewInputCoverage(inTransaction = false): void {
     let prior: ReviewInputProvenance;
     try { prior = this.readReviewInputProvenance(); }
