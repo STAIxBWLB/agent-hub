@@ -78,3 +78,50 @@ Legacy coverage becomes complete only when journal evidence shows no unsettled p
 Once coverage is complete, NULL clean-session receipts may be pruned because complete absence preserves clean state. Positive and uncertain holds are not evicted to satisfy the 4096-row bound. Integrity metadata and counts are updated atomically with these changes. Public status names unavailable provenance and its next step without exposing note text or raw database errors. There is no automatic corrupt-state reset. Recovery preserves the receipts, integrity metadata and session-bound exclusion.
 
 Role reassignment cannot clear the original recipient's observer exclusion while a review envelope remains queued, recovery-deferred or unsettled. The journal supplies recipient/task-scoped metadata independently of current task roles; explicit disposition ends that delivery scope. Sent person comments independently retain their saved package recipient until resolution or person dismissal.
+
+## Room presence and broker backpressure (#1204 T1)
+
+Presence carries a signed optional `ephemeral: true` frame header. The broker can
+read this metadata but cannot decrypt the presence body. It retains only the
+latest ephemeral frame per sender for currently connected, ready recipients;
+disconnect and broker restart remove ephemeral recipients. Durable frames keep
+the existing queue caps, TTL and exactly-once receiver admission.
+
+A link skips an unchanged local presence snapshot, except explicit peer refresh
+requests/responses and a fresh connection. One sealed frame is sent at a time
+until its broker storage response, so a refused sequence cannot be overtaken.
+A correlated `queue_full` retains the frame (applications remain in the local
+outbox) and retries after 250 ms, doubling to a 30 s ceiling. Stop/refresh clears
+connection timers; no recipient receipt or application completion is inferred.
+T1 does not change acknowledgement deadlines, restart replay or receipt outbox
+persistence, which belong to T2. Existing layer caps remain authoritative.
+
+### Room wire compatibility (#1204 T1)
+
+The link requests only the ephemeral feature with the WebSocket upgrade header
+`x-agent-hub-ephemeral: 1`. A supporting broker includes `ephemeral: true` in its
+ready response only to an opted-in client, preserving the exact legacy ready
+shape for older hubs. Each new connection starts with the feature disabled.
+Without the advertisement, presence retains the legacy frame shape; dedupe and
+queue_full backoff still apply, but that broker retains presence for offline
+members under its old queue rules. Upgrade the broker for ephemeral retention.
+
+A supporting broker forwards ephemeral presence only to ready members that
+opted in. Older members do not see upgraded members' presence until they upgrade. Application
+chat frames keep the legacy shape. This is the one-bit compatibility bridge;
+full codec feature advertisement belongs to #1204 T4.
+
+Ephemeral replacement preserves a recipient's outstanding one-packet transport
+slot until its matching ACK or the original TTL/grace bound expires. Only the
+pending replacement coalesces; a newer observation never refreshes the handed
+packet's deadline. Unsupported recipients never receive the new frame shape.
+
+Ordinary receipt publication preserves socket-send-before-chat-transport-ACK ordering via
+a per-session deferred fence outside the serial receive queue. A refresh request
+remains on non-reply snapshots until all asked members supply validated presence;
+replies never request a reply. The bounded round resets on reconnect or roster
+change. The latest-per-sender crossing ceiling and its #736 upgrade path are
+recorded in the rooms spec; durable stored-ACK receipt recovery remains T2.
+
+The confirmed queue_full escape and bounded-RAM crash/session-loss ceiling are
+recorded in the rooms spec; task #735 replaces that exception with durable receipts.

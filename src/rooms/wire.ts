@@ -23,7 +23,7 @@ const FP = /^[0-9a-f]{64}$/;
 export interface RoomMember extends PublicHubIdentity { label: string; exposedPeers: string[] }
 export interface FrameWire {
   v: 1; type: "frame"; room: string; epoch: string; sender: string;
-  recipients: string[]; seq: string; nonce: string; ciphertext: string; signature: string;
+  recipients: string[]; seq: string; ephemeral?: true; nonce: string; ciphertext: string; signature: string;
 }
 export interface RosterWire {
   v: 1; type: "roster"; room: string; epoch: string; owner: string;
@@ -107,8 +107,10 @@ function wrap(x: unknown): WrappedEpochKey {
   return { v: 1, owner: fingerprint(o.owner), recipient: fingerprint(o.recipient), ephemeralKey: b64(o.ephemeralKey, 32), salt: b64(o.salt, 32), nonce: b64(o.nonce, 12), ciphertext: ciphertext(o.ciphertext, 48, 48), signature: b64(o.signature, 64) };
 }
 function parseFrame(x: unknown): FrameWire {
-  const o = object(x, ["v", "type", "room", "epoch", "sender", "recipients", "seq", "nonce", "ciphertext", "signature"]); base(o, "frame");
-  return { v: 1, type: "frame", room: b64(o.room, 32), epoch: positiveU64(o.epoch), sender: fingerprint(o.sender), recipients: sorted(array(o.recipients, 64, fingerprint, true), x => x), seq: positiveU64(o.seq), nonce: b64(o.nonce, 12), ciphertext: ciphertext(o.ciphertext, 65552), signature: b64(o.signature, 64) };
+  const ephemeral = typeof x === "object" && x !== null && Object.hasOwn(x, "ephemeral");
+  const o = object(x, ["v", "type", "room", "epoch", "sender", "recipients", "seq", "nonce", "ciphertext", "signature", ...(ephemeral ? ["ephemeral"] : [])]); base(o, "frame");
+  if (ephemeral && o.ephemeral !== true) fail();
+  return { v: 1, type: "frame", room: b64(o.room, 32), epoch: positiveU64(o.epoch), sender: fingerprint(o.sender), recipients: sorted(array(o.recipients, 64, fingerprint, true), x => x), seq: positiveU64(o.seq), ...(ephemeral ? { ephemeral: true as const } : {}), nonce: b64(o.nonce, 12), ciphertext: ciphertext(o.ciphertext, 65552), signature: b64(o.signature, 64) };
 }
 function parseRoster(x: unknown): RosterWire {
   const o = object(x, ["v", "type", "room", "epoch", "owner", "members", "wraps", "privateNonce", "privateCiphertext", "signature"]); base(o, "roster");
@@ -228,6 +230,7 @@ export interface VerifiedPublicFrame {
   readonly digest: string;
   readonly rosterDigest: string;
   readonly recipients: readonly string[];
+  readonly ephemeral?: true;
 }
 interface PublicFrameState { wire: Uint8Array }
 const publicFrames = new WeakMap<VerifiedPublicFrame, PublicFrameState>();
@@ -252,7 +255,7 @@ export async function verifyPublicFrame(input: { wire: Uint8Array; roster: Verif
   await verifyFrameSignature(frame, sender);
   const frameDigest = await digest(canonicalBytes(frame));
   const proof = Object.freeze({ room: frame.room, epoch: frame.epoch, sender: frame.sender, seq: frame.seq,
-    digest: frameDigest, rosterDigest: roster.digest, recipients: Object.freeze([...frame.recipients]) });
+    digest: frameDigest, rosterDigest: roster.digest, ...(frame.ephemeral ? { ephemeral: true as const } : {}), recipients: Object.freeze([...frame.recipients]) });
   publicFrames.set(proof, { wire });
   return proof;
 }
@@ -330,9 +333,10 @@ function frameAad(frame: Pick<FrameWire, "room" | "epoch" | "sender" | "seq">): 
   return enc.encode(`${frame.room}|${frame.epoch}|${frame.sender}|${frame.seq}`);
 }
 export async function sealFrame(input: {
-  epoch: VerifiedEpoch; identity: HubIdentity; recipients: string[]; plaintext: Uint8Array; sequence: SequencePort;
+  epoch: VerifiedEpoch; identity: HubIdentity; recipients: string[]; plaintext: Uint8Array; sequence: SequencePort; ephemeral?: true;
 }): Promise<Uint8Array> {
   await assertRoomCryptoReady();
+  if (input.ephemeral !== undefined && input.ephemeral !== true) fail();
   const epoch = input.epoch, identity = input.identity, sequence = input.sequence;
   const current = state(epoch), sender = identity.public.fingerprint;
   const member = current.roster.members.find(m => m.fingerprint === sender);
@@ -344,7 +348,7 @@ export async function sealFrame(input: {
   if (!sequence || typeof sequence.reserve !== "function" || typeof sequence.isCurrent !== "function") fail("state_unavailable");
   const binding = { room: epoch.room, sender, epoch: epoch.epoch, rosterDigest: epoch.digest };
   const seq = positiveU64(await portCall(() => sequence.reserve({ ...binding })));
-  const header = { v: 1 as const, type: "frame" as const, room: epoch.room, epoch: epoch.epoch, sender, recipients, seq };
+  const header = { v: 1 as const, type: "frame" as const, room: epoch.room, epoch: epoch.epoch, sender, recipients, seq, ...(input.ephemeral ? { ephemeral: true as const } : {}) };
   const nonce = randomBytes(12);
   const encrypted = await encryptEpoch({ key: current.key, purpose: "frame", context: frameContext(epoch, sender), aad: frameAad(header), nonce, plaintext });
   const body = { ...header, nonce: encodeBase64url(nonce), ciphertext: encodeBase64url(encrypted) };

@@ -775,6 +775,13 @@ export class RoomStore {
     if (this.db.query("SELECT 1 FROM application_outbox WHERE digest=?").get(digestValue)) fail("invalid");
     this.transaction(() => { this.db.query("UPDATE outbox SET state='accepted' WHERE room=? AND digest=?").run(room.current.room, digestValue); });
   }
+  /** Recheck retained intent immediately before a delayed transport send. */
+  applicationSendable(name: string, frameDigest: string): boolean {
+    const state = this.get(name); if (!state || state.left || !validDigest(frameDigest)) return false;
+    const now = this.now();
+    return !!this.db.query("SELECT 1 FROM application_outbox a JOIN outbox o ON o.room=a.room AND o.digest=a.digest WHERE a.room=? AND a.digest=? AND a.state IN ('dispatching','accepted') AND a.disposition IS NULL AND a.expires_at>? AND a.ack_deadline>?")
+      .get(state.current.room, frameDigest, now, now);
+  }
   applicationOutbox(name: string, activeOnly = false): RoomOutgoing[] {
     const state = this.get(name); if (!state) return [];
     const filter = activeOnly ? " AND state IN ('dispatching','accepted','needs_review') AND disposition IS NULL" : "";

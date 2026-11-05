@@ -25,6 +25,7 @@ export interface BrokerOptions {
 interface Client {
   ws?: ServerWebSocket<Client>;
   room: string;
+  ephemeral: boolean;
   challenge: BrokerChallenge;
   phase: "challenge" | "authenticating" | "roster" | "ready" | "closed";
   busy: boolean;
@@ -35,6 +36,9 @@ interface Client {
   rosterDigest?: string;
   rosterDeadline?: number;
   inFlight?: string;
+  inFlightEphemeral?: boolean;
+  inFlightExpiresAt?: number;
+  inFlightEpoch?: string;
 }
 export interface BrokerRuntime {
   readonly port: number;
@@ -104,8 +108,12 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
   function close(client: Client, code: string): void {
     if (client.phase === "closed") return;
     client.phase = "closed";
+    client.inFlight = undefined; client.inFlightEphemeral = undefined; client.inFlightExpiresAt = undefined; client.inFlightEpoch = undefined;
     queuedBytes -= client.inboxBytes; client.inboxBytes = 0; client.inbox.length = 0;
-    if (client.member && members.get(memberKey(client)) === client) members.delete(memberKey(client));
+    if (client.member && members.get(memberKey(client)) === client) {
+      members.delete(memberKey(client));
+      try { store.disconnect(client.room, client.member); } catch { emit("refused", client, "state_unavailable"); }
+    }
     if (client.ws) { try { client.ws.close(4403, code); } catch { /* already closed */ } }
     else clients.delete(client);
   }
@@ -117,9 +125,9 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
     close(client, "backpressure"); return false;
   }
   const control = (client: Client, value: unknown) => send(client, canonicalBytes(value));
-  function refused(client: Client, code: string, terminal = true): void {
+  function refused(client: Client, code: string, terminal = true, digest?: string): void {
     emit("refused", client, code);
-    control(client, { v: 1, type: "error", code });
+    control(client, { v: 1, type: "error", code, ...(code === "queue_full" && digest ? { digest } : {}) });
     if (terminal) close(client, code);
   }
   function active(client: Client): VerifiedPublicRoster {
@@ -133,16 +141,29 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
     const roster = active(client);
     client.phase = "roster"; client.rosterDigest = roster.digest;
     client.rosterDeadline = now() + BROKER_SOCKET_LIMITS.rosterAckMs;
-    if (send(client, publicRosterWire(roster))) control(client, { v: 1, type: "ready", room: client.room, member: client.member, epoch: roster.epoch, digest: roster.digest });
+    // Legacy hubs have a closed ready grammar; advertise only after HTTP opt-in.
+    if (send(client, publicRosterWire(roster))) control(client, { v: 1, type: "ready", room: client.room, member: client.member, epoch: roster.epoch, digest: roster.digest, ...(client.ephemeral ? { ephemeral: true } : {}) });
   }
   function pump(client: Client): void {
     if (stopping || client.phase === "closed" || !client.member) return;
-    active(client);
+    const roster = active(client);
     const next = store.next(client.room, client.member);
-    if (client.inFlight && next?.digest === client.inFlight) return;
-    client.inFlight = undefined; // the previous packet may have expired or been purged.
+    if (client.inFlightEphemeral && client.inFlightEpoch !== roster.epoch) {
+      const previous = store.current(client.room)?.previous;
+      client.inFlightExpiresAt = previous && previous.roster.epoch === client.inFlightEpoch
+        ? Math.min(client.inFlightExpiresAt ?? 0, previous.expiresAt) : 0;
+    }
+    // Replacement retires an ephemeral queue row, not the packet already handed
+    // to this socket. Keep its slot until ACK or its original TTL/grace deadline.
+    if (client.inFlight && (client.inFlightEphemeral && now() < (client.inFlightExpiresAt ?? 0) || next?.digest === client.inFlight)) return;
+    client.inFlight = undefined; client.inFlightEphemeral = undefined; client.inFlightExpiresAt = undefined; client.inFlightEpoch = undefined; // durable expiry/purge still releases its slot.
     if (client.phase !== "ready" || !next) return;
-    if (send(client, next.wire)) client.inFlight = next.digest;
+    if (send(client, next.wire)) {
+      client.inFlight = next.digest;
+      const frame = decodeFrame(next.wire);
+      client.inFlightEphemeral = frame.ephemeral === true;
+      client.inFlightExpiresAt = next.expiresAt; client.inFlightEpoch = frame.epoch;
+    }
   }
   function safePump(client: Client): void {
     try { pump(client); } catch (error) { refused(client, errorCode(error)); }
@@ -195,9 +216,19 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
       const selected = state && (header.epoch === state.current.epoch ? state.current : state.previous?.roster);
       if (!selected) throw new BrokerServerError("wrong_epoch");
       const proof = await (ports.verifyFrame ?? verifyPublicFrame)({ wire: bytes, roster: selected });
-      active(client);
-      const result = store.enqueue(proof, client.member!); // latest membership/grace/caps checked transactionally.
-      control(client, { v: 1, type: "stored", digest: result.digest, seq: proof.seq, duplicate: result.duplicate });
+      const onlineRecipients = proof.recipients.filter(recipient => {
+        const target = members.get(`${client.room}|${recipient}`);
+        return target?.phase === "ready" && (!proof.ephemeral || target.ephemeral);
+      });
+      try {
+        active(client);
+        const result = store.enqueue(proof, client.member!, onlineRecipients); // latest membership/grace/caps checked transactionally.
+        control(client, { v: 1, type: "stored", digest: result.digest, seq: proof.seq, duplicate: result.duplicate });
+      } catch (error) {
+        if (errorCode(error) !== "queue_full") throw error;
+        refused(client, "queue_full", false, client.ephemeral ? proof.digest : undefined);
+        return;
+      }
       for (const recipient of proof.recipients) {
         const target = members.get(`${client.room}|${recipient}`);
         if (target) safePump(target);
@@ -215,7 +246,7 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
     if (packet.digest !== client.inFlight) { refused(client, "unexpected_ack", false); return; }
     active(client);
     store.ack(client.room, client.member!, packet.digest);
-    client.inFlight = undefined;
+    client.inFlight = undefined; client.inFlightEphemeral = undefined; client.inFlightExpiresAt = undefined; client.inFlightEpoch = undefined;
     control(client, { v: 1, type: "queue_ack", digest: packet.digest });
     safePump(client);
   }
@@ -259,7 +290,7 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
           const room = roomId(url.pathname.slice("/v1/rooms/".length));
           if (clients.size >= BROKER_SOCKET_LIMITS.connections) return new Response("busy", { status: 503 });
           const current = store.current(room)?.current;
-          const client: Client = { room, challenge: { v: 1, type: "challenge", room, broker: publicUrl, nonce: encodeBase64url(randomBytes(32)), expiresAt: now() + BROKER_SOCKET_LIMITS.authMs, rosterDigest: current?.digest ?? null }, phase: "challenge", busy: false, inbox: [], inboxBytes: 0 };
+          const client: Client = { room, ephemeral: req.headers.get("x-agent-hub-ephemeral") === "1", challenge: { v: 1, type: "challenge", room, broker: publicUrl, nonce: encodeBase64url(randomBytes(32)), expiresAt: now() + BROKER_SOCKET_LIMITS.authMs, rosterDigest: current?.digest ?? null }, phase: "challenge", busy: false, inbox: [], inboxBytes: 0 };
           clients.add(client);
           if (host.upgrade(req, { data: client })) return;
           clients.delete(client); return new Response("websocket required", { status: 400 });

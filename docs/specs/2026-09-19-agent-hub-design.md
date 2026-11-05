@@ -803,7 +803,9 @@ atomically install that candidate against its persisted pin. Replaying an old
 candidate must never reset the minimum epoch or a grace deadline.
 
 A frame's public header is `{v,type,room,epoch,sender,recipients,seq}` plus nonce,
-ciphertext and signature. Recipients are hub fingerprints, not local peer ids.
+ciphertext and signature. Presence may add the signed optional `ephemeral: true`
+header (#1204 T1); every other value for that optional field refuses. Recipients
+are hub fingerprints, not local peer ids.
 The body is opaque encrypted bytes, including any eventual local addressing,
 kind, trace and text. Frame AAD is exactly UTF-8 `room|epoch|sender|seq`. A
 sender-specific AES key is HKDF-derived from the epoch root and room/epoch/sender/
@@ -974,7 +976,14 @@ survive queue ACKs/restart: the last accepted digest or an identical retained ol
 packet is idempotent without requeueing; conflicting or
 unknown lower sequences refuse. FIFO uses SQLite admission row order, never lexical
 sequence strings or clock ties. Full queues refuse new packets without evicting
-accepted ones. Prior-epoch grace may expire a packet before its ordinary TTL.
+accepted durable ones. Ephemeral presence replaces only prior ephemeral rows of
+that sender and retains only currently ready recipients; disconnect/restart
+removes those recipients, while sender floors and durable work remain. The same
+queue/byte caps still apply. A frame-level `queue_full` includes its verified
+digest. Links retain the sealed frame and retry after 250 ms, doubling to 30 s,
+with one frame awaiting storage acceptance so later sequences cannot overtake it.
+Applications stay in the local outbox; T2 owns receipt persistence and deadline/
+restart replay changes. Prior-epoch grace may expire a packet before its ordinary TTL.
 
 One packet per recipient socket is in flight. `{v:1,type:"received",digest}` removes
 only that identity from the packet's remaining recipients, then returns
@@ -1114,6 +1123,16 @@ not project config or synced memory. A hub stop closes links and retains members
 A person may explicitly import a pinned signed roster to reactivate a left room;
 automatic link traffic cannot reactivate it.
 
+
+The optional ephemeral field is used only after an opted-in connection receives
+`ephemeral: true` in the broker ready control. The upgrade header is
+`x-agent-hub-ephemeral: 1`; brokers preserve the old closed ready shape for
+clients that do not opt in. Missing advertisement means legacy presence frames,
+with dedupe/backoff still active. The broker withholds ephemeral frames from older member hubs
+until upgraded; application chat stays wire-compatible. See the [compatibility
+ceiling](../design/bus.md#room-wire-compatibility-1204-t1); #1204 T4 owns full codec
+feature negotiation.
+
 ### Durable state and outbound link
 
 `<hub-state>/rooms/rooms.db` is schema version 1, SQLite DELETE/EXTRA with exclusive
@@ -1152,9 +1171,12 @@ at most 8 pending packets/2 MiB per link, 1 MiB packet/backpressure limits and a
 minutes and do not block local work. Stop, leave, replacement and rotation fence
 all awaited work by link generation.
 
+With latest-per-sender coalescing, A awaiting C can have its queued request replaced by A's broadcast reply to B, so C sees the request only on A's next state change or reconnect; task #736 idle refresh or per-(sender,recipient) coalescing is the upgrade path.
+
 Presence is an encrypted, signed frame containing only exposed peer ids and closed
 idle/busy/paused/offline states. It is sent on connection and coalesced peer-state
-changes, never titles, bodies, private task context or credentials. Unknown payload
+changes, skipping identical snapshots except explicit peer refresh exchanges,
+never titles, bodies, private task context or credentials. Unknown payload
 types and unexposed ids refuse before replay commit. Broker ACKs are transport
 facts only. A canonical room/recipient-bound frame that is refused or stale is
 recorded in a durable metadata-only drop ledger before transport retirement ACK.
@@ -6466,3 +6488,18 @@ The implementation contract for #929 R1 and R3 and for #1018 is `docs/specs/2026
 The current contract is recorded in [Task Board](../design/task-board.md#anchored-review-packages-1056). Optional finding anchors use the published acon review shape, with stricter hub UTF-8 write bounds. Person drafts are board-local until one explicit console-authorized Send creates one immutable package and one count-only history entry. Owner completion can claim sent comment IDs resolved without claiming person verification. Placement is recomputed over guarded task-scoped Git/projection material; stored anchors never move.
 
 The acon plugin uses `ActionMeta` and `host.ui.review` from the published DOM-free 0.1.3 contract as types only; there is no new runtime dependency or renderer. A private/PII view withholds text, and trusted package markers exclude quote/body content from logs, tails, incoming labels and memory capture without making a public task private. Recovery sections are optional for older snapshots. The owner's live document package-format confirmation remains a separate manual check; fixture and code evidence do not claim that confirmation.
+
+### Receipt publication ordering (#1204 T1)
+
+A chat ciphertext transport ACK follows its signed receipt's actual socket send.
+If another outbound frame is awaiting storage, the ACK is deferred outside the
+serial receive handler until that receipt reaches the wire, so stored controls
+can still progress. Stop/reconnect fences the deferred ACK. This is not durable
+receipt storage proof; #1204 T2 adds the stored-ACK and receipt-outbox guarantee.
+
+A session keeps its refresh request pending for every asked recipient until a
+validated presence from that member arrives. Later non-reply snapshots retain
+requestReply while anyone is pending; replies never carry requestReply. The set
+is bounded by the current roster and resets at reconnect or membership change.
+
+When a receipt is queued behind a confirmed queue_full head, T1 ACKs the chat to free broker capacity while retaining the receipt in bounded RAM; a crash or session loss before its send can lose it, and task #735's durable receipt outbox closes this exception.

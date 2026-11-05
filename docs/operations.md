@@ -5894,6 +5894,26 @@ to ordinary automatic assignment. This PR changes no live repository setting or
 routing template; real-use adoption metrics remain separate from fixture checks.
 
 
+### Presence and full broker queues (#1204 T1)
+
+Unchanged presence snapshots are skipped. Presence is ephemeral: an offline
+member does not accumulate observations, and the broker keeps only the latest
+per sender for connected members. Explicit refresh exchanges still work.
+
+On `queue_full`, the link retains the sealed frame and retries with exponential
+backoff from 250 ms to at most 30 s. Applications stay in the existing local
+outbox, and later sequences wait for broker storage acceptance. Stop/refresh
+clears connection timers. The broker storage ACK remains transport metadata;
+application receipts, current acknowledgement deadlines and uncertainty rules
+remain unchanged until the T2 delivery work. No layer cap is raised.
+
+
+A hub uses the ephemeral bit only after the broker advertises it to that
+connection. Against an older broker, presence uses the legacy wire shape and
+chat stays usable; upgrade the broker to avoid offline presence retention.
+The supporting broker withholds ephemeral frames from older member hubs; they
+must upgrade to see upgraded hubs' presence. Chat wire shapes remain unchanged. See [wire compatibility](design/bus.md#room-wire-compatibility-1204-t1).
+
 ## Screened room chat (#446 X4)
 
 After joining and confirming fingerprints, expose each receiving native peer with
