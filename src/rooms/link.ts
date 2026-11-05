@@ -640,13 +640,16 @@ export class RoomLink {
     const allowed = () => this.publicationCurrent(session, digest) && current();
     let queueStarted = false;
     try {
+      let presenceWork: Promise<void> | undefined;
       // A chat is the transport barrier for earlier observations. Receipts keep
       // their durable-commit/ACK path and do not wait behind a new observation.
       if (message.type === "chat" && this.republish) {
         clearTimeout(this.republish); this.republish = undefined;
-        await this.publishPresence();
+        presenceWork = this.publishPresence();
       }
+      // Reserve this chat's FIFO slot before yielding to the earlier observation.
       return await this.serialSend(async () => {
+      if (presenceWork) await presenceWork;
       if (!allowed()) fail("state_changed");
       if (metadata && (session.outbound.length >= LIMITS.packets || session.outboundBytes + plaintext.byteLength > LIMITS.queuedBytes
         || session.ws.bufferedAmount > LIMITS.backpressure)) throw new RoomNotSentError();

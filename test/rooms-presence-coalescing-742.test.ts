@@ -125,6 +125,22 @@ for (const intent of ["response", "capacity request"] as const) {
   });
 }
 
+test("concurrent chats reserve FIFO positions before waiting for the presence barrier", async () => {
+  const f = await transport();
+  try {
+    await f.pending(); f.state("busy");
+    const first = chat(), second = chat();
+    if (first.type !== "chat" || second.type !== "chat") throw new Error("expected chat fixture");
+    first.envelope.body = "first chat"; second.envelope.body = "second chat";
+    const one = f.link.publishApplication(first, f.guest.public.fingerprint);
+    const two = f.link.publishApplication(second, f.guest.public.fingerprint);
+    const [firstDigest, secondDigest] = await Promise.all([one, two]);
+    expect(f.session.outbound.map(frame => frame.digest).slice(2)).toEqual([firstDigest, secondDigest]);
+    expect((await f.open(f.session.outbound[2]!.wire)).envelope.body).toBe("first chat");
+    expect((await f.open(f.session.outbound[3]!.wire)).envelope.body).toBe("second chat");
+  } finally { f.link.stop(); }
+});
+
 test("a receipt commits its sealed FIFO frame without flushing deferred ordinary presence", async () => {
   const f = await transport();
   try {
