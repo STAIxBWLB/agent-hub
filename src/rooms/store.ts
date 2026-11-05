@@ -1178,13 +1178,17 @@ export class RoomStore {
   private applicationFor(room: string, digestValue: string): ApplicationRow | undefined {
     return this.db.query<ApplicationRow, [string, string]>("SELECT a.* FROM applications a JOIN application_frames f ON f.room=a.room AND f.sender=a.sender AND f.application=a.application WHERE f.room=? AND f.digest=?").get(room, digestValue) ?? undefined;
   }
-  private personIdentityRetained(row: Pick<ApplicationRow, "room" | "sender" | "application">): boolean {
+  private personIdentityRetained(row: Pick<ApplicationRow, "room" | "sender" | "application">, now = this.now()): boolean {
     return !!this.db.query("SELECT 1 FROM person_inbox WHERE room=? AND sender=? AND application=?").get(row.room, row.sender, row.application)
-      || !!this.db.query("SELECT 1 FROM receipt_outbox r JOIN application_frames f ON f.room=r.room AND f.digest=r.inbound_digest WHERE f.room=? AND f.sender=? AND f.application=?").get(row.room, row.sender, row.application);
+      || !!this.db.query("SELECT 1 FROM receipt_outbox r JOIN application_frames f ON f.room=r.room AND f.digest=r.inbound_digest WHERE f.room=? AND f.sender=? AND f.application=? AND r.state='dispatching' AND r.expires_at>?").get(row.room, row.sender, row.application, now);
   }
-  private deleteSettledApplication(row: ApplicationRow): void {
+  private deleteSettledApplication(row: ApplicationRow, now = this.now()): void {
     if (this.db.query("SELECT 1 FROM person_inbox WHERE room=? AND sender=? AND application=? AND state='unread'").get(row.room, row.sender, row.application)
-      || this.db.query("SELECT 1 FROM receipt_outbox r JOIN application_frames f ON f.room=r.room AND f.digest=r.inbound_digest WHERE f.room=? AND f.sender=? AND f.application=?").get(row.room, row.sender, row.application)) return;
+      || this.db.query("SELECT 1 FROM receipt_outbox r JOIN application_frames f ON f.room=r.room AND f.digest=r.inbound_digest WHERE f.room=? AND f.sender=? AND f.application=? AND r.state='dispatching' AND r.expires_at>?").get(row.room, row.sender, row.application, now)) return;
+    this.db.query("DELETE FROM outbox WHERE room=? AND digest IN (SELECT r.receipt_digest FROM receipt_outbox r JOIN application_frames f ON f.room=r.room AND f.digest=r.inbound_digest WHERE f.room=? AND f.sender=? AND f.application=?)")
+      .run(row.room, row.room, row.sender, row.application);
+    this.db.query("DELETE FROM receipt_outbox WHERE room=? AND inbound_digest IN (SELECT digest FROM application_frames WHERE room=? AND sender=? AND application=?)")
+      .run(row.room, row.room, row.sender, row.application);
     this.db.query("DELETE FROM person_inbox WHERE room=? AND sender=? AND application=?").run(row.room, row.sender, row.application);
     this.db.query("DELETE FROM inbox WHERE room=? AND plaintext IS NULL AND digest IN (SELECT digest FROM application_frames WHERE room=? AND sender=? AND application=?)")
       .run(row.room, row.room, row.sender, row.application);
@@ -1195,16 +1199,16 @@ export class RoomStore {
     this.prunePersonInbox(now);
     // Person stubs have their own disposition/expiry horizon. Only the cap walk
     // below may evict a settled stub early; unread identities are never candidates.
-    const expired = this.db.query<ApplicationRow, [string, number, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND settled_at<=? AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application) AND NOT EXISTS (SELECT 1 FROM receipt_outbox r JOIN application_frames f ON f.room=r.room AND f.digest=r.inbound_digest WHERE f.room=applications.room AND f.sender=applications.sender AND f.application=applications.application)").all(room, now - ROOM_APPLICATION_RETENTION.settledMs, retained?.sender ?? "", retained?.application ?? "");
-    for (const row of expired) this.deleteSettledApplication(row);
+    const expired = this.db.query<ApplicationRow, [string, number, string, string, number]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND settled_at<=? AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application) AND NOT EXISTS (SELECT 1 FROM receipt_outbox r JOIN application_frames f ON f.room=r.room AND f.digest=r.inbound_digest WHERE f.room=applications.room AND f.sender=applications.sender AND f.application=applications.application AND r.state='dispatching' AND r.expires_at>?)").all(room, now - ROOM_APPLICATION_RETENTION.settledMs, retained?.sender ?? "", retained?.application ?? "", now);
+    for (const row of expired) this.deleteSettledApplication(row, now);
     for (;;) {
       const identities = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM applications WHERE room=?").get(room)?.n ?? 0;
       const aliases = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM application_frames WHERE room=?").get(room)?.n ?? 0;
       if ((!freshIdentity || identities < ROOM_APPLICATION_RETENTION.identitiesPerRoom) && aliases < ROOM_APPLICATION_RETENTION.aliasesPerRoom) return;
       // A person identity becomes settled at done/discard/expiry, not at its earlier admission.
-      const settled = this.db.query<ApplicationRow, [string, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application AND p.state='unread') AND NOT EXISTS (SELECT 1 FROM receipt_outbox r JOIN application_frames f ON f.room=r.room AND f.digest=r.inbound_digest WHERE f.room=applications.room AND f.sender=applications.sender AND f.application=applications.application) ORDER BY COALESCE((SELECT p.settled_at FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application),settled_at),created_at,sender,application LIMIT 1").get(room, retained?.sender ?? "", retained?.application ?? "");
+      const settled = this.db.query<ApplicationRow, [string, string, string, number]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND NOT (sender=? AND application=?) AND NOT EXISTS (SELECT 1 FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application AND p.state='unread') AND NOT EXISTS (SELECT 1 FROM receipt_outbox r JOIN application_frames f ON f.room=r.room AND f.digest=r.inbound_digest WHERE f.room=applications.room AND f.sender=applications.sender AND f.application=applications.application AND r.state='dispatching' AND r.expires_at>?) ORDER BY COALESCE((SELECT p.settled_at FROM person_inbox p WHERE p.room=applications.room AND p.sender=applications.sender AND p.application=applications.application),settled_at),created_at,sender,application LIMIT 1").get(room, retained?.sender ?? "", retained?.application ?? "", now);
       if (!settled) throw new RoomApplicationLimitError(room, Math.max(identities, aliases));
-      this.deleteSettledApplication(settled);
+      this.deleteSettledApplication(settled, now);
     }
   }
   async applicationIncoming(name: string, digestValue: string, current?: () => boolean): Promise<{ sender: string; chat: RoomChatEnvelope; contentHash: string; primary: boolean; state: ApplicationState }> {
