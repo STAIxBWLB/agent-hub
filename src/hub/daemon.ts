@@ -766,6 +766,8 @@ export interface DaemonOptions {
   /** Test seams (#733): the period of the handoff catch-up (default 5 minutes) and of the check for a target whose control descriptor changed (default 15 seconds). */
   handoffCatchUpMs?: number;
   handoffWatchMs?: number;
+  /** Test seam (#733): awaited by each handoff catch-up pass once it has chosen its targets, so a test can hold a pass open while descriptors change. */
+  handoffCatchUpHold?: () => Promise<void>;
   /** Test seam: how often the scheduled security-scan baseline checks whether a scan is due, default one hour (the configured `every_h` still decides). */
   securityScanEveryMs?: number;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
@@ -4362,36 +4364,51 @@ export async function startDaemon(opts: DaemonOptions) {
   /**
    * #604 ORIGIN side: for every handoff this project made that is still open, ask the target (if it is running) where the task stands now, and record the answer. #733 (H2, H5): it runs at start,
    * every `handoffCatchUpMs` (5 minutes), and when a target's control descriptor changes (`handoffWatch`), over every row `handoffCatchUpRow` keeps (no 200 cap), asked in chunks of 200 over one
-   * connection per target. One pass at a time, in the background, never holding a board write; a target that is down or refused is asked again at the next pass. `only` limits it to one target.
+   * connection per target. One pass at a time, in the background, never holding a board write; a request that arrives while a pass runs is queued and drained when it ends, never dropped; a target that is down or refused is asked again at the next pass. `only` limits a pass to a set of targets.
    */
   let handoffCatchUpRunning = false;
-  const handoffCatchUp = async (only?: string): Promise<void> => {
-    if (handoffCatchUpRunning || stopping) return;
+  // A request that arrives while a pass runs is not dropped: the targets it names (or "all") are queued and the pass that is running drains them when it ends, so a watcher that already recorded a
+  // new descriptor never loses its catch-up to the guard (it would otherwise wait for the next period, which is the delay this exists to remove).
+  let handoffQueuedAll = false;
+  const handoffQueued = new Set<string>();
+  const handoffCatchUp = async (only?: ReadonlySet<string>): Promise<void> => {
+    if (stopping) return;
+    if (handoffCatchUpRunning) { if (only === undefined) handoffQueuedAll = true; else for (const remote of only) handoffQueued.add(remote); return; }
     handoffCatchUpRunning = true;
+    let scope = only;
     try {
-      const now = Date.now();
-      const byProject = new Map<string, number[]>();
-      for (const row of board.handoffOutboundOpen()) {
-        if (!handoffCatchUpRow(row, now) || only !== undefined && row.remoteProject !== only) continue;
-        byProject.set(row.remoteProject, [...(byProject.get(row.remoteProject) ?? []), row.remoteTask]);
-      }
-      for (const [remote, ids] of byProject) {
-        if (stopping) return;
-        try {
-          const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
-          const descriptor = project && readControl(project.stateDir);
-          if (!project || !descriptor?.features?.includes("task_handoff")) continue;
-          const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
-          try {
-            for (const chunk of handoffChunks(ids)) {
-              if (stopping) return;
-              const reply = await client.request({ t: "task_handoff_states", projectId, tasks: chunk }, 5000);
-              if (reply.ok && Array.isArray(reply.states)) tasks.handoffCaughtUp(remote, reply.states);
-            }
-          } finally { client.close(); }
-        } catch { /* that target is down or refused: it is asked again at the next pass */ }
+      for (;;) {
+        await handoffCatchUpPass(scope);
+        if (stopping || !handoffQueuedAll && !handoffQueued.size) return;
+        scope = handoffQueuedAll ? undefined : new Set(handoffQueued);
+        handoffQueuedAll = false; handoffQueued.clear();
       }
     } finally { handoffCatchUpRunning = false; }
+  };
+  const handoffCatchUpPass = async (only?: ReadonlySet<string>): Promise<void> => {
+    const now = Date.now();
+    const byProject = new Map<string, number[]>();
+    for (const row of board.handoffOutboundOpen()) {
+      if (!handoffCatchUpRow(row, now) || only !== undefined && !only.has(row.remoteProject)) continue;
+      byProject.set(row.remoteProject, [...(byProject.get(row.remoteProject) ?? []), row.remoteTask]);
+    }
+    await opts.handoffCatchUpHold?.();   // after the pass chose its targets, so a test can hold a pass that has committed to a set
+    for (const [remote, ids] of byProject) {
+      if (stopping) return;
+      try {
+        const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
+        const descriptor = project && readControl(project.stateDir);
+        if (!project || !descriptor?.features?.includes("task_handoff")) continue;
+        const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
+        try {
+          for (const chunk of handoffChunks(ids)) {
+            if (stopping) return;
+            const reply = await client.request({ t: "task_handoff_states", projectId, tasks: chunk }, 5000);
+            if (reply.ok && Array.isArray(reply.states)) tasks.handoffCaughtUp(remote, reply.states);
+          }
+        } finally { client.close(); }
+      } catch { /* that target is down or refused: it is asked again at the next pass */ }
+    }
   };
   /** #733: a target that restarted, or moved to a new control port, is caught up at once instead of at the next period. The first reading of a target only records it (the start-up pass covers it). */
   const handoffDescriptors = new Map<string, string>();
@@ -4405,7 +4422,7 @@ export async function startDaemon(opts: DaemonOptions) {
       handoffDescriptors.set(remote, seen);
       if (before !== undefined && before !== seen && seen) changed.add(remote);
     }
-    for (const remote of changed) void handoffCatchUp(remote);
+    if (changed.size) void handoffCatchUp(changed);   // one request for the whole changed set: none of them waits for another to finish
   };
   const conductedMutations = new Set(["hub_task_propose", "hub_task_accept", "hub_task_decline", "hub_task_done", "hub_review", "hub_checkpoint", "hub_remember"]);
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {

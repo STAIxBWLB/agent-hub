@@ -21,13 +21,13 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 type Project = Awaited<ReturnType<typeof project>>;
-async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[]; handoffRequestMs?: number; handoffCatchUpMs?: number; handoffWatchMs?: number; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }> } = {}) {
+async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[]; handoffRequestMs?: number; handoffCatchUpMs?: number; handoffWatchMs?: number; handoffCatchUpHold?: () => Promise<void>; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }> } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), `ahub-handoff-${name}-`))), stateDir = join(root, ".agenthub", "state");
   mkdirSync(stateDir, { recursive: true }); writeFileSync(join(root, ".agenthub", "config.json"), "{}");
   writeFileSync(join(root, ".agenthub", "routing.toml"), '[local]\nfixed_model = "coding"\n[signals]\npii_patterns = ["\\\\b\\\\d{6}-\\\\d{7}\\\\b"]\n' + (options.screen ? 'pii_screen = "local"\n' : ""));   // the shipped PII pattern (Korean resident numbers), and nothing else
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const registry = new Registry(join(home, "registry.db")), registered = registry.register(root); registry.close?.();
-  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}), ...(options.handoffRequestMs ? { handoffRequestMs: options.handoffRequestMs } : {}), ...(options.handoffCatchUpMs ? { handoffCatchUpMs: options.handoffCatchUpMs } : {}), ...(options.handoffWatchMs ? { handoffWatchMs: options.handoffWatchMs } : {}),
+  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}), ...(options.handoffRequestMs ? { handoffRequestMs: options.handoffRequestMs } : {}), ...(options.handoffCatchUpMs ? { handoffCatchUpMs: options.handoffCatchUpMs } : {}), ...(options.handoffWatchMs ? { handoffWatchMs: options.handoffWatchMs } : {}), ...(options.handoffCatchUpHold ? { handoffCatchUpHold: options.handoffCatchUpHold } : {}),
     config: { ...DEFAULT_CONFIG, roles: options.roles ?? { claude: ["planner"], codex: ["implementer"] }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
@@ -36,7 +36,7 @@ async function project(name: string, home: string, options: { roles?: Record<str
   const connect = async (hello: Record<string, unknown>) => { const client = await ControlClient.connect(stateDir, { projectRoot: root, ...hello } as never); cleanup.push(() => client.close()); return client; };
   return { id: registered.id, root, stateDir, daemon, connect, person: await connect({ role: "console" }) };
 }
-async function pair(options: { a?: Parameters<typeof project>[2]; b?: Parameters<typeof project>[2] } = {}) {
+async function pair(options: { a?: Parameters<typeof project>[2]; b?: Parameters<typeof project>[2]; more?: Parameters<typeof project>[2] } = {}) {
   const base = realPath(mkdtempSync(join(tmpdir(), "ahub-handoff-home-"))); cleanup.push(() => rmSync(base, { recursive: true, force: true }));
   const saved = { HOME: process.env.HOME, AGENTHUB_HOME: process.env.AGENTHUB_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, AMEM_HOME: process.env.AMEM_HOME, KIMI_CODE_HOME: process.env.KIMI_CODE_HOME };
   const home = join(base, "hubs"); mkdirSync(home);
@@ -44,7 +44,8 @@ async function pair(options: { a?: Parameters<typeof project>[2]; b?: Parameters
   for (const key of ["HOME", "CLAUDE_CONFIG_DIR", "AMEM_HOME", "KIMI_CODE_HOME"] as const) { const dir = join(base, key.toLowerCase()); mkdirSync(dir); process.env[key] = dir; }
   cleanup.push(() => { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
   const a = await project("a", home, options.a), b = await project("b", home, options.b);
-  return { a, b, home };
+  const more = options.more ? await project("c", home, options.more) : undefined;
+  return { a, b, c: more as Project, home };
 }
 const task = (client: ControlClient, op: string, args: Record<string, unknown> = {}) => client.request({ t: "task", op, args });
 const body = (reply: any) => { expect(reply.ok, JSON.stringify(reply)).toBe(true); return JSON.parse(reply.text); };
@@ -726,4 +727,52 @@ test("#733: an origin without task_handoff_seq is sent no seq and not the two ne
   await until(() => received.some(env => env.body === `agent-hub task ${sent.task} accepted`), "an event the older origin knows still arrives");
   expect(readOnly(a).handoffOutbound()[0]!.seq).toBeNull();                               // sent without a sequence
   expect(DAEMON_FEATURES).toContain("task_handoff_seq");
+}, 60_000);
+
+// #733 review: handoffWatch asks for ONE catch-up for the whole changed set, and a request that arrives while a pass is running is queued and drained when it ends, never dropped by the one-pass guard.
+// Each project's token is hidden on its own, so its descriptor can come back separately. C files a local task first, so its handed-off task is #2 and the two follow-backs differ.
+const hide = (p: Project) => { const file = join(p.stateDir, "control-token"), real = readFileSync(file, "utf8"); rmSync(file); return () => writeFileSync(file, real); };
+const twoTargets = async (options: { hold?: () => Promise<void> }) => {
+  const { a, b, c } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 100, ...(options.hold ? { handoffCatchUpHold: options.hold } : {}) }, more: {} });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const received: Envelope[] = [];
+  const listening = await a.connect({ role: "peer", peer: "claude", channel: true });
+  listening.onPush = message => { if (message.t === "deliver") received.push(...(message.envs ?? [message.env])); };
+  expect((await task(c.person, "hub_task_propose", { title: "a local task of C", class: "implement" })).ok).toBe(true);
+  const sentB = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" })), sentC = body(await task(planner, "hub_task_handoff", { project: c.id, title: "Chore for C" }));
+  expect([sentB.task, sentC.task]).toEqual([1, 2]);
+  const owners: { id: number; owner: ControlClient }[] = [];
+  for (const [project, id] of [[b, sentB.task], [c, sentC.task]] as const) {
+    { const codex = new FixturePeer("codex"); project.daemon.bus.add(codex); await codex.start(); }
+    expect((await task(project.person, "task_assign", { id, peer: "codex", role: "owner" })).ok).toBe(true);
+    owners.push({ id, owner: await project.connect({ role: "tools", peer: "codex" }) });   // connected now: a hidden token would refuse a new connection
+  }
+  await Bun.sleep(350);                                                                    // A's watch has read both descriptors
+  const back = { a: hide(a), b: hide(b), c: hide(c) };                                     // all three are away
+  for (const { id, owner } of owners) expect((await task(owner, "hub_task_accept", { id })).ok).toBe(true);
+  await Bun.sleep(400);                                                                    // A's watch sees them gone
+  expect(readOnly(a).handoffOutbound().map(row => row.state)).toEqual(["proposed", "proposed"]);
+  const caught = (id: number) => received.some(env => env.body === `agent-hub task ${id} accepted`);
+  return { back, caught, ids: [sentB.task as number, sentC.task as number] };
+};
+
+test("#733 AC2: two targets whose descriptors change in the same watch tick are both caught up promptly, not only the first", async () => {
+  const { back, caught, ids } = await twoTargets({});
+  back.a(); back.b(); back.c();                                                            // all come back together
+  await until(() => caught(ids[0]!) && caught(ids[1]!), "both targets were caught up long before the hour-long period", 10_000);
+}, 60_000);
+
+test("#733 AC2: a descriptor change that arrives while a catch-up pass is running is queued and drained when the pass ends, not dropped", async () => {
+  let release!: () => void, holds = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  // A's start-up pass goes through; the next one is held open once it has chosen its targets, standing for a long pass, while another descriptor changes.
+  const hold = async () => { if (++holds >= 2) await gate; };
+  const { back, caught, ids } = await twoTargets({ hold });
+  back.a(); back.b();                                                                      // B returns: the watch starts a pass for B, which is held
+  await Bun.sleep(500);
+  back.c();                                                                                // C returns while that pass is still running
+  await Bun.sleep(500);
+  expect(caught(ids[0]!) || caught(ids[1]!)).toBe(false);                                  // the held pass has delivered nothing yet
+  release();
+  await until(() => caught(ids[0]!) && caught(ids[1]!), "C, queued behind the held pass, was caught up when it ended", 10_000);
 }, 60_000);
