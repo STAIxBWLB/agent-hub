@@ -869,16 +869,12 @@
   "src/hub/context-window.ts:ContextWindows:inline:cfg.gate > 1=1#0": "operational",
   "src/hub/context-window.ts:report:inline:reading.used > 1=1#0": "operational",
   "src/hub/context-window.ts:stale_min:inline:stale_min=30#0": "operational",
-<<<<<<< HEAD
   "src/hub/control-client.ts:HANDOFF_CONNECT_MS:constant:HANDOFF_CONNECT_MS=5000#0": "operational",
   "src/hub/control-client.ts:HANDOFF_CONTROL_TIMEOUT_MS:inline:HANDOFF_CONTROL_TIMEOUT_MS=2 * (HANDOFF_CONNECT_MS + HANDOFF_REQUEST_MS) + HANDOFF_LOOKUP_CONNECT_MS + HANDOFF_LOOKUP_REQUEST_MS + 12_000#0": "operational",
   "src/hub/control-client.ts:HANDOFF_LOOKUP_CONNECT_MS:constant:HANDOFF_LOOKUP_CONNECT_MS=3000#0": "operational",
   "src/hub/control-client.ts:HANDOFF_LOOKUP_REQUEST_MS:constant:HANDOFF_LOOKUP_REQUEST_MS=5000#0": "operational",
   "src/hub/control-client.ts:HANDOFF_REQUEST_MS:constant:HANDOFF_REQUEST_MS=30000#0": "operational",
-||||||| parent of f8753f95 (chore(inventory): classify the first 65 baseline keys by mechanical rules, with the rules and their calibration (Refs #1180))
-=======
   "src/hub/control-client.ts:INVOCATION_CONTROL_TIMEOUT_MS:constant:INVOCATION_CONTROL_TIMEOUT_MS=3665000#0": "operational",
->>>>>>> f8753f95 (chore(inventory): classify the first 65 baseline keys by mechanical rules, with the rules and their calibration (Refs #1180))
   "src/hub/control-client.ts:PROTOCOL:constant:PROTOCOL=17#0": "contract",
   "src/hub/control-client.ts:QUESTION_WAIT_MAX_MS:constant:QUESTION_WAIT_MAX_MS=600000#0": "operational",
   "src/hub/control-client.ts:backoff:inline:backoff=250#0": "operational",
