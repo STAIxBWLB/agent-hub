@@ -836,6 +836,11 @@ export class RoomChat {
   epochRotated(store: RoomStore, name: string, previousDigest: string, expected: readonly RoomOutgoing[]): boolean {
     const state = store.get(name);
     if (this.stopped || !state || state.left || state.current.digest === previousDigest) return false;
+    const binding = this.bindings.get(name);
+    if (binding?.store === store && binding.room === state.current.room) {
+      // Releasing an old FIFO head must not drain queued work using old presence.
+      binding.online = false; binding.states.clear(); binding.observedAt.clear();
+    }
     let complete = true;
     for (const before of expected) {
       const current = () => {
@@ -849,7 +854,10 @@ export class RoomChat {
         complete = false; continue;
       }
       const remote = this.remotes.get(before.remotePeer);
-      if (remote?.remoteRoom === state.current.room && remote.remoteMember === before.recipient) remote.settled(before.deliveryId);
+      if (remote?.remoteRoom === state.current.room && remote.remoteMember === before.recipient) {
+        remote.presence("offline", false);
+        remote.settled(before.deliveryId);
+      }
     }
     this.evidenceCache = undefined;
     return complete;
