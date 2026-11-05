@@ -582,6 +582,38 @@ test("schema3 migrates v2 handoff deadlines conservatively and never infers rece
   }
 });
 
+test("schema5 clamps schema4 ACK deadlines to queue expiry for active and retained terminal rows", async () => {
+  for (const state of ["dispatching", "accepted", "completed", "failed_safe"] as const) {
+    const f = await pair(), q = await queued(f, chat(), { ackTimeoutMs: 7200000, ttlMs: 3600000 });
+    if (state === "accepted") f.owner.markApplicationStored("work", q.frameDigest, decodeFrame(q.wire).seq);
+    if (state === "completed" || state === "failed_safe") {
+      const signed = await receipt(f.guest, f.owner, { v: 1, type: "receipt", frame: q.frameDigest, application: q.envelope.id, peer: "claude", outcome: state, reason: state === "completed" ? "admitted" : "boundary_refused" });
+      expect(f.owner.applyApplicationReceipt("work", signed)?.state).toBe(state);
+    }
+    const saved = f.owner.applicationOutbox("work")[0]!, directory = locations.get(f.owner)!;
+    expect(saved.state).toBe(state);
+    const fingerprint = f.owner.identity.public.fingerprint, roster = f.owner.get("work")!.current.digest;
+    f.owner.close();
+    const legacy = new Database(join(directory, "rooms.db"));
+    try {
+      legacy.exec("DROP TABLE receipt_outbox; DROP TABLE application_attempts; ALTER TABLE application_outbox DROP COLUMN content_hash; UPDATE application_outbox SET ack_deadline=created_at+ack_timeout; PRAGMA user_version=4;");
+      expect(legacy.query<{ deadline: number; expiry: number }, []>("SELECT ack_deadline AS deadline,expires_at AS expiry FROM application_outbox").get()).toEqual({ deadline: saved.createdAt + 7200000, expiry: saved.expiresAt });
+    } finally { legacy.close(); }
+    const restored = await opened(f.clock, directory);
+    expect(restored.identity.public.fingerprint).toBe(fingerprint);
+    expect(restored.get("work")!.current.digest).toBe(roster);
+    expect(restored.applicationOutbox("work")).toEqual([{ ...saved, ackDeadline: saved.expiresAt }]);
+  }
+});
+
+test("schema5 still refuses an ACK deadline beyond expiry instead of repairing current-schema corruption", async () => {
+  const f = await pair(), q = await queued(f), directory = locations.get(f.owner)!;
+  f.owner.close();
+  const corrupt = new Database(join(directory, "rooms.db"));
+  try { corrupt.query("UPDATE application_outbox SET ack_deadline=?").run(q.outgoing.expiresAt + 1); } finally { corrupt.close(); }
+  await expect(RoomStore.open({ stateDir: directory, clock: f.clock })).rejects.toMatchObject({ code: "corrupt" });
+});
+
 async function capturedReceiptFailure(recipient: RoomStore, wire: Uint8Array): Promise<unknown> {
   let failure: unknown;
   const state = recipient.get("work")!;

@@ -234,6 +234,7 @@ export class RoomStore {
         PRAGMA user_version=4;
       `);
       if (version! < 5) db.exec(`
+        UPDATE application_outbox SET ack_deadline=MIN(ack_deadline,expires_at);
         ALTER TABLE application_outbox ADD COLUMN content_hash TEXT;
         CREATE TABLE application_attempts (room TEXT NOT NULL, digest TEXT NOT NULL, delivery_id TEXT NOT NULL, application TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(room,digest)) WITHOUT ROWID;
         CREATE INDEX application_attempts_delivery ON application_attempts(room,delivery_id);
