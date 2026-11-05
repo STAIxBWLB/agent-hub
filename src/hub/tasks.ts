@@ -2218,17 +2218,29 @@ export class Tasks {
     return origin ? { projectId: origin.projectId, peer: origin.peer, originTask: origin.originTask } : undefined;
   }
 
-  /** ORIGIN side: the target reported a state change. Records it and tells the origin peer with one `kind: task` envelope. Idempotent: a state already recorded sends nothing. */
+  /**
+   * ORIGIN side: the target reported a state change. Records it and tells the origin peer with one `kind: task` envelope. Idempotent: a state already recorded sends nothing.
+   * #733: an event may carry `seq`, the target task's flow revision. One that is not newer than the stored sequence changes nothing and sends nothing (an `in_review` that arrives after
+   * `approved` cannot reopen the row), decided inside the board write; an event without one (an older target) applies as before.
+   */
   handoffEvent(input: unknown): { recorded: boolean } {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new HandoffRefusal("invalid", "handoff event must be a data object");
     const e = input as Record<string, unknown>;
     if (typeof e.projectId !== "string" || !e.projectId || e.projectId.length > 200 || !Number.isSafeInteger(e.remoteTask) || (e.remoteTask as number) < 1
-      || typeof e.state !== "string" || !(HANDOFF_EVENTS as readonly string[]).includes(e.state)) throw new HandoffRefusal("invalid", "handoff event is malformed");
+      || typeof e.state !== "string" || !(HANDOFF_EVENTS as readonly string[]).includes(e.state)
+      || e.seq !== undefined && (!Number.isSafeInteger(e.seq) || (e.seq as number) < 1)) throw new HandoffRefusal("invalid", "handoff event is malformed");
     const row = this.d.board.handoffOutboundFor(e.projectId, e.remoteTask as number);
     if (!row) throw new HandoffRefusal("invalid", "no handoff of ours is recorded for that task");
+    const seq = e.seq as number | undefined;
     const pr = Number.isSafeInteger(e.pr) && (e.pr as number) > 0 ? e.pr as number : undefined, head = typeof e.head === "string" && /^[0-9a-f]{40}$/.test(e.head) ? e.head : undefined;
-    if (row.state === e.state && (pr === undefined || pr === row.pr) && (head === undefined || head === row.head)) return { recorded: false };
-    this.d.board.recordHandoffOutbound({ remoteProject: row.remoteProject, remoteTask: row.remoteTask, originPeer: row.originPeer, ...(row.localTask === null ? {} : { localTask: row.localTask }), title: row.title, state: e.state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }) });
+    if (seq !== undefined && row.seq !== null && seq <= row.seq) return { recorded: false };
+    if (row.state === e.state && (pr === undefined || pr === row.pr) && (head === undefined || head === row.head)) {
+      // Nothing to tell the peer, but a newer sequence is still kept, so a later stale event is judged against it.
+      if (seq !== undefined && (row.seq === null || seq > row.seq)) this.d.board.recordHandoffOutbound({ remoteProject: row.remoteProject, remoteTask: row.remoteTask, originPeer: row.originPeer, ...(row.localTask === null ? {} : { localTask: row.localTask }), title: row.title, state: row.state, seq });
+      return { recorded: false };
+    }
+    const written = this.d.board.recordHandoffOutbound({ remoteProject: row.remoteProject, remoteTask: row.remoteTask, originPeer: row.originPeer, ...(row.localTask === null ? {} : { localTask: row.localTask }), title: row.title, state: e.state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }), ...(seq === undefined ? {} : { seq }) });
+    if (!written.applied) return { recorded: false };   // a newer event won the race between the read above and this write
     const body = followBackLine(row.remoteTask, e.state as HandoffEvent, { pr, head });
     if (row.originPeer !== USER && row.originPeer !== HUB) {
       // #731 (H3): the envelope names the REMOTE task and no local one. `refs.task` made the bus judge it against whatever local task has that number (or the origin's own task it came from), so a
@@ -2243,9 +2255,9 @@ export class Tasks {
    * TARGET side, catch-up (#1030 design 4): the origin asks for the current state of the tasks it handed us, by id, after it was down. Answers only for tasks whose recorded origin IS the asking
    * project, and only with the same fields a live event carries (the event name, a PR number, a full head), so an origin learns nothing it could not have been told live.
    */
-  handoffStatesFor(projectId: unknown, taskIds: unknown): { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string }[] {
+  handoffStatesFor(projectId: unknown, taskIds: unknown): { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string; seq: number }[] {
     if (typeof projectId !== "string" || !projectId || projectId.length > 200 || !Array.isArray(taskIds) || taskIds.length > 200 || !taskIds.every(id => Number.isSafeInteger(id) && id > 0)) throw new HandoffRefusal("invalid", "handoff state request is malformed");
-    const out: { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string }[] = [];
+    const out: { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string; seq: number }[] = [];
     for (const id of taskIds as number[]) {
       const origin = this.d.board.handoffOrigin(id), task = origin?.projectId === projectId ? this.d.board.get(id) : undefined;
       if (!task) continue;
@@ -2253,7 +2265,8 @@ export class Tasks {
       const state = entry ? handoffEventFor(entry.event, task.state) ?? "proposed" : "proposed";
       const pr = typeof task.sdlc?.pr === "number" && Number.isSafeInteger(task.sdlc.pr) && task.sdlc.pr > 0 ? task.sdlc.pr : undefined;
       const rawHead = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead, head = typeof rawHead === "string" && /^[0-9a-f]{40}$/.test(rawHead) ? rawHead : undefined;   // the owner's commit, else the receipt's head; only a full SHA crosses
-      out.push({ task: id, state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }) });
+      // #733: the task's current flow revision (its history length), the same number a live event carries, so a catch-up answer and a late live event are ordered against each other.
+      out.push({ task: id, state, ...(pr === undefined ? {} : { pr }), ...(head === undefined ? {} : { head }), seq: Math.max(1, task.history.length) });
     }
     return out;
   }
@@ -2262,18 +2275,18 @@ export class Tasks {
    * TARGET side (#731): where the task a handoff key made stands, for an origin whose request got no answer. Answers only the asking project, and only the fields a live event carries; nothing is
    * written. `undefined` means this target holds no task for that key.
    */
-  handoffStateByKey(projectId: unknown, key: unknown): { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string } | undefined {
+  handoffStateByKey(projectId: unknown, key: unknown): { task: number; state: HandoffEvent | "proposed"; pr?: number; head?: string; seq: number } | undefined {
     if (typeof projectId !== "string" || !projectId || projectId.length > 200 || typeof key !== "string" || !HANDOFF_KEY.test(key)) throw new HandoffRefusal("invalid", "handoff key lookup is malformed");
     const found = this.d.board.handoffOriginByKey(projectId, key);
     return found ? this.handoffStatesFor(projectId, [found.taskId])[0] : undefined;
   }
 
   /** ORIGIN side: record what a target answered to the catch-up, and tell the origin peer about a change this project missed while it was down. */
-  handoffCaughtUp(projectId: string, rows: { task: number; state: string; pr?: number; head?: string }[]): number {
+  handoffCaughtUp(projectId: string, rows: { task: number; state: string; pr?: number; head?: string; seq?: number }[]): number {
     let changed = 0;
     for (const row of rows) {
       if (!(HANDOFF_EVENTS as readonly string[]).includes(row.state)) continue;
-      try { if (this.handoffEvent({ projectId, remoteTask: row.task, state: row.state, ...(row.pr === undefined ? {} : { pr: row.pr }), ...(row.head === undefined ? {} : { head: row.head }) }).recorded) changed++; }
+      try { if (this.handoffEvent({ projectId, remoteTask: row.task, state: row.state, ...(row.pr === undefined ? {} : { pr: row.pr }), ...(row.head === undefined ? {} : { head: row.head }), ...(row.seq === undefined ? {} : { seq: row.seq }) }).recorded) changed++; }
       catch { /* a row we hold no handoff for is not ours */ }
     }
     return changed;

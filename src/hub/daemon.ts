@@ -166,7 +166,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalPath, realPath, hubHome } from "./project.ts";
-import { HandoffRefusal, checkTarget, handoffOutcomeUnknown, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
+import { HandoffRefusal, checkTarget, handoffCatchUpRow, handoffChunks, handoffOutcomeUnknown, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
@@ -763,6 +763,9 @@ export interface DaemonOptions {
   piiScreen?: (text: string) => Promise<PiiVerdict>;
   /** Test seam (#731): how long a handoff waits for the target's answer before it counts as outcome unknown, default 30 s. */
   handoffRequestMs?: number;
+  /** Test seams (#733): the period of the handoff catch-up (default 5 minutes) and of the check for a target whose control descriptor changed (default 15 seconds). */
+  handoffCatchUpMs?: number;
+  handoffWatchMs?: number;
   /** Test seam: how often the scheduled security-scan baseline checks whether a scan is due, default one hour (the configured `every_h` still decides). */
   securityScanEveryMs?: number;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
@@ -4321,54 +4324,88 @@ export async function startDaemon(opts: DaemonOptions) {
     return { project: target.id, task: remote, state: String(reply.state ?? "proposed"), ...(typeof reply.note === "string" && reply.note ? { note: sanitize(reply.note).slice(0, 300) } : {}) };
   }
   /** #731 ORIGIN side: where the task a handoff key made stands on the target, or undefined when it holds none or cannot be asked. Never throws: it only narrows an unknown outcome. */
-  async function handoffStateByKey(target: { id: string; stateDir: string; root: string }, projectRoot: string, key: string | undefined): Promise<{ task: number; state: string; pr?: number; head?: string } | undefined> {
+  async function handoffStateByKey(target: { id: string; stateDir: string; root: string }, projectRoot: string, key: string | undefined): Promise<{ task: number; state: string; pr?: number; head?: string; seq?: number } | undefined> {
     if (key === undefined) return undefined;
     try {
       const client = await ControlClient.connect(target.stateDir, { role: "console", projectRoot }, HANDOFF_LOOKUP_CONNECT_MS);
       try {
         const reply = await client.request({ t: "task_handoff_by_key", projectId, key }, HANDOFF_LOOKUP_REQUEST_MS);
-        return reply.ok === true && reply.found === true && Number.isSafeInteger(reply.task) && typeof reply.state === "string" ? { task: reply.task, state: reply.state, ...(Number.isSafeInteger(reply.pr) ? { pr: reply.pr } : {}), ...(typeof reply.head === "string" ? { head: reply.head } : {}) } : undefined;
+        return reply.ok === true && reply.found === true && Number.isSafeInteger(reply.task) && typeof reply.state === "string" ? { task: reply.task, state: reply.state, ...(Number.isSafeInteger(reply.pr) ? { pr: reply.pr } : {}), ...(typeof reply.head === "string" ? { head: reply.head } : {}), ...(Number.isSafeInteger(reply.seq) ? { seq: reply.seq } : {}) } : undefined;
       } finally { client.close(); }
     } catch { return undefined; }
   }
   /** The head a handoff reports: the owner's `refs.commit`, else the receipt's verified head. Only a full 40-hex SHA crosses; anything else is dropped. */
   const handoffHead = (task: Task): string | undefined => { const head = task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead; return typeof head === "string" && /^[0-9a-f]{40}$/.test(head) ? head : undefined; };
-  /** #604 TARGET side: tell the origin project's daemon about a state change of a task it handed us. Best effort and never blocking a board write: an origin that is down reads the state later. */
+  /**
+   * #604 TARGET side: tell the origin project's daemon about a state change of a task it handed us. Best effort and never blocking a board write: an origin that is down, or a notice that fails, is
+   * read by the origin's periodic catch-up (#733), so a missed event stays missed for at most one period. #733: the event carries `seq`, the task's flow revision, to an origin that advertises
+   * `task_handoff_seq`, so it can order events that arrive out of order; the two new events (`changes_requested`, `reopened`) go only to such an origin, which is the one that knows them.
+   */
   const handoffNotifyOrigin = (task: Task, entry: { event: string }): void => {
     const event: HandoffEvent | undefined = handoffEventFor(entry.event, task.state);
     const origin = event ? board.handoffOrigin(task.id) : undefined;
     if (!event || !origin) return;
+    const seq = Math.max(1, task.history.length);
     void (async () => {
       try {
         const project = registeredProjects(hubHome()).find(candidate => candidate.id === origin.projectId);
         const descriptor = project && readControl(project.stateDir);
         if (!project || !descriptor || !descriptor.features?.includes("task_handoff")) return;
+        const sequenced = descriptor.features.includes("task_handoff_seq");
+        if (!sequenced && (event === "changes_requested" || event === "reopened")) return;
         const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
-        try { await client.request({ t: "task_handoff_event", event: { projectId, remoteTask: task.id, state: event, ...(typeof task.sdlc?.pr === "number" ? { pr: task.sdlc.pr } : {}), ...(handoffHead(task) ? { head: handoffHead(task) } : {}) } }, 5000); }
+        try { await client.request({ t: "task_handoff_event", event: { projectId, remoteTask: task.id, state: event, ...(sequenced ? { seq } : {}), ...(typeof task.sdlc?.pr === "number" ? { pr: task.sdlc.pr } : {}), ...(handoffHead(task) ? { head: handoffHead(task) } : {}) } }, 5000); }
         finally { client.close(); }
-      } catch { /* the origin is down or refused: it reads the target's state on its next start */ }
+      } catch { /* the origin is down or refused: the origin's next catch-up reads the target's state */ }
     })();
   };
   /**
-   * #604 ORIGIN side, on start: for every handoff this project made that has not reached a final state, ask the target (if it is running) where the task stands now, and record the answer.
-   * A target that is down is skipped: it is asked again on the next start. Best effort, in the background, never delaying readiness.
+   * #604 ORIGIN side: for every handoff this project made that is still open, ask the target (if it is running) where the task stands now, and record the answer. #733 (H2, H5): it runs at start,
+   * every `handoffCatchUpMs` (5 minutes), and when a target's control descriptor changes (`handoffWatch`), over every row `handoffCatchUpRow` keeps (no 200 cap), asked in chunks of 200 over one
+   * connection per target. One pass at a time, in the background, never holding a board write; a target that is down or refused is asked again at the next pass. `only` limits it to one target.
    */
-  const handoffCatchUp = (): void => {
-    void (async () => {
-      const open = board.handoffOutbound().filter(row => !["approved", "cancelled"].includes(row.state));
+  let handoffCatchUpRunning = false;
+  const handoffCatchUp = async (only?: string): Promise<void> => {
+    if (handoffCatchUpRunning || stopping) return;
+    handoffCatchUpRunning = true;
+    try {
+      const now = Date.now();
       const byProject = new Map<string, number[]>();
-      for (const row of open) byProject.set(row.remoteProject, [...(byProject.get(row.remoteProject) ?? []), row.remoteTask]);
+      for (const row of board.handoffOutboundOpen()) {
+        if (!handoffCatchUpRow(row, now) || only !== undefined && row.remoteProject !== only) continue;
+        byProject.set(row.remoteProject, [...(byProject.get(row.remoteProject) ?? []), row.remoteTask]);
+      }
       for (const [remote, ids] of byProject) {
+        if (stopping) return;
         try {
           const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
           const descriptor = project && readControl(project.stateDir);
           if (!project || !descriptor?.features?.includes("task_handoff")) continue;
           const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: descriptor.cwd ?? project.root }, 3000);
-          try { const reply = await client.request({ t: "task_handoff_states", projectId, tasks: ids.slice(0, 200) }, 5000); if (reply.ok && Array.isArray(reply.states)) tasks.handoffCaughtUp(remote, reply.states); }
-          finally { client.close(); }
-        } catch { /* that target is down or refused: it is asked again on the next start */ }
+          try {
+            for (const chunk of handoffChunks(ids)) {
+              if (stopping) return;
+              const reply = await client.request({ t: "task_handoff_states", projectId, tasks: chunk }, 5000);
+              if (reply.ok && Array.isArray(reply.states)) tasks.handoffCaughtUp(remote, reply.states);
+            }
+          } finally { client.close(); }
+        } catch { /* that target is down or refused: it is asked again at the next pass */ }
       }
-    })();
+    } finally { handoffCatchUpRunning = false; }
+  };
+  /** #733: a target that restarted, or moved to a new control port, is caught up at once instead of at the next period. The first reading of a target only records it (the start-up pass covers it). */
+  const handoffDescriptors = new Map<string, string>();
+  const handoffWatch = (): void => {
+    const changed = new Set<string>();
+    for (const remote of new Set(board.handoffOutboundOpen().filter(row => handoffCatchUpRow(row, Date.now())).map(row => row.remoteProject))) {
+      const project = registeredProjects(hubHome()).find(candidate => candidate.id === remote);
+      const descriptor = project && readControl(project.stateDir);
+      const seen = descriptor ? `${descriptor.instanceId ?? ""}|${descriptor.url}` : "";
+      const before = handoffDescriptors.get(remote);
+      handoffDescriptors.set(remote, seen);
+      if (before !== undefined && before !== seen && seen) changed.add(remote);
+    }
+    for (const remote of changed) void handoffCatchUp(remote);
   };
   const conductedMutations = new Set(["hub_task_propose", "hub_task_accept", "hub_task_decline", "hub_task_done", "hub_review", "hub_checkpoint", "hub_remember"]);
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
@@ -11193,7 +11230,11 @@ export async function startDaemon(opts: DaemonOptions) {
   reconstructRuns();
   ready = true;
   controlWriteTelemetry?.start();
-  handoffCatchUp();
+  void handoffCatchUp();
+  // #733: the periodic catch-up and the descriptor watch. Unref'd, cleared with the other intervals at stop; each pass is guarded by `stopping` and never overlaps another.
+  { const every = opts.handoffCatchUpMs ?? 5 * 60_000, watch = opts.handoffWatchMs ?? 15_000;
+    const periodic = setInterval(() => void handoffCatchUp(), every), descriptorWatch = setInterval(handoffWatch, watch);
+    periodic.unref?.(); descriptorWatch.unref?.(); intervals.push(periodic, descriptorWatch); }
   tasks.scheduleQueuePressureRecheck();
   for (const name of opts.configWatch === false ? [] : CONFIG_SOURCE_FILES) {
     const path = join(opts.cwd, ".agenthub", name);

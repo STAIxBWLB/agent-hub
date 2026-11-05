@@ -129,7 +129,7 @@ export function checkTarget(project: RegisteredProject, descriptor: TargetDescri
 }
 
 /** The states a target reports back, in the order a task can reach them. `declined` is the owner passing; the task then returns to the target's routing, so it is information, not an end. */
-export const HANDOFF_EVENTS = Object.freeze(["accepted", "in_review", "approved", "declined", "cancelled"] as const);
+export const HANDOFF_EVENTS = Object.freeze(["accepted", "in_review", "approved", "declined", "cancelled", "changes_requested", "reopened"] as const);
 export type HandoffEvent = (typeof HANDOFF_EVENTS)[number];
 
 /** Map a target's task history entry to the event the origin is told about, or undefined for every other entry. Reads only the event name and the task state, never a note. */
@@ -140,9 +140,31 @@ export function handoffEventFor(entryEvent: string, state: string): HandoffEvent
   if (entryEvent === "cancelled" && state === "cancelled") return "cancelled";
   if (entryEvent === "done" && state === "in_review") return "in_review";
   if (entryEvent === "approved" && state === "approved") return "approved";
+  // #733 (agent-hub#1203 H10): a reviewer's changes_requested, and the hub's return of that task to its owner, are states the origin used to hear nothing about. A withdrawn approval is the same
+  // verdict on an approved task: the row it reopens is picked up through the sequence.
+  if (entryEvent === "changes_requested" && state === "changes_requested") return "changes_requested";
+  if (entryEvent === "reopened" && state === "in_progress") return "reopened";
   // A class with no reviewer: the done itself approves (`in_progress -> approved`), so the origin hears "approved" for that entry, not "in review".
   if (entryEvent === "done" && state === "approved") return "approved";
   return undefined;
+}
+
+/**
+ * #733: whether the origin still asks a target about a handoff row. An open row always; an approved one for a grace period, because a reviewer can withdraw an approval and the origin only learns
+ * of it through the sequence; a cancelled one never. ponytail: the grace period is a fixed 7 days; a per-row "reopenable" fact from the target would end it, at the cost of one more field per state.
+ */
+export const HANDOFF_APPROVED_GRACE_MS = 7 * 24 * 3600_000;
+export function handoffCatchUpRow(row: { state: string; updatedAt: number }, now: number): boolean {
+  if (row.state === "cancelled") return false;
+  return row.state !== "approved" || now - row.updatedAt <= HANDOFF_APPROVED_GRACE_MS;
+}
+/** One request carries at most this many task ids: the target refuses a longer list (`handoffStatesFor`). */
+export const HANDOFF_STATES_CHUNK = 200;
+/** Split a project's task ids into requests of at most `HANDOFF_STATES_CHUNK`, in order, none dropped. */
+export function handoffChunks(ids: readonly number[]): number[][] {
+  const out: number[][] = [];
+  for (let i = 0; i < ids.length; i += HANDOFF_STATES_CHUNK) out.push(ids.slice(i, i + HANDOFF_STATES_CHUNK));
+  return out;
 }
 
 const SHA = /^[0-9a-f]{40}$/;
