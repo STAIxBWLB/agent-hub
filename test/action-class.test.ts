@@ -364,6 +364,39 @@ for (const [command, expected] of reviewCases) {
   });
 }
 
+// #725 (#1193): a redirect to a device file writes no file, so `2>/dev/null` is not a destroy. The owner's ruling limits `/dev/fd/<n>` to 1 and 2: `> /dev/fd/3` reopens and truncates whatever file that
+// descriptor names. The exemption is the exact literal the command wrote, so a lookalike path or a second, real target on the same command still counts.
+const deviceCases: Array<[string, ActionClass[]]> = [
+  // AC1: the device targets are not outputs
+  ["ls 2>/dev/null", []], ["ls >/dev/null", []], ["ls > /dev/null", []], ["ls 2> /dev/null", []], ["ls >/dev/null 2>&1", []], ["ls &>/dev/null", []], ["ls >|/dev/null", []], ["ls 2>>/dev/null", []],
+  ["ls 2>\"/dev/null\"", []], ["ls 2>'/dev/null'", []],
+  ["cmd 2>/dev/stderr", []], ["cmd >/dev/stdout", []], ["cmd >/dev/tty", []], ["cmd >/dev/fd/1", []], ["cmd >/dev/fd/2", []],
+  ["git status 2>/dev/null", []], ["(ls >/dev/null)", []], ["sh -c 'ls 2>/dev/null'", []], ["echo $(ls 2>/dev/null)", []],
+  ["ls -la ~/.claude/plugins/cache/agent-hub/ 2>&1 | head -20; grep -rln always-ask ~/.claude 2>/dev/null | head", []],
+  ["for t in 40 41; do ahub task show $t --json 2>/dev/null | python3 -c x && echo saved $t; done", []],
+  // a class the command earns on its own is unchanged
+  ["git push 2>/dev/null", ["publish"]], ["git push >/dev/null 2>&1", ["publish"]],
+  // AC2: every other target keeps its classification
+  ["git push </dev/null>/tmp/out", ["publish", "destroy"]], ["echo x >/tmp/out", ["destroy"]], ["echo x >../out", ["destroy"]], ["echo x >/dev/sda", ["destroy"]], ["echo x >~/x", ["destroy"]],
+  ["echo x >/dev/fd/3", ["destroy"]], ["echo x >/dev/fd/10", ["destroy"]], ["echo x >/dev/fd/0", ["destroy"]], ["echo x >/dev/fd/01", ["destroy"]],
+  ["echo x >/dev/zero", ["destroy"]], ["echo x >/dev/random", ["destroy"]],
+  // lookalikes are not the literal: nothing is resolved, normalized or prefix-matched
+  ["echo x >/dev/null/x", ["destroy"]], ["echo x >/dev//null", ["destroy"]], ["echo x >/dev/./null", ["destroy"]], ["echo x >/dev/../tmp/x", ["destroy"]],
+  ["echo x >/dev/null.bak", ["destroy"]], ["echo x >/dev/NULL", ["destroy"]], ["echo x >/dev/stdout/x", ["destroy"]], ["echo x >/dev/ttyS0", ["destroy"]],
+  // a device target does not hide a real one beside it, in either order
+  ["echo x >/dev/null >/tmp/out", ["destroy"]], ["echo x 2>/dev/null >/tmp/out", ["destroy"]], ["echo x >/tmp/out 2>/dev/null", ["destroy"]], ["echo x >/dev/fd/3 2>/dev/null", ["destroy"]],
+  ["echo x 2>/dev/null; echo y >/tmp/out", ["destroy"]], ["sh -c 'echo x >/dev/sda'", ["destroy"]], ["{ echo x >/dev/fd/3; }", ["destroy"]],
+  // other classes from the same line are untouched
+  ["git reset --hard 2>/dev/null", ["destroy"]], ["rm -rf /tmp/x 2>/dev/null", ["destroy"]],
+  // an unresolved expansion keeps its existing answer
+  ["echo x >/dev/$X", ["destroy"]],
+];
+for (const [command, expected] of deviceCases) {
+  test(`#725 device redirect: ${command}`, () => {
+    expect(classifyAction("Bash", { command }, root)).toEqual(expected);
+  });
+}
+
 test("#636 R2 an explicit home cwd is conservatively outside for relative destruction", () => {
   expect(classifyAction("bash", { command: "rm -rf target", cwd: "~" }, root)).toEqual(["destroy"]);
   expect(classifyAction("exec_command", { cmd: "cp -f input target", workdir: "~/archive" }, root)).toEqual(["destroy"]);

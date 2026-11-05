@@ -171,6 +171,13 @@ function commands(text: string, nest = 0): Command[] | undefined {
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
+/**
+ * #725 (#1193): the device files a redirect can name without writing any file: `2>/dev/null` is the common case. Matched as the exact literal the command wrote, never as a resolved path, so
+ * `/dev/../tmp/x`, `/dev//null`, `/dev/null/x` and `/dev/sda` stay outputs outside the root. `/dev/fd/<n>` is limited to 1 and 2 (stdout, stderr): `> /dev/fd/3` reopens and truncates whatever file that
+ * descriptor names, so n >= 3 stays an output. The redirect itself is still recorded (`redirected`), so the read-only git fast path stays closed.
+ */
+const DEVICE_OUTPUTS: ReadonlySet<string> = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/1", "/dev/fd/2"]);
+const isDeviceOutput = (target: string): boolean => DEVICE_OUTPUTS.has(target);
 function outside(target: string, root: string, cwd: string): boolean {
   if (!isAbsolute(root) || !target || /[$`]/.test(target)) return false;
   if (target.startsWith("~") || !cwd && !isAbsolute(target)) return true;
@@ -646,7 +653,7 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
       if (nested) sequence(nested, root, cwd, found, depth + 1, bare ? floor : undefined);
     }
   }
-  if (command.outputs.some(p => cwd.some(at => outside(p, root, at)))) found.add("destroy");
+  if (command.outputs.some(p => !isDeviceOutput(p) && cwd.some(at => outside(p, root, at)))) found.add("destroy");
   if (program === "git") {
     const heads = commandHeads(words, ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"],
       ["-P", "-p", "--no-pager", "--paginate", "--literal-pathspecs", "--bare", "--no-optional-locks", "--no-replace-objects"], ["push", "reset", "clean", "branch"]);

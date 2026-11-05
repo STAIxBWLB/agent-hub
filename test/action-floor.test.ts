@@ -230,6 +230,21 @@ test("an earlier command on the same line that can change the facts ends the flo
   expect(classes("git push origin main && git push origin feat/x")).toEqual(["publish"]);
 });
 
+// #725 (#1193): a redirect to a device file is no longer a destroy, but it is still a redirect: the read-only fast path stays closed for the segment that has one, so the floor still ends for the rest of the line.
+test("#725 a device redirect on an earlier segment still ends the floor for a later push, and is no destroy by itself", () => {
+  for (const command of ["git status 2>/dev/null; git push origin feat/x", "ls >/dev/null; git push origin feat/x", "echo x 2>/dev/null && git push origin feat/x", "git diff >/dev/null; git push origin feat/x", "git status >/dev/stderr; git push origin feat/x"])
+    expect(classes(command), command).toEqual(["publish"]);                       // the push asks (floor ended), and nothing adds destroy
+  // the same line without the redirect keeps the floor
+  expect(classes("git status; git push origin feat/x")).toEqual([]);
+  // a real target, or a descriptor above 2, still asks as destroy
+  for (const command of ["git status >/tmp/e; git push origin feat/x", "cat f >/dev/fd/3; git push origin feat/x", "git status >/dev/sda; git push origin feat/x"])
+    expect(classes(command), command).toEqual(["publish", "destroy"]);
+  // a release-grade push keeps asking, redirect or not
+  expect(classes("git push origin main 2>/dev/null")).toEqual(["publish"]);
+  expect(classes("git push origin v1 2>/dev/null")).toEqual(["publish"]);       // a tag push (facts: `v1` is a local tag) asks with or without the redirect
+  expect(classes("git push origin v1")).toEqual(["publish"]);
+});
+
 test("the shipped classifier is unchanged when nothing supplies the new facts: no floor argument, empty facts", () => {
   for (const command of ["git push origin feat/x", "gh pr comment 3 --body hi", "env GH_REPO=x sh -c 'gh pr comment 3'", "git config push.followTags true; git push origin feat/x"]) {
     expect(classes(command, NO_FLOOR), command).toEqual(classifyAction("bash", { command }, root));
