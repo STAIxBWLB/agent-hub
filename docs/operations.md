@@ -3195,7 +3195,10 @@ or native process handover is certified by the fixture tests.
 A replaced session says it is standing by. Its reconnect requests cannot reclaim
 an attached or claiming peer, even if its status-file read missed that holder. A
 channel-capable session may still replace a pull-only holder once its claim has
-finished. Starting a new session intentionally keeps the newest-hello behavior.
+finished. A session whose plugin does not opt in to standby (an older plugin, or
+tools mode) keeps the newest-hello behavior; an opted-in session started while
+another holds the peer stays a standby until the person runs `ahub peer takeover`
+or the holder leaves (#1174).
 
 A plugin carrying an older launch id than this daemon's current per-peer Claude
 launch is refused with close 4430. It stops reconnecting, and hub tools report that

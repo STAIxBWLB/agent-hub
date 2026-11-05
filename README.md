@@ -106,7 +106,8 @@ defaults. The
   settled worktrees and removes the safe ones only on your confirmation
   (`ahub worktrees`), questions an agent asks you with `hub_ask` (answered with
   `ahub answer`, the console's `A` or the acon inbox), the results of runs you
-  started (`ahub results`), structural config
+  started (`ahub results`), a person-requested handover of a peer to a waiting
+  standby session (`ahub peer takeover`), structural config
   (instances, review, lifecycle) edited with a validated diff and a backup from the
   console or a dashboard settings session, token usage and quota
   history (`ahub usage` and the dashboard's Usage view), and `ahub upgrade`, which
