@@ -175,16 +175,45 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     return listing.projects.filter((p) => p.state === "running" && p.instanceId);
   }
   /**
+   * #730 r1200-m1: the project listing asks every daemon for its status, so a slow one holds it. `space()` and `inbox()` both bound it to `ms` and fall back to the last listing.
+   * One listing is in flight at a time and both callers join it, so a listing that hangs is asked once, not once per poll. A listing that finishes after its budget still becomes the fallback.
+   */
+  let lastRunning: ProjectRow[] = [];
+  let listingFlight: Promise<ProjectRow[]> | undefined;
+  function runningWithin(ms: number): Promise<ProjectRow[]> {
+    if (!listingFlight) {
+      const flight: Promise<ProjectRow[]> = running().then((rows) => { lastRunning = rows; return rows; }, () => lastRunning)
+        .finally(() => { if (listingFlight === flight) listingFlight = undefined; });
+      listingFlight = flight;
+    }
+    return within(listingFlight, ms).then((rows) => rows ?? lastRunning);
+  }
+  /**
    * #727: one project's items from its last answer, reused for a project that did not answer in time, so a slow daemon neither blanks its rows nor restarts their `at`.
    * Fenced by the action generation on both sides: an entry is written only by a computation that no action has overtaken, and read only in the generation it was written in, so an approval
    * or an answer that has been given never comes back from here (a late project is then simply left out of that poll, which is the safe side).
    */
   const lastProjectItems = new Map<string, { generation: number; items: InboxItem[] }>();
+  /**
+   * #730 r1200-m2: a project's `agents` snapshot in flight. `within()` stops waiting at the budget but the snapshot keeps running, so the next refresh joins it while it is pending instead of asking the
+   * same slow project again (one question per slow project, not one per poll). Joined only in the generation it started in, so an answer that began before an action never serves a poll after it.
+   */
+  const projectFlights = new Map<string, { generation: number; instanceId: string | null; promise: Promise<Record<string, unknown> | null> }>();
   /** The project's `agents` snapshot, or null when it did not answer within the budget or threw: the other projects' rows are never held back by it. */
-  const projectSnapshot = (project: ProjectRow) => within(act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "agents" }) as Promise<Record<string, unknown>>, INBOX_PROJECT_BUDGET_MS);
+  const projectSnapshot = (project: ProjectRow) => {
+    let flight = projectFlights.get(project.id);
+    if (!flight || flight.generation !== inboxGeneration || flight.instanceId !== project.instanceId) {
+      const promise: Promise<Record<string, unknown> | null> = Promise.resolve(act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "agents" }) as Promise<Record<string, unknown>>)
+        .then((snap) => snap, () => null)
+        .finally(() => { if (projectFlights.get(project.id)?.promise === promise) projectFlights.delete(project.id); });
+      flight = { generation: inboxGeneration, instanceId: project.instanceId, promise };
+      projectFlights.set(project.id, flight);
+    }
+    return within(flight.promise, INBOX_PROJECT_BUDGET_MS);
+  };
   async function inbox(generation: number): Promise<InboxItem[]> {
     const items: InboxItem[] = [];
-    const projects = await running();
+    const projects = await runningWithin(Math.round(INBOX_PROJECT_BUDGET_MS / 2));
     // The projects are asked at once: the answer takes as long as the slowest daemon, not the sum of them (#727).
     const snaps = await Promise.all(projects.map(projectSnapshot));
     for (const [index, project] of projects.entries()) {
@@ -301,11 +330,8 @@ export function createProvider(options: { home: string; registry?: Registry; lif
     const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); });
     try { return await Promise.race([work, late]); } catch { return null; } finally { clearTimeout(timer); }
   };
-  let lastRunning: ProjectRow[] = [];
   async function space() {
-    // A listing that finishes after its budget still becomes the fallback for the next poll.
-    const listing = running().then((rows) => { lastRunning = rows; return rows; }, () => lastRunning);
-    const projects = await within(listing, Math.round(SPACE_BUDGET_MS / 2)) ?? lastRunning;
+    const projects = await runningWithin(Math.round(SPACE_BUDGET_MS / 2));
     for (const id of offices.keys()) if (!projects.some((p) => p.id === id)) offices.delete(id);
     const scenes = [];
     const snaps = await Promise.all(projects.map((project) =>
