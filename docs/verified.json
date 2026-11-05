@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "142c80c792d322f74f3049d1c3f5db9f85e0c883",
+      "verifiedAgainst": "aceed8832ec401c9615d32e47bdf115ffe691b09",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "142c80c792d322f74f3049d1c3f5db9f85e0c883",
+      "verifiedAgainst": "aceed8832ec401c9615d32e47bdf115ffe691b09",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "142c80c792d322f74f3049d1c3f5db9f85e0c883",
+      "verifiedAgainst": "aceed8832ec401c9615d32e47bdf115ffe691b09",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "142c80c792d322f74f3049d1c3f5db9f85e0c883",
+      "verifiedAgainst": "aceed8832ec401c9615d32e47bdf115ffe691b09",
       "paths": [
         "package.json",
         "src/",
@@ -93,7 +93,7 @@
       ]
     },
     "docs/agent-notes/budget.md": {
-      "verifiedAgainst": "142c80c792d322f74f3049d1c3f5db9f85e0c883",
+      "verifiedAgainst": "aceed8832ec401c9615d32e47bdf115ffe691b09",
       "paths": [
         "src/hub/budget.ts",
         "src/cli/statusline-tee.ts",
@@ -117,7 +117,7 @@
       ]
     },
     "docs/agent-notes/bus.md": {
-      "verifiedAgainst": "142c80c792d322f74f3049d1c3f5db9f85e0c883",
+      "verifiedAgainst": "aceed8832ec401c9615d32e47bdf115ffe691b09",
       "paths": [
         "src/hub/bus.ts",
         "src/hub/envelope.ts",
@@ -132,7 +132,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "142c80c792d322f74f3049d1c3f5db9f85e0c883",
+      "verifiedAgainst": "aceed8832ec401c9615d32e47bdf115ffe691b09",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -243,7 +243,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "142c80c792d322f74f3049d1c3f5db9f85e0c883",
+      "verifiedAgainst": "aceed8832ec401c9615d32e47bdf115ffe691b09",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
@@ -291,7 +291,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "142c80c792d322f74f3049d1c3f5db9f85e0c883",
+      "verifiedAgainst": "aceed8832ec401c9615d32e47bdf115ffe691b09",
       "paths": [
         "test/",
         "scripts/check.sh",
