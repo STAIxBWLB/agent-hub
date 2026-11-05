@@ -33842,7 +33842,7 @@ var server = new Server({ name: "agent-hub", version: VERSION }, toolsMode ? { c
 var inbox = [];
 var hub;
 var detached;
-var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
+var offline = () => detached === "detached by the person" ? `detached by the person; this session no longer acts as ${peerId}. Stop here and tell the person. If they want this session back, start a fresh ahub claude.` : detached ?? "hub is not running for this project (start it with: ahub up).";
 var offlineToolResult = (suffix = "") => {
   const result = text5(`${offline()}${suffix}`);
   return detached === "detached by the person" ? { ...result, isError: true } : result;
