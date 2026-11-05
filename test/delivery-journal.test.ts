@@ -217,6 +217,8 @@ test("corrupt review provenance reopens as unknown while ordinary journal operat
     const reopened = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "p", instanceId: "i2" });
     expect(reopened.get("ordinary-row")).toMatchObject({ state: "queued", peer: "codex" });
     expect(reopened.reviewInputState("claude", sessionHash)).toEqual({ state: "unknown" });
+    expect(reopened.reviewInputHealth()).toMatchObject({ state: "corrupt", cause: "provenance_corrupt" });
+    expect(reopened.reviewInputHealth().nextStep).toContain("review-input provenance");
     expect(reopened.hasReviewInputState()).toBe(true);
     expect(() => reopened.snapshot()).toThrow("inputHash is invalid");
     const transport = reopened.transportSnapshot();
@@ -269,6 +271,53 @@ test("unbound identities and explicit incomplete markers stay scoped and fail cl
     expect(journal.reviewInputState("pi", "d".repeat(64))).toEqual({ state: "clean" });
     expect(journal.hasReviewInputState()).toBe(true);
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("verified input clears only its own peer marker and selected session evidence", () => {
+  const { dir, journal } = open(), sessionA = "a".repeat(64), sessionB = "b".repeat(64), incompleteSession = "e".repeat(64), hashA = "c".repeat(64), hashB = "d".repeat(64);
+  try {
+    journal.markReviewInputIncomplete("claude");
+    journal.markReviewInputIncomplete("codex");
+    journal.holdReviewInput({ peer: "codex", sessionHash: sessionA, inputHash: hashA });
+    journal.holdReviewInput({ peer: "codex", sessionHash: sessionB, inputHash: hashB });
+    journal.markReviewInputIncomplete("codex", incompleteSession);
+    journal.clearReviewInputIncomplete("claude"); // New native SID confirmation has no stable session receipt to clear.
+    expect(journal.reviewInputEvidence("claude")).toMatchObject({ provenance: "available", incompletePeer: false, sessionState: "clean" });
+    expect(journal.reviewInputState("codex", sessionA)).toEqual({ state: "held", inputHash: hashA });
+
+    journal.clearReviewInput("codex", sessionA); // Verified ordinary input releases its own marker and SID.
+    expect(journal.reviewInputState("codex", sessionA)).toEqual({ state: "clean" });
+    expect(journal.reviewInputEvidence("codex", sessionB)).toMatchObject({ incompletePeer: false, sessionState: "held" });
+    expect(journal.reviewInputState("codex", sessionB)).toEqual({ state: "held", inputHash: hashB });
+    expect(journal.reviewInputEvidence("codex", incompleteSession)).toMatchObject({ incompleteSession: true, sessionState: "unknown" });
+    expect(journal.reviewInputHealth()).toMatchObject({ state: "incomplete", cause: "incomplete_markers" });
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("legacy coverage completes after its final review delivery settles and prunes NULL clean receipts", () => {
+  const source = open(), targetDir = mkdtempSync(join(tmpdir(), "ahub-legacy-coverage-"));
+  const target = new DeliveryJournal({ file: join(targetDir, "hub.db"), projectRoot: targetDir, projectId: "p", instanceId: "legacy-target" });
+  try {
+    const review = newEnvelope("hub", "review request", { kind: "review", to: ["claude"], refs: { task: "1", reviewPackage: "reviewer-request-1" } });
+    const row = source.journal.createDelivery({ id: "legacy-review", peer: "claude", state: "needs_review", createdAt: review.ts, originals: [review], out: [review] });
+    const { reviewInputProvenance: _provenance, ...legacySnapshot } = source.journal.snapshot();
+    expect(target.importSnapshot(legacySnapshot, "legacy-review-coverage")).toBe(true);
+    expect(target.reviewInputEvidence("claude", "e".repeat(64))).toMatchObject({ coverageComplete: false, sessionState: "unknown" });
+    target.clearReviewInput("claude", "f".repeat(64)); // Legacy confirmation stays explicit while old review work is unsettled.
+    const targetDb = (target as unknown as { db: Database }).db;
+    expect(targetDb.query("SELECT input_hash FROM review_input_sessions WHERE project_id='p' AND peer='claude' AND session_hash=?").get("f".repeat(64))).toMatchObject({ input_hash: null });
+    const addClean = targetDb.query("INSERT INTO review_input_sessions(project_id,peer,session_hash,input_hash) VALUES('p',?,?,NULL)");
+    for (let index = 0; index < 4095; index++) addClean.run(`legacy-peer-${index}`, index.toString(16).padStart(64, "0"));
+    (target as unknown as { writeReviewInputProvenance(complete: boolean, coverageComplete: boolean): void }).writeReviewInputProvenance(true, false);
+    expect(targetDb.query("SELECT COUNT(*) AS n FROM review_input_sessions WHERE project_id='p' AND input_hash IS NULL").get()).toMatchObject({ n: 4096 });
+
+    target.transition(row.id, "completed");
+    expect(target.reviewInputEvidence("claude", "e".repeat(64))).toMatchObject({ coverageComplete: true, sessionState: "clean" });
+    expect(targetDb.query("SELECT 1 FROM review_input_sessions WHERE project_id='p' AND input_hash IS NULL LIMIT 1").get()).toBeNull();
+    expect(target.get(row.id)?.state).toBe("completed"); // Settlement is observed, never replayed.
+    expect(() => target.holdReviewInput({ peer: "new-peer", sessionHash: "a".repeat(64), inputHash: "b".repeat(64) })).not.toThrow();
+    expect(target.reviewInputHealth()).toMatchObject({ state: "healthy", cause: null });
+  } finally { source.journal.close(); target.close(); rmSync(source.dir, { recursive: true, force: true }); rmSync(targetDir, { recursive: true, force: true }); }
 });
 
 test("closed observer cleanup compare-and-deletes only the matching session receipt", () => {

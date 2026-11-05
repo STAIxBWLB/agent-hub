@@ -57,6 +57,20 @@ export interface JournalDelivery {
 }
 export interface ReviewInputHold { peer: string; sessionHash: string; inputHash: string | null }
 export interface ReviewInputProvenance { version: 2; instanceId: string; complete: boolean; coverageComplete: boolean; count: number; digest: string; holds: ReviewInputHold[]; incompletePeers: string[]; incompleteSessions: Array<{ peer: string; sessionHash: string }> }
+export type ReviewInputState = { state: "clean" } | { state: "held"; inputHash: string } | { state: "unknown" };
+export interface ReviewInputEvidence {
+  provenance: "available" | "corrupt";
+  coverageComplete: boolean;
+  incompletePeer: boolean;
+  incompleteSession: boolean;
+  sessionState: "clean" | "held" | "unknown";
+}
+export type ReviewInputHealthCause = "legacy_coverage" | "incomplete_markers" | "provenance_incomplete" | "provenance_corrupt";
+export interface ReviewInputHealth {
+  state: "healthy" | "incomplete" | "corrupt";
+  cause: ReviewInputHealthCause | null;
+  nextStep: string;
+}
 export interface AcceptedDeliveryCandidate { id: string; peer: string; revision: number; updatedAt: number; notifyConductor: boolean }
 export interface DeliveryJournalOptions {
   file: string;
@@ -661,6 +675,45 @@ export class DeliveryJournal {
     const digest = reviewInputDigest(instanceId, REVIEW_INPUT_VERSION, complete, coverageComplete, count, holds, incompletePeers, incompleteSessions);
     return { version: REVIEW_INPUT_VERSION, instanceId, complete, coverageComplete, count, digest, holds, incompletePeers, incompleteSessions };
   }
+  /** Legacy coverage can be completed only from the journal's durable queue and unsettled rows. */
+  private hasUnsettledReviewInput(): boolean {
+    // deliveries_pending indexes these states by project; LIMIT 1 makes this an existence probe.
+    const row = this.db.query(`SELECT 1 FROM deliveries d
+      WHERE d.project_id=? AND d.state IN ('queued','dispatching','accepted','needs_review')
+        AND EXISTS (SELECT 1 FROM json_each(d.originals) e
+          WHERE json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+            AND json_type(e.value,'$.refs.reviewPackage')='text')
+      LIMIT 1`).get(this.projectId);
+    if (row) return true;
+    // The snapshot itself is bounded by validateBus; this covers work not yet admitted to a delivery row.
+    return !!this.db.query(`SELECT 1 FROM delivery_meta m, json_each(m.bus_snapshot,'$.queues') q, json_each(q.value) e
+        WHERE m.project_id=? AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+          AND json_type(e.value,'$.refs.reviewPackage')='text'
+      UNION ALL SELECT 1 FROM delivery_meta m, json_each(m.bus_snapshot,'$.deferredHub') e
+        WHERE m.project_id=? AND json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review'
+          AND json_type(e.value,'$.refs.reviewPackage')='text'
+      LIMIT 1`).get(this.projectId, this.projectId);
+  }
+  /** Complete legacy coverage only after all pre-upgrade review work is settled; then NULL means clean by absence. */
+  private refreshReviewInputCoverage(inTransaction = false): void {
+    let prior: ReviewInputProvenance;
+    try { prior = this.readReviewInputProvenance(); }
+    catch { return; } // Corrupt provenance stays held without blocking unrelated journal work.
+    if (!prior.complete) return;
+    const unsettled = !prior.coverageComplete && this.hasUnsettledReviewInput();
+    const cleanRows = prior.coverageComplete ? Number((this.db.query("SELECT COUNT(*) AS n FROM review_input_sessions WHERE project_id=? AND input_hash IS NULL").get(this.projectId) as { n: number }).n) : 0;
+    if (unsettled) return;
+    if (!prior.coverageComplete || cleanRows > 0) {
+      const update = () => {
+        this.bump();
+        if (!prior.coverageComplete) this.db.query("UPDATE delivery_meta SET review_input_coverage_complete=1 WHERE project_id=?").run(this.projectId);
+        if (!prior.coverageComplete || cleanRows > 0) this.db.query("DELETE FROM review_input_sessions WHERE project_id=? AND input_hash IS NULL").run(this.projectId);
+        this.writeReviewInputProvenance(prior.complete, true);
+        this.harden();
+      };
+      if (inTransaction) update(); else this.transaction(update);
+    }
+  }
   private writeReviewInputProvenance(complete: boolean, coverageComplete: boolean): void {
     const holds = this.reviewInputRows(), incompletePeers = this.reviewInputIncompletePeerRows(), incompleteSessions = this.reviewInputIncompleteSessionRows();
     if (holds.length + incompletePeers.length + incompleteSessions.length > MAX_REVIEW_INPUTS) fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
@@ -669,11 +722,12 @@ export class DeliveryJournal {
       .run(REVIEW_INPUT_VERSION, complete ? 1 : 0, coverageComplete ? 1 : 0, count, reviewInputDigest(this.instanceId, REVIEW_INPUT_VERSION, complete, coverageComplete, count, holds, incompletePeers, incompleteSessions), this.instanceId, this.projectId);
   }
   /** Persist the scoped unknown marker before changing this session's held/clear receipt. */
-  private writePendingReviewInputSession(peer: string, sessionHash: string, complete: boolean, coverageComplete: boolean): void {
+  private writePendingReviewInputSession(peer: string, sessionHash: string, complete: boolean, coverageComplete: boolean, clearIncompletePeer = false): void {
     this.transaction(() => {
       this.bump();
       this.db.query("INSERT OR IGNORE INTO review_input_incomplete_sessions(project_id,peer,session_hash) VALUES(?,?,?)")
         .run(this.projectId, peer, sessionHash);
+      if (clearIncompletePeer) this.db.query("DELETE FROM review_input_incomplete_peers WHERE project_id=? AND peer=?").run(this.projectId, peer);
       this.writeReviewInputProvenance(complete, coverageComplete);
       this.harden();
     });
@@ -799,7 +853,7 @@ export class DeliveryJournal {
       this.harden();
     });
   }
-  reviewInputState(peerValue: string, sessionHashValue?: string): { state: "clean" } | { state: "held"; inputHash: string } | { state: "unknown" } {
+  reviewInputState(peerValue: string, sessionHashValue?: string): ReviewInputState {
     try {
       const peer = text(peerValue, "review input peer", 256);
       const sessionHash = sessionHashValue === undefined ? undefined : hashText(sessionHashValue, "review input session hash");
@@ -817,6 +871,39 @@ export class DeliveryJournal {
       return { state: "unknown" };
     } catch { return { state: "unknown" }; }
   }
+  /** Cause projection for host admission; preserves reviewInputState's stable public shape. */
+  reviewInputEvidence(peerValue: string, sessionHashValue?: string): ReviewInputEvidence {
+    this.ensureOpen();
+    try {
+      this.refreshReviewInputCoverage();
+      const peer = text(peerValue, "review input peer", 256), sessionHash = sessionHashValue === undefined ? undefined : hashText(sessionHashValue, "review input session hash");
+      const provenance = this.readReviewInputProvenance();
+      const sessionState = this.reviewInputState(peer, sessionHash).state;
+      return {
+        provenance: "available",
+        coverageComplete: provenance.coverageComplete,
+        incompletePeer: provenance.incompletePeers.includes(peer),
+        incompleteSession: sessionHash !== undefined && provenance.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash),
+        sessionState,
+      };
+    } catch {
+      return { provenance: "corrupt", coverageComplete: false, incompletePeer: false, incompleteSession: false, sessionState: "unknown" };
+    }
+  }
+  /** Public-safe journal health; positive held receipts are normal, expected state. */
+  reviewInputHealth(): ReviewInputHealth {
+    this.ensureOpen();
+    try {
+      this.refreshReviewInputCoverage();
+      const provenance = this.readReviewInputProvenance();
+      if (!provenance.complete) return { state: "incomplete", cause: "provenance_incomplete", nextStep: "Keep affected peers held and inspect the review-input provenance record." };
+      if (provenance.incompletePeers.length || provenance.incompleteSessions.length) return { state: "incomplete", cause: "incomplete_markers", nextStep: "Verify the peer's next ordinary input or confirmed session change to clear its incomplete marker." };
+      if (!provenance.coverageComplete) return { state: "incomplete", cause: "legacy_coverage", nextStep: "Allow existing review-marked deliveries to settle; coverage clears when the journal confirms none remain." };
+      return { state: "healthy", cause: null, nextStep: "No action required." };
+    } catch {
+      return { state: "corrupt", cause: "provenance_corrupt", nextStep: "Keep affected peers held and inspect or repair only review-input provenance, preserving delivery and task state." };
+    }
+  }
   /** Compatibility reader: only positive held hashes are returned; clean and unknown stay absent. */
   readReviewInput(peerValue: string, sessionHashValue: string): string | undefined {
     const state = this.reviewInputState(peerValue, sessionHashValue);
@@ -827,20 +914,38 @@ export class DeliveryJournal {
     const peer = text(peerValue, "review input peer", 256), sessionHash = hashText(sessionHashValue, "review input session hash");
     const prior = this.readReviewInputProvenance(), existing = prior.holds.find(row => row.peer === peer && row.sessionHash === sessionHash);
     const pending = prior.incompleteSessions.some(row => row.peer === peer && row.sessionHash === sessionHash);
+    const incompletePeer = prior.incompletePeers.includes(peer);
     const legacyConfirmation = !prior.coverageComplete && !existing && !pending;
-    if ((!existing || existing.inputHash === null) && !pending && !legacyConfirmation) return;
-    if (!existing && !pending && prior.count >= MAX_REVIEW_INPUTS) {
+    if ((!existing || existing.inputHash === null) && !pending && !legacyConfirmation && !incompletePeer) return;
+    if (!existing && !pending && !incompletePeer && prior.count >= MAX_REVIEW_INPUTS) {
       this.transaction(() => { this.bump(); this.db.query("UPDATE delivery_meta SET review_input_coverage_complete=0 WHERE project_id=?").run(this.projectId); });
       fail(`too many review input provenance rows (limit ${MAX_REVIEW_INPUTS})`);
     }
-    this.writePendingReviewInputSession(peer, sessionHash, prior.complete, prior.coverageComplete);
+    this.writePendingReviewInputSession(peer, sessionHash, prior.complete, prior.coverageComplete, true);
     this.transaction(() => {
       this.bump();
       this.db.query("INSERT INTO review_input_sessions(project_id,peer,session_hash,input_hash) VALUES(?,?,?,NULL) ON CONFLICT(project_id,peer,session_hash) DO UPDATE SET input_hash=NULL")
         .run(this.projectId, peer, sessionHash);
       this.db.query("DELETE FROM review_input_incomplete_sessions WHERE project_id=? AND peer=? AND session_hash=?")
         .run(this.projectId, peer, sessionHash);
+      this.db.query("DELETE FROM review_input_incomplete_peers WHERE project_id=? AND peer=?")
+        .run(this.projectId, peer);
       this.writeReviewInputProvenance(prior.complete, prior.coverageComplete);
+      this.harden();
+    });
+    this.refreshReviewInputCoverage();
+  }
+  /** A verified ordinary input or confirmed SID change clears only this peer-level incomplete marker. */
+  clearReviewInputIncomplete(peerValue: string): void {
+    this.ensureOpen();
+    const peer = text(peerValue, "incomplete review input peer", 256), prior = this.readReviewInputProvenance();
+    if (!prior.incompletePeers.includes(peer)) return;
+    this.transaction(() => {
+      const current = this.readReviewInputProvenance();
+      if (!current.incompletePeers.includes(peer)) return;
+      this.bump();
+      this.db.query("DELETE FROM review_input_incomplete_peers WHERE project_id=? AND peer=?").run(this.projectId, peer);
+      this.writeReviewInputProvenance(current.complete, current.coverageComplete);
       this.harden();
     });
   }
@@ -889,6 +994,7 @@ export class DeliveryJournal {
   hasReviewInputState(): boolean {
     this.ensureOpen();
     try {
+      this.refreshReviewInputCoverage();
       const provenance = this.readReviewInputProvenance();
       return !provenance.complete || !provenance.coverageComplete || provenance.holds.some(row => row.inputHash !== null) || provenance.incompletePeers.length > 0 || provenance.incompleteSessions.length > 0;
     } catch { return true; }
@@ -965,6 +1071,7 @@ export class DeliveryJournal {
           this.projectId,
         );
       this.writeQueueMetadata(checkedBus, revision, trackQueuePressure);
+      this.refreshReviewInputCoverage(true);
       this.harden();
       return revision;
     });
@@ -1021,6 +1128,7 @@ export class DeliveryJournal {
             d.attempt ?? null,
             d.previousId ?? null,
           );
+      this.refreshReviewInputCoverage(true);
       this.harden();
       return revision;
     });
@@ -1180,6 +1288,7 @@ export class DeliveryJournal {
         )
         .run(state, revision, Date.now(), reason ?? null, id, this.projectId);
       this.pruneTerminal(state, id);
+      this.refreshReviewInputCoverage(true);
       return this.get(id)!;
     })();
   }
