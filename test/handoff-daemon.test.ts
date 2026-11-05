@@ -881,3 +881,21 @@ test("#734 the real ahub process shows --list with age and reachability and a ca
   const agent = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", a.root, "task", "handoff", "--sync"], { cwd: a.root, env: { ...process.env, AGENTHUB_PEER_ID: "codex" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const agentErr = await new Response(agent.stderr).text(); expect(await agent.exited).toBe(1); expect(agentErr).toContain("codex cannot run ahub task");
 }, 120_000);
+
+// #734 AC6: a sync answers with the state after a pass that began when it was asked. A sync that arrives while a pass is running waits for it and then runs its own, instead of answering from the older pass or from none.
+test("#734 AC6: a sync that arrives while a catch-up pass is running waits for it, then runs its own pass", async () => {
+  let release!: () => void, holds = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000, handoffCatchUpHold: async () => { holds++; if (holds === 1) await gate; } } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" })).ok).toBe(true);
+  let first = false, second = false;
+  const one = task(a.person, "hub_task_handoff_sync").then(r => { first = true; return r; });
+  await until(() => holds >= 1, "a pass is running and held");
+  const two = task(a.person, "hub_task_handoff_sync").then(r => { second = true; return r; });
+  await Bun.sleep(400);
+  expect({ first, second, holds }).toEqual({ first: false, second: false, holds: 1 });                 // both syncs wait for the running pass, neither answers from it
+  release();
+  expect((await one).ok).toBe(true); expect((await two).ok).toBe(true);
+  expect(holds).toBeGreaterThanOrEqual(2);                                                                // at least one sync pass began after the held one ended; two waiting syncs run in turn
+}, 60_000);
