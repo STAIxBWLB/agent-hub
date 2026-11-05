@@ -1084,9 +1084,20 @@ targets before any local effect; implicit broadcast never crosses the boundary.
 
 Signed completion proves remote durable queue admission only and is displayed as
 completed (admitted). Crypto inbox, application claim and Bus publication use
-separate durable stages; a cross-DB failure is uncertainty, never an exactly-once
-or native-execution claim. Late proof cannot auto-settle uncertainty. Person
-accept/discard is local disposed metadata and never a signed application receipt.
+separate durable stages; a receiver cross-DB failure is uncertainty, never an
+exactly-once or native-execution claim. A late authenticated ordinary-chat receipt
+may settle its matching unresolved sender row under current room/member identity,
+without overriding a person disposition. Invocation uncertainty remains person-held
+and is never inferred from transport proof. Person accept/discard is local disposed
+metadata and never a signed application receipt.
+
+Sender retries retain the application id, canonical content and original queue TTL.
+A distinct root delivery requires the same retained content hash and recipient,
+with no disposition or permanent hold; it inherits the original creation/expiry.
+Legacy unknown content hashes refuse cross-root reuse. Receipt ciphertext commits
+to the local durable outbox before chat transport ACK and replays until broker
+storage confirmation. Deferred admission may ACK its durable crypto inbox entry
+and commit its receipt when admission resumes. Neither path claims native execution.
 
 Schema3 reserves a separate durable lane for at most eight canonical receipt
 payloads per room, at most 1,024 bytes each and 512 KiB extra globally. A receipt
@@ -1106,12 +1117,15 @@ Capacity recovery requests fresh presence once per transition; runtime and
 other storage errors stay unACKed.
 Fresh, fully authenticated chat at the ordinary cap is likewise durably refused
 and transport-ACKed without admission, floor advance or signed receipt. Its
-sender remains uncertain until the application ACK deadline; the refused chat
-cannot hold matching receipt traffic behind it in the broker FIFO.
+sender retries at the ACK deadline under the same immutable application id, without
+renewing its queue TTL. Queue expiry or a permanent refusal ends automatic sending.
+The refused chat cannot hold matching receipt traffic behind it in the broker FIFO.
 
 Permanent signed sequence floors survive all application retention/eviction.
 Application-id and trace guards retain 30 days/10,000 rows per room, settled first;
-outside that retention they make no historical claim. MAX_HOP 3 remains absolute.
+outside that retention they make no historical claim. Automatic resend can reach
+this settled-eviction ceiling and repeat admission under a fresh ciphertext sequence:
+exactly once within dedupe ceiling. MAX_HOP 3 remains absolute.
 All-unsettled capacity refuses with ids/counts, and person disposition releases
 settled capacity. This state protects against other users, not hostile code
 running as the same user with access to the private room keys. Native/account,
