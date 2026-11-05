@@ -218,6 +218,10 @@ test("corrupt review provenance reopens as unknown while ordinary journal operat
     expect(reopened.get("ordinary-row")).toMatchObject({ state: "queued", peer: "codex" });
     expect(reopened.reviewInputState("claude", sessionHash)).toEqual({ state: "unknown" });
     expect(reopened.hasReviewInputState()).toBe(true);
+    expect(() => reopened.snapshot()).toThrow("inputHash is invalid");
+    const transport = reopened.transportSnapshot();
+    expect(transport.deliveries).toContainEqual(expect.objectContaining({ id: "ordinary-row", state: "queued", peer: "codex" }));
+    expect(transport).not.toHaveProperty("reviewInputProvenance");
     expect(() => reopened.holdReviewInput({ peer: "claude", sessionHash: "c".repeat(64), inputHash: "d".repeat(64) })).toThrow("inputHash is invalid");
     reopened.close();
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }

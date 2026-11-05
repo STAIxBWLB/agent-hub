@@ -266,7 +266,7 @@ export class Bus {
     this.journal = opts.journal;
     this.trackingQueuePressure();
     if (this.journal) {
-      const state = this.journal.snapshot();
+      const state = this.journal.transportSnapshot();
       const bus = state.bus as BusSnapshot;
       if (state.revision > 0 && bus && bus.schemaVersion === 1) this.loadSnapshot(bus);
       for (const id of state.manualPaused) { this.manualPaused.add(id); this.paused.add(id); }

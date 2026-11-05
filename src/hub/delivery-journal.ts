@@ -76,6 +76,7 @@ export interface JournalSnapshot {
   manualPaused: string[];
   reviewInputProvenance?: ReviewInputProvenance;
 }
+export type JournalTransportSnapshot = Omit<JournalSnapshot, "reviewInputProvenance">;
 
 function fail(message: string): never {
   throw new Error(`invalid delivery journal: ${message}`);
@@ -892,10 +893,7 @@ export class DeliveryJournal {
       return !provenance.complete || !provenance.coverageComplete || provenance.holds.some(row => row.inputHash !== null) || provenance.incompletePeers.length > 0 || provenance.incompleteSessions.length > 0;
     } catch { return true; }
   }
-  snapshot(): JournalSnapshot {
-    this.ensureOpen();
-    const meta = this.readMeta();
-    if (!meta) throw new Error("delivery journal metadata missing");
+  private snapshotTransportBase(meta: Record<string, unknown>): JournalTransportSnapshot {
     this.validateStored(meta);
     const rows = this.db
       .query(
@@ -903,7 +901,6 @@ export class DeliveryJournal {
       )
       .all(this.projectId) as Record<string, unknown>[];
     const storedBus = JSON.parse(String(meta.bus_snapshot || "{}"));
-    const reviewInputProvenance = this.readReviewInputProvenance(meta);
     const bus =
       Object.keys(storedBus).length === 0
         ? {
@@ -915,15 +912,31 @@ export class DeliveryJournal {
             withdrawn: [],
           }
         : storedBus;
-    const result = {
+    const result: JournalTransportSnapshot = {
       schemaVersion: SCHEMA_VERSION,
       revision: Number(meta.revision),
       instanceId: String(meta.instance_id),
       bus,
       manualPaused: JSON.parse(String(meta.manual_paused || "[]")),
       deliveries: rows.map(parseDelivery),
-      reviewInputProvenance,
     };
+    validateJournalSnapshot(result);
+    return result;
+  }
+  /** Transport restoration may proceed from the validated bus/delivery projection while review provenance remains unknown. */
+  transportSnapshot(): JournalTransportSnapshot {
+    this.ensureOpen();
+    const meta = this.readMeta();
+    if (!meta) throw new Error("delivery journal metadata missing");
+    return this.snapshotTransportBase(meta);
+  }
+  /** Strict recovery snapshot: malformed or incomplete review provenance refuses recovery. */
+  snapshot(): JournalSnapshot {
+    this.ensureOpen();
+    const meta = this.readMeta();
+    if (!meta) throw new Error("delivery journal metadata missing");
+    const base = this.snapshotTransportBase(meta);
+    const result: JournalSnapshot = { ...base, reviewInputProvenance: this.readReviewInputProvenance(meta) };
     validateJournalSnapshot(result);
     return result;
   }

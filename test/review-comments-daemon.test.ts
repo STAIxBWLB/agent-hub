@@ -416,6 +416,34 @@ test("recovery refuses a target without review input state when a native session
   } finally { await f.stop(); }
 });
 
+test("ordinary inbox and push ACKs cannot clear a prior hold for an unbound session, while a confirmed new SID is clean", async () => {
+  const f = await fixture();
+  try {
+    const saved = await f.person.request({ t: "review_comment_put", task: f.task, commit: f.head, anchor: f.anchor, body: "stable session review context" });
+    const reviewAck = waitForDelivery(f.owner);
+    expect((await f.person.request({ t: "review_comment_send", task: f.task, ids: [saved.id] })).delivery).toBe("queued");
+    await reviewAck;
+    const taskB = proposeOwnedTask(f.board, "codex", { title: "unbound after restore", class: "test", refs: { paths: ["outside.md"], commit: f.head } });
+
+    await f.restartNative("fixture-native-session");
+    Object.defineProperty(f.owner, "nativeSession", { value: undefined });
+    f.daemon.bus.publish(newEnvelope("user", "ordinary inbox input", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
+    const afterInbox = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "inbox cannot prove same native identity", kind: "finding" } });
+    expect(afterInbox.ok).toBe(false);
+
+    const ordinaryAck = waitForDelivery(f.owner);
+    f.daemon.bus.publish(newEnvelope("user", "ordinary push input", { to: ["codex"], priority: "important", refs: { task: String(taskB.id) } }));
+    await ordinaryAck;
+    const afterPush = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "push ACK cannot prove same native identity", kind: "finding" } });
+    expect(afterPush.ok).toBe(false);
+
+    Object.defineProperty(f.owner, "nativeSession", { value: "confirmed-new-native-session" });
+    const newIdentity = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "confirmed new SID is clean", kind: "finding" } });
+    expect(newIdentity.ok).toBe(true);
+  } finally { await f.stop(); }
+});
+
 test("a new native session with a complete store and no prior hold can remember immediately", async () => {
   const f = await fixture();
   try {

@@ -1525,7 +1525,22 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const resetReviewObserverSessionIfChanged = (peer: PeerId): void => {
     const current = reviewObserverStableSessionHash(peer);
-    if (current) bindReviewObserverSessionHash(peer, current);
+    if (!current) return;
+    const prior = reviewObserverSessionBindings.get(peer);
+    if (prior) { bindReviewObserverSessionHash(peer, current); return; }
+    const currentInput = currentReviewObserverInputs.get(peer), pendingInput = pendingReviewObserverInputs.get(peer);
+    const transientHeld = currentInput?.held === true || currentInput?.reviewInputScoped === true || currentInput?.anchoredSubmission === true
+      || pendingInput?.held === true || pendingInput?.reviewInputScoped === true || pendingInput?.previous?.held === true || pendingInput?.anchoredSubmission === true;
+    if (transientHeld) {
+      let state: "clean" | "held" | "unknown" = "unknown";
+      try { state = journal.reviewInputState(peer, current).state; } catch { /* unknown is held */ }
+      if (state === "clean") {
+        currentReviewObserverInputs.delete(peer); pendingReviewObserverInputs.delete(peer);
+        ordinaryReviewObserverInputs.delete(peer); currentDaemonReviewObserverHolds.delete(peer);
+        restoredPullOnlyReviewHolds.delete(peer); ownedObserverInputs.delete(peer); bus.resetLastDelivery(peer);
+      }
+    }
+    bindReviewObserverSessionHash(peer, current);
   };
   const reviewObserverDurableHeld = (peer: PeerId): boolean => {
     if (peer === USER || peer === HUB || peer.includes("@") || !definitionOf(peer)) return false;
@@ -1533,10 +1548,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const stableSessionHash = reviewObserverStableSessionHash(peer);
     const stickySession = restoredPullOnlyReviewHolds.get(peer);
     if (stickySession && stableSessionHash && stickySession !== stableSessionHash) restoredPullOnlyReviewHolds.delete(peer);
-    const runtimeSessionHash = reviewObserverSessionHash(peer), ordinary = ordinaryReviewObserverInputs.get(peer);
-    const querySessionHash = stableSessionHash ?? (runtimeSessionHash && ordinary?.sessionHash === runtimeSessionHash ? runtimeSessionHash : undefined);
     try {
-      const state = journal.reviewInputState(peer, querySessionHash).state;
+      const state = journal.reviewInputState(peer, stableSessionHash).state;
       if (state !== "clean" && bus.peers.get(peer)?.pullOnly && currentDaemonReviewObserverHolds.get(peer) !== stableSessionHash)
         restoredPullOnlyReviewHolds.set(peer, stableSessionHash ?? "unbound");
       return state !== "clean" || restoredPullOnlyReviewHolds.has(peer);
@@ -2047,20 +2060,21 @@ export async function startDaemon(opts: DaemonOptions) {
     const reviewInputScoped = reviewInputHeld(peer, envs);
     const sameTurnHeld = turnId !== undefined && prior?.turnId === turnId && prior.held;
     const durableHeld = reviewObserverDurableHeld(peer);
-    const held = reviewInputScoped || sameTurnHeld || restoredPullOnlyReviewHeld(peer) || turnId !== undefined && durableHeld;
+    const stableSessionHash = reviewObserverStableSessionHash(peer);
+    const held = reviewInputScoped || sameTurnHeld || restoredPullOnlyReviewHeld(peer)
+      || turnId !== undefined && durableHeld || !stableSessionHash && durableHeld;
     if (held) ordinaryReviewObserverInputs.delete(peer);
     if (held) progress.clearPeer(peer);
     currentReviewObserverInputs.set(peer, { deliveryKey, outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(turnId ? { turnId } : {}), ...(turnId === undefined ? { awaitingTurn: true } : {}), held,
       reviewInputScoped, ...(turnId !== undefined && durableHeld ? { heldSameTurnAtAdmission: true } : {}), ...(sameTurnHeld && prior?.anchoredSubmission ? { anchoredSubmission: true } : {}) });
     pendingReviewObserverInputs.delete(peer);
-    const stableSessionHash = reviewObserverStableSessionHash(peer), sessionHash = stableSessionHash ?? reviewObserverSessionHash(peer);
-    if (!held && sessionHash) {
+    if (!held && stableSessionHash) {
       const inputHash = reviewObserverInputHash(envs, turnId);
       ordinaryReviewObserverInputs.delete(peer);
       try {
-        journal.clearReviewInput(peer, sessionHash);
-        ordinaryReviewObserverInputs.set(peer, { sessionHash, inputHash });
-        if (stableSessionHash) currentDaemonReviewObserverHolds.delete(peer);
+        journal.clearReviewInput(peer, stableSessionHash);
+        ordinaryReviewObserverInputs.set(peer, { sessionHash: stableSessionHash, inputHash });
+        currentDaemonReviewObserverHolds.delete(peer);
       }
       catch {
         try { journal.markReviewInputIncomplete(peer, stableSessionHash); } catch { /* a failed state mutation remains held in RAM */ }
@@ -3311,24 +3325,22 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       else if (!pendingReviewInput) currentReviewObserverInputs.set(peer, { deliveryKey: reviewInputKey, outputKey: reviewObserverDeliveryKey(bus.lastDeliveredTo(peer)), ...(activeTurnId ? { turnId: activeTurnId } : {}), ...(activeTurnId === undefined ? { awaitingTurn: true } : {}),
         held: reviewInputScoped || previousHeldSameTurn, reviewInputScoped, ...(previousHeldSameTurn ? { heldSameTurnAtAdmission: true } : {}), ...(previousHeldSameTurn && previousInput?.anchoredSubmission ? { anchoredSubmission: true } : {}) });
-      const durableSessionHash = reviewObserverStableSessionHash(peer), sessionHash = durableSessionHash ?? reviewObserverSessionHash(peer);
+      const durableSessionHash = reviewObserverStableSessionHash(peer);
       const inputReleaseOwner = bus.peers.get(peer);
-      if (pendingReviewInput?.deliveryKey === reviewInputKey && pendingReviewInput.sessionHash === reviewObserverSessionHash(peer) && pendingReviewInput.durableSessionHash === durableSessionHash && (!inputReleaseOwner || !ownedReviewInputReleasePeers.has(inputReleaseOwner)) && !pendingReviewInput.reviewInputScoped && !reviewInputScoped && !previousHeldSameTurn) {
+      if (durableSessionHash && pendingReviewInput?.deliveryKey === reviewInputKey && pendingReviewInput.sessionHash === reviewObserverSessionHash(peer) && pendingReviewInput.durableSessionHash === durableSessionHash && (!inputReleaseOwner || !ownedReviewInputReleasePeers.has(inputReleaseOwner)) && !pendingReviewInput.reviewInputScoped && !reviewInputScoped && !previousHeldSameTurn) {
         const inputHash = reviewObserverInputHash(originals, activeTurnId);
-        if (sessionHash) {
-          ordinaryReviewObserverInputs.delete(peer);
-          try {
-            journal.clearReviewInput(peer, sessionHash);
-            ordinaryReviewObserverInputs.set(peer, { sessionHash, inputHash });
-            if (durableSessionHash) currentDaemonReviewObserverHolds.delete(peer);
-            const current = currentReviewObserverInputs.get(peer);
-            if (current?.deliveryKey === reviewInputKey) { current.held = false; current.reviewInputScoped = false; delete current.heldSameTurnAtAdmission; delete current.anchoredSubmission; }
-          } catch {
-            try { journal.markReviewInputIncomplete(peer, durableSessionHash); } catch { /* the RAM latch remains held */ }
-            const current = currentReviewObserverInputs.get(peer);
-            if (current?.deliveryKey === reviewInputKey) current.held = true;
-            /* the retained row or this RAM latch continues to hold until a later verified ordinary ACK */
-          }
+        ordinaryReviewObserverInputs.delete(peer);
+        try {
+          journal.clearReviewInput(peer, durableSessionHash);
+          ordinaryReviewObserverInputs.set(peer, { sessionHash: durableSessionHash, inputHash });
+          currentDaemonReviewObserverHolds.delete(peer);
+          const current = currentReviewObserverInputs.get(peer);
+          if (current?.deliveryKey === reviewInputKey) { current.held = false; current.reviewInputScoped = false; delete current.heldSameTurnAtAdmission; delete current.anchoredSubmission; }
+        } catch {
+          try { journal.markReviewInputIncomplete(peer, durableSessionHash); } catch { /* the RAM latch remains held */ }
+          const current = currentReviewObserverInputs.get(peer);
+          if (current?.deliveryKey === reviewInputKey) current.held = true;
+          /* the retained row or this RAM latch continues to hold until a later verified ordinary ACK */
         }
       }
     }
@@ -8936,7 +8948,7 @@ export async function startDaemon(opts: DaemonOptions) {
           ...(recoveryPeerSnapshot?.filter(saved => saved.state !== "offline" && !!definitionOf(saved.id)).map(saved => saved.id) ?? []),
         ]);
         const states = [...relevantPeers].map(readReviewInputState);
-        if (states.includes("unknown")) return "review observer input compatibility is unknown; retained privacy state could not be confirmed";
+        if (states.includes("unknown")) return "target lacks review_observer_input_state; review input compatibility is unknown and retained privacy state could not be confirmed";
         if (heldReviewInput || states.includes("held")) return "target lacks review_observer_input_state; held review input requires a supporting daemon";
       }
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("research_experiments")) && board.hasResearchExperimentState())
