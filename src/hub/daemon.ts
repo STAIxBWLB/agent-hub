@@ -1536,7 +1536,8 @@ export async function startDaemon(opts: DaemonOptions) {
       || !current || current.deliveryKey !== staged.deliveryKey || current.reviewInputScoped || currentAnchorForNextTurn
       || pending?.reviewInputScoped || pendingAnchorForNextTurn) { stagedSessionlessOrdinaryInputs.delete(peer); return; }
     try {
-      if (journal.reviewInputEvidence(peer, undefined).provenance === "corrupt") return;
+      const evidence = journal.reviewInputEvidence(peer, undefined);
+      if (evidence.provenance === "corrupt" || evidence.retainedPeerSessionHold) { stagedSessionlessOrdinaryInputs.delete(peer); return; }
       journal.clearReviewInputIncomplete(peer);
       if (!rememberSessionlessOrdinaryObserverProof(peer, staged.inputHash, owner)) return;
       current.held = false; current.reviewInputScoped = false;
@@ -1579,6 +1580,26 @@ export async function startDaemon(opts: DaemonOptions) {
     const currentInput = currentReviewObserverInputs.get(peer), pendingInput = pendingReviewObserverInputs.get(peer);
     const transientHeld = currentInput?.held === true || currentInput?.reviewInputScoped === true || currentInput?.anchoredSubmission === true
       || pendingInput?.held === true || pendingInput?.reviewInputScoped === true || pendingInput?.previous?.held === true || pendingInput?.anchoredSubmission === true;
+    const quoteInput = pendingInput?.reviewInputScoped || pendingInput?.anchoredSubmission ? pendingInput
+      : currentInput?.reviewInputScoped || currentInput?.anchoredSubmission ? currentInput
+      : pendingInput?.previous?.reviewInputScoped || pendingInput?.previous?.anchoredSubmission ? pendingInput.previous : undefined;
+    let evidence: ReturnType<typeof journal.reviewInputEvidence>;
+    try { evidence = journal.reviewInputEvidence(peer, current); }
+    catch { return; } // No durable identity transition is recorded while provenance cannot be read.
+    if (evidence.provenance === "corrupt") return;
+    if (quoteInput) {
+      const inputHash = reviewObserverHash(JSON.stringify([quoteInput.deliveryKey, quoteInput.inputId ?? "", quoteInput.reviewHoldTurnId ?? quoteInput.turnId ?? ""]));
+      try {
+        journal.holdReviewInput({ peer, sessionHash: current, inputHash });
+        currentDaemonReviewObserverHolds.set(peer, current);
+      } catch {
+        try { journal.markReviewInputIncomplete(peer, current); } catch { /* the RAM quote remains held */ }
+        return;
+      }
+      if (evidence.incompletePeer) try { journal.clearReviewInputIncomplete(peer); } catch { /* the exact-session positive hold now carries the quote */ }
+    } else if (evidence.incompletePeer) {
+      try { journal.clearReviewInputIncomplete(peer); } catch { return; }
+    }
     if (transientHeld) {
       let state: "clean" | "held" | "unknown" = "unknown";
       try { state = journal.reviewInputState(peer, current).state; } catch { /* unknown is held */ }
@@ -1599,6 +1620,7 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       const evidence = journal.reviewInputEvidence(peer, stableSessionHash);
       if (evidence.provenance === "corrupt") return true;
+      if (!stableSessionHash && evidence.retainedPeerSessionHold) return true;
       if (!stableSessionHash && hasSessionlessOrdinaryObserverInput(peer)) return false;
       const ownIncomplete = evidence.incompletePeer || evidence.incompleteSession;
       const retainedPositiveHold = evidence.retainedSessionHold === true;
@@ -1608,6 +1630,16 @@ export async function startDaemon(opts: DaemonOptions) {
         restoredPullOnlyReviewHolds.delete(peer);
       return evidence.sessionState !== "clean" || ownIncomplete || restoredPullOnlyReviewHolds.has(peer);
     } catch { return true; }
+  };
+  const reviewObserverSessionIdentityHoldNote = (peer: PeerId): string | undefined => {
+    if (peer === USER || peer === HUB || peer.includes("@") || !definitionOf(peer)) return undefined;
+    try {
+      if (reviewObserverStableSessionHash(peer)) return undefined;
+      const evidence = journal.reviewInputEvidence(peer);
+      return evidence.provenance === "available" && evidence.retainedPeerSessionHold
+        ? "held: session unidentified, earlier review input; next: reconnect so the native session ID can be confirmed"
+        : undefined;
+    } catch { return undefined; }
   };
   const restoredPullOnlyReviewHeld = (peer: PeerId): boolean => restoredPullOnlyReviewHolds.has(peer);
   const presenceOnlyDelivery = (envs: readonly Envelope[]): boolean => envs.length === 0 || envs.every(env => env.from === HUB && env.kind === "presence");
@@ -2114,16 +2146,27 @@ export async function startDaemon(opts: DaemonOptions) {
     const reviewInputScoped = reviewInputHeld(peer, envs);
     const durableHeld = reviewObserverDurableHeld(peer);
     const stableSessionHash = reviewObserverStableSessionHash(peer);
+    let sessionlessIdentityRequired = false;
+    if (!stableSessionHash) {
+      try {
+        const evidence = journal.reviewInputEvidence(peer);
+        sessionlessIdentityRequired = evidence.provenance === "corrupt" || evidence.retainedPeerSessionHold;
+      } catch { sessionlessIdentityRequired = true; }
+    }
     const sameTurnHeld = turnId !== undefined && (stableSessionHash
       ? prior?.turnId === turnId && prior.held
       : prior?.held === true && prior.reviewHoldTurnId === turnId);
-    let held = reviewInputScoped || sameTurnHeld || restoredPullOnlyReviewHeld(peer)
+    let held = reviewInputScoped || sameTurnHeld || sessionlessIdentityRequired || restoredPullOnlyReviewHeld(peer)
       || turnId !== undefined && durableHeld && (stableSessionHash !== undefined || prior?.reviewHoldTurnId === turnId)
       || !stableSessionHash && durableHeld && turnId === undefined;
     const sessionlessNewTurn = !stableSessionHash && turnId !== undefined
       && (prior?.reviewHoldTurnId !== undefined && prior.reviewHoldTurnId !== turnId || prior?.reviewHoldTurnId === undefined && prior?.reviewInputScoped !== true);
     if (!stableSessionHash && reviewInputScoped) stagedSessionlessOrdinaryInputs.delete(peer);
-    if (!stableSessionHash && !reviewInputScoped && sameTurnHeld && turnId !== undefined && durableHeld) {
+    if (!stableSessionHash && sessionlessIdentityRequired) {
+      ordinaryReviewObserverInputs.delete(peer);
+      stagedSessionlessOrdinaryInputs.delete(peer);
+      held = true;
+    } else if (!stableSessionHash && !reviewInputScoped && sameTurnHeld && turnId !== undefined && durableHeld) {
       ordinaryReviewObserverInputs.delete(peer);
       stageSessionlessOrdinaryObserverInput(peer, deliveryKey, reviewObserverInputHash(envs, turnId), turnId);
       held = true;
@@ -3421,6 +3464,13 @@ export async function startDaemon(opts: DaemonOptions) {
       const durableSessionHash = reviewObserverStableSessionHash(peer);
       const inputReleaseOwner = bus.peers.get(peer);
       const sameSessionlessHoldTurn = activeTurnId !== undefined && pendingReviewInput?.reviewHoldTurnId === activeTurnId;
+      let sessionlessIdentityRequired = false;
+      if (!durableSessionHash) {
+        try {
+          const evidence = journal.reviewInputEvidence(peer);
+          sessionlessIdentityRequired = evidence.provenance === "corrupt" || evidence.retainedPeerSessionHold;
+        } catch { sessionlessIdentityRequired = true; }
+      }
       if (durableSessionHash && pendingReviewInput?.deliveryKey === reviewInputKey && pendingReviewInput.sessionHash === reviewObserverSessionHash(peer) && pendingReviewInput.durableSessionHash === durableSessionHash && (!inputReleaseOwner || !ownedReviewInputReleasePeers.has(inputReleaseOwner)) && !pendingReviewInput.reviewInputScoped && !reviewInputScoped && !previousHeldSameTurn) {
         const inputHash = reviewObserverInputHash(originals, activeTurnId);
         ordinaryReviewObserverInputs.delete(peer);
@@ -3436,6 +3486,10 @@ export async function startDaemon(opts: DaemonOptions) {
           if (current?.deliveryKey === reviewInputKey) current.held = true;
           /* the retained row or this RAM latch continues to hold until a later verified ordinary ACK */
         }
+      } else if (!durableSessionHash && sessionlessIdentityRequired && pendingReviewInput?.deliveryKey === reviewInputKey) {
+        ordinaryReviewObserverInputs.delete(peer); stagedSessionlessOrdinaryInputs.delete(peer);
+        const current = currentReviewObserverInputs.get(peer);
+        if (current?.deliveryKey === reviewInputKey) current.held = true;
       } else if (!durableSessionHash && pendingReviewInput?.deliveryKey === reviewInputKey && !pendingReviewInput.reviewInputScoped
         && !reviewInputScoped && sameSessionlessHoldTurn && (!inputReleaseOwner || !ownedReviewInputReleasePeers.has(inputReleaseOwner))) {
         ordinaryReviewObserverInputs.delete(peer);
@@ -5763,7 +5817,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) ? { ...(p.claiming ? { claiming: true } : {}), ...(definitionOf(id)?.transport === "claude-channel" && p.attached ? { attachMode: p.attachMode, attachEvidence: p.attachEvidence } : {}) } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; const reviewObserverHoldNote = reviewObserverSessionIdentityHoldNote(id); return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(reviewObserverHoldNote ? { reviewObserverHoldNote } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) ? { ...(p.claiming ? { claiming: true } : {}), ...(definitionOf(id)?.transport === "claude-channel" && p.attached ? { attachMode: p.attachMode, attachEvidence: p.attachEvidence } : {}) } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },

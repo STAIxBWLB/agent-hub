@@ -525,6 +525,17 @@ test("a positive session receipt stays sticky when a peer-level incomplete marke
     await f.restartNative("positive-and-incomplete-session");
     const stillHeld = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "positive receipt remains held", kind: "finding" } });
     expect(stillHeld.ok).toBe(false);
+    Object.defineProperty(f.owner, "nativeSession", { value: undefined });
+    const anonymousStatus = await f.person.request({ t: "status" });
+    expect(anonymousStatus.status.peers.codex.reviewObserverHoldNote).toContain("held: session unidentified, earlier review input");
+    expect(anonymousStatus.status.peers.codex.reviewObserverHoldNote).toContain("reconnect so the native session ID can be confirmed");
+    const renderedAnonymousStatus = renderStatus(anonymousStatus.status).flatMap(row => row.map(cell => cell.text)).join("\n");
+    expect(renderedAnonymousStatus).toContain("codex review input");
+    expect(renderedAnonymousStatus).toContain("reconnect so the native session ID can be confirmed");
+    f.daemon.bus.publish(newEnvelope("user", "ordinary inbox while SID is unidentified", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
+    expect(f.daemon.bus.pull("codex")?.some(env => env.body === "ordinary inbox while SID is unidentified")).toBe(true);
+    const stillHeldWithoutSid = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "prior positive SID hold remains unknown", kind: "finding" } });
+    expect(stillHeldWithoutSid.ok).toBe(false);
     f.daemon.bus.publish(newEnvelope("user", "ordinary inbox cannot clear positive receipt", { to: ["codex"], priority: "status", refs: { task: String(taskB.id) } }));
     expect(f.daemon.bus.pull("codex")?.some(env => env.refs?.task === String(taskB.id))).toBe(true);
     const stillHeldAfterPull = await f.peer.request({ t: "task", op: "hub_remember", args: { task: taskB.id, text: "positive receipt survives ordinary pull", kind: "finding" } });

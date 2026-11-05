@@ -286,6 +286,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (p.flowRoles) out.push(...detail(`${id} flow roles`, p.flowRoles.join(", ") || "none", columns));
     if (p.catalogRoles) { out.push(...detail(`${id} catalog roles`, Array.isArray(p.catalogRoles.value) ? p.catalogRoles.value.join(", ") || "none" : "unconfirmed", columns)); if (p.catalogRoles.pending !== undefined) out.push(...detail(`${id} pending roles`, p.catalogRoles.pending.join(", ") || "none", columns, "attention")); }
     if (p.liveAccepted?.length) { settling = true; out.push(...detail("settling", p.liveAccepted.map((v: string) => shortId(v, columns, full)).join(", "), columns, "attention")); }
+    if (typeof p.reviewObserverHoldNote === "string" && p.reviewObserverHoldNote) out.push(...detail(`${id} review input`, p.reviewObserverHoldNote, columns, "attention"));
     if (p.heldRows?.length) {
       for (const row of p.heldRows) out.push(...detail("held", `${id}: needs_review ${shortId(row.id, columns, full)}; from ${row.senders.join(",")}; kind ${row.kinds.join(",")}; age ${duration(Math.max(0, now - row.createdAt))}${row.context ? `; ${row.context}` : ""}; ahub queue show ${row.id}`, columns, "failure"));
     } else if (p.heldBy) {
