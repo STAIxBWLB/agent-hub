@@ -6540,7 +6540,11 @@ within two seconds while retaining durable intents and receipt outbox rows.
 Failure leaves supporting recipients to age the observation; it grants no
 remote process-stop or execution authority. Refresh period and observation clock
 are fixture seams. Restored observations cannot establish freshness; clock
-rollback fails closed and status reads mutate neither time nor delivery state.
+rollback makes displayed liveness unknown and status reads mutate neither time
+nor delivery state. Aging is advisory only and never changes outbound admissibility;
+signed roster, exposure, link and Bus proofs remain authoritative. Explicit signed
+offline presence keeps its existing handling, and the broker can queue for members
+that are not live.
 
 Person previews for epoch-changing owner exposure, invite acceptance, revocation
 and existing-room `join --roster` adoption bind the current roster digest and the

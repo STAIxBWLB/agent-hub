@@ -5980,8 +5980,11 @@ must upgrade to see upgraded hubs' presence. Chat wire shapes remain unchanged. 
 
 On an ephemeral-capable broker, idle hubs request fresh signed presence every
 30 seconds. After three missed periods (90 seconds), room presence becomes
-`unknown`, including `user@label`, and the remote transport is unavailable until
-fresh validated presence arrives. Saved presence after restart is not fresh.
+`unknown` in exposed-peer status. This expiry is advisory only and never blocks
+outbound transport: current signed roster, exposure, link and Bus proofs still
+control sending, including broker queueing for members that are not live. An
+explicit signed offline presence keeps its existing handling. Saved presence after
+restart is not a fresh liveness observation.
 The optional room advisory presence is separate from native peer state; neither
 an offline observation nor expiry stops the other person's agent process.
 

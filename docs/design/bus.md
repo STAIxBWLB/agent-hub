@@ -148,10 +148,13 @@ change; latest-per-sender coalescing and the existing dedupe ceiling remain.
 Only a connection whose broker negotiated ephemeral presence publishes periodic
 `requestReply` snapshots, every 30 seconds by default. Replies never request
 replies. Three missed local refresh periods (90 seconds) make that member's room
-presence `unknown` and its remote transport unavailable, including `user@label`.
-A fresh validated observation restores eligibility under the existing gates.
-Freshness uses local observation time, never a saved snapshot or a sender clock;
-restart needs a fresh observation. Invalid time or clock rollback fails closed.
+presence `unknown` in its exposed-peer status. Aging is advisory only: it changes
+no outbound admissibility, native peer state or authority. Sending remains governed
+by the signed roster, exposure, link and Bus proofs; the broker can queue for a
+member that is not live. An explicit signed offline presence keeps its existing
+handling. Freshness uses local observation time, never a saved snapshot or a sender
+clock; restart needs a fresh observation for its displayed liveness. Invalid time
+or clock rollback makes that advisory view unknown without changing transport gates.
 Status computes the advisory view without mutating the clock or delivery state.
 The refresh period and clock are injectable for fixtures.
 

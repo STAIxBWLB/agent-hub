@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startBroker, type BrokerRuntime } from "../src/broker/server.ts";
 import { Bus } from "../src/hub/bus.ts";
+import { newEnvelope } from "../src/hub/envelope.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { parseRouting } from "../src/hub/routing.ts";
@@ -112,7 +113,7 @@ async function mesh(options: { legacy?: boolean } = {}) {
   } finally { if (options.legacy) globalThis.WebSocket = NativeWebSocket; }
 }
 
-test("member presence expires after three local refresh periods, including user hub liveness", async () => {
+test("member presence ages to advisory unknown without blocking durable transport", async () => {
   const f = await mesh();
   expect(f.a.bus.stateOf("codex@beta")).toBe("idle");
   expect(f.a.bus.stateOf("user@beta")).toBe("idle");
@@ -131,10 +132,14 @@ test("member presence expires after three local refresh periods, including user 
 
   f.a.setNow(1_000_030);
   f.a.chat.tick();
-  expect(f.a.bus.stateOf("codex@beta")).toBe("offline");
-  expect(f.a.bus.stateOf("user@beta")).toBe("offline");
+  expect(f.a.bus.stateOf("codex@beta")).toBe("idle");
+  expect(f.a.bus.stateOf("user@beta")).toBe("idle");
   expect(f.a.chat.peers("work").find(row => row.id === "codex@beta")?.presence).toBe("unknown");
   expect(f.verifiedSenders.filter(sender => sender === betaMember)).toHaveLength(betaFramesAtCrash);
+  const env = newEnvelope("codex", "durable transport is independent of advisory aging", { to: ["codex@beta"] });
+  f.a.bus.publish(env);
+  await f.signal.wait(() => f.a.store!.applicationOutbox("work").some(row => row.application === env.id && row.state === "accepted"), "broker stores chat for the non-live member after its liveness ages");
+  expect(f.a.chat.peers("work").find(row => row.id === "codex@beta")?.presence).toBe("unknown");
 });
 
 test("a legacy broker without ephemeral support preserves signed presence and reports liveness as untracked", async () => {
@@ -152,7 +157,7 @@ test("a legacy broker without ephemeral support preserves signed presence and re
   expect(peer).toMatchObject({ presence: "idle", liveness: "untracked" });
 });
 
-test("restored presence cannot renew freshness, and local clock rollback fails closed until a fresh observation", async () => {
+test("restored presence and clock rollback cannot renew advisory freshness or change transport admission", async () => {
   const f = await mesh(), betaMember = f.b.store!.identity.public.fingerprint;
   const currentPresence = { member: betaMember, peers: [{ id: "codex", state: "idle" as const }] };
   f.a.setNow(1_000_000);
@@ -161,6 +166,7 @@ test("restored presence cannot renew freshness, and local clock rollback fails c
   f.a.chat.presence(f.a.store!, "work", f.a.link!, { member: betaMember, peers: [{ id: "codex", state: "offline" }] });
   f.a.chat.presence(f.a.store!, "work", f.a.link!, { ...currentPresence, restored: true });
   expect(f.a.chat.peers("work").find(row => row.id === "codex@beta")?.presence).toBe("offline");
+  expect(f.a.bus.stateOf("codex@beta")).toBe("offline");
   f.a.chat.presence(f.a.store!, "work", f.a.link!, currentPresence);
 
   f.a.setNow(1_000_001);
@@ -177,14 +183,22 @@ test("restored presence cannot renew freshness, and local clock rollback fails c
   expect(f.a.bus.stateOf("codex@beta")).toBe(beforeRead);
   expect(beforeRead).toBe("idle");
   f.a.chat.tick();
-  expect(f.a.bus.stateOf("codex@beta")).toBe("offline");
+  expect(f.a.bus.stateOf("codex@beta")).toBe("idle");
   expect(f.a.chat.peers("work").find(row => row.id === "codex@beta")?.presence).toBe("unknown");
   f.a.setNow(1_000_029);
   f.a.chat.tick();
-  expect(f.a.bus.stateOf("codex@beta")).toBe("offline");
+  expect(f.a.bus.stateOf("codex@beta")).toBe("idle");
 
   f.a.chat.presence(f.a.store!, "work", f.a.link!, currentPresence);
   expect(f.a.bus.stateOf("codex@beta")).toBe("idle");
+  f.a.chat.presence(f.a.store!, "work", f.a.link!, { member: betaMember, peers: [{ id: "codex", state: "offline" }] });
+  f.a.setNow(1_000_059);
+  f.a.chat.tick();
+  expect(f.a.chat.peers("work").find(row => row.id === "codex@beta")?.presence).toBe("unknown");
+  expect(f.a.bus.stateOf("codex@beta")).toBe("offline");
+  f.a.chat.presence(f.a.store!, "work", f.a.link!, { ...currentPresence, restored: true });
+  expect(f.a.bus.stateOf("codex@beta")).toBe("offline");
+  expect(f.a.chat.peers("work").find(row => row.id === "codex@beta")?.presence).toBe("unknown");
 });
 
 test("a restarted host treats saved peer state as unknown until the member sends fresh presence", async () => {
