@@ -623,6 +623,50 @@ test("an invalid launch row for the queried peer and instance is unknown, never 
   } finally { rmSync(stateDir, { recursive: true, force: true }); }
 });
 
+// #1233: Orca 1.4.250 throws terminal_exited from a wait on a pane whose process ended, on stdout with an empty
+// stderr. The 0.32.0 upgrade stopped on it as "Orca terminal wait failed: exit status 1".
+test("#1233 Orca's gone codes reach the launcher check, and any other Orca failure names its code", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex resume session-1", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-orca-exited-"));
+  const emptyState = mkdtempSync(join(tmpdir(), "ahub-orca-exited-none-"));
+  const ended = Bun.spawnSync(["true"]).pid;
+  writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "codex", projectRoot: root, stateDir, instanceId: "i-target", launcherPid: ended,
+    launcherSignature: "launcher-start", launchId: "launch-new", handle: "term-new", incarnationId: "inc-new", worktreeId, env: {} }]));
+  const orcaError = (code: string, message = code) => ({ status: 1, stdout: JSON.stringify({ ok: false, error: { code, message } }), stderr: "" });
+  const scenario = (waitAnswer: CommandResult, state: string) => fake((argv) => {
+    if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
+    if (argv[1] === "show") return { result: { terminal: terminal({ handle: "term-new", incarnationId: "inc-new" }) } };
+    if (argv[1] === "list") return { result: { terminals: [terminal({ handle: "term-new", incarnationId: "inc-new" })] } };
+    if (argv[1] === "wait") return waitAnswer;
+    throw new Error("unexpected command");
+  });
+  const create = (waitAnswer: CommandResult, state = stateDir) =>
+    createTerminal(binding, { runner: scenario(waitAnswer, state).runner, stateDir: state, instanceId: "i-target", processIdentity: () => undefined }, 5_000);
+  try {
+    for (const code of ["terminal_exited", "terminal_gone", "no_connected_pty"]) {
+      // The launcher recorded itself and is gone: the restoration launcher exited.
+      expect((await create(orcaError(code))).blockers[0]?.code).toBe("launcher-exited");
+      // No launcher record and the pane is still listed: gone, naming Orca's code, never a bare exit status.
+      const unrecorded = (await create(orcaError(code), emptyState)).blockers[0];
+      expect(unrecorded?.code).toBe("terminal-gone");
+      expect(unrecorded?.message).toContain(code === "terminal_exited" ? "exited" : code);
+    }
+    // 1.4.250: a TUI held by a prompt answers ok with satisfied false and a blocked reason, which the blocker names.
+    const prompt = await waitForIdle({ ...binding, handle: "term-new", incarnationId: "inc-new" }, 1, scenario({ stdout: JSON.stringify({ ok: true, result: { wait: { satisfied: false, blockedReason: "agent-update-prompt" } } }) }, stateDir).runner);
+    expect(prompt.blockers[0]).toMatchObject({ code: "terminal-unready", message: expect.stringContaining("blocked by agent-update-prompt") });
+    const other = (await create(orcaError("runtime_unavailable", "Orca runtime is not ready"))).blockers[0];
+    expect(other?.code).toBe("command-error");
+    expect(other?.message).toContain("runtime_unavailable: Orca runtime is not ready");
+    expect(other?.message).not.toContain("exit status");
+    // Without any structured error the exit status is still the last resort.
+    expect((await create({ status: 1, stdout: "", stderr: "" })).blockers[0]?.message).toContain("exit status 1");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+    rmSync(emptyState, { recursive: true, force: true });
+  }
+});
+
 test("a restoration create beside an invalid row of its own launch reads may-run, never exited", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ahub-invalid-create-"));
   try {
