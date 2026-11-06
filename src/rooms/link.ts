@@ -61,7 +61,7 @@ export class RoomNotSentError extends Error {
 export class RoomCodecPendingError extends RoomNotSentError {
   constructor(readonly changed: () => boolean) {
     super(); this.name = "RoomCodecPendingError";
-    this.message = "Room codec observation is pending; wait for signed presence within the original queue lifetime.";
+    this.message = "Room codec observation is pending; wait for a signed codec advertisement, then retry.";
   }
 }
 export type RoomCodecState = "pending" | "supported" | "unsupported";
@@ -71,7 +71,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const STATES: readonly string[] = ["idle", "busy", "paused", "offline"];
-interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void; afterInboundAck?: string; codecFeatures?: boolean; supported?: () => boolean; codecPending?: () => boolean }
+interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void; afterInboundAck?: string; codecFeatures?: boolean; supported?: () => boolean; codecPending?: () => boolean; codecTarget?: { member: string; feature: RoomCodecFeature } }
 interface Session {
   closingHead?: PendingFrame;
   refresh?: ReturnType<typeof setTimeout>;
@@ -153,6 +153,7 @@ export class RoomLink {
   private attempts = 0;
   private state: RoomLinkState = "offline";
   private cause?: RoomHealthCause;
+  private blockedCodec?: { member: string; feature: RoomCodecFeature };
   private clockHighWater?: number;
   private publishing = false;
   private publishDirty = false;
@@ -293,7 +294,15 @@ export class RoomLink {
   private clockRecoveredAfterWrite(): void {
     if (this.cause === "clock_rollback" && this.observationTime() !== undefined) this.setState(this.state);
   }
+  private refreshCodecCause(member: string): void {
+    const blocked = this.blockedCodec;
+    if (!blocked || blocked.member !== member) return;
+    const compatibility = this.codecState(member, blocked.feature);
+    if (compatibility === "supported") this.setState(this.state);
+    else this.setState(this.state, compatibility === "pending" ? "codec_pending" : "codec_unsupported");
+  }
   private setState(state: RoomLinkState, cause?: RoomHealthCause): void {
+    if (cause !== "codec_pending" && cause !== "codec_unsupported") this.blockedCodec = undefined;
     if (this.state === state && this.cause === cause) return;
     this.state = state; this.cause = cause;
     try { this.options.onState?.(state); } catch { /* observation never changes transport authority */ }
@@ -445,7 +454,7 @@ export class RoomLink {
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
   }
-  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void, afterInboundAck?: string, codecFeatures = false, supported?: () => boolean, codecPending?: () => boolean): void {
+  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void, afterInboundAck?: string, codecFeatures = false, supported?: () => boolean, codecPending?: () => boolean, codecTarget?: { member: string; feature: RoomCodecFeature }): void {
     this.current(session, undefined, this.stopping);
     // Only an unsent observation may be replaced. Never reorder an attempted frame.
     if (presence) {
@@ -453,7 +462,7 @@ export class RoomLink {
       if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
     }
     if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
-    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent, afterInboundAck, codecFeatures, supported, codecPending }); session.outboundBytes += wire.byteLength;
+    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent, afterInboundAck, codecFeatures, supported, codecPending, codecTarget }); session.outboundBytes += wire.byteLength;
     this.pumpFrames(session);
   }
   private pumpFrames(session: Session): void {
@@ -475,6 +484,7 @@ export class RoomLink {
       return;
     }
     if (frame.supported && !frame.supported()) {
+      this.blockedCodec = frame.codecTarget;
       this.setState(this.state, frame.codecPending?.() ? "codec_pending" : "codec_unsupported");
       if (frame.retained) {
         // The durable intent owns retry. Withdraw only this unsent ciphertext so
@@ -488,7 +498,7 @@ export class RoomLink {
     // verification/storage of the receipt can pin the chat's one-packet slot.
     if (frame.afterInboundAck && session.processingFrame === frame.afterInboundAck && session.acknowledgedFrame !== frame.afterInboundAck) return;
     this.send(session, frame.wire); session.frameSent = true;
-    if (frame.supported && (this.cause === "codec_unsupported" || this.cause === "codec_pending")) this.setState(this.state);
+    if (frame.codecTarget) this.refreshCodecCause(frame.codecTarget.member);
     const onSent = frame.onSent; frame.onSent = undefined; onSent?.();
   }
   private storedFrame(session: Session, digest: string): void {
@@ -591,6 +601,7 @@ export class RoomLink {
         this.send(session, local.wire); return;
       }
       if (session.presenceRoster !== roster.digest) {
+        if (this.blockedCodec) this.setState(this.state);
         session.presenceRoster = roster.digest; session.features = new Map(); session.codecPeers = new Map(); session.pendingPresenceReplies.clear(); session.presenceAsked = false;
         session.requestPresenceReply = true; session.lastPresence = undefined;
       }
@@ -633,6 +644,7 @@ export class RoomLink {
         if (previous?.session === peer.session && previous.supported === peer.supported) continue;
         (session.codecPeers ??= new Map()).set(peer.member, { session: peer.session, supported: peer.supported });
         session.features?.delete(peer.member);
+        this.refreshCodecCause(peer.member);
         try { this.options.application?.codecsChanged?.(this.context(session, local.current.digest), { member: peer.member }); } catch { /* Compatibility evidence grants no authority. */ }
       }
       return;
@@ -785,6 +797,7 @@ export class RoomLink {
           const payload = packet(result.plaintext), peer = session.codecPeers?.get(frame.sender);
           if (frame.epoch === latest.current.epoch && peer?.supported && peer.session !== null && payload.codecSession === peer.session) {
             (session.features ??= new Map()).set(frame.sender, { session: peer.session, features: roomCodecFeatures(payload.features) });
+            this.refreshCodecCause(frame.sender);
             this.pumpFrames(session);
             try { this.options.application?.codecsChanged?.(this.context(session, digest), { member: frame.sender }); } catch { /* Compatibility observations cannot change admission. */ }
           }
@@ -942,7 +955,7 @@ export class RoomLink {
         this.queueFrame(session, wire, frameDigest, false, allowed, false,
           metadata ? () => this.options.store.applicationSendable(this.options.name, frameDigest)
             : message.type === "receipt" ? () => this.options.store.receiptSendable(this.options.name, frameDigest) : undefined,
-          undefined, message.type === "receipt" && message.frame === session.processingFrame ? message.frame : undefined, false, required ? supported : undefined, required ? () => this.codecState(recipient, required) === "pending" : undefined);
+          undefined, message.type === "receipt" && message.frame === session.processingFrame ? message.frame : undefined, false, required ? supported : undefined, required ? () => this.codecState(recipient, required) === "pending" : undefined, required ? { member: recipient, feature: required } : undefined);
       } catch (error) {
         // The durable outbox owns retry after local backpressure; this is no uncertainty.
         if (!allowed() || !(error instanceof RoomLinkError) || error.code !== "limit" || !metadata && message.type !== "receipt") throw error;

@@ -75,13 +75,14 @@ function gate() {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 }
-async function durableTransport() {
+async function durableTransport(withOther = false) {
   const root = mkdtempSync(join(tmpdir(), "ahub-codec-race-"));
   let now = Date.now();
-  const store = await RoomStore.open({ stateDir: root, clock: () => now }), recipient = await generateHubIdentity();
+  const store = await RoomStore.open({ stateDir: root, clock: () => now }), recipient = await generateHubIdentity(), other = withOther ? await generateHubIdentity() : undefined;
   const { epoch, wire } = await createRoomEpoch({ owner: store.identity, members: [
     { ...store.identity.public, label: "owner", exposedPeers: ["codex"] },
     { ...recipient.public, label: "guest", exposedPeers: ["codex"] },
+    ...(other ? [{ ...other.public, label: "other", exposedPeers: ["codex"] }] : []),
   ] });
   await store.install({ name: "work", broker: "ws://127.0.0.1:1/", wire, expectedDigest: null });
   const sent: Uint8Array[] = [];
@@ -97,7 +98,7 @@ async function durableTransport() {
   const metadata = (message: Extract<RoomMessage, { type: "chat" }>) => ({ deliveryId: crypto.randomUUID(), application: message.envelope.id,
     remotePeer: "user@guest", recipient: recipient.public.fingerprint, peer: "user", ackTimeoutMs: 1000, ttlMs: 60000 });
   const internal = subject as unknown as { storedFrame(session: unknown, digest: string): void; observationTime(): number | undefined; receiveFrame(session: unknown, bytes: Uint8Array, local: ReturnType<RoomStore["get"]>): Promise<void> };
-  return { store, subject, internal, session, sent, recipient, metadata, callbacks, epoch, now: () => now, time: (value: number) => { now = value; },
+  return { store, subject, internal, session, sent, recipient, other, metadata, callbacks, epoch, now: () => now, time: (value: number) => { now = value; },
     close: async () => { Object.assign(subject, { session: undefined }); await subject.stop(); store.close(); rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -239,5 +240,37 @@ test("a grace-epoch feature advertisement cannot establish support for the curre
       ephemeral: true, codecFeatures: true, sequence: { reserve: async () => "2", isCurrent: () => true } });
     await f.internal.receiveFrame(f.session, fresh, f.store.get("work"));
     expect(f.subject.codecState(f.recipient.public.fingerprint, "person_inbox_v1")).toBe("supported");
+  } finally { await f.close(); }
+});
+
+
+test("a withdrawn codec diagnostic follows only its blocked member and feature", async () => {
+  const f = await durableTransport(true), member = f.recipient.public.fingerprint;
+  const handle = (f.subject as unknown as { handle(session: unknown, bytes: Uint8Array): Promise<void> }).handle.bind(f.subject);
+  const inventory = (target: string, session: string | null, supported: boolean) => handle(f.session,
+    canonicalBytes({ v: 1, type: "codec_peers", digest: f.epoch.digest, peers: [{ member: target, session, supported }] }));
+  try {
+    await f.subject.publishApplication(chat("codex"), member);
+    const head = f.session.outbound[0]!.digest, message = chat(); if (message.type !== "chat") throw new Error("expected chat");
+    const metadata = f.metadata(message);
+    await f.subject.publishApplication(message, member, metadata);
+    f.session.features.clear(); f.internal.storedFrame(f.session, head);
+    expect(f.subject.connectionCause).toBe("codec_pending");
+    await inventory(f.other!.public.fingerprint, "D".repeat(43), false);
+    expect(f.subject.connectionCause).toBe("codec_pending");
+    await inventory(member, "C".repeat(43), false);
+    expect(f.subject.connectionCause).toBe("codec_unsupported");
+    expect(f.subject.status().nextStep).toContain("Upgrade both hubs and the broker");
+    await inventory(f.other!.public.fingerprint, null, false);
+    expect(f.subject.connectionCause).toBe("codec_unsupported");
+    await inventory(member, "E".repeat(43), true);
+    expect(f.subject.connectionCause).toBe("codec_pending");
+    const wire = await sealFrame({ epoch: f.epoch, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ROOM_CODEC_FEATURES, codecSession: "E".repeat(43) }),
+      ephemeral: true, codecFeatures: true, sequence: { reserve: async () => "1", isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, wire, f.store.get("work"));
+    expect(f.subject.connectionCause).toBeUndefined();
+    const retained = f.store.applicationOutbox("work").find(row => row.deliveryId === metadata.deliveryId)!;
+    expect(retained.state).toBe("dispatching"); expect(retained.disposition).toBeUndefined();
   } finally { await f.close(); }
 });

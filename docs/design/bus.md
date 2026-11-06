@@ -277,6 +277,10 @@ the original queue lifetime still bounds this wait. A signed advertisement wakes
 that member's queued feature-required sends as well as retained durable intents.
 The pending path rechecks observations after requeue so an advertisement arriving
 during asynchronous refusal cannot be lost. No timer or grace period grants support.
+The private low-level link API has no Bus queue: it returns a typed not-sent
+pending outcome and the caller retries after signed evidence; it never waits
+inside the serialized receive lane. Codec-aware publication puts signed codec
+evidence before its ordinary peer-state observation on the outbound FIFO.
 Only a known legacy transport, an authenticated legacy member, or a signed
 advertisement missing the required feature refuses with the upgrade-and-reconnect
 step. Support is rechecked across awaited admission and at actual publication.

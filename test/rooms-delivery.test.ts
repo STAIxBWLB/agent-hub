@@ -1244,15 +1244,28 @@ test("a receive-only hub retries deferred admission on the journal recovery edge
 
 
 for (const kind of ["person", "invocation"] as const) test(`immediate online ${kind} waits for signed codec observation and preserves its original Bus queue`, async () => {
-  const f = await mesh(600, undefined, false, true);
+  const f = kind === "person" ? await mesh(600, undefined, false, true) : await mesh();
   f.control.authorizeInvocation = true; f.control.admitInvocation = true;
+  if (kind === "invocation") {
+    f.control.holdCodec = "alpha"; f.control.codecGate = deferred();
+    f.b.link!.refresh(); // A retains the last authenticated codex state, while the new source session needs a signed advertisement.
+    await f.event.wait(() => f.control.codecEntered === true && f.a.link!.codecState(f.guest, "read_invocation_v1") === "pending"
+      && f.a.bus.stateOf("codex@beta") === "idle", "established invocation target has a pending replacement-session codec observation");
+  }
   const env = newEnvelope(kind === "person" ? "codex" : HUB, `immediate online ${kind}`, { to: [kind === "person" ? "user@beta" : "codex@beta"], ...(kind === "invocation" ? { kind: "invocation" as const } : {}) });
   f.a.bus.publish(env);
-  await f.event.wait(() => f.control.codecEntered === true && (kind === "invocation" || f.a.bus.stateOf("user@beta") === "offline") && f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "queued"), "pending codec observation defers original Bus delivery");
+  await f.event.wait(() => f.control.codecEntered === true && f.a.bus.stateOf(kind === "person" ? "user@beta" : "codex@beta") === "offline" && f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "queued"), "pending codec observation defers original Bus delivery");
+  const queued = f.a.journal.list().find(row => row.originals.some(original => original.id === env.id) && row.state === "queued")!;
+  const target = kind === "person" ? "user@beta" : "codex@beta";
+  const deadline = f.a.bus.snapshot(false).remoteQueueExpires?.[target]?.[env.id];
+  expect(deadline).toBeDefined();
   expect(f.a.store!.applicationOutbox("work").some(row => row.application === env.id)).toBe(false);
   expect(f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "failed")).toBe(false);
   f.control.holdCodec = undefined; f.control.codecGate!.release();
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === (kind === "person" ? "completed (inbox)" : "completed (admitted)"), "fresh signed advertisement wakes the original queued send");
+  expect((await outbound(f.a, env.id))?.id).toBe(queued.id);
+  const intent = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  expect(intent.expiresAt).toBeLessThanOrEqual(deadline!);
   if (kind === "invocation") expect(f.control.receivedInvocations?.filter(id => id === env.id)).toHaveLength(1);
 });
 
@@ -1304,3 +1317,32 @@ test("a queued pending codec send wakes to a concrete upgrade refusal after curr
   expect(failed?.reason).toContain("upgrade both hubs and the broker");
   expect(f.a.store!.applicationOutbox("work").some(row => row.application === env.id)).toBe(false);
 });
+
+test("a feature snapshot filtered while the receiver is offline is repaired by a signed presence reply", async () => {
+  const f = await mesh(), entered = deferred(), release = deferred();
+  const reserve = f.b.store!.sequence.reserve;
+  let reservations = 0;
+  await f.a.link!.stop();
+  f.b.store!.sequence.reserve = async input => {
+    if (++reservations === 2) { entered.release(); await release.promise; } // Feature seals first while A is offline; hold only its following legacy snapshot.
+    return reserve(input);
+  };
+  const beta = f.b.link as unknown as { forcePresenceRequest: boolean; session: { requestPresenceReply: boolean } };
+  beta.forcePresenceRequest = true; beta.session.requestPresenceReply = true;
+  f.control.phase = "filtered-feature";
+  const publication = f.b.link!.publishPresence(); void publication.catch(() => {});
+  try {
+    await entered.promise;
+    await f.event.wait(() => f.frames.some(frame => frame.sender === f.guest && frame.ephemeral && frame.phase === "filtered-feature"), "broker accepts the codec snapshot while A is disconnected");
+    await f.a.link!.start();
+    await f.event.wait(() => f.a.bus.stateOf("user@beta") === "idle" && f.a.link!.codecState(f.guest, "person_inbox_v1") === "pending", "receiver returns after the feature snapshot was filtered");
+    const env = newEnvelope("codex", "topology-filtered codec send", { to: ["user@beta"] });
+    f.a.bus.publish(env);
+    await f.event.wait(() => f.a.bus.stateOf("user@beta") === "offline" && f.a.journal.list().some(row => row.state === "queued" && row.originals.some(original => original.id === env.id)), "missing advertisement keeps the original send queued");
+    const queued = f.a.journal.list().find(row => row.state === "queued" && row.originals.some(original => original.id === env.id))!;
+    release.release(); await publication;
+    await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (inbox)", "the crossed signed presence reply supplies codec support and wakes the original queue");
+    expect((await outbound(f.a, env.id))?.id).toBe(queued.id);
+    expect(f.a.journal.list().some(row => row.state === "failed" && row.originals.some(original => original.id === env.id))).toBe(false);
+  } finally { release.release(); f.b.store!.sequence.reserve = reserve; await publication.catch(() => {}); }
+}, 20000);
