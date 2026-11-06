@@ -291,7 +291,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "642ae9c9ec65139d2b36dad31ccd590c13ff9d54",
+      "verifiedAgainst": "4ad77748c96383bdef8e55a11ff53808a1359500",
       "paths": [
         "test/",
         "scripts/check.sh",
