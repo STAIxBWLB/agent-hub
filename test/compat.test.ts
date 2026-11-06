@@ -402,3 +402,10 @@ test("the Pi 1.5.0 receipt names the exact package, isolation and every repeated
   expect(receipt).toMatch(/[0-9a-f]{64}/);
   for (const leg of ["sha512-", "Native identity", "Real CLI extension load", "Installed SDK extension registration", "Managed tool callback", "Failed tool result", "Host permission modes", "Provider requests", "PASS", "Not verified"]) expect(receipt, leg).toContain(leg);
 });
+
+
+test("Kimi reviewer 2.5.1 is exact-receipt verified without trusting nearby versions (#888)", () => {
+  expect(assessVersion("kimi-review", "2.5.1", [])).toEqual({ ok: true, state: "verified", version: "2.5.1" });
+  expect(COMPAT["kimi-review"].receipt).toBe("docs/verification/2026-11-06-kimi-251-reviewer-compat.md");
+  for (const near of ["2.5.0", "2.5.2", "2.5.1-rc.1", "kimi 2.5.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
+});
