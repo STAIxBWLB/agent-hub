@@ -7,6 +7,7 @@ import { RoomStore, type RoomState, type RoomPersonInboxMeta, type RoomPersonInb
 import { RoomLink } from "./link.ts";
 import { exposedPeers, roomName, RoomPolicy } from "./policy.ts";
 import type { RoomChat } from "./service.ts";
+import { roomHealthCause, roomHealthNextStep, type RoomHealthCause } from "./health.ts";
 import { projectRoomStatus, type RoomStatusView } from "./status.ts";
 
 export interface RoomCommandResult { kind?: string; artifact?: string; name?: string; room?: string; owner?: string; member?: string }
@@ -50,26 +51,64 @@ export class RoomCommands {
   private pending?: Promise<RoomStore>;
   private store?: RoomStore;
   private stopped = false;
+  private openFailure?: RoomHealthCause;
+  private openRetry?: ReturnType<typeof setTimeout>;
+  private openAttempts = 0;
   private stopWork?: Promise<void>;
   private readonly links = new Map<string, RoomLink>();
   private readonly policy: RoomPolicy;
-  constructor(private readonly options: { stateDir: string; cwd: string; clock?: () => number; refreshMs?: number; presence?: () => readonly {id: string; state: string}[]; chat?: RoomChat }) { this.policy = new RoomPolicy(options.cwd); }
+  constructor(private readonly options: { stateDir: string; cwd: string; clock?: () => number; refreshMs?: number; presence?: () => readonly {id: string; state: string}[]; chat?: RoomChat; openStore?: typeof RoomStore.open; retryMs?: number; changed?: () => void }) { this.policy = new RoomPolicy(options.cwd); }
+  private changedAvailability(): void {
+    try { this.options.changed?.(); } catch { /* Diagnostics cannot change store admission. */ }
+  }
+  private retryOpen(): void {
+    if (this.stopped || this.openRetry) return;
+    const delay = Math.min(30_000, (this.options.retryMs ?? 1000) * 2 ** Math.min(this.openAttempts++, 5));
+    this.openRetry = setTimeout(() => {
+      this.openRetry = undefined;
+      if (!this.stopped) void this.start().catch(() => undefined);
+    }, delay);
+    this.openRetry.unref?.();
+  }
   private async open(): Promise<RoomStore> {
     if (this.stopped) refuse("stopped");
-    this.pending ??= RoomStore.open({ stateDir: join(this.options.stateDir, "rooms"), ...(this.options.clock ? { clock: this.options.clock } : {}) }).then(store => {
+    if (this.store) return this.store;
+    if (this.openRetry) throw new Error(`rooms unavailable (${this.openFailure ?? "unavailable"}); ${roomHealthNextStep(this.openFailure ?? "unavailable")}`);
+    this.pending ??= (this.options.openStore ?? RoomStore.open)({ stateDir: join(this.options.stateDir, "rooms"), ...(this.options.clock ? { clock: this.options.clock } : {}) }).then(store => {
       if (this.stopped) { store.close(); return refuse("stopped"); }
-      this.store = store; return store;
+      this.store = store; this.openFailure = undefined; this.openAttempts = 0;
+      this.changedAvailability(); return store;
+    }).catch(error => {
+      this.pending = undefined;
+      if (!this.stopped) {
+        const cause = roomHealthCause(error), changed = this.openFailure !== cause;
+        this.openFailure = cause; this.retryOpen();
+        if (changed) this.changedAvailability();
+      }
+      throw error;
     });
     return this.pending;
   }
   async start(): Promise<void> {
-    if (!existsSync(join(this.options.stateDir, "rooms"))) return;
-    const store = await this.open();
-    if (!this.stopped) for (const state of store.list()) if (!state.left) this.link(state.name);
+    if (this.stopped || !existsSync(join(this.options.stateDir, "rooms"))) return;
+    try {
+      const store = await this.open();
+      if (!this.stopped) for (const state of store.list()) if (!state.left) this.link(state.name);
+      const recovered = this.openFailure !== undefined;
+      this.openFailure = undefined; this.openAttempts = 0;
+      if (recovered) this.changedAvailability();
+    } catch (error) {
+      if (!this.stopped && !this.openRetry) {
+        const cause = roomHealthCause(error), changed = this.openFailure !== cause;
+        this.openFailure = cause; this.retryOpen();
+        if (changed) this.changedAvailability();
+      }
+      throw error;
+    }
   }
   stop(): Promise<void> {
     if (this.stopWork) return this.stopWork;
-    this.stopped = true; clearTimeout(this.presenceTimer); this.options.chat?.stop();
+    this.stopped = true; clearTimeout(this.presenceTimer); clearTimeout(this.openRetry); this.options.chat?.stop();
     const stops = [...this.links.values()].map(link => link.stop()); this.links.clear();
     this.stopWork = Promise.allSettled([...(this.pending ? [this.pending] : []), ...stops]).then(() => { this.store?.close(); });
     return this.stopWork;
@@ -81,7 +120,7 @@ export class RoomCommands {
       const store = this.store;
       const created: RoomLink = new RoomLink({ store, name, application: this.options.chat?.application, refreshMs: this.options.refreshMs, now: this.options.clock,
         onPresence: value => this.options.chat?.presence(store, name, created, value),
-        onState: state => this.options.chat?.linkState(store, name, created, state), presence: () => {
+        onState: state => { this.options.chat?.linkState(store, name, created, state); this.changedAvailability(); }, presence: () => {
         const allowed = new Set(this.policy.get(name));
         return (this.options.presence?.() ?? []).filter(row => allowed.has(row.id));
       } });
@@ -166,21 +205,33 @@ export class RoomCommands {
   async rows(name?: string, details = name !== undefined): Promise<Record<string, unknown>[]> {
     if (!this.store && !existsSync(join(this.options.stateDir, "rooms"))) return [];
     const store = await this.open(); if (name !== undefined) roomName(name);
-    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline", ...(details && this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) }));
+    return store.list().filter(row => name === undefined || row.name === name).map(row => {
+      const link = this.links.get(row.name)?.status();
+      return { name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch,
+        state: row.left ? "left" : link?.state ?? "offline",
+        ...(details ? { linkCause: row.left ? null : link?.cause ?? null, health: store.health(row.name), ...(this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) } : {}) };
+    });
   }
-  /** Polling uses only already-loaded public metadata; it never opens room state or reads message rows. */
-  statusView(): RoomStatusView[] | null {
-    if (this.stopped) return null;
-    if (!this.store) return this.pending ? null : [];
+  /** One metadata snapshot binds unavailable diagnostics to the reads that failed. */
+  statusSnapshot(): { rooms: RoomStatusView[] | null; roomsOpening?: true; roomsUnavailable?: { code: RoomHealthCause; nextStep: string } } {
+    const unavailable = (code: RoomHealthCause) => ({ rooms: null, roomsUnavailable: { code, nextStep: roomHealthNextStep(code) } });
+    if (this.stopped) return { rooms: null };
+    if (this.openFailure) return unavailable(this.openFailure);
+    if (!this.store) return this.pending ? { rooms: null, roomsOpening: true } : { rooms: [] };
     try {
-      return projectRoomStatus(this.store.statusMetadata().map(row => ({
+      return { rooms: projectRoomStatus(this.store.statusMetadata().map(row => ({
         name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch,
         state: row.left ? "left" : this.links.get(row.name)?.connectionState ?? "offline", members: row.members,
+        linkCause: row.left ? null : this.links.get(row.name)?.connectionCause ?? null, health: this.store!.health(row.name),
         remotePeers: this.options.chat?.peersForStatus(row.name) ?? null,
         relays: this.options.chat?.metrics(row.name, row.room) ?? null,
-      })));
-    } catch { return null; }
+      }))) };
+    } catch (error) { return unavailable(roomHealthCause(error)); }
   }
+  /** Closed cause metadata only, never raw errors; unavailable is distinct from no rooms. */
+  unavailable(): { code: RoomHealthCause; nextStep: string } | undefined { return this.statusSnapshot().roomsUnavailable; }
+  /** Polling uses loaded public metadata and aggregate counts; never opens storage or loads payloads. */
+  statusView(): RoomStatusView[] | null { return this.statusSnapshot().rooms; }
   async preview(action: unknown, raw: unknown, check: () => boolean): Promise<RoomPreview> {
     if (typeof action !== "string") refuse("invalid_operation");
     await assertRoomCryptoReady(); this.current(check);

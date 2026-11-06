@@ -5,7 +5,7 @@ import { boardColumns, type BoardPeerInput } from "../ui/task-board.ts";
 import { peerStyle } from "../ui/peer-palette.ts";
 import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
-import { backendLabel, memorySyncLine, reviewInputHealthLine } from "./status-lines.ts";
+import { backendLabel, memorySyncLine, reviewInputHealthLine, roomsUnavailableLine } from "./status-lines.ts";
 import { ownerIsolationText } from "./role-holders.ts";
 import { schedulePeriodText, scheduleWhen } from "../hub/schedules.ts";
 import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
@@ -14,6 +14,8 @@ import type { SpecsStatus } from "../hub/specs-task.ts";
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
+  roomsUnavailable?: unknown;
+  roomsOpening?: boolean;
   controlWriteTiming?: { active: number; slowRequests: number; blockedLoopSamples: number; droppedActive: number; droppedRecent: number; droppedLogs: number; droppedSpans?: number; droppedMetadata?: number; expiredRequests?: number };
   specs?: SpecsStatus & { missingBlockHint?: boolean };
   queueBackpressure?: QueueBackpressureStatus;
@@ -263,6 +265,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     const text = ownerIsolationText(isolated, data.ownerIsolationNotes?.[id]);
     if (text) out.push(...detail(`${id} owner isolation`, text, columns, isolated ? undefined : "attention"));
   }
+  if (data.roomsOpening === true) out.push(...lines("rooms: opening; wait for local room storage initialization", columns, "muted"));
+  if (data.roomsUnavailable !== undefined) out.push(...lines(roomsUnavailableLine(data.roomsUnavailable), columns, "failure"));
   if (data.deliveryError) out.push(...detail("delivery storage", `${data.deliveryError}; dispatch is stopped`, columns, "failure"));
   for (const [peer, count] of Object.entries(data.deliveryFailures ?? {})) {
     if (Number.isSafeInteger(count) && count > 0) out.push(...detail(`${peer} failed deliveries`, `${count}; next: ahub queue discard --peer ${peer} --state failed`, columns, "attention"));

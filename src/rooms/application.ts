@@ -4,6 +4,21 @@ import { decodeBase64url } from "./crypto.ts";
 import { canonicalBytes, ROOM_WIRE_LIMITS } from "./wire.ts";
 
 export const ROOM_APPLICATION_MAX_BYTES = ROOM_WIRE_LIMITS.plaintext;
+/** Compatibility evidence only: never a permission, privacy or capability grant. */
+export const ROOM_CODEC_FEATURES = ["chat_v1", "person_inbox_v1", "read_invocation_v1"] as const;
+export type RoomCodecFeature = typeof ROOM_CODEC_FEATURES[number];
+export const ROOM_CODEC_FEATURE_LIMIT = 16, ROOM_CODEC_FEATURE_NAME_LIMIT = 64;
+export function roomCodecFeatures(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > ROOM_CODEC_FEATURE_LIMIT
+    || value.some((item, index) => typeof item !== "string" || item.length > ROOM_CODEC_FEATURE_NAME_LIMIT
+      || !/^[a-z][a-z0-9_]*$/.test(item) || index > 0 && value[index - 1] >= item)) fail();
+  return [...value] as string[];
+}
+export function roomRequiredCodecFeature(message: RoomMessage): RoomCodecFeature | undefined {
+  if (message.type !== "chat") return undefined;
+  if (message.envelope.kind === "invocation" || message.envelope.kind === "invocation_result") return "read_invocation_v1";
+  return message.envelope.to === "user" ? "person_inbox_v1" : undefined;
+}
 export interface RoomChatEnvelope {
   id: string; trace: string; hop: number; from: string; to: string;
   kind: "chat" | "status" | "invocation" | "invocation_result"; priority: Priority; body: string; ts: number;

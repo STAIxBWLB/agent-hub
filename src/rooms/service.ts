@@ -11,7 +11,7 @@ import { roomMembers, RoomWireError } from "./wire.ts";
 import { RoomStore, RoomStoreError, RoomApplicationLimitError, type RoomOutgoing } from "./store.ts";
 import { RoomPolicy } from "./policy.ts";
 import { RemotePeer } from "./remote-peer.ts";
-import { parseRemotePeerId, roomReceiptReasonText, type RoomMessage, type RoomReceiptReason, type RoomChatEnvelope } from "./application.ts";
+import { parseRemotePeerId, roomReceiptReasonText, type RoomMessage, type RoomReceiptReason, type RoomChatEnvelope, type RoomCodecFeature } from "./application.ts";
 import { RoomApplicationDeferredError, RoomNotSentError, type RoomLink, type RoomLinkApplication, type RoomLinkContext, type RoomLinkState, type RoomPresencePeer } from "./link.ts";
 import { ROOM_PRESENCE_MISSES, ROOM_REFRESH_MS, roomRefreshPeriod } from "./liveness.ts";
 
@@ -32,7 +32,7 @@ export interface RoomChatOptions {
   roster?: (ids: readonly string[]) => void;
   changed?: () => void;
   limits?: () => LimitsConfig;
-  notice?: (value: { code: "application_capacity"; room: string; count: number } | { code: "sequence_gap"; room: string; sender: string; count: string }) => void;
+  notice?: (value: { code: "application_capacity"; room: string; count: number }) => void;
 }
 export interface RoomMetrics { since: number; outbound: number | null; inbound: number | null; withheld: number | null }
 interface Binding { store: RoomStore; name: string; room: string; link: RoomLink; digest: string; rosterMembers: string; online: boolean; states: Map<string, PeerState>; observedAt: Map<string, number>; observedMembers: Set<string>; tracked?: boolean }
@@ -106,9 +106,9 @@ export class RoomChat {
         const binding = this.bindings.get(context.name); if (binding) this.wakeRemotes(binding);
       },
       capacityChanged: context => { if (context.current()) { const binding = this.bindings.get(context.name); if (binding) this.wakeRemotes(binding); this.capacityChanged(); } },
-      gap: (context, input) => {
-        if (context.current()) this.options.notice?.({ code: "sequence_gap", room: context.store.get(context.name)!.current.room, sender: input.sender, count: input.count });
-      },
+      codecsChanged: (context, input) => { if (context.current()) { const binding = this.bindings.get(context.name); if (binding) { this.wakeRemotes(binding, input.member, true); void this.resumeActive(binding, input.member, input.features); } } },
+      // The signed sequence is room-wide, while chat recipients are selective.
+      // A numeric gap is not evidence of loss and must not become an operator notice.
     };
   }
   private now(): number { return this.options.now?.() ?? Date.now(); }
@@ -149,8 +149,10 @@ export class RoomChat {
     const target = this.targets.get(id);
     return !!target && target.binding.online && this.valid(target.binding);
   }
-  private wakeRemotes(binding: Binding): void {
-    for (const [id, remote] of this.remotes) if (this.targets.get(id)?.binding === binding) remote.wake();
+  private wakeRemotes(binding: Binding, member?: string, codecOnly = false): void {
+    for (const [id, remote] of this.remotes) if (this.targets.get(id)?.binding === binding && (member === undefined || this.targets.get(id)?.member === member)) {
+      if (codecOnly) remote.wakeCodec(); else remote.wake();
+    }
   }
   metrics(name: string, room?: string): RoomMetrics | null {
     const binding = this.bindings.get(name);
@@ -360,7 +362,7 @@ export class RoomChat {
       && this.policy.get(binding.name).includes(peer)
       && roomMembers(state.current).some(member => member.fingerprint === binding.store.identity.public.fingerprint && member.exposedPeers.includes(peer));
   }
-  presence(store: RoomStore, name: string, link: RoomLink, value: { member: string; peers: readonly RoomPresencePeer[]; restored?: true }): void {
+  presence(store: RoomStore, name: string, link: RoomLink, value: { member: string; peers: readonly RoomPresencePeer[]; restored?: true; observedAt?: number | null }): void {
     const binding = this.bindings.get(name), state = store.get(name);
     if (!binding || binding.store !== store || binding.link !== link || !state || !this.valid(binding)) return;
     const member = roomMembers(state.current).find(row => row.fingerprint === value.member);
@@ -371,7 +373,9 @@ export class RoomChat {
     const now = this.presenceNow();
     if (value.restored !== true) {
       binding.observedMembers.add(member.fingerprint);
-      if (now !== undefined) binding.observedAt.set(member.fingerprint, now);
+      const receivedAt = Object.hasOwn(value, "observedAt") ? value.observedAt : now;
+      if (typeof receivedAt === "number" && Number.isSafeInteger(receivedAt) && receivedAt >= 0 && now !== undefined && receivedAt <= now) binding.observedAt.set(member.fingerprint, receivedAt);
+      else binding.observedAt.delete(member.fingerprint);
     }
     this.refreshTargets();
     this.queueChanged();
@@ -686,11 +690,18 @@ export class RoomChat {
     }
     void this.retryPending(); this.queueChanged();
   }
-  private async resumeActive(binding: Binding): Promise<void> {
+  private async resumeActive(binding: Binding, codecMember?: string, changedFeatures?: readonly RoomCodecFeature[]): Promise<void> {
     if (!binding.online || !this.valid(binding)) return;
     try {
-      const active = binding.store.applicationOutbox(binding.name, true).filter(row => (row.state === "dispatching" || row.state === "accepted")
-        && !this.personHeldInvocations.get(binding.name)?.has(row.deliveryId));
+      const active = binding.store.applicationOutbox(binding.name, true).filter(row => {
+        if (row.state !== "dispatching" && row.state !== "accepted" || this.personHeldInvocations.get(binding.name)?.has(row.deliveryId)) return false;
+        if (codecMember === undefined) return true;
+        if (row.recipient !== codecMember) return false;
+        let required: RoomCodecFeature | undefined;
+        if (row.peer === USER) required = "person_inbox_v1";
+        else if (this.options.bus.queueShow(row.deliveryId)?.originals.some(isInvocationKind)) required = "read_invocation_v1";
+        return required !== undefined && (changedFeatures === undefined || changedFeatures.includes(required));
+      });
       for (const row of active) this.remotes.get(row.remotePeer)?.reservePending(row.deliveryId);
       for (const row of active) this.launchResume(binding, row);
     } catch { /* The next authenticated online edge will retry durable rows. */ }
@@ -747,6 +758,10 @@ export class RoomChat {
     const digest = state?.current.digest;
     const proofCurrent = () => this.storeProofCurrent(binding, row, remote, target, digest);
     if (!target || !state || target.binding !== binding || !proofCurrent()) { remote.deferResume(row.deliveryId); return; }
+    let required: RoomCodecFeature | undefined;
+    if (isInvocationKind(original)) required = "read_invocation_v1";
+    else if (row.peer === USER) required = "person_inbox_v1";
+    if (required && !binding.link.codecSupported(row.recipient, required)) { remote.deferResume(row.deliveryId); return; }
     const ready = () => binding.online && this.options.bus.remoteSendAllowed(remote);
     if (!ready()) { remote.waitForReady(row.deliveryId); return; }
     let readinessLost = false;

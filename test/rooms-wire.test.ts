@@ -299,3 +299,21 @@ test("ephemeral frame header is strict and authenticated before receiver admissi
   expect(replay.commits).toHaveLength(0);
   expect((await openFrame({ wire, identity: f.guest, current: f.guestEpoch, replay: replay.port })).status).toBe("accepted");
 });
+
+
+test("codec feature presence marker is strict, ephemeral-only and signed before replay admission", async () => {
+  const f = await fixture(), replay = inbox(f.guestEpoch);
+  const wire = await sealFrame({ epoch: f.epoch, identity: f.owner, recipients: [f.guest.public.fingerprint], plaintext: text.encode("codec presence"), sequence: sequence(), ephemeral: true, codecFeatures: true });
+  const frame = decodeFrame(wire);
+  expect(frame.codecFeatures).toBe(true);
+  for (const bad of [false, 1, "true", null]) expect(() => decodeFrame(canonicalBytes({ ...frame, codecFeatures: bad }))).toThrow();
+  const { ephemeral: _ephemeral, ...withoutEphemeral } = frame;
+  expect(() => decodeFrame(canonicalBytes(withoutEphemeral))).toThrow();
+  const { codecFeatures: _codecFeatures, ...legacy } = frame;
+  await expect(openFrame({ wire: canonicalBytes(legacy), identity: f.guest, current: f.guestEpoch, replay: replay.port })).rejects.toThrow();
+  expect(replay.commits).toHaveLength(0);
+  expect((await openFrame({ wire, identity: f.guest, current: f.guestEpoch, replay: replay.port })).status).toBe("accepted");
+  let reserved = false;
+  await expect(sealFrame({ epoch: f.epoch, identity: f.owner, recipients: [f.guest.public.fingerprint], plaintext: text.encode("must not seal"), sequence: { reserve: async () => { reserved = true; return "2"; }, isCurrent: () => true }, codecFeatures: true })).rejects.toThrow();
+  expect(reserved).toBe(false);
+});

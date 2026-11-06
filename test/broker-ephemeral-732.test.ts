@@ -15,8 +15,8 @@ async function fixture() {
   const store = await BrokerStore.open({ stateDir, limits: { queuedPerRoom: 2, queuedGlobal: 2 } });
   store.install(roster, owner.public.fingerprint);
   let sequence = 0;
-  const frame = async (ephemeral = true) => {
-    const wire = await sealFrame({ epoch: created.epoch, identity: owner, recipients: [online.public.fingerprint, offline.public.fingerprint].sort(), plaintext: new TextEncoder().encode("presence-or-chat"), ...(ephemeral ? { ephemeral: true as const } : {}), sequence: { reserve: async () => String(++sequence), isCurrent: () => true } });
+  const frame = async (ephemeral = true, codecFeatures = false) => {
+    const wire = await sealFrame({ epoch: created.epoch, identity: owner, recipients: [online.public.fingerprint, offline.public.fingerprint].sort(), plaintext: new TextEncoder().encode("presence-or-chat"), ...(ephemeral ? { ephemeral: true as const } : {}), ...(codecFeatures ? { codecFeatures: true as const } : {}), sequence: { reserve: async () => String(++sequence), isCurrent: () => true } });
     return verifyPublicFrame({ wire, roster });
   };
   return { owner, online, offline, roster, stateDir, store, frame, cleanup: () => { store.close(); rmSync(stateDir, { recursive: true, force: true }); } };
@@ -64,5 +64,29 @@ test("broker reopen discards ephemeral recipients but preserves durable traffic 
       expect(restored.enqueue(ephemeral, f.owner.public.fingerprint, [f.online.public.fingerprint]).duplicate).toBe(true);
       expect(restored.stats().queuedFrames).toBe(1);
     } finally { restored.close(); }
+  } finally { f.cleanup(); }
+});
+
+
+test("codec advertisements coalesce separately from an undelivered legacy presence snapshot", async () => {
+  const f = await fixture(), online = [f.online.public.fingerprint];
+  try {
+    const legacy = await f.frame(), firstCodec = await f.frame(true, true);
+    f.store.enqueue(legacy, f.owner.public.fingerprint, online);
+    f.store.enqueue(firstCodec, f.owner.public.fingerprint, online);
+    expect(f.store.stats().queuedFrames).toBe(2);
+    expect(f.store.next(f.roster.room, f.online.public.fingerprint)?.digest).toBe(legacy.digest);
+    const codec = await f.frame(true, true);
+    f.store.enqueue(codec, f.owner.public.fingerprint, online);
+    expect(f.store.stats().queuedFrames).toBe(2);
+    expect(f.store.next(f.roster.room, f.online.public.fingerprint)?.digest).toBe(legacy.digest);
+    const newerLegacy = await f.frame();
+    f.store.enqueue(newerLegacy, f.owner.public.fingerprint, online);
+    expect(f.store.stats().queuedFrames).toBe(2);
+    expect(f.store.next(f.roster.room, f.online.public.fingerprint)?.digest).toBe(codec.digest);
+    f.store.ack(f.roster.room, f.online.public.fingerprint, codec.digest);
+    expect(f.store.next(f.roster.room, f.online.public.fingerprint)?.digest).toBe(newerLegacy.digest);
+    f.store.disconnect(f.roster.room, f.online.public.fingerprint);
+    expect(f.store.stats().queuedFrames).toBe(0);
   } finally { f.cleanup(); }
 });

@@ -408,7 +408,9 @@ export class BrokerStore {
         // ponytail: while A awaits C, A's broadcast reply to B may replace C's request;
         // C waits for A's next state change/reconnect. Task #736 idle refresh or
         // per-(sender,recipient) coalescing closes this latest-per-sender ceiling.
-        this.removeEphemeral(proof.room, proof.sender);
+        // Codec advertisements must not evict a legacy snapshot that a mixed
+        // member has not received yet. Both groups share the existing queue caps.
+        this.removeEphemeral(proof.room, proof.sender, undefined, proof.codecFeatures === true);
         const connected = new Set(onlineRecipients);
         recipients = recipients.filter(recipient => connected.has(recipient));
       }
@@ -438,12 +440,13 @@ export class BrokerStore {
     this.transaction(() => { this.removeEphemeral(room, undefined, recipient); });
   }
 
-  private removeEphemeral(room?: string, sender?: string, recipient?: string): void {
+  private removeEphemeral(room?: string, sender?: string, recipient?: string, codecFeatures?: boolean): void {
     const rows = this.db.query<{ rowid: number; wire: Uint8Array; recipients: string }, [string | null, string | null, string | null, string | null]>(
       "SELECT rowid,wire,recipients FROM queued_frames WHERE (? IS NULL OR room=?) AND (? IS NULL OR sender=?)",
     ).all(room ?? null, room ?? null, sender ?? null, sender ?? null);
     for (const row of rows) {
-      if (!decodeFrame(row.wire).ephemeral) continue;
+      const frame = decodeFrame(row.wire);
+      if (!frame.ephemeral || codecFeatures !== undefined && (frame.codecFeatures === true) !== codecFeatures) continue;
       const remaining = recipient === undefined ? [] : parseRecipients(row.recipients).filter(id => id !== recipient);
       if (remaining.length) this.db.query("UPDATE queued_frames SET recipients=? WHERE rowid=?").run(JSON.stringify(remaining), row.rowid);
       else this.db.query("DELETE FROM queued_frames WHERE rowid=?").run(row.rowid);
