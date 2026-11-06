@@ -242,9 +242,13 @@ slices, and once the terminal reads idle (an idle terminal may be the shell the
 launcher returned to), a recorded launcher that is gone means the launch failed,
 recognized within one slice. A launcher whose identity cannot be read is unknown
 and is waited for, never taken as gone. A handle Orca reports
-`terminal_handle_stale` means the terminal is gone only when no recorded
-launcher may still run and Orca no longer lists the terminal's incarnation;
-otherwise the create stays uncertain. A launcher that died before recording
+`terminal_handle_stale`, `terminal_exited`, `terminal_gone` or
+`no_connected_pty` (the codes Orca itself groups as gone; 1.4.250 raises
+`terminal_exited` for a wait on a pane whose process ended, #1233) leads to the
+launcher check: the terminal is gone only when no recorded launcher may still
+run and Orca no longer lists the terminal's incarnation; otherwise the create
+stays uncertain. Any other Orca failure is reported with Orca's error code and
+message, and a wait Orca answers as blocked names its `blockedReason`. A launcher that died before recording
 itself is not distinguished from a slow one, and whether Orca reports the bare
 login shell as TUI-idle is not verified: if it does, the create stops at once as
 not mappable to the session; if not, after the 10-minute readiness bound. Either
