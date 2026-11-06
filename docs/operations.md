@@ -6363,6 +6363,10 @@ the latter and retains its ephemeral/liveness behavior. A peer with a pending
 codec observation waits under the original queue expiry; it does not receive a
 false upgrade refusal. Known legacy or unsupported peers name the upgrade step.
 Ordinary presence refreshes preserve same-connection signed codec evidence.
+During a rolling upgrade, person-inbox (`user@label`) and invocation sends to a
+released 0.31/0.32 member, or between upgraded hubs on a released broker, are
+refused before any effect with an upgrade step; plain chat keeps working.
+Upgrade the broker, then every room member to a codec-capable release, then reconnect.
 `ahub status` distinguishes local room storage opening from a failed broker
 connection; direct `ahub room status` failures expose only closed cause/action
 metadata. A healthy online link needs no broker repair advice.
