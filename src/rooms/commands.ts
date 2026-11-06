@@ -207,9 +207,18 @@ export class RoomCommands {
     const store = await this.open(); if (name !== undefined) roomName(name);
     return store.list().filter(row => name === undefined || row.name === name).map(row => {
       const link = this.links.get(row.name)?.status();
-      return { name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch,
-        state: row.left ? "left" : link?.state ?? "offline",
-        ...(details ? { linkCause: row.left ? null : link?.cause ?? null, health: store.health(row.name), ...(this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) } : {}) };
+      const result: Record<string, unknown> = { name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch,
+        state: row.left ? "left" : link?.state ?? "offline" };
+      if (details) {
+        result.linkCause = null;
+        if (!row.left) result.linkCause = link?.cause ?? null;
+        result.health = store.health(row.name);
+        if (this.options.chat) {
+          result.deliveries = this.options.chat.rows(row.name);
+          result.remotePeers = this.options.chat.peers(row.name);
+        }
+      }
+      return result;
     });
   }
   /** One metadata snapshot binds unavailable diagnostics to the reads that failed. */

@@ -161,10 +161,14 @@ function healthCause(value: unknown): RoomHealthCause | null {
 export function projectRoomDiagnostics(value: unknown): RoomStatusDiagnostics {
   if (!plainRecord(value)) return {};
   const cause = healthCause(ownData(value, "linkCause"));
-  return {
-    ...(ownField(value, "health").present ? { health: projectRoomHealth(ownData(value, "health")) } : {}),
-    ...(ownField(value, "linkCause").present ? { linkCause: cause, linkNextStep: cause === null ? null : roomHealthNextStep(cause) } : {}),
-  };
+  const result: RoomStatusDiagnostics = {};
+  if (ownField(value, "health").present) result.health = projectRoomHealth(ownData(value, "health"));
+  if (ownField(value, "linkCause").present) {
+    result.linkCause = cause;
+    result.linkNextStep = null;
+    if (cause !== null) result.linkNextStep = roomHealthNextStep(cause);
+  }
+  return result;
 }
 
 /** Absent or malformed availability metadata stays unknown without evaluating getters. */
