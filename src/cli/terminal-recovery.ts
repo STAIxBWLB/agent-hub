@@ -231,6 +231,7 @@ function errorText(result: CommandResult): string {
  * terminal_exited, so restoration must read it as gone and check the launcher, not stop on a command error (#1233).
  */
 const GONE_CODES = new Set(["terminal_handle_stale", "terminal_exited", "terminal_gone", "no_connected_pty"]);
+const GONE_STATES: Record<string, string> = { terminal_handle_stale: "no longer exists", terminal_exited: "exited (terminal_exited)" };
 
 function runnerFailure(argv: readonly string[], result: CommandResult): RecoveryBlocker {
   return { code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} failed: ${errorText(result)}` };
@@ -243,8 +244,8 @@ async function run(runner: CommandRunner, argv: readonly string[]): Promise<unkn
     const code = errorCode(result);
     if (typeof code === "string" && GONE_CODES.has(code)) {
       const handle = argv.includes("--terminal") ? argv[argv.indexOf("--terminal") + 1] : undefined;
-      const terminal = `the Orca terminal${handle ? ` ${handle}` : ""}`;
-      throw new OrcaCommandError({ code: "terminal-gone", message: code === "terminal_handle_stale" ? `${terminal} no longer exists` : code === "terminal_exited" ? `${terminal} exited (terminal_exited)` : `${terminal} is gone (${code})` });
+      const state = GONE_STATES[code] ?? `is gone (${code})`;
+      throw new OrcaCommandError({ code: "terminal-gone", message: `the Orca terminal${handle ? ` ${handle}` : ""} ${state}` });
     }
     throw new OrcaCommandError(runnerFailure(argv, result));
   }
@@ -253,8 +254,8 @@ async function run(runner: CommandRunner, argv: readonly string[]): Promise<unkn
   const payload = responseResult(value);
   if (root.ok === false || payload.ok === false) {
     const error = root.error ?? payload.error;
-    const detail = typeof error === "string" ? error : typeof object(error).code === "string" ? String(object(error).code) : "";
-    throw new OrcaCommandError({ code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} returned ok:false${detail ? `: ${detail}` : ""}` });
+    const detail = typeof error === "string" ? error : object(error).code;
+    throw new OrcaCommandError({ code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} returned ok:false${typeof detail === "string" && detail ? `: ${detail}` : ""}` });
   }
   return value;
 }
