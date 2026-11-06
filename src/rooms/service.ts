@@ -35,7 +35,7 @@ export interface RoomChatOptions {
   notice?: (value: { code: "application_capacity"; room: string; count: number } | { code: "sequence_gap"; room: string; sender: string; count: string }) => void;
 }
 export interface RoomMetrics { since: number; outbound: number | null; inbound: number | null; withheld: number | null }
-interface Binding { store: RoomStore; name: string; room: string; link: RoomLink; digest: string; rosterMembers: string; online: boolean; states: Map<string, PeerState>; observedAt: Map<string, number>; tracked?: boolean }
+interface Binding { store: RoomStore; name: string; room: string; link: RoomLink; digest: string; rosterMembers: string; online: boolean; states: Map<string, PeerState>; observedAt: Map<string, number>; observedMembers: Set<string>; tracked?: boolean }
 interface Target { binding: Binding; member: string; peer: string }
 const ACTIVE = new Set(["dispatching", "accepted", "needs_review"]);
 function completedText(reason?: RoomReceiptReason): string {
@@ -119,10 +119,6 @@ export class RoomChat {
     if (!Number.isSafeInteger(now) || now < 0 || this.presenceClockHighWater !== undefined && now < this.presenceClockHighWater) {
       if (mutate && !this.presenceClockInvalid) {
         for (const binding of this.bindings.values()) if (this.livenessTracked(binding) !== false) binding.observedAt.clear();
-        for (const [id, remote] of this.remotes) {
-          const target = this.targets.get(id);
-          if (target && this.livenessTracked(target.binding) !== false) remote.presence("offline", false);
-        }
       }
       if (mutate) this.presenceClockInvalid = true;
       return undefined;
@@ -151,10 +147,7 @@ export class RoomChat {
   }
   private targetSendable(id: string): boolean {
     const target = this.targets.get(id);
-    if (!target || !target.binding.online) return false;
-    const fresh = this.memberFresh(target.binding, target.member, this.presenceNow());
-    if (!fresh) this.remotes.get(id)?.presence("offline", false);
-    return fresh;
+    return !!target && target.binding.online && this.valid(target.binding);
   }
   private wakeRemotes(binding: Binding): void {
     for (const [id, remote] of this.remotes) if (this.targets.get(id)?.binding === binding) remote.wake();
@@ -198,12 +191,12 @@ export class RoomChat {
     if (counted?.room !== room && (counted || this.counts.size < 64)) this.counts.set(name, { room, outbound: 0, inbound: 0, withheld: 0 });
     const saved = this.bindings.get(name);
     const binding: Binding = saved?.store === store && saved.link === link && saved.room === room ? saved : {
-      store, name, room, link, digest, rosterMembers, online: false, states: new Map<string, PeerState>(), observedAt: new Map<string, number>(),
+      store, name, room, link, digest, rosterMembers, online: false, states: new Map<string, PeerState>(), observedAt: new Map<string, number>(), observedMembers: new Set<string>(),
     };
     const tracked = link.livenessTracked;
     if (binding.digest !== digest || binding.rosterMembers !== rosterMembers
       || tracked !== undefined && binding.tracked !== undefined && tracked !== binding.tracked) {
-      binding.states.clear(); binding.observedAt.clear(); binding.online = false; binding.digest = digest; binding.rosterMembers = rosterMembers;
+      binding.states.clear(); binding.observedAt.clear(); binding.observedMembers.clear(); binding.online = false; binding.digest = digest; binding.rosterMembers = rosterMembers;
     }
     if (tracked !== undefined) binding.tracked = tracked;
     this.bindings.set(name, binding);
@@ -222,6 +215,13 @@ export class RoomChat {
   }
   private refreshTargets(): void {
     const now = this.presenceNow();
+    // Consume an expired observation once. Keeping its timestamp makes every
+    // later queue callback revisit this branch and can re-reserve settled rows.
+    if (now !== undefined) for (const binding of this.bindings.values()) if (this.livenessTracked(binding) !== false) {
+      for (const [member, seenAt] of binding.observedAt) {
+        if (now >= seenAt && now - seenAt >= this.refreshMs * ROOM_PRESENCE_MISSES) binding.observedAt.delete(member);
+      }
+    }
     const candidates = new Map<string, Target[]>();
     for (const binding of this.bindings.values()) {
       const state = binding.store.get(binding.name);
@@ -349,9 +349,8 @@ export class RoomChat {
     }
     for (const [id, remote] of this.remotes) {
       const target = this.targets.get(id);
-      const fresh = target && this.livenessTracked(target.binding) === false ? true : target ? this.memberFresh(target.binding, target.member, now) : false;
-      const state = !fresh ? "offline" : target?.peer === USER ? "idle" : target?.binding.states.get(id) ?? "offline";
-      remote.presence(state, target?.binding.online === true && fresh);
+      const state = target?.peer === USER ? "idle" : target?.binding.states.get(id) ?? "offline";
+      remote.presence(state, target?.binding.online === true);
     }
     this.options.roster?.([...this.targets.keys()]);
   }
@@ -366,11 +365,14 @@ export class RoomChat {
     if (!binding || binding.store !== store || binding.link !== link || !state || !this.valid(binding)) return;
     const member = roomMembers(state.current).find(row => row.fingerprint === value.member);
     if (!member) return;
-    if (value.restored && binding.observedAt.has(value.member)) return;
+    if (value.restored && binding.observedMembers.has(value.member)) return;
     for (const peer of member.exposedPeers) binding.states.delete(`${peer}@${member.label}`);
     for (const peer of value.peers) if (member.exposedPeers.includes(peer.id)) binding.states.set(`${peer.id}@${member.label}`, peer.state);
     const now = this.presenceNow();
-    if (value.restored !== true && now !== undefined) binding.observedAt.set(member.fingerprint, now);
+    if (value.restored !== true) {
+      binding.observedMembers.add(member.fingerprint);
+      if (now !== undefined) binding.observedAt.set(member.fingerprint, now);
+    }
     this.refreshTargets();
     this.queueChanged();
   }
@@ -402,6 +404,9 @@ export class RoomChat {
     return [...new Set([...this.outgoing.values()].filter(({ binding, row }) => binding.store.get(binding.name)?.current.room === room && ACTIVE.has(row.state) && !row.disposition).map(({ row }) => row.application))];
   }
   private outcome(binding: Binding, row: RoomOutgoing): void {
+    // Refresh this snapshot before settlement callbacks synchronously re-enter
+    // queueChanged through Bus.onQueues.
+    this.refreshOutgoing(binding);
     const remote = this.remotes.get(row.remotePeer);
     if (row.state === "needs_review" && !row.disposition) {
       const journalRow = this.options.bus.queueShow(row.deliveryId);
@@ -419,6 +424,7 @@ export class RoomChat {
   }
   private settleStoredOutcome(binding: Binding, remote: RemotePeer | undefined, row: RoomOutgoing): boolean {
     if ((row.state !== "completed" && row.state !== "failed_safe") || row.disposition) return false;
+    this.refreshOutgoing(binding);
     const outcome = row.lateReceipt?.outcome ?? row.state;
     const reason = row.lateReceipt?.reason ?? row.reason ?? (outcome === "completed" ? "admitted" : "boundary_refused");
     const journalRow = this.options.bus.queueShow(row.deliveryId);
@@ -496,6 +502,7 @@ export class RoomChat {
     if (!this.valid(binding)) return;
     let rows: RoomOutgoing[];
     try { rows = binding.store.applicationOutbox(binding.name); } catch { return; }
+    this.refreshOutgoing(binding);
     for (const row of rows) {
       if (row.disposition) continue;
       const remote = this.remotes.get(row.remotePeer);
@@ -506,7 +513,7 @@ export class RoomChat {
         const current = this.currentOutgoingRow(binding, row);
         if (!this.options.bus.holdRemoteMissingIntent(remote, row.deliveryId, current, "proof-unavailable")) continue;
         const quarantined = binding.store.quarantineOutgoingPermanent(binding.name, row.deliveryId, "boundary_refused", current);
-        if (quarantined) remote.settled(row.deliveryId);
+        if (quarantined) { this.refreshOutgoing(binding); remote.settled(row.deliveryId); }
       } else if (row.state === "needs_review") this.holdStoreNeedsReview(binding, row, remote);
     }
     this.refreshOutgoing(binding);
@@ -740,7 +747,7 @@ export class RoomChat {
     const digest = state?.current.digest;
     const proofCurrent = () => this.storeProofCurrent(binding, row, remote, target, digest);
     if (!target || !state || target.binding !== binding || !proofCurrent()) { remote.deferResume(row.deliveryId); return; }
-    const ready = () => binding.online && this.options.bus.remoteSendAllowed(remote) && this.memberFresh(binding, row.recipient, this.presenceNow());
+    const ready = () => binding.online && this.options.bus.remoteSendAllowed(remote);
     if (!ready()) { remote.waitForReady(row.deliveryId); return; }
     let readinessLost = false;
     const current = () => {
@@ -789,16 +796,18 @@ export class RoomChat {
   }
   private reconcileDispositions(binding: Binding): boolean {
     let complete = true;
+    const settled: Array<{ peer: string; deliveryId: string }> = [];
     for (const row of binding.store.applicationOutbox(binding.name)) if (!row.disposition) {
       const action = this.options.bus.remoteDisposition(row.deliveryId);
       if (action) try {
         const disposed = binding.store.disposeApplication(binding.name, row.deliveryId, action, true, () => this.valid(binding)
           && binding.store.get(binding.name)?.current.digest === binding.digest && this.options.bus.remoteDisposition(row.deliveryId) === action);
-        if (disposed?.disposition === action) this.remotes.get(row.remotePeer)?.settled(row.deliveryId);
+        if (disposed?.disposition === action) settled.push({ peer: row.remotePeer, deliveryId: row.deliveryId });
       }
       catch { complete = false; }
     }
     this.refreshOutgoing(binding);
+    for (const row of settled) this.remotes.get(row.peer)?.settled(row.deliveryId);
     return complete;
   }
   disposition(peer: string, deliveryId: string, action: "completed" | "retry" | "discard"): void {
@@ -810,7 +819,10 @@ export class RoomChat {
       const disposed = binding.store.disposeApplication(binding.name, deliveryId, action, true, () => this.valid(binding)
         && binding.store.get(binding.name)?.current.room === room && binding.store.get(binding.name)?.current.digest === digest
         && this.options.bus.remoteDisposition(deliveryId) === action);
-      if (disposed?.disposition === action) this.remotes.get(peer)?.settled(deliveryId);
+      if (disposed?.disposition === action) {
+        this.refreshOutgoing(binding);
+        this.remotes.get(peer)?.settled(deliveryId);
+      }
       this.personHeldInvocations.get(binding.name)?.delete(deliveryId);
       this.refreshOutgoing(binding); break;
     }
