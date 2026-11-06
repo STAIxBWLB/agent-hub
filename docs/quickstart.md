@@ -23,6 +23,18 @@ ahub setup
 
 From a clone instead: `git clone`, `bun install`, `bun link`.
 
+### Installed with dotfiles
+
+If the dotfiles CLI manages ahub (`dot ai family install ahub`), `ahub` runs from `~/.local/share/dotfiles/tools/ahub/<version>/`. Keep that the only copy:
+
+- Wherever an upgrade note or `ahub upgrade` says `bun add -g @staix/agent-hub@<version>`, run `dot ai family install ahub --version <version>` instead, then `ahub setup`, and restart Claude sessions. `dot ai rollback ahub` switches back.
+- Do not also install with `bun add -g`. Check with `readlink -f "$(command -v ahub)"`, and remove a bun copy with `bun remove -g @staix/agent-hub` before running `ahub setup`.
+- Moving from a bun install to dotfiles, `ahub setup` can refuse with `refused marketplace removal ... non-user plugin rows were preserved`. Claude still lists an older project- or local-scope agent-hub row (`claude plugin list --json`). Hub-launched sessions do not load it.
+  - Remove it with `claude plugin uninstall agent-hub@agent-hub --scope project`, run from that row's project directory.
+  - If the row's project path is your home directory, do not: there the project settings file is `~/.claude/settings.json`. Instead back up `<claude home>/plugins/installed_plugins.json` and delete only that row from it.
+  - Then run `ahub setup` again (#1245).
+- If Claude then reports `PreToolUse ... hook error ... Module not found ... claude-profile-hook.ts`, a hook from the removed copy is left behind. Delete that one entry from `hooks.PreToolUse` in that home's `settings.json`; `ahub setup` has already installed the current one (#1245).
+
 `ahub doctor` tells you what is installed, running and configured. Rows you do not need can stay red: the hub works with any subset of the peers.
 
 For managed launchers, two-agent task/review work, approvals, graceful shutdown,
