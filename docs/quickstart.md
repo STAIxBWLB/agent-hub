@@ -34,7 +34,9 @@ it; other projects keep their version. It then names the `bun add -g` and
 
 ## Upgrading to 0.31.0
 
-Nothing changes until you use something new: the hub.db schema and control protocol are unchanged (16 through 17), and `@staix/agent-mem` stays at 0.20.1. Two defaults are new. An accepted channel delivery that is never confirmed moves to needs-review after 10 minutes (`bus.accepted_settle_ms`). A Claude session that only inherits `AGENTHUB_CHANNEL=1`, without the native channel launch, attaches tools-only and reads its messages with `hub_inbox`; `ahub status` names the mode. A 0.30.0 hub sending a handoff here is refused when the spec issue already has an open task, until it is upgraded and passes `--duplicate-ok`.
+The control protocol stays at 16 through 17 and hub.db keeps schema version 2, but this release adds the nullable `deliveries.failure_cause` diagnostic column. N-1 recovery ignores the extra snapshot key, and older rows without it remain unknown. The exact `@staix/agent-mem` pin moves from 0.20.1 to 0.21.0; upgrading does not activate placement or migrate a memory home. `ahub memory declined` now lists complete bounded physical IDs and safe rule categories when inspection succeeds. Automatic v3 sync remains unsupported until agent-mem#281 provides activation and fresh host attestation. The [N-1 statement](../CHANGELOG.md) distinguishes the hub 0.30.0 fixture from agent-mem's own 0.20.3 compatibility proof.
+
+Two defaults are new. An accepted channel delivery that is never confirmed moves to needs-review after 10 minutes (`bus.accepted_settle_ms`). A Claude session that only inherits `AGENTHUB_CHANNEL=1`, without the native channel launch, attaches tools-only and reads its messages with `hub_inbox`; `ahub status` names the mode. A 0.30.0 hub sending a handoff here is refused when the spec issue already has an open task, until it is upgraded and passes `--duplicate-ok`.
 
 `ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.31.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
@@ -186,7 +188,7 @@ The restarted Claude planner gets the release-train tools (`hub_release_new`, `h
 
 Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.20.1. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
+Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.21.0. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
@@ -264,7 +266,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 ## Shared memory
 
-The hub exact-pins the first-party `@staix/agent-mem` 0.20.1 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
+The hub exact-pins the first-party `@staix/agent-mem` 0.21.0 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
 
 Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
