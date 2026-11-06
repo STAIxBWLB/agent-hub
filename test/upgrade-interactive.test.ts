@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestRelease, newerVersion } from "../src/cli/recovery-package.ts";
 import { endAgents, follow, operationLines, operationScreen, peerKind, planLines, planScreen, resetFlow, stepLabel, type ScreenIO, type UpgradeHost } from "../src/cli/upgrade-interactive.ts";
-import { PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
-import { cancellableWait, nextActions, nextChoices, type Inspection, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { PACKAGE_ROOT, reattachPlannedTerminals } from "../src/cli/upgrade-runtime.ts";
+import { cancellableWait, nextActions, nextChoices, planFingerprint, type Inspection, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { operationPath, recoveryRunner, signedRunner, stopSignedRunner, writeOperation } from "../src/hub/recovery-store.ts";
 
@@ -87,7 +87,7 @@ test("apply is offered only without blockers, and an applied plan is followed to
   let applied = 0;
   await planScreen(host({ plan: async () => plan({ blockers: ["claude: unmanaged session cannot reconnect"] }), apply: async () => { applied++; return operation(); } }), blocked.io);
   expect(applied).toBe(0);
-  expect(blocked.asked[0]).toStartWith("Blocked: take the next action each blocker names, then refresh.\n[r] refresh  [k] end agents");
+  expect(blocked.asked[0]).toStartWith("Blocked: take the next action each blocker names, then press [r] refresh.\n[r] refresh  [k] end agents");
   expect(blocked.out.at(-1)).toBe("nothing was changed");
 
   const steps: Partial<RecoveryOperation>[] = [{ phase: "running", step: "stage" }, { phase: "running", step: "prepare:alpha" }, { phase: "running", step: "prepare:alpha" }, { phase: "running", step: "commit:alpha" }, { phase: "completed", step: "completed" }];
@@ -470,4 +470,88 @@ test("#718 nothing is added when the host has nothing to say, when it throws, wh
   const cancelled = screen([]);
   await operationScreen(host({ read: () => operation({ phase: "cancelled" }), afterCompleted: () => STEP }), cancelled.io, ID);
   expect(cancelled.out.join("\n")).not.toContain("does not update the global CLI");
+});
+
+// #1246. The plan records the verified orphaned-but-connected panes; the menu's [t] switches exactly those and plans again.
+const orphanRoot = "/alpha";
+const orphan = { peer: "codex", handle: "term_codex", incarnationId: "inc-1", worktreeId: "wt-1", root: orphanRoot };
+const orphanBlocker = "the codex terminal term_codex in /alpha is orphaned but still connected (terminal term_codex); next action: reattach the pane with orca terminal switch --terminal term_codex; then press [r] refresh in ahub upgrade, or rerun it";
+
+test("#1246 the menu offers [t] for verified orphaned terminals, switches exactly those and plans again without the blocker", async () => {
+  const plans = [plan({ blockers: [orphanBlocker], orphanedTerminals: [orphan] }), plan()];
+  const switched: string[][] = [];
+  const f = screen(["t", "q"]);
+  await planScreen(host({ plan: async () => plans.shift()!, reattachTerminals: async (planned, terminals) => { switched.push(terminals.map((t) => `${planned.project.id}:${t.handle}`)); return ["alpha/codex: terminal term_codex reattached"]; } }), f.io);
+  expect(f.asked[0]).toBe("Blocked: take the next action each blocker names, then press [r] refresh.\n[r] refresh  [t] reattach 1 orphaned terminal  [k] end agents  [j] plan as JSON  [x] reset a project's hub  [q] quit: ");
+  expect(switched).toEqual([["alpha:term_codex"]]);
+  expect(f.out).toContain("  alpha/codex: terminal term_codex reattached");
+  expect(f.asked[1]).toStartWith("[a] apply  [r] refresh"); // the refreshed plan has no orphan blocker
+  expect(f.asked[1]).not.toContain("[t]");
+  expect(f.ran).toEqual([]);
+});
+
+test("#1246 a still-orphaned terminal stays a blocker with its next action, and [t] is offered again", async () => {
+  const blocked = () => plan({ blockers: [orphanBlocker], orphanedTerminals: [orphan] });
+  const f = screen(["t", "q"]);
+  await planScreen(host({ plan: async () => blocked(), reattachTerminals: async () => ["alpha/codex: terminal term_codex is still orphaned after the switch; it stays a blocker"] }), f.io);
+  expect(f.out).toContain("  alpha/codex: terminal term_codex is still orphaned after the switch; it stays a blocker");
+  expect(f.out.filter((line) => line.includes("press [r] refresh in ahub upgrade, or rerun it"))).toHaveLength(2);
+  expect(f.asked[1]).toContain("[t] reattach 1 orphaned terminal");
+});
+
+test("#1246 no [t] key without a verified orphaned terminal or on a host that cannot switch, and a typed t does nothing", async () => {
+  const none = screen(["t", "q"]);
+  let called = 0;
+  await planScreen(host({ reattachTerminals: async () => { called++; return []; } }), none.io);
+  expect(none.asked[0]).not.toContain("[t]");
+  const noHost = screen(["t", "q"]);
+  await planScreen(host({ plan: async () => plan({ blockers: [orphanBlocker], orphanedTerminals: [orphan] }) }), noHost.io);
+  expect(noHost.asked[0]).not.toContain("[t]");
+  expect(called).toBe(0);
+});
+
+test("#1246 the plan fingerprint covers the verified orphaned terminals", () => {
+  const body = (extra: object) => { const { fingerprint, ...rest } = plan(extra); return rest; };
+  expect(planFingerprint(body({ orphanedTerminals: [orphan] }))).not.toBe(planFingerprint(body({})));
+  expect(planFingerprint(body({ orphanedTerminals: [orphan] }))).not.toBe(planFingerprint(body({ orphanedTerminals: [{ ...orphan, incarnationId: "inc-2" }] })));
+});
+
+test("#1246 the plan line names the orphaned terminal and both keys", () => {
+  const lines = planLines(plan({ terminals: [], orphanedTerminals: [orphan], blockers: [orphanBlocker], source: source({ peers: [{ id: "codex", state: "idle", threadId: "t1" }] }) }), "0.6.0").join("\n").replace(/\s+/g, " ");
+  expect(lines).toContain("terminal term_codex is orphaned but still connected");
+  expect(lines).toContain("[t]");
+  expect(lines).toContain("press [r] refresh");
+});
+
+function orca(shown: (calls: string[][]) => Record<string, unknown>) {
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv.slice(1));
+    if (argv[2] === "switch") return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminal: shown(calls) } }), stderr: "" };
+  };
+  return { calls, run };
+}
+const live = (patch: Record<string, unknown> = {}) => ({ handle: "term_codex", incarnationId: "inc-1", worktreeId: "wt-1", worktreePath: orphanRoot, connected: true, orphaned: true, ...patch });
+const plannedOrphan = () => plan({ blockers: [orphanBlocker], orphanedTerminals: [orphan] }).projects[0]!;
+
+test("#1246 reattachPlannedTerminals switches only plan-verified handles, once each, and reports a reattached pane", async () => {
+  const f = orca((calls) => live({ orphaned: calls.filter((c) => c[1] === "show").length < 2 }));
+  const stranger = { ...orphan, handle: "term_other" };
+  const lines = await reattachPlannedTerminals(plannedOrphan(), [orphan, stranger], { run: f.run, lock: () => undefined, boundMs: 2_000 });
+  expect(lines).toEqual(["alpha/codex: terminal term_codex reattached", "alpha/codex: terminal term_other is not one the plan verified; not switched"]);
+  expect(f.calls.filter((c) => c[1] === "switch").map((c) => c[3])).toEqual(["term_codex"]);
+  expect(f.calls.every((c) => c[3] === "term_codex")).toBe(true);
+});
+
+test("#1246 a pane that stays orphaned past the bound, a changed identity and a held lock each stay a blocker", async () => {
+  const stuck = orca(() => live());
+  expect(await reattachPlannedTerminals(plannedOrphan(), [orphan], { run: stuck.run, lock: () => undefined, boundMs: 300 })).toEqual(["alpha/codex: terminal term_codex is still orphaned after the switch; it stays a blocker"]);
+  expect(stuck.calls.filter((c) => c[1] === "switch")).toHaveLength(1);
+  const changed = orca(() => live({ incarnationId: "inc-9" }));
+  expect((await reattachPlannedTerminals(plannedOrphan(), [orphan], { run: changed.run, lock: () => undefined, boundMs: 100 }))[0]).toContain("identity changed");
+  expect(changed.calls.some((c) => c[1] === "switch")).toBe(false);
+  const locked = orca(() => live());
+  expect((await reattachPlannedTerminals(plannedOrphan(), [orphan], { run: locked.run, lock: () => "op-1", boundMs: 100 }))[0]).toContain("op-1 holds the lock");
+  expect(locked.calls).toEqual([]);
 });

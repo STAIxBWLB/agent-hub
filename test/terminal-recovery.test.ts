@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   inspectTerminals,
   inspectSavedTerminal,
+  reattachOrphanedTerminal,
   recordTerminalLaunch,
   createTerminal,
   launcherOf,
@@ -109,6 +110,70 @@ test("#482 an orphaned but connected terminal asks the person to reattach, never
   expect(result.blockers[0]?.nextAction).toContain("refresh");
   expect(result.blockers[0]?.nextAction).not.toMatch(/finish|cancel/);
   expect(probe.calls.every(argv => ["list", "show"].includes(argv[1]!))).toBe(true);
+});
+
+test("#1246 the orphaned blocker names the peer, the project, the handle and the [r] refresh key, and the inspection records the verified identity", async () => {
+  const shown = terminal({ orphaned: true, connected: true });
+  const probe = fake(argv => argv[1] === "list" ? { result: { terminals: [shown] } } : { result: { terminal: shown } });
+  const result = await inspectTerminals(root, { codex: session }, probe.runner);
+  expect(result.blockers[0]?.message).toContain("the codex terminal term-old");
+  expect(result.blockers[0]?.message).toContain(root);
+  expect(result.blockers[0]?.nextAction).toContain("press [r] refresh in ahub upgrade, or rerun it");
+  expect(result.orphaned).toEqual([{ peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, root }]);
+  expect(probe.calls.every(argv => ["list", "show"].includes(argv[1]!))).toBe(true);
+});
+
+test("#1246 a terminal that is not orphaned and connected is never recorded for reattachment", async () => {
+  for (const patch of [{ orphaned: true, connected: false }, { orphaned: false, connected: true }]) {
+    const shown = terminal(patch);
+    const probe = fake(argv => argv[1] === "list" ? { result: { terminals: [shown] } } : { result: { terminal: shown } });
+    expect((await inspectTerminals(root, { codex: session }, probe.runner)).orphaned).toBeUndefined();
+  }
+});
+
+const orphan = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, root };
+function switching(reads: Record<string, unknown>[], onSwitch: () => CommandResult = () => ({ result: { ok: true } })) {
+  let read = 0;
+  return fake(argv => argv[1] === "switch" ? onSwitch() : { result: { terminal: reads[Math.min(read++, reads.length - 1)] } });
+}
+
+test("#1246 reattach switches exactly the verified handle once and polls until orphaned is false", async () => {
+  const probe = switching([terminal({ orphaned: true, connected: true }), terminal({ orphaned: true, connected: true }), terminal({ orphaned: false, connected: true })]);
+  expect(await reattachOrphanedTerminal(orphan, probe.runner, 5_000)).toBe("reattached");
+  expect(probe.calls.filter(argv => argv[1] === "switch")).toEqual([["terminal", "switch", "--terminal", "term-old", "--json"]]);
+  expect(probe.calls.every(argv => ["show", "switch"].includes(argv[1]!) && argv[0] === "terminal")).toBe(true);
+});
+
+test("#1246 a terminal that stays orphaned past the bound is still-orphaned", async () => {
+  const probe = switching([terminal({ orphaned: true, connected: true })]);
+  const started = Date.now();
+  expect(await reattachOrphanedTerminal(orphan, probe.runner, 300)).toBe("still-orphaned");
+  expect(Date.now() - started).toBeLessThan(3_000);
+  expect(probe.calls.filter(argv => argv[1] === "switch")).toHaveLength(1);
+});
+
+test("#1246 a changed identity triggers no switch", async () => {
+  for (const patch of [{ incarnationId: "inc-new" }, { worktreeId: "other" }, { worktreePath: "/elsewhere" }, { handle: "term-other" }]) {
+    const probe = switching([terminal({ orphaned: true, connected: true, ...patch })]);
+    expect(await reattachOrphanedTerminal(orphan, probe.runner, 100)).toBe("unavailable");
+    expect(probe.calls.some(argv => argv[1] === "switch")).toBe(false);
+  }
+});
+
+test("#1246 a pane that is disconnected, gone, or already attached triggers no switch", async () => {
+  const disconnected = switching([terminal({ orphaned: true, connected: false })]);
+  expect(await reattachOrphanedTerminal(orphan, disconnected.runner, 100)).toBe("unavailable");
+  const attached = switching([terminal({ orphaned: false, connected: true })]);
+  expect(await reattachOrphanedTerminal(orphan, attached.runner, 100)).toBe("reattached");
+  const gone = fake(() => ({ status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) }));
+  expect(await reattachOrphanedTerminal(orphan, gone.runner, 100)).toBe("unavailable");
+  for (const probe of [disconnected, attached, gone]) expect(probe.calls.some(argv => argv[1] === "switch")).toBe(false);
+});
+
+test("#1246 a failing switch is unavailable and is not polled", async () => {
+  const probe = switching([terminal({ orphaned: true, connected: true })], () => ({ status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_gone" } }) }));
+  expect(await reattachOrphanedTerminal(orphan, probe.runner, 100)).toBe("unavailable");
+  expect(probe.calls.map(argv => argv[1])).toEqual(["show", "switch"]);
 });
 
 test("#482 disconnected terminals retain their existing turn guidance", async () => {

@@ -17,7 +17,7 @@ import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { canonicalPath, hubHome, realPath } from "../hub/project.ts";
 import { packageDigest, preserveRuntimePackage, preserveRuntimeSource, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
-import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
+import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, reattachOrphanedTerminal, waitForIdle, shellQuote, type OrphanedTerminal, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { ReattachmentRequired, MissingRecordedSession, FinalRefusal, planFingerprint, recoveryScope, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { SHARED_CHANNEL_VERSION_ARGV, nativeRecordedSessionState } from "../adapters/definitions/native-recovery.ts";
 import { refreshManager } from "../hub/manager.ts";
@@ -420,10 +420,33 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         ? `${unresumable(binding)}; manual-required; next action: make that store readable, then make a new plan`
         : `${unresumable(binding)}, and the hub cannot show that no turn ran on it, so its conversation may not come back after the restart; manual-required; next action: end that Codex session and close its Orca terminal ${binding.handle} (ahub codex starts a new one later), then make a new plan`);
     }
-    body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(unrecordedTerminals.length ? { unrecordedTerminals } : {}), ...(freshStart.length ? { freshStart } : {}) });
+    body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(unrecordedTerminals.length ? { unrecordedTerminals } : {}), ...(freshStart.length ? { freshStart } : {}), ...(terminals.orphaned?.length ? { orphanedTerminals: terminals.orphaned } : {}) });
   }
   if (!body.projects.length) body.blockers.push("no running registered projects in scope");
   return { ...body, fingerprint: planFingerprint(body) };
+}
+
+/**
+ * #1246: switch back the orphaned-but-connected panes the plan verified, and nothing else. Each handle is read again by
+ * `reattachOrphanedTerminal` (identity, still orphaned and connected) before `orca terminal switch`, then polled for at
+ * most 5 s. A held recovery lock refuses all of them. One line of outcome per terminal; the caller plans again.
+ */
+export async function reattachPlannedTerminals(planned: PlannedProject, terminals: readonly OrphanedTerminal[], deps: { run?: RunCommand; lock?: () => string | undefined; boundMs?: number } = {}): Promise<string[]> {
+  const { run = runCommand, lock = recoveryLock, boundMs } = deps;
+  const verified = terminals.filter((t) => planned.orphanedTerminals?.some((o) => o.handle === t.handle && o.incarnationId === t.incarnationId && o.worktreeId === t.worktreeId && o.root === t.root && o.peer === t.peer));
+  const lines: string[] = [];
+  for (const terminal of terminals) {
+    const name = `${planned.project.id}/${terminal.peer}`;
+    if (!verified.includes(terminal)) { lines.push(`${name}: terminal ${terminal.handle} is not one the plan verified; not switched`); continue; }
+    let owner: string | undefined;
+    try { owner = lock(); } catch (error) { lines.push(`${name}: terminal ${terminal.handle} not switched (${(error as Error).message})`); continue; }
+    if (owner) { lines.push(`${name}: terminal ${terminal.handle} not switched (recovery operation ${owner} holds the lock)`); continue; }
+    const result = await reattachOrphanedTerminal(terminal, terminalOptions(run), ...(boundMs === undefined ? [] : [boundMs]));
+    lines.push(result === "reattached" ? `${name}: terminal ${terminal.handle} reattached`
+      : result === "still-orphaned" ? `${name}: terminal ${terminal.handle} is still orphaned after the switch; it stays a blocker`
+      : `${name}: terminal ${terminal.handle} not switched or not confirmed (its identity changed, it is not connected, or Orca did not answer)`);
+  }
+  return lines;
 }
 
 /** Freeze the coordinator/source package before its mutable global installation is replaced. */
