@@ -1949,6 +1949,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       const present = outputOptions(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail", "--duplicate-ok", "--key"], edges: true }).flags);
       const parsed = parseHandoffArgs(splitPresentation(rest, { valueFlags: ["--project", "--path", "--issue", "--task", "--detail", "--duplicate-ok", "--key"], edges: true }).operands);
       if ("usage" in parsed) return fail(parsed.usage);
+      // #734: the person's list (age and reachability of each target) and sync (ask the targets now); both read the same rows `ahub board --handoffs` shows.
+      if ("view" in parsed) return showToolText(data => renderHandoffs(data, present.columns), await taskOp(parsed.view === "sync" ? "hub_task_handoff_sync" : "hub_task_handoffs", {}), present);
       const text = await taskOp("hub_task_handoff", { ...parsed });
       return showToolText(data => renderHandoffReceipt(data, present.columns), text, present);
     }

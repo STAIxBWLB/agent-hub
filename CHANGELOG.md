@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Cross-project handoff failures are named and repairable (#1203 T3, #734). `ahub task handoff --list` shows each handoff's age and whether its target is reachable, unreachable (with the cause and the command to run) or moved (the project id is no longer registered), and `--sync` asks every target now, for at most 20 seconds: with slow or down targets it prints the list so far and "catch-up still running for N targets" instead of timing out. A target on another wire version is refused as `older_target` with the upgrade step, an instance mismatch as the new code `mismatch`, and neither says "run `ahub up`". A failed notify or catch-up writes one `hub.log` line per target and cause every 15 minutes instead of nothing. A catch-up request the target does not answer now counts as a failure (the target reads unreachable) instead of clearing it, and `--sync` says `synced: false` when its pass fails. Completes #1203: T1 made the request idempotent, T2 made the follow-back converge, T3 makes failures visible.
+
 ## 0.31.0
 
 - A cross-project handoff's follow-back now converges (#1203 T2, #733). Each state event carries the target task's flow revision, and the origin ignores one that is not newer, so an `in_review` that arrives after `approved` cannot reopen the row. The origin's catch-up runs every 5 minutes and when a target restarts, over every open handoff with no 200-row cap, so a state change that missed the first notify arrives within one period. A reviewer's `changes requested` and a reopen are now reported to the requesting peer. Additive feature `task_handoff_seq`: an older origin is sent no sequence and not the two new events.

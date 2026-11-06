@@ -21,13 +21,13 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 type Project = Awaited<ReturnType<typeof project>>;
-async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[]; handoffRequestMs?: number; handoffCatchUpMs?: number; handoffWatchMs?: number; handoffCatchUpHold?: () => Promise<void>; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }> } = {}) {
+async function project(name: string, home: string, options: { roles?: Record<string, string[]>; features?: string[]; handoffRequestMs?: number; handoffCatchUpMs?: number; handoffWatchMs?: number; handoffCatchUpHold?: () => Promise<void>; handoffLogWindowMs?: number; handoffSyncBoundMs?: number; screen?: (text: string) => Promise<{ label: "clear" | "pii" | "unknown"; ms: number }> } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), `ahub-handoff-${name}-`))), stateDir = join(root, ".agenthub", "state");
   mkdirSync(stateDir, { recursive: true }); writeFileSync(join(root, ".agenthub", "config.json"), "{}");
   writeFileSync(join(root, ".agenthub", "routing.toml"), '[local]\nfixed_model = "coding"\n[signals]\npii_patterns = ["\\\\b\\\\d{6}-\\\\d{7}\\\\b"]\n' + (options.screen ? 'pii_screen = "local"\n' : ""));   // the shipped PII pattern (Korean resident numbers), and nothing else
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const registry = new Registry(join(home, "registry.db")), registered = registry.register(root); registry.close?.();
-  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}), ...(options.handoffRequestMs ? { handoffRequestMs: options.handoffRequestMs } : {}), ...(options.handoffCatchUpMs ? { handoffCatchUpMs: options.handoffCatchUpMs } : {}), ...(options.handoffWatchMs ? { handoffWatchMs: options.handoffWatchMs } : {}), ...(options.handoffCatchUpHold ? { handoffCatchUpHold: options.handoffCatchUpHold } : {}),
+  const daemon = await startDaemon({ cwd: root, stateDir, projectId: registered.id, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, notifier: () => {}, ...(options.screen ? { piiScreen: options.screen } : {}), ...(options.handoffRequestMs ? { handoffRequestMs: options.handoffRequestMs } : {}), ...(options.handoffCatchUpMs ? { handoffCatchUpMs: options.handoffCatchUpMs } : {}), ...(options.handoffLogWindowMs ? { handoffLogWindowMs: options.handoffLogWindowMs } : {}), ...(options.handoffSyncBoundMs ? { handoffSyncBoundMs: options.handoffSyncBoundMs } : {}), ...(options.handoffWatchMs ? { handoffWatchMs: options.handoffWatchMs } : {}), ...(options.handoffCatchUpHold ? { handoffCatchUpHold: options.handoffCatchUpHold } : {}),
     config: { ...DEFAULT_CONFIG, roles: options.roles ?? { claude: ["planner"], codex: ["implementer"] }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, research: { ...DEFAULT_CONFIG.research, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
@@ -775,4 +775,180 @@ test("#733 AC2: a descriptor change that arrives while a catch-up pass is runnin
   expect(caught(ids[0]!) || caught(ids[1]!)).toBe(false);                                  // the held pass has delivered nothing yet
   release();
   await until(() => caught(ids[0]!) && caught(ids[1]!), "C, queued behind the held pass, was caught up when it ended", 10_000);
+}, 60_000);
+
+// #734 (agent-hub#1203 T3): diagnostics and repair, over two real daemons. A target's status.json is edited the way a version skew or a restarted hub would leave it, and a daemon rewrites that file
+// on every bus event, so the edit is held in place for the length of the test.
+const holdStatus = (p: Project, edit: (status: any) => any) => {
+  const file = join(p.stateDir, "status.json");
+  const apply = () => { try { const now = JSON.parse(readFileSync(file, "utf8")); const next = edit(now); if (JSON.stringify(next) !== JSON.stringify(now)) writeFileSync(file, JSON.stringify(next)); } catch { /* mid-rewrite */ } };
+  const timer = setInterval(apply, 5); cleanup.push(() => clearInterval(timer)); apply();
+  return () => clearInterval(timer);
+};
+const logOf = (p: Project) => { try { return readFileSync(join(p.stateDir, "hub.log"), "utf8"); } catch { return ""; } };
+
+test("#734 AC7: a target whose wire version this hub cannot speak is named older_target with the upgrade step, and nothing is filed or recorded", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  holdStatus(b, status => ({ ...status, protocol: 99, protocolMin: 99, protocolMax: 99 }));       // a hub from the future: no shared protocol
+  const refused = await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for a newer B" });
+  expect(refused.ok).toBe(false);
+  expect(String(refused.error)).toContain("another wire version"); expect(String(refused.error)).toContain("ahub upgrade"); expect(String(refused.error)).not.toContain("run `ahub up`");
+  const readB = boardOf(b), readA = boardOf(a);
+  try { expect(readB.board.list()).toEqual([]); expect(readA.board.handoffOutbound()).toEqual([]); } finally { readB.close(); readA.close(); }
+  expect(logOf(a)).toContain(`handoff to ${b.id} failed: wire version differs`);                  // one named line in the origin's log
+}, 60_000);
+
+test("#734 AC7: a hub that is not the instance the registry names is mismatch, not \"not running\"", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  holdStatus(b, status => ({ ...status, instanceId: "i-some-other-instance" }));                  // another instance answers on B's descriptor
+  const refused = await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for a swapped B" });
+  expect(refused.ok).toBe(false);
+  expect(String(refused.error)).toContain("not the instance"); expect(String(refused.error)).toContain("ahub projects"); expect(String(refused.error)).not.toContain("run `ahub up`");
+}, 60_000);
+
+test("#734 AC6: --list shows each handoff's age and reachability, with the cause once; a target that is gone reads unreachable and --sync refreshes it", async () => {
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000 } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" }));
+  const list = async () => body(await task(a.person, "hub_task_handoffs")).handoffs as any[];
+  expect(await list()).toMatchObject([{ remoteProject: b.id, remoteTask: sent.task, reach: "reachable" }]);
+  expect((await list())[0].age).toMatch(/^\d+s$/); expect((await list())[0].ageMs).toBeGreaterThanOrEqual(0);
+  const restore = hideBoth(b);                                                                     // B's hub cannot be reached: no control token
+  const down = (await list())[0];
+  expect(down).toMatchObject({ reach: "unreachable" }); expect(String(down.cause)).toContain("ahub up");
+  // a sync while B is down logs once and leaves the row alone; once B is back it learns the state
+  { const codex = new FixturePeer("codex"); b.daemon.bus.add(codex); await codex.start(); }
+  const synced = await task(a.person, "hub_task_handoff_sync");
+  expect(synced.ok, JSON.stringify(synced)).toBe(true); expect(body(synced).synced).toBe(true);
+  expect(logOf(a)).toContain(`handoff catch-up of ${b.id} skipped: its hub is not running`);
+  restore();
+  expect(body(await task(a.person, "hub_task_handoff_sync")).handoffs[0]).toMatchObject({ reach: "reachable" });
+}, 60_000);
+
+test("#734 AC6: a project the registry no longer holds shows moved, logs once, and is never asked", async () => {
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 400, handoffWatchMs: 3_600_000, handoffLogWindowMs: 3_600_000 } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  const sent = body(await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for a B that moves" }));
+  const registry = new Registry(join(process.env.AGENTHUB_HOME!, "registry.db"));
+  try { (registry as any).db.run("DELETE FROM projects WHERE id = ?", [b.id]); } finally { registry.close?.(); }          // B's root moved or was removed: its id is a hash of the old root
+  const row = (body(await task(a.person, "hub_task_handoffs")).handoffs as any[])[0];
+  expect(row).toMatchObject({ remoteTask: sent.task, reach: "moved" }); expect(String(row.cause)).toContain("project not registered (moved?)");
+  await Bun.sleep(1_300);                                                                          // several catch-up periods
+  const lines = logOf(a).split("\n").filter(line => line.includes(`handoff catch-up of ${b.id} skipped: project not registered (moved?)`));
+  expect(lines).toHaveLength(1);                                                                   // once, not once per period
+}, 60_000);
+
+test("#734 AC7: a sync from an agent that is not the conductor is refused; the person's is not", async () => {
+  const { a, b } = await pair();
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" });
+  const agent = await task(planner, "hub_task_handoff_sync");
+  expect(agent.ok).toBe(false); expect(String(agent.error)).toContain("person's or the conductor's");
+  expect((await task(a.person, "hub_task_handoff_sync")).ok).toBe(true);
+}, 60_000);
+
+// #734: the real `ahub` process for --list and --sync: argv parsing, the control socket, the new ops and the renderer.
+test("#734 the real ahub process shows --list with age and reachability and a cause line, runs --sync, and refuses a mixed form", async () => {
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000 } });
+  const cli = async (project: Project, ...args: string[]) => {
+    const env = { ...process.env, NO_COLOR: "1", COLUMNS: "140" } as Record<string, string>;
+    for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "KIMI_CODE"].includes(key)) delete env[key];
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project.root, ...args], { cwd: project.root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    return { code: await proc.exited, stdout, stderr };
+  };
+  const sent = await cli(a, "task", "handoff", "--project", b.id, "Chore for B");
+  expect(sent.code, sent.stderr).toBe(0);
+  const list = await cli(a, "task", "handoff", "--list");
+  expect(list.code, list.stderr).toBe(0);
+  expect(list.stdout).toContain("Handoffs (1)"); expect(list.stdout).toMatch(/AGE\s+REACH/); expect(list.stdout).toMatch(/\d+s\s+reachable/);
+  const down = hideBoth(b);
+  const unreachable = await cli(a, "task", "handoff", "--list");
+  expect(unreachable.code, unreachable.stderr).toBe(0);
+  expect(unreachable.stdout).toMatch(/unreachable/); expect(unreachable.stdout).toContain("ahub up");                    // the cause and its next step, once, under the table
+  const json = JSON.parse((await cli(a, "task", "handoff", "--list", "--json")).stdout);
+  expect(json.handoffs[0]).toMatchObject({ reach: "unreachable" }); expect(typeof json.handoffs[0].ageMs).toBe("number");
+  down();
+  const synced = await cli(a, "task", "handoff", "--sync");
+  expect(synced.code, synced.stderr).toBe(0); expect(synced.stdout).toContain("Handoffs (1)"); expect(synced.stdout).toMatch(/reachable/);
+  for (const args of [["--list", "--sync"], ["--list", "--project", b.id], ["--sync", "a title"]]) {
+    const mixed = await cli(a, "task", "handoff", ...args);
+    expect(mixed.code, args.join(" ")).toBe(1); expect(mixed.stderr).toContain("usage: ahub task handoff --list | --sync");
+  }
+  // an agent shell cannot run either view: `task handoff` is the person's, whatever the flag
+  const agent = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", a.root, "task", "handoff", "--sync"], { cwd: a.root, env: { ...process.env, AGENTHUB_PEER_ID: "codex" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const agentErr = await new Response(agent.stderr).text(); expect(await agent.exited).toBe(1); expect(agentErr).toContain("codex cannot run ahub task");
+}, 120_000);
+
+// #734 AC6: a sync answers with the state after a pass that began when it was asked. A sync that arrives while a pass is running waits for it and then runs its own, instead of answering from the older pass or from none.
+test("#734 AC6: a sync that arrives while a catch-up pass is running waits for it, then runs its own pass", async () => {
+  let release!: () => void, holds = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000, handoffCatchUpHold: async () => { holds++; if (holds === 1) await gate; } } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" })).ok).toBe(true);
+  let first = false, second = false;
+  const one = task(a.person, "hub_task_handoff_sync").then(r => { first = true; return r; });
+  await until(() => holds >= 1, "a pass is running and held");
+  const two = task(a.person, "hub_task_handoff_sync").then(r => { second = true; return r; });
+  await Bun.sleep(400);
+  expect({ first, second, holds }).toEqual({ first: false, second: false, holds: 1 });                 // both syncs wait for the running pass, neither answers from it
+  release();
+  expect((await one).ok).toBe(true); expect((await two).ok).toBe(true);
+  expect(holds).toBeGreaterThanOrEqual(2);                                                                // at least one sync pass began after the held one ended; two waiting syncs run in turn
+}, 60_000);
+
+// #734 review: a sync must answer inside the caller's control timeout. A pass held longer than the bound does not make the sync time out: it answers with the list and says the pass is still running.
+test("#734 AC6: a sync whose pass outlasts the bound answers within it with the list and syncing: true, and the pass goes on", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000, handoffSyncBoundMs: 700, handoffCatchUpHold: () => gate } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" })).ok).toBe(true);
+  const started = Date.now();
+  const reply = await task(a.person, "hub_task_handoff_sync");
+  const took = Date.now() - started;
+  expect(reply.ok, JSON.stringify(reply)).toBe(true);
+  expect(took).toBeGreaterThanOrEqual(650); expect(took).toBeLessThan(5_000);                           // it waited for the bound and no longer
+  expect(body(reply)).toMatchObject({ synced: false, syncing: true, pending: 1 });
+  expect(body(reply).handoffs).toHaveLength(1);                                                          // the list as it stands, not nothing
+  // the real process prints the list and the still-running line, and exits 0, while the pass is still held
+  const env = { ...process.env, NO_COLOR: "1", COLUMNS: "140" } as Record<string, string>;
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CODEX_THREAD_ID", "KIMI_CODE"].includes(key)) delete env[key];
+  const proc = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", a.root, "task", "handoff", "--sync"], { cwd: a.root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  expect(await proc.exited, err).toBe(0);
+  expect(out).toContain("Handoffs (1)"); expect(out).toContain("catch-up still running for 1 target"); expect(out).toContain("ahub task handoff --list");
+  release();
+  const after = await task(a.person, "hub_task_handoff_sync");                                           // the pass that was held finished; a new sync completes
+  expect(body(after)).toMatchObject({ synced: true }); expect(body(after).syncing).toBeUndefined();
+}, 60_000);
+
+// A target that accepts the connection and then answers the state request with ok: false (a refusal, or what `request` resolves to on a timeout) is not an answer: the list must not read it as reachable.
+const refusingTarget = (b: Project, answer: (msg: any) => Record<string, unknown>) => {
+  const server = Bun.serve<undefined>({ port: 0, hostname: "127.0.0.1", fetch(req, srv) { return srv.upgrade(req) ? undefined : new Response("no", { status: 400 }); },
+    websocket: { message(ws, raw) {
+      const msg = JSON.parse(String(raw));
+      if (msg.t === "hello") ws.send(JSON.stringify({ t: "welcome", ok: true, rid: msg.rid, projectId: msg.projectId, instanceId: msg.instanceId, cwd: msg.projectRoot, features: ["task_handoff"] }));
+      else ws.send(JSON.stringify({ rid: msg.rid, t: msg.t, ...answer(msg) }));
+    } } });
+  cleanup.push(() => server.stop(true));
+  holdStatus(b, status => ({ ...status, controlPort: server.port }));
+};
+
+test("#734 AC6: a catch-up reply with ok: false is a recorded failure with its cause, one log line, and the target reads unreachable, not reachable", async () => {
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 3_600_000, handoffWatchMs: 3_600_000, handoffLogWindowMs: 3_600_000 } });
+  const planner = await a.connect({ role: "tools", peer: "claude" });
+  expect((await task(planner, "hub_task_handoff", { project: b.id, title: "Chore for B" })).ok).toBe(true);
+  refusingTarget(b, () => ({ ok: false, error: "the handoff state request was refused" }));
+  const first = body(await task(a.person, "hub_task_handoff_sync"));
+  expect(first.synced).toBe(true);                                                                          // the pass ran to its end; what it learned is in the list
+  expect(first.handoffs[0]).toMatchObject({ reach: "unreachable" }); expect(String(first.handoffs[0].cause)).toContain("no answer to the state request");
+  expect(String(first.handoffs[0].cause)).toContain("ahub status");
+  await task(a.person, "hub_task_handoff_sync");                                                            // a second failed pass in the same window writes no second line
+  const lines = logOf(a).split("\n").filter(line => line.includes(`handoff catch-up of ${b.id} failed: no answer to the state request`));
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).not.toContain("refused");                                                                // the target's own words never reach the log
 }, 60_000);

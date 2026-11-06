@@ -2,12 +2,20 @@
 import { CLASSES } from "../hub/board.ts";
 import { HANDOFF_KEY } from "../hub/handoff.ts";
 
-export const HANDOFF_USAGE = "usage: ahub task handoff --project <root|id> [<class>] <title...> [--path <p>]... [--issue <n>] [--task <n>] [--detail <text>] [--duplicate-ok <reason>] [--key <uuid>] [--json] [--color=auto|always|never]";
+export const HANDOFF_USAGE = "usage: ahub task handoff --list | --sync | --project <root|id> [<class>] <title...> [--path <p>]... [--issue <n>] [--task <n>] [--detail <text>] [--duplicate-ok <reason>] [--key <uuid>] [--json] [--color=auto|always|never]";
 
+/** `--list` and `--sync` are the person's views of the handoffs this project made (#734): the list shows each one's age and whether its target is reachable, the sync asks the targets now. */
+export type HandoffCliView = { view: "list" | "sync" };
 export interface HandoffCliRequest { project: string; title: string; class?: string; detail?: string; paths?: string[]; issue?: number; task?: number; duplicate_ok?: string; handoffKey?: string }
 
 /** `operands` is argv after `task handoff`, presentation flags already removed. A first word that is a class name is the class, said out loud by the caller (the documented short form). */
-export function parseHandoffArgs(operands: readonly string[]): HandoffCliRequest | { usage: string } {
+export function parseHandoffArgs(operands: readonly string[]): HandoffCliRequest | HandoffCliView | { usage: string } {
+  if (operands.includes("--list") || operands.includes("--sync")) {
+    // A view takes no other operand: `--list --project x` would read as filing a handoff and listing at once, which is neither.
+    const views = operands.filter(arg => arg === "--list" || arg === "--sync");
+    if (operands.length !== views.length || new Set(views).size !== 1) return { usage: HANDOFF_USAGE };
+    return { view: views[0] === "--list" ? "list" : "sync" };
+  }
   const one: Record<string, string> = {}, paths: string[] = [], rest: string[] = [];
   for (let i = 0; i < operands.length; i++) {
     const arg = operands[i]!;
