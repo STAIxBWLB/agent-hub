@@ -411,6 +411,6 @@ test("Qwen ACP 0.26.8 is exact-receipt verified while the Q2-unqualified dual en
   expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
   const acp = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-06-qwen-0268-acp.md"), "utf8");
   const dual = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-06-qwen-0268-dual-output.md"), "utf8");
-  for (const leg of ["sha512-", "Linux x86_64", "Native ACP, no prompts", "Actual published permission handler", "proceed_once", "Not verified"]) expect(acp, leg).toContain(leg);
+  for (const leg of ["sha512-", "macOS arm64", "Linux x86_64", "Native ACP, no prompts", "Actual published permission handler", "Actual macOS arm64 repetition", "proceed_once", "Not verified"]) expect(acp, leg).toContain(leg);
   for (const outcome of ["Q2 fewer than two user events", "Matched 0.26.1 control", "do not add 0.26.8"]) expect(dual, outcome).toContain(outcome);
 });
