@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
+import { stablePackageRoot } from "../../cli/install-paths.ts";
 import { realPath } from "../../hub/project.ts";
 import { VERSION } from "../../version.ts";
 
@@ -53,11 +55,11 @@ export type PluginState =
   | { state: "stale"; version: string; why: string; notices?: string[] };
 
 const safeDisplayValue = (value: unknown): string | undefined =>
-  typeof value === "string" && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) ? value : undefined;
+  typeof value === "string" && value.length <= 4096 && value.isWellFormed() && !/[\p{Cc}\p{Cf}]/u.test(value) ? value : undefined;
 
 function nonUserPluginNotices(plugins: InstalledPlugin[]): string[] {
   return plugins.filter(plugin => plugin.id === PLUGIN && plugin.scope !== "user").map(plugin => {
-    const scope = plugin.scope === "project" || plugin.scope === "local" ? plugin.scope : "unknown-scope";
+    const scope = safeDisplayValue(plugin.scope) ?? "unknown-scope";
     const path = safeDisplayValue(plugin.projectPath) ?? safeDisplayValue(plugin.installPath);
     const version = safeDisplayValue(plugin.version) ?? "unknown";
     return `${scope} plugin row preserved${path ? ` at ${path}` : ""} (version ${version}); setup never removes non-user scopes`;
@@ -90,14 +92,21 @@ export interface SetupStep {
  * The next thing `ahub setup` has to do, or nothing. One step at a time: the state is read again after every step,
  * because what a step leaves behind is Claude Code's business (removing a marketplace may uninstall its plugins).
  */
-export function nextStep(plugins: InstalledPlugin[], marketplaces: Marketplace[], packageRoot: string): SetupStep | undefined {
+export function nextStep(plugins: InstalledPlugin[], marketplaces: Marketplace[], packageRoot: string, personHome = homedir()): SetupStep | undefined {
   const root = real(packageRoot);
   const market = marketplaces.find((m) => m.name === MARKETPLACE);
   if (market && real(market.path ?? "") !== root) {
-    if (plugins.some(plugin => plugin.id === PLUGIN && plugin.scope !== "user")) return { why: `the ${MARKETPLACE} marketplace points at another source; removing it may remove non-user plugin rows`, argv: [], blocked: true };
+    const blockers = plugins.filter(plugin => plugin.id === PLUGIN && plugin.scope !== "user");
+    if (blockers.length) {
+      const display = (value: unknown) => JSON.stringify(safeDisplayValue(value) ?? "unknown");
+      const rows = blockers.map(plugin => `scope=${display(plugin.scope)}, projectPath=${display(plugin.projectPath)}, version=${display(plugin.version)}, installPath=${display(plugin.installPath)}`).join("; ");
+      const homeProject = blockers.some(plugin => safeDisplayValue(plugin.projectPath) !== undefined && real(plugin.projectPath!) === real(personHome));
+      const danger = homeProject ? ` Do not run 'claude plugin uninstall --scope project' from $HOME (${display(personHome)}): its project settings file ~/.claude/settings.json (${display(join(personHome, ".claude/settings.json"))}) is also the default home's user settings.` : "";
+      return { why: `the ${MARKETPLACE} marketplace points at another source; removing it may remove non-user plugin rows. Blocking rows: ${rows}. Hub-launched Claude sessions load their plugin from ~/.agenthub/releases (${display(join(personHome, ".agenthub/releases"))}), not from these plugin-cache rows. Standalone Claude sessions may still use them.${danger} Next: back up the selected Claude home's plugins/installed_plugins.json, review every listed row, and manually remove only rows confirmed stale and unused, preserving every other row; then rerun ahub setup. Setup never removes these rows automatically`, argv: [], blocked: true };
+    }
     return { why: `the ${MARKETPLACE} marketplace points at ${market.path ?? "another source"}, not at this package`, argv: ["claude", "plugin", "marketplace", "remove", MARKETPLACE] };
   }
-  if (!market) return { why: "register this package as a Claude Code plugin marketplace", argv: ["claude", "plugin", "marketplace", "add", root] };
+  if (!market) return { why: "register this package as a Claude Code plugin marketplace", argv: ["claude", "plugin", "marketplace", "add", stablePackageRoot(root)] };
   const state = pluginState(plugins, root);
   if (state.state === "missing") return { why: "install the user-scope channel plugin", argv: ["claude", "plugin", "install", PLUGIN, "--scope", "user"] };
   // Uninstall rather than update: with an unchanged version number an update has nothing to do.

@@ -1,9 +1,9 @@
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join } from "node:path";
-import { canonicalJson } from "../hub/packs.ts";
 import { factsHook } from "./facts-hook.ts";
 import { shellQuote } from "./shell-quote.ts";
+import { stableBunRuntime, stablePackageRoot } from "./install-paths.ts";
 import type { ClaudeHome } from "./claude-homes.ts";
 
 export interface ClaudeProfileHookOptions { script?: string; runtime?: string }
@@ -25,9 +25,27 @@ interface HookPlan {
 }
 
 function hookEntry(options: ClaudeProfileHookOptions): Record<string, unknown> {
-  const script = options.script ?? join(import.meta.dir, "claude-profile-hook.ts"), runtime = options.runtime ?? process.execPath;
+  const script = options.script ?? join(stablePackageRoot(join(import.meta.dir, "../..")), "src/cli/claude-profile-hook.ts"), runtime = options.runtime ?? stableBunRuntime();
   if (!validPath(script) || !validPath(runtime)) throw new Error("invalid profile hook command");
   return { matcher: "*", hooks: [{ type: "command", command: `${shellQuote(runtime)} ${shellQuote(script)} --run`, timeout: 5 }] };
+}
+
+interface ManagedProfileHook { entry: Record<string, unknown>; hook: Record<string, unknown>; runtime: string; script: string }
+/** Own only the generated command grammar; matcher, timeout and caller metadata remain theirs. */
+function managedProfileHook(candidate: unknown): ManagedProfileHook | undefined {
+  if (!object(candidate) || !Array.isArray(candidate.hooks) || candidate.hooks.length !== 1) return;
+  const hook = candidate.hooks[0];
+  if (!object(hook) || hook.type !== "command" || typeof hook.command !== "string") return;
+  const match = /^'((?:[^']|'\\'')*)' '((?:[^']|'\\'')*)' --run$/.exec(hook.command);
+  if (!match) return;
+  const runtime = match[1]!.replace(/'\\''/g, "'"), script = match[2]!.replace(/'\\''/g, "'");
+  if (!validPath(runtime) || !validPath(script) || !script.endsWith("/src/cli/claude-profile-hook.ts")
+    || hook.command !== `${shellQuote(runtime)} ${shellQuote(script)} --run`) return;
+  return { entry: candidate, hook, runtime, script };
+}
+
+function hookPathPresent(file: string): boolean {
+  try { return statSync(file).isFile(); } catch { return false; }
 }
 
 function settingsSource(file: string): { value: Record<string, unknown>; source?: HookPlan["source"] } {
@@ -67,13 +85,24 @@ function planClaudeProfileHook(home: ClaudeHome, options: ClaudeProfileHookOptio
     if (value.hooks !== undefined && !object(value.hooks)) return refuse("Claude's hook configuration is malformed.");
     const hooks = value.hooks ?? {}, existing = hooks.PreToolUse ?? [];
     if (!Array.isArray(existing)) return refuse("Claude's PreToolUse hook list is malformed.");
-    const entry = hookEntry(options), expected = canonicalJson(entry);
-    const matches = existing.filter(candidate => canonicalJson(candidate) === expected).length;
-    const next = matches === 1 ? undefined : `${JSON.stringify({ ...value, hooks: { ...hooks, PreToolUse: [...existing.filter(candidate => canonicalJson(candidate) !== expected), entry] } }, null, 2)}\n`;
+    const entry = hookEntry(options), expectedCommand = (entry.hooks as { command: string }[])[0]!.command;
+    const managed = existing.map(managedProfileHook), first = managed.find(candidate => candidate !== undefined);
+    const count = managed.filter(candidate => candidate !== undefined).length;
+    const stale = managed.some(candidate => candidate && (!hookPathPresent(candidate.runtime) || !hookPathPresent(candidate.script)));
+    const configured = count === 1 && first?.hook.command === expectedCommand && !stale;
+    const normalized = existing.flatMap((candidate, index) => {
+      const owned = managed[index];
+      if (!owned) return [candidate];
+      return owned === first ? [{ ...owned.entry, hooks: [{ ...owned.hook, command: expectedCommand }] }] : [];
+    });
+    if (!first) normalized.push(entry);
+    const next = configured ? undefined : `${JSON.stringify({ ...value, hooks: { ...hooks, PreToolUse: normalized } }, null, 2)}\n`;
     if (next !== undefined && Buffer.byteLength(next, "utf8") > MAX_SETTINGS_BYTES) return refuse("Claude's settings would exceed the bounded profile settings size.");
-    return { file, home: directory, parent, source, next, check: matches === 1
-      ? { state: "installed", reason: "The project-neutral profile hook is configured; this does not prove live permission enforcement." }
-      : { state: "missing", reason: matches ? "Duplicate managed profile hooks need normalization." : "The project-neutral profile hook is not configured." } };
+    let reason = "The project-neutral profile hook is not configured for this install; run ahub setup.";
+    if (count > 1) reason = "Duplicate managed profile hooks need normalization; run ahub setup.";
+    if (stale) reason = "A managed profile hook script or runtime is missing; run ahub setup to refresh the selected home's hook.";
+    if (configured) reason = "The project-neutral profile hook is configured; this does not prove live permission enforcement.";
+    return { file, home: directory, parent, source, next, check: { state: configured ? "installed" : "missing", reason } };
   } catch { return refuse("Claude profile settings could not be safely inspected; no settings were changed."); }
 }
 

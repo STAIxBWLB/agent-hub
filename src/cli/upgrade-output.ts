@@ -1,3 +1,4 @@
+import { globalCliUpdateStep } from "./install-paths.ts";
 // Human output for the commands #814 T3 converts: the non-interactive restart/upgrade plan, `recovery status`, and
 // `budget execution configure|disable`. Pure: data in, lines out. It only composes the renderers the interactive
 // screens already use (`planLines`, `renderPlan`, `renderOperation`, `renderBlocked`, `choiceInstruction`), so the
@@ -22,7 +23,7 @@ export function renderUpgradePlan(plan: UpgradePlan, current: string, options: R
   const out = renderPlan(plan, current, options, planLines(plan, current));
   const blocked = plan.blockers.length > 0 || plan.projects.some(project => project.blockers.length > 0);
   if (!plan.projects.length) out.push(...text(plan.kind === "upgrade"
-    ? `No hub is running, so nothing is carried over: install with \`bun add -g @staix/agent-hub@${plan.version}\`, then \`ahub setup\`.`
+    ? `No hub is running, so nothing is carried over: ${globalCliUpdateStep(plan.version)}, then \`ahub setup\`.`
     : "This project's hub is not running: `ahub up` starts it.", "muted", options));
   out.push(...text(blocked
     ? "Blocked: take the next action each blocker names, then run this again. Nothing was changed."

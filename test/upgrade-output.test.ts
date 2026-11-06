@@ -42,7 +42,20 @@ test("renderUpgradePlan: a pipe or dry run shows each peer, its blocker, reconne
   }
   const clean = renderUpgradePlan(planWith({ blockers: [], reconnectOnly: [], freshStart: [] }), "0.17.0", options(80)).join("\n");
   expect(clean).toContain("Apply with `--yes`"); expect(clean).not.toContain("Blocked:");
-  expect(renderUpgradePlan({ ...planWith(), projects: [], blockers: ["no running registered projects in scope"] }, "0.17.0", options(80)).join("\n")).toContain("No hub is running");
+  const install = mkdtempSync(join(tmpdir(), "ahub-upgrade-install-1245-"));
+  cleanup.push(() => rmSync(install, { recursive: true, force: true }));
+  mkdirSync(join(install, "install/global/node_modules"), { recursive: true });
+  const previous = process.env.BUN_INSTALL;
+  try {
+    process.env.BUN_INSTALL = install;
+    const noHub = renderUpgradePlan({ ...planWith(), projects: [], blockers: ["no running registered projects in scope"] }, "0.17.0", options(80)).join("\n");
+    expect(noHub).toContain("No hub is running");
+    expect(flat(noHub)).toContain("update the global CLI to 0.18.0 the way it was installed");
+    expect(noHub).not.toContain("bun add");
+    const wideNoHub = renderUpgradePlan({ ...planWith(), projects: [], blockers: ["no running registered projects in scope"] }, "0.17.0", options(200)).join("\n");
+    expect(flat(wideNoHub)).toContain(join(import.meta.dir, ".."));
+    expect(wideNoHub).not.toContain("bun add");
+  } finally { if (previous === undefined) delete process.env.BUN_INSTALL; else process.env.BUN_INSTALL = previous; }
 });
 
 test("renderRecoveryStatus: completed, running, blocked and unknown-runner receipts each say what the person can do", () => {

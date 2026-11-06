@@ -1,3 +1,4 @@
+import { globalCliUpdateStep } from "./install-paths.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { renderPlan, renderOperation, renderBlocked, renderSummary, renderStep, renderWait, renderMenu, choiceInstruction, type RecoveryPresentationOptions, type MenuPresentationItem } from "./upgrade-presentation.ts";
 import { quoted, wrap } from "./console-state.ts";
@@ -335,7 +336,7 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
     if (io.presentation) emit(io, renderPlan(plan, host.version, io.presentation, planLines(plan, host.version)));
     else for (const line of planLines(plan, host.version)) human(io, line);
     const blocked = plan.blockers.length > 0 || plan.projects.some((p) => p.blockers.length > 0);
-    if (!plan.projects.length) human(io, plan.kind === "upgrade" && plan.scope === undefined ? `no hub is running, so nothing is carried over: install with \`bun add -g @staix/agent-hub@${plan.version}\`, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");
+    if (!plan.projects.length) human(io, plan.kind === "upgrade" && plan.scope === undefined ? `no hub is running, so nothing is carried over: ${globalCliUpdateStep(plan.version)}, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");
     const endable = plan.projects.flatMap((p) => p.source.peers.filter((peer) => ["tui", "headless"].includes(peerKind(p, peer))).map((peer) => ({ planned: p, peer })));
     const keys = [...(blocked ? [] : ["[a] apply"]), "[r] refresh", ...(endable.length ? ["[k] end agents"] : []), "[j] plan as JSON", ...(plan.projects.length ? ["[x] reset a project's hub"] : []), "[q] quit"];
     const preferred = "r"; // Enter never closes terminals, stops a hub, resumes or reattaches implicitly.
