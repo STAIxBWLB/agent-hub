@@ -414,3 +414,10 @@ test("Qwen ACP 0.26.8 is exact-receipt verified while the Q2-unqualified dual en
   for (const leg of ["sha512-", "macOS arm64", "Linux x86_64", "Native ACP, no prompts", "Actual published permission handler", "Actual macOS arm64 repetition", "proceed_once", "Not verified"]) expect(acp, leg).toContain(leg);
   for (const outcome of ["Q2 fewer than two user events", "Matched 0.26.1 control", "do not add 0.26.8"]) expect(dual, outcome).toContain(outcome);
 });
+
+
+test("Kimi reviewer 2.5.1 is exact-receipt verified without trusting nearby versions (#888)", () => {
+  expect(assessVersion("kimi-review", "2.5.1", [])).toEqual({ ok: true, state: "verified", version: "2.5.1" });
+  expect(COMPAT["kimi-review"].receipt).toBe("docs/verification/2026-11-06-kimi-251-reviewer-compat.md");
+  for (const near of ["2.5.0", "2.5.2", "2.5.1-rc.1", "kimi 2.5.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
+});
