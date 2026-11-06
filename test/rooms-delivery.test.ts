@@ -1433,11 +1433,14 @@ test("identical signed codec advertisements do not resend or recount an active p
     const frame = JSON.parse(new TextDecoder().decode(args[1])) as { sender?: string; codecFeatures?: boolean };
     if (frame.sender === f.guest && frame.codecFeatures === true) { advertisements++; f.event.notify(); }
   };
-  f.control.holdSender = f.owner; f.control.hold = true;
+  // Defer the receiver's application claim, keeping broker verification and
+  // transport ACKs free so identical advertisements can traverse both links.
+  f.control.blockIncoming = true; f.control.blockedApplication = env.id;
   try {
     f.a.bus.publish(env);
-    await f.event.wait(() => f.control.entered && store.applicationOutbox("work").some(row => row.application === env.id && row.state === "dispatching")
-      && f.a.chat.metrics("work")?.outbound === 1, "the original person intent is counted once and held before broker storage");
+    await f.event.wait(() => (f.control.blockedAttempts ?? 0) > 0 && f.b.store!.pendingInbox("work").length === 1
+      && store.applicationOutbox("work").some(row => row.application === env.id && row.state === "accepted")
+      && f.a.chat.metrics("work")?.outbound === 1, "the original person intent is counted once and durably deferred before receiver claim");
     const initial = store.applicationOutbox("work").find(row => row.application === env.id)!;
     for (let n = 0; n < 3; n++) {
       const before = advertisements;
@@ -1452,14 +1455,15 @@ test("identical signed codec advertisements do not resend or recount an active p
       expect(active[0]?.deliveryId).toBe(initial.deliveryId);
       expect(active[0]?.expiresAt).toBe(initial.expiresAt);
     }
-    f.control.hold = false; f.control.gate.release();
+    f.control.blockIncoming = false;
+    await f.b.chat.retryPending("work");
     await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (inbox)", "release admits the original application once");
     expect(f.b.store!.listPersonInbox("work")).toHaveLength(1);
     expect(f.a.chat.metrics("work")?.outbound).toBe(1);
     expect(f.b.chat.metrics("work")?.inbound).toBe(1);
     expect(queueCalls).toBe(1);
   } finally {
-    f.control.hold = false; f.control.gate.release();
+    f.control.blockIncoming = false; f.control.blockedApplication = undefined;
     store.queueApplication = queue; transport.receiveFrame = receive; f.a.chat.application.codecsChanged = changed;
   }
 });
