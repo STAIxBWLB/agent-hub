@@ -251,9 +251,9 @@ test("Claude 2.1.316 is receipt-verified without machine trust; 2.1.315 and 2.1.
   for (const near of ["2.1.315", "2.1.317", "2.1.316-rc.1", "2.2.0"]) expect(assessVersion("claude-implementer", near, []).ok).toBe(false);
 });
 
-test("Claude 2.1.318 is receipt-verified without machine trust; 2.1.317 and 2.1.319 are not (#888)", () => {
-  expect(assessVersion("claude-implementer", "2.1.318", [])).toEqual({ ok: true, state: "verified", version: "2.1.318" });
-  for (const near of ["2.1.317", "2.1.319", "2.1.318-rc.1", "2.2.0"]) expect(assessVersion("claude-implementer", near, []).ok).toBe(false);
+test("Claude 2.1.318 and 2.1.319 are receipt-verified without machine trust; their neighbours are not (#888)", () => {
+  for (const version of ["2.1.318", "2.1.319"]) expect(assessVersion("claude-implementer", version, [])).toEqual({ ok: true, state: "verified", version });
+  for (const near of ["2.1.317", "2.1.320", "2.1.319-rc.1", "2.2.0"]) expect(assessVersion("claude-implementer", near, []).ok).toBe(false);
 });
 
 test("Kimi 2.3.1 and 2.3.2 are receipt-verified without machine trust; their neighbours are not (#792, #843)", () => {
