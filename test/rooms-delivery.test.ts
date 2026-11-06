@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { decodeBrokerControl } from "../src/broker/protocol.ts";
 import { startBroker, type BrokerEvent, type BrokerRuntime } from "../src/broker/server.ts";
 import type { Database } from "bun:sqlite";
 import { Bus, type PublishResult } from "../src/hub/bus.ts";
@@ -12,7 +13,7 @@ import { parseRouting } from "../src/hub/routing.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
 import { authorizeRoomInvocation } from "../src/rooms/boundary.ts";
-import { verifyPublicFrame, sealFrame, openFrame, roomMembers, canonicalBytes } from "../src/rooms/wire.ts";
+import { verifyPublicFrame, sealFrame, openFrame, roomMembers, canonicalBytes, decodeRoster } from "../src/rooms/wire.ts";
 import { RoomCodecPendingError, RoomNotSentError, type RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
 import { RoomStore, RoomStoreError, RoomApplicationLimitError, ROOM_APPLICATION_RETENTION } from "../src/rooms/store.ts";
 import { encodeRoomMessage, decodeRoomMessage, type RoomMessage } from "../src/rooms/application.ts";
@@ -199,7 +200,16 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = fa
         if (Object.keys(frame).sort().join(",") !== oldKeys.sort().join(",")) throw new Error("old broker closed frame grammar refused an added field");
       }
       const proof = await verifyPublicFrame(input); frames.push({ sender: proof.sender, digest: proof.digest, phase: control.phase, ephemeral: proof.ephemeral === true, codecFeatures: proof.codecFeatures === true });
-      if (control.hold && control.holdSender === proof.sender) { control.heldFrame = { ephemeral: proof.ephemeral === true, codecFeatures: proof.codecFeatures === true }; control.entered = true; event.notify(); await control.gate.promise; }
+      if (control.hold && control.holdSender === proof.sender) {
+        // T2 faults target a durable application or receipt, never an advisory
+        // bootstrap/liveness packet that happens to arrive first after online.
+        let source: RoomStore | undefined;
+        if (proof.sender === owner) source = result.a.store;
+        else if (proof.sender === guest) source = result.b.store;
+        if (!source) throw new Error("fixture durable sender proof unavailable; bind the source room store before injecting this fault");
+        const intended = source.outbox("work").some(row => row.digest === proof.digest && (row.kind === "application" || row.kind === "receipt"));
+        if (intended) { control.heldFrame = { ephemeral: proof.ephemeral === true, codecFeatures: proof.codecFeatures === true }; control.entered = true; event.notify(); await control.gate.promise; }
+      }
       event.notify(); return proof;
     },
   });
@@ -646,25 +656,62 @@ test("a pause after durable enqueue resumes the same Bus delivery without resett
     if (queueCalls === 1) { f.a.bus.pause("codex@beta"); f.event.notify(); }
     return row;
   };
-  const framesBefore = f.frames.filter(row => row.sender === f.owner).length;
-  f.a.bus.publish(env);
-  await f.event.wait(() => {
-    const row = store.applicationOutbox("work").find(item => item.application === env.id);
-    const remotes = (f.a.chat as unknown as { remotes: Map<string, { waitingForReady?: Set<string> }> }).remotes;
-    return !!row && remotes.get("codex@beta")?.waitingForReady?.has(row.deliveryId) === true;
-  }, "durable Store intent waits behind the Bus pause");
-  const initial = store.applicationOutbox("work").find(row => row.application === env.id)!;
-  expect(f.a.journal.list("codex@beta").find(row => row.originals.some(original => original.id === env.id))?.state).toBe("dispatching");
-  if (f.frames.filter(row => row.sender === f.owner).length !== framesBefore) console.error("pause frame classes", JSON.stringify(f.frames.filter(row => row.sender === f.owner).map(row => ({ ephemeral: row.ephemeral, codecFeatures: row.codecFeatures, digestMatchesInitialIntent: row.digest === initial.digest }))));
-  expect(f.frames.filter(row => row.sender === f.owner)).toHaveLength(framesBefore);
-  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(0);
-  f.a.bus.resume("codex@beta");
-  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "Bus resume publishes the retained application");
-  const settled = store.applicationOutbox("work").find(row => row.application === env.id)!;
-  expect(settled.deliveryId).toBe(initial.deliveryId);
-  expect(settled.expiresAt).toBe(initial.expiresAt);
-  expect(queueCalls).toBe(2);
-  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  const durableFrames = () => {
+    const intended = new Set(store.outbox("work").filter(row => row.kind === "application" || row.kind === "receipt").map(row => row.digest));
+    return f.frames.filter(row => row.sender === f.owner && intended.has(row.digest));
+  };
+  const framesBefore = durableFrames().length;
+  const transport = f.a.link as unknown as { send(session: unknown, bytes: Uint8Array): void };
+  const send = transport.send.bind(f.a.link), sourceBytes: Uint8Array[] = [];
+  transport.send = (session, bytes) => { send(session, bytes); sourceBytes.push(Uint8Array.from(bytes)); };
+  try {
+    f.a.bus.publish(env);
+    await f.event.wait(() => {
+      const row = store.applicationOutbox("work").find(item => item.application === env.id);
+      const remotes = (f.a.chat as unknown as { remotes: Map<string, { waitingForReady?: Set<string> }> }).remotes;
+      return !!row && remotes.get("codex@beta")?.waitingForReady?.has(row.deliveryId) === true;
+    }, "durable Store intent waits behind the Bus pause");
+    const initial = store.applicationOutbox("work").find(row => row.application === env.id)!;
+    expect(f.a.journal.list("codex@beta").find(row => row.originals.some(original => original.id === env.id))?.state).toBe("dispatching");
+    if (durableFrames().length !== framesBefore) console.error("pause frame classes", JSON.stringify(f.frames.filter(row => row.sender === f.owner).map(row => ({ ephemeral: row.ephemeral, codecFeatures: row.codecFeatures, digestMatchesInitialIntent: row.digest === initial.digest }))));
+    expect(durableFrames()).toHaveLength(framesBefore);
+    expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(0);
+    // Audit the transport choke point across ALL source packets, independently of
+    // the count selector and frame flags. Unknown controls/ciphertext fail closed.
+    const packetOf = (bytes: Uint8Array): { type?: unknown } => {
+      try {
+        const packet: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+        if (!packet || typeof packet !== "object" || Array.isArray(packet)) throw new Error("invalid packet");
+        return packet as { type?: unknown };
+      } catch { throw new Error("paused-send packet is malformed; inspect the synthetic transport grammar without printing payloads"); }
+    };
+    for (const wire of [...sourceBytes]) {
+      const packet = packetOf(wire);
+      let payload: string;
+      if (packet.type === "frame") {
+        const opened = await openFrame({ wire, identity: f.b.store!.identity, current: f.b.store!.get("work")!.current,
+          replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
+        expect(opened.status).toBe("accepted");
+        if (opened.status !== "accepted") throw new Error("paused-send ciphertext was not authenticated; inspect the captured synthetic transport proof");
+        payload = new TextDecoder("utf-8", { fatal: true }).decode(opened.plaintext);
+        expect(packetOf(opened.plaintext).type).toBe("presence");
+      } else {
+        expect(["auth", "roster_ready", "received", "roster"].includes(String(packet.type))).toBe(true);
+        if (packet.type === "roster") decodeRoster(wire); else decodeBrokerControl(wire);
+        payload = JSON.stringify(packet);
+      }
+      expect(payload.includes(env.id)).toBe(false);
+      expect(payload.includes(env.body)).toBe(false);
+    }
+    transport.send = send;
+    f.a.bus.resume("codex@beta");
+    await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "Bus resume publishes the retained application");
+    const settled = store.applicationOutbox("work").find(row => row.application === env.id)!;
+    expect(settled.deliveryId).toBe(initial.deliveryId);
+    expect(settled.expiresAt).toBe(initial.expiresAt);
+    expect(queueCalls).toBe(2);
+    expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  } finally { transport.send = send; }
 });
 
 test("a transient outgoing proof read waits for the ACK deadline instead of spinning", async () => {

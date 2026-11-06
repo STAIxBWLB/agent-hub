@@ -1013,7 +1013,16 @@ export class RoomLink {
       } while (session.codecDirty && this.session === session && this.running && !this.stopping);
     })();
     session.codecPublishing = work;
-    void work.finally(() => { if (session.codecPublishing === work) session.codecPublishing = undefined; }).catch(() => undefined);
+    void work.finally(() => {
+      if (session.codecPublishing !== work) return;
+      session.codecPublishing = undefined;
+      const again = session.codecDirty; session.codecDirty = false;
+      // A peer event can arrive after the loop resolved but before this cleanup.
+      // Consume that real event once, after releasing the old publication slot.
+      if (again && this.session === session && this.running && !this.stopping && session.phase === "ready") {
+        void this.publishCodecPresence(session).catch(error => this.retry(session, error));
+      }
+    }).catch(() => undefined);
     return work;
   }
   async publishPresence(): Promise<void> {

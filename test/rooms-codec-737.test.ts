@@ -354,3 +354,53 @@ test("current signed codec proof cannot release a legacy observation from a prev
     expect(f.observed).toEqual([{ member, peers: [{ id: "codex", state: "idle" }] }]);
   } finally { await f.close(); }
 });
+
+
+test("a bootstrap notification arriving after the publication loop resolves is consumed once", async () => {
+  const f = await durableTransport(), ready = gate(), release = gate();
+  const internal = f.subject as unknown as { serialSend(task: () => Promise<void>): Promise<void>; publishCodecPresence(session: unknown): Promise<void> };
+  const serialSend = internal.serialSend.bind(f.subject);
+  let calls = 0, next: Promise<void> | undefined, failure: unknown;
+  internal.serialSend = task => {
+    const current = serialSend(task);
+    if (++calls === 1) { void current.then(ready.resolve, error => { failure = error; ready.resolve(); }); return release.promise; }
+    next = current; return current;
+  };
+  try {
+    const first = internal.publishCodecPresence(f.session);
+    await ready.promise; if (failure !== undefined) throw failure;
+    expect(f.session.outbound).toHaveLength(1);
+    release.resolve(); // Queues the loop's continuation before the late peer event.
+    queueMicrotask(() => { void internal.publishCodecPresence(f.session).catch(() => {}); });
+    await first; // Its registered finalizer runs after the peer event and before this continuation.
+    expect(calls).toBe(2);
+    await next;
+    expect(f.session.outbound).toHaveLength(2);
+    expect(f.session.outbound.every(row => decodeFrame(row.wire).codecFeatures === true)).toBe(true);
+  } finally { release.resolve(); internal.serialSend = serialSend; await f.close(); }
+});
+
+for (const fence of ["replaced", "stopping"] as const) test(`a late bootstrap notification does not restart a ${fence} session`, async () => {
+  const f = await durableTransport(), ready = gate(), release = gate();
+  const internal = f.subject as unknown as { serialSend(task: () => Promise<void>): Promise<void>; publishCodecPresence(session: unknown): Promise<void> };
+  const serialSend = internal.serialSend.bind(f.subject);
+  let calls = 0, failure: unknown;
+  internal.serialSend = task => {
+    const current = serialSend(task); calls++;
+    void current.then(ready.resolve, error => { failure = error; ready.resolve(); });
+    return release.promise;
+  };
+  try {
+    const first = internal.publishCodecPresence(f.session);
+    await ready.promise; if (failure !== undefined) throw failure;
+    release.resolve();
+    queueMicrotask(() => {
+      void internal.publishCodecPresence(f.session).catch(() => {});
+      if (fence === "replaced") Object.assign(f.subject, { session: undefined });
+      else Object.assign(f.subject, { running: false, stopping: true });
+    });
+    await first;
+    expect(calls).toBe(1);
+    expect(f.session.outbound).toHaveLength(1);
+  } finally { release.resolve(); internal.serialSend = serialSend; await f.close(); }
+});
