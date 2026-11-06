@@ -2224,6 +2224,7 @@
   "src/rooms/link.ts:retryAttempt:inline:retryAttempt=0#0": "operational",
   "src/rooms/link.ts:v:inline:v=1#1": "contract",
   "src/rooms/link.ts:v:inline:v=1#2": "contract",
+  "src/rooms/link.ts:v:inline:v=1#3": "contract",
   "src/rooms/liveness.ts:ROOM_PRESENCE_MISSES:constant:ROOM_PRESENCE_MISSES=3#0": "contract",
   "src/rooms/liveness.ts:ROOM_REFRESH_MS:constant:ROOM_REFRESH_MS=30000#0": "operational",
   "src/rooms/liveness.ts:ROOM_STOP_TIMEOUT_MS:constant:ROOM_STOP_TIMEOUT_MS=2000#0": "operational",
