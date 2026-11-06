@@ -33,7 +33,7 @@ function lexicalTarget(entry: string): string | undefined {
 
 /** Bun resolves argv[1], Bun.main and import.meta.dir, through both bun <link> and a shebang (native probe, #1245). */
 export function stablePackageRoot(root: string, options: { invocation?: string } = {}): string {
-  const invocation = options.invocation ?? Bun.which("ahub");
+  const invocation = options.invocation ?? Bun.which("ahub", { PATH: process.env.PATH });
   if (invocation) {
     const target = lexicalTarget(invocation);
     if (target?.endsWith(`${sep}src${sep}cli${sep}main.js`)) {
@@ -45,7 +45,7 @@ export function stablePackageRoot(root: string, options: { invocation?: string }
 }
 
 export function stableBunRuntime(options: { runtime?: string; pathRuntime?: string } = {}): string {
-  const runtime = options.runtime ?? process.execPath, candidate = options.pathRuntime ?? Bun.which("bun");
+  const runtime = options.runtime ?? process.execPath, candidate = options.pathRuntime ?? Bun.which("bun", { PATH: process.env.PATH });
   return candidate && lexicalTarget(candidate) && samePath(candidate, runtime) ? candidate : runtime;
 }
 

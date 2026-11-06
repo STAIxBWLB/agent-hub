@@ -117,7 +117,7 @@ test("an explicitly selected missing home is the only directory created", () => 
   expect(checkClaudeProfileHook(f.home, f.options).state).toBe("missing");
   expect(existsSync(f.home.path)).toBe(false);
   expect(installClaudeProfileHook(f.home, f.options)).toMatchObject({ state: "installed", changed: true });
-  expect(readdirSync(f.root)).toEqual(["bun", "package", "selected-home"]);
+  expect(readdirSync(f.root).sort()).toEqual(["bun", "package", "selected-home"]);
   const unobserved = { ...f.home, path: join(f.root, "not-selected"), sources: [] };
   expect(installClaudeProfileHook(unobserved, f.options).state).toBe("refused");
   expect(existsSync(unobserved.path)).toBe(false);
