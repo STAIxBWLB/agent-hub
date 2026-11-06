@@ -118,7 +118,7 @@ test("#1246 the orphaned blocker names the peer, the project, the handle and the
   const result = await inspectTerminals(root, { codex: session }, probe.runner);
   expect(result.blockers[0]?.message).toContain("the codex terminal term-old");
   expect(result.blockers[0]?.message).toContain(root);
-  expect(result.blockers[0]?.nextAction).toContain("press [r] refresh in ahub upgrade, or rerun it");
+  expect(result.blockers[0]?.nextAction).toContain("refresh in ahub upgrade ([r] on the plan, [s] on an open operation), or rerun it");
   expect(result.orphaned).toEqual([{ peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, root }]);
   expect(probe.calls.every(argv => ["list", "show"].includes(argv[1]!))).toBe(true);
 });

@@ -426,6 +426,13 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
   return { ...body, fingerprint: planFingerprint(body) };
 }
 
+/** #1246: one line of outcome per `reattachOrphanedTerminal` result. */
+const REATTACH_LINES: Record<Awaited<ReturnType<typeof reattachOrphanedTerminal>>, (name: string, handle: string) => string> = {
+  reattached: (name, handle) => `${name}: terminal ${handle} reattached`,
+  "still-orphaned": (name, handle) => `${name}: terminal ${handle} is still orphaned after the switch; it stays a blocker`,
+  unavailable: (name, handle) => `${name}: terminal ${handle} not switched or not confirmed (its identity changed, it is not connected, or Orca did not answer)`,
+};
+
 /**
  * #1246: switch back the orphaned-but-connected panes the plan verified, and nothing else. Each handle is read again by
  * `reattachOrphanedTerminal` (identity, still orphaned and connected) before `orca terminal switch`, then polled for at
@@ -442,9 +449,7 @@ export async function reattachPlannedTerminals(planned: PlannedProject, terminal
     try { owner = lock(); } catch (error) { lines.push(`${name}: terminal ${terminal.handle} not switched (${(error as Error).message})`); continue; }
     if (owner) { lines.push(`${name}: terminal ${terminal.handle} not switched (recovery operation ${owner} holds the lock)`); continue; }
     const result = await reattachOrphanedTerminal(terminal, terminalOptions(run), ...(boundMs === undefined ? [] : [boundMs]));
-    lines.push(result === "reattached" ? `${name}: terminal ${terminal.handle} reattached`
-      : result === "still-orphaned" ? `${name}: terminal ${terminal.handle} is still orphaned after the switch; it stays a blocker`
-      : `${name}: terminal ${terminal.handle} not switched or not confirmed (its identity changed, it is not connected, or Orca did not answer)`);
+    lines.push(REATTACH_LINES[result](name, terminal.handle));
   }
   return lines;
 }

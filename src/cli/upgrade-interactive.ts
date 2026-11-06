@@ -6,7 +6,7 @@ import { operationLines, stepLabel } from "./upgrade-labels.ts";
 export { operationLines, stepLabel } from "./upgrade-labels.ts";
 import { recoveryArgv } from "../hub/recovery-store.ts";
 import { cancellableWait, nextChoices, publicOperation, type Inspection, type PlannedProject, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
-import type { OrphanedTerminal } from "./terminal-recovery.ts";
+import { shellQuote, type OrphanedTerminal } from "./terminal-recovery.ts";
 
 /**
  * #272: the interactive screens of `ahub upgrade`, `ahub restart` and bare `ahub recovery`. They add no way to change
@@ -119,7 +119,7 @@ function peerAction(planned: PlannedProject, peer: RecoveryPeer): string {
   const terminal = (planned.terminals as { peer: string; handle: string }[]).find((t) => t.peer === peer.id);
   if (terminal) return `resumes its session in a new terminal (replaces ${terminal.handle})`;
   const orphan = planned.orphanedTerminals?.find((t) => t.peer === peer.id);
-  if (orphan) return `attached, terminal ${orphan.handle} is orphaned but still connected; reattach it with orca terminal switch --terminal ${orphan.handle} (the upgrade menu's [t] does it), then press [r] refresh`;
+  if (orphan) return `attached, terminal ${orphan.handle} is orphaned but still connected; reattach it with orca terminal switch --terminal ${shellQuote(orphan.handle)} (the upgrade menu's [t] does it), then press [r] refresh`;
   if (peerKind(planned, peer) === "unmanaged") return "attached, terminal ownership unverified; resolve its evidence or end it in its terminal or resume the original conversation, then press [r] refresh";
   return definitionOf(peer.id)?.session.restoreOnStart ? "restarts headless on its recorded session" : "restarts headless as a new session";
 }

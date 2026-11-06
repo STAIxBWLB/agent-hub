@@ -664,7 +664,7 @@ function blocker(code: RecoveryBlocker["code"], message: string, peer?: Terminal
     code === "ownership-unknown" ? "confirm the terminal owner in Orca, then resume recovery" :
     code === "ambiguous-terminal" ? "close or identify the duplicate terminal, then resume recovery" :
     code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
-    code === "terminal-orphaned" ? `reattach the pane with orca terminal switch --terminal ${shellQuote(handle!)}; then press [r] refresh in ahub upgrade, or rerun it` :
+    code === "terminal-orphaned" ? `reattach the pane with orca terminal switch --terminal ${shellQuote(handle!)}; then refresh in ahub upgrade ([r] on the plan, [s] on an open operation), or rerun it` :
     code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
     code === "launcher-exited" ? "the session was not restored; the coordinator's error names the choices" :
     code === "terminal-gone" ? "the terminal was closed; inspect the project's terminals in Orca before resuming recovery" :

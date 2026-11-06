@@ -3990,8 +3990,8 @@ ownership, with end or native resume guidance.
 
 An Orca pane that is orphaned but still connected needs reattachment, not turn
 cancellation (#1246). The blocker names the peer, the project and the handle, and its
-next action is `orca terminal switch --terminal <handle>`, then `[r] refresh` in
-`ahub upgrade` (or rerun it). The plan records each such pane whose identity it
+next action is `orca terminal switch --terminal <handle>`, then refresh in
+`ahub upgrade` (`[r]` on the plan, `[s]` on an open operation) or rerun it. The plan records each such pane whose identity it
 verified (peer, handle, incarnation, worktree and root) as `orphanedTerminals`, part
 of the plan fingerprint, and the interactive plan screen then offers `[t] reattach N
 orphaned terminals`. Choosing it reads each recorded pane again, requires the same

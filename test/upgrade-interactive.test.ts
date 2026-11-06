@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestRelease, newerVersion } from "../src/cli/recovery-package.ts";
 import { endAgents, follow, operationLines, operationScreen, peerKind, planLines, planScreen, resetFlow, stepLabel, type ScreenIO, type UpgradeHost } from "../src/cli/upgrade-interactive.ts";
+import { shellQuote } from "../src/cli/terminal-recovery.ts";
 import { PACKAGE_ROOT, reattachPlannedTerminals } from "../src/cli/upgrade-runtime.ts";
 import { cancellableWait, nextActions, nextChoices, planFingerprint, type Inspection, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -475,7 +476,7 @@ test("#718 nothing is added when the host has nothing to say, when it throws, wh
 // #1246. The plan records the verified orphaned-but-connected panes; the menu's [t] switches exactly those and plans again.
 const orphanRoot = "/alpha";
 const orphan = { peer: "codex", handle: "term_codex", incarnationId: "inc-1", worktreeId: "wt-1", root: orphanRoot };
-const orphanBlocker = "the codex terminal term_codex in /alpha is orphaned but still connected (terminal term_codex); next action: reattach the pane with orca terminal switch --terminal term_codex; then press [r] refresh in ahub upgrade, or rerun it";
+const orphanBlocker = "the codex terminal term_codex in /alpha is orphaned but still connected (terminal term_codex); next action: reattach the pane with orca terminal switch --terminal term_codex; then refresh in ahub upgrade ([r] on the plan, [s] on an open operation), or rerun it";
 
 test("#1246 the menu offers [t] for verified orphaned terminals, switches exactly those and plans again without the blocker", async () => {
   const plans = [plan({ blockers: [orphanBlocker], orphanedTerminals: [orphan] }), plan()];
@@ -495,7 +496,7 @@ test("#1246 a still-orphaned terminal stays a blocker with its next action, and 
   const f = screen(["t", "q"]);
   await planScreen(host({ plan: async () => blocked(), reattachTerminals: async () => ["alpha/codex: terminal term_codex is still orphaned after the switch; it stays a blocker"] }), f.io);
   expect(f.out).toContain("  alpha/codex: terminal term_codex is still orphaned after the switch; it stays a blocker");
-  expect(f.out.filter((line) => line.includes("press [r] refresh in ahub upgrade, or rerun it"))).toHaveLength(2);
+  expect(f.out.filter((line) => line.includes("[s] on an open operation), or rerun it"))).toHaveLength(2);
   expect(f.asked[1]).toContain("[t] reattach 1 orphaned terminal");
 });
 
@@ -554,4 +555,10 @@ test("#1246 a pane that stays orphaned past the bound, a changed identity and a 
   const locked = orca(() => live());
   expect((await reattachPlannedTerminals(plannedOrphan(), [orphan], { run: locked.run, lock: () => "op-1", boundMs: 100 }))[0]).toContain("op-1 holds the lock");
   expect(locked.calls).toEqual([]);
+});
+
+test("#1246 the plan line shell-quotes a handle with a space or a quote", () => {
+  const handle = "term ' with space";
+  const lines = planLines(plan({ terminals: [], orphanedTerminals: [{ ...orphan, handle }], blockers: [orphanBlocker], source: source({ peers: [{ id: "codex", state: "idle", threadId: "t1" }] }) }), "0.6.0").join("\n").replace(/\s+/g, " ");
+  expect(lines).toContain(`orca terminal switch --terminal ${shellQuote(handle)}`);
 });
