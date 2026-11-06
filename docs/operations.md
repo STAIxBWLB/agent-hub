@@ -3569,7 +3569,7 @@ or the plugin is older than the daemon it installed (#1179). It prints nothing w
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
-| 0.26.0 through 0.31.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.26.0 through 0.32.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The protocol window remains 16
 through 17, so the published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -3577,11 +3577,11 @@ capabilities still require their own labels. A disjoint window refuses with 4426
 The compatibility-floor `protocol` field remains readable by old clients.
 
 Release N-1 is counted in minor versions, separately from this protocol window
-(#1164, family contract entelecheia/ai-workspace#70). For 0.31.x, N-1 is 0.30.0,
-the latest published patch of 0.30.x (exact `@staix/agent-mem` 0.20.1, control
-protocol 17 with descriptor floor 16). Every patch on 0.31.x keeps that release
-baseline. A change that cannot retain it needs a new minor release. For 0.30.x
-the baseline was 0.29.0.
+(#1164, family contract entelecheia/ai-workspace#70). For 0.32.x, N-1 is 0.31.0,
+the latest published patch of 0.31.x (exact `@staix/agent-mem` 0.21.0, control
+protocol 17 with descriptor floor 16). Every patch on 0.32.x keeps that release
+baseline. A change that cannot retain it needs a new minor release. The 0.31.x
+baseline remains 0.30.0 (agent-mem 0.20.1); for 0.30.x it was 0.29.0.
 
 In the minor release PR, together with its `package.json` version bump, query
 the published versions of `@staix/agent-hub`,
@@ -6012,7 +6012,8 @@ preview rather than reuse the old confirmation.
 
 The epoch commit quarantines old active sealed intents and removes their
 sendable ciphertext. Their local delivery becomes `needs_review` with reason
-`epoch rotated`, also named by `ahub room status team`. Inspect each id with
+`room epoch rotated; inspect ahub queue show <id>`; `ahub room status team` labels
+its `holdReason` as `epoch rotated`. Inspect each id with
 `ahub queue show <delivery-id>` and choose a person disposition. Rotation does
 not assert completion, cancel a native turn or replay old ciphertext. Existing
 terminal results and person dispositions remain unchanged. T2 already fences
