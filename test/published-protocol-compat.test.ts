@@ -121,10 +121,11 @@ async function plugin(entry: string, f: Awaited<ReturnType<typeof fixture>>) {
     // The published bundle inlines its observer port. Supply only the direct
     // parent's raw ps row before importing it; keep its bytes and classifier intact.
     program = join(f.root, "published-channel-parent.ts");
-    writeFileSync(program, `import childProcess from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
+    writeFileSync(program, `import * as childProcess from "node:child_process";
+import { mock } from "bun:test";
 const rawSpawnSync = childProcess.spawnSync;
-childProcess.spawnSync = (file, args, options) => {
+const nativeExports = { ...childProcess };
+const hostSpawnSync = (file, args, options) => {
   if (file === "/bin/ps" && Array.isArray(args) && args.length === 5
     && args[0] === "-ww" && args[1] === "-p" && args[2] === String(process.ppid)
     && args[3] === "-o" && args[4] === "command=") {
@@ -133,7 +134,8 @@ childProcess.spawnSync = (file, args, options) => {
   }
   return rawSpawnSync(file, args, options);
 };
-syncBuiltinESMExports();
+mock.module("child_process", () => ({ ...nativeExports, spawnSync: hostSpawnSync }));
+mock.module("node:child_process", () => ({ ...nativeExports, spawnSync: hostSpawnSync }));
 await import(${JSON.stringify(entry)});`);
   }
   const child = Bun.spawn([process.execPath, program], { cwd: f.root, env: f.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
