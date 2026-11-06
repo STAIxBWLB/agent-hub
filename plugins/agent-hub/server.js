@@ -321,12 +321,12 @@ var init_compat = __esm(() => {
     },
     "claude-implementer": {
       label: "Claude headless implementer",
-      verified: ["2.1.309", "2.1.310", "2.1.314", "2.1.316", "2.1.318"],
+      verified: ["2.1.309", "2.1.310", "2.1.314", "2.1.316", "2.1.318", "2.1.319"],
       gate: "contract",
       probe: ["claude", "--version"],
       parse: (out) => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
       trustNote: "The native prompt-tool transport and host-wrapper rewrite, environment isolation and replay contract have isolated receipts. No dontAsk/bypass fallback exists; another version's permission or rewrite behavior is unverified.",
-      receipt: "docs/verification/2026-11-05-claude-implementer-2.1.318.md"
+      receipt: "docs/verification/2026-11-06-claude-implementer-2.1.319.md"
     },
     "codex-review": {
       label: "Codex reviewer (codex-cli)",
@@ -336,7 +336,7 @@ var init_compat = __esm(() => {
       config: "codex_bin",
       parse: (out) => plain(out.trim().replace(/^codex-cli /, "")),
       trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md).",
-      receipt: "docs/verification/2026-10-31-codex-0166-reviewer-isolation.md"
+      receipt: "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md"
     },
     "kimi-review": {
       label: "Kimi reviewer (kimi-code)",

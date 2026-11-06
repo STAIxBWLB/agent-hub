@@ -4,6 +4,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Kimi Code 2.5.1 is an exact receipt-verified fresh-reviewer version (#888, task 748): the official macOS arm64 artifact passes the production preparation and native two-tool/Write controls in fixture-trust and verified/no-trust runs (`docs/verification/2026-11-06-kimi-251-reviewer-compat.md`). Runtime preparation remains required; real account, model and quota behavior remain unverified.
+- Claude Code 2.1.319 is a receipt-verified headless implementer version (#888, task 750): the model-free permission-transport and host shell-wrapper producers pass on it with 2.1.318 as the control (`docs/verification/2026-11-06-claude-implementer-2.1.319.md`).
+- Codex 0.167.0 passed the model-free reviewer isolation procedure (#888, task 747): all four legs passed with 0.166.0 as the control (`docs/verification/2026-11-06-codex-0167-reviewer-isolation.md`). It stays out of the verified set and joins it after the separately authorized model-backed tool-call run; until then the person can run `ahub agents trust codex-review 0.167.0`, and every runtime proof still runs. verified stays 0.146.0, 0.163.0, 0.164.0 and 0.166.0.
+
 ## 0.32.0
 
 - Rooms gain advisory liveness and person-visible epoch changes (T3 of #1204, task 736). An ephemeral-capable broker enables 30-second presence refresh and unknown status after three missed periods; aging never changes sending authority. Graceful stop fences new work and attempts a signed offline snapshot within two seconds without overtaking an attempted FIFO head. Legacy brokers report liveness untracked with an upgrade step. Epoch-changing commands preview sealed outstanding delivery IDs, recheck the exact set and roster, and immediately hold old-epoch work as needs_review with the cause "epoch rotated". Bus-only work and person/terminal dispositions are preserved; T4 remains open.
