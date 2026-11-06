@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.31.0 and control protocols 16 through 17. Live verification
+This guide describes ahub 0.33.0 and control protocols 16 through 17. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -1824,7 +1824,7 @@ ahub memory forget 1a2b3c4d              # a person's; also promote, demote, sup
 
 `"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
 
-The exact-pinned `@staix/agent-mem` 0.20.1 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
+The exact-pinned `@staix/agent-mem` 0.22.1 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
 
 The daemon checks its selector at hub operation entry and before candidate/counter writes. It does not hot-switch handles or provide an atomic fence against selection changes during an in-flight core call. Quiesce consumers and close their handles before migration or selection changes; reopen through the supported session-preserving lifecycle afterward. Candidate/counter storage remains `M/candidates.db`, independent of `G`; since agent-mem 0.7.0 `amem review` also lists and accepts candidates on a selected generation. Every running hub using this home needs an authenticated receipt: a matching ready binding, or a generation-capable unbound receipt (`disabled` when native memory is off, `unavailable` when opening failed) proving it holds no memory handle. An unbound daemon and zero running hubs are quiesced for memory; a stale bound handle, unreadable registry or unknown runtime is not ready. Existing JSON memory/goal results remain unchanged; the additive binding receipt belongs to daemon status, profile-check and the decay object. This source integration does not authorize installing a new runtime, migrating real memory, restarting sessions or claiming real-machine sync/capture receipts. Migration/deactivation and their limits belong to [agent-mem](https://github.com/STAIxBWLB/agent-mem); see [the hub profile contract](memory.md#selected-memory-profile).
 
@@ -3569,7 +3569,7 @@ or the plugin is older than the daemon it installed (#1179). It prints nothing w
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
-| 0.26.0 through 0.32.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.26.0 through 0.33.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The protocol window remains 16
 through 17, so the published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -3577,7 +3577,10 @@ capabilities still require their own labels. A disjoint window refuses with 4426
 The compatibility-floor `protocol` field remains readable by old clients.
 
 Release N-1 is counted in minor versions, separately from this protocol window
-(#1164, family contract entelecheia/ai-workspace#70). For 0.32.x, N-1 is 0.31.0,
+(#1164, family contract entelecheia/ai-workspace#70). For 0.33.x, N-1 is 0.32.0,
+the latest published patch of 0.32.x (exact `@staix/agent-mem` 0.21.0, control
+protocol 17 with descriptor floor 16). Every patch on 0.33.x keeps that release
+baseline. For 0.32.x, N-1 is 0.31.0,
 the latest published patch of 0.31.x (exact `@staix/agent-mem` 0.21.0, control
 protocol 17 with descriptor floor 16). Every patch on 0.32.x keeps that release
 baseline. A change that cannot retain it needs a new minor release. The 0.31.x
@@ -4876,7 +4879,7 @@ selected roster and existing capabilities; the TUI is always a person's start.
 - If the hub cannot read the event file the peer is `detached`, shown as offline with a notice, never idle: Qwen itself keeps working, and the hub reattaches when the file is readable again.
 - Restart: if the hub restarts while your Qwen keeps running, it reads on from its saved offset (no event twice, no launch). If Qwen is gone, `ahub qwen --mode tui` starts `qwen -r <session id>` on the same two files; the earlier submits are not replayed and the recorded answers are not shared again. Recovery never restores this terminal as a headless worker, and `ahub stop qwen` refuses: end Qwen in its own terminal.
 
-Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)), 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)) 0.26.4 ([0.26.4 ACP receipt](verification/2026-10-31-qwen-0264-acp.md)) and 0.26.5 ([0.26.5 ACP receipt](verification/2026-11-03-qwen-0265-acp.md)). The separate [0.26.4](verification/2026-10-31-qwen-0264-dual-output.md) and [0.26.5](verification/2026-11-03-qwen-0265-dual-output.md) dual-output attempts did not establish their queued-turn criterion, so `qwen-dual` stays at 0.26.1. A CLI version label alone
+Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)), 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)), 0.26.4 ([0.26.4 ACP receipt](verification/2026-10-31-qwen-0264-acp.md)), 0.26.5 ([0.26.5 ACP receipt](verification/2026-11-03-qwen-0265-acp.md)) and 0.26.8 ([0.26.8 ACP receipt](verification/2026-11-06-qwen-0268-acp.md)). The separate [0.26.4](verification/2026-10-31-qwen-0264-dual-output.md), [0.26.5](verification/2026-11-03-qwen-0265-dual-output.md), and [0.26.8](verification/2026-11-06-qwen-0268-dual-output.md) dual-output attempts did not establish their queued-turn criterion, so `qwen-dual` stays at 0.26.1. A CLI version label alone
 is insufficient: startup verifies its native identity/version and advertised mode
 ids before any prompt. The earlier local installation reported CLI 0.25.0 while
 its package/ACP source said 0.24.1; that was not a ready identity. The 0.26.0 receipt
@@ -5992,7 +5995,7 @@ With a legacy broker, status says `liveness not tracked (broker without ephemera
 Upgrade the broker to enable periodic refresh and aging. Legacy connections keep
 identical-snapshot dedupe and ordinary state-change publication, with no
 periodic refresh or freshness expiry. Older clients may ignore the new advisory
-status fields. Full capability advertisement remains #1204 T4.
+status fields. Codec negotiation is described under Room health diagnostics below.
 
 A graceful room stop immediately fences new publications and attempts one signed
 offline snapshot behind an already attempted FIFO frame, bounded to two seconds

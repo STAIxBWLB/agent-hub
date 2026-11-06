@@ -32,6 +32,16 @@ terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
 
+## Upgrading to 0.33.0
+
+Rooms now show refused-frame counts, outbox depth/ages and a closed link cause with a recovery step. Store-open failures retry, receive-only work wakes after journal recovery, and selective traffic no longer produces false sequence-gap notices. For a rolling room upgrade, update the broker first, then every member, then reconnect: 0.33.0 person-inbox (`user@label`) and invocation sends to a released 0.32.0 member, or through a released 0.32.0 broker are refused before effects with the upgrade step; plain chat keeps working. Use the matching CLI for the new diagnostics: 0.32.0 `ahub room status` drops the new fields, including in its JSON output, while `ahub status --json` passes raw daemon fields through.
+
+Orca recovery now recognizes its gone-terminal codes. The compat policy adds exactly Claude headless implementer 2.1.319, Kimi reviewer 2.5.1 and Qwen ACP 0.26.8 based on their model-free receipts. Codex reviewer 0.167.0 remains unverified after an unknown tool-call outcome, and Qwen dual-output remains at 0.26.1. These entries do not install agent CLIs or prove real-account/model behavior. N-1 is published 0.32.0 and control remains 16 through 17.
+
+This hub pins agent-mem 0.22.1 while 0.32.0 pins 0.21.0. Placement is opt-in; inactive homes behave as before, and the common formats and `INDEX_VERSION` are unchanged. The person-only activation preview is available, but activation alone does not enable this hub's automatic v3 sync: fresh host `placementAttestation` integration remains #1173. Shared-home activation and writer renewal are separate person operations; upgrading the hub performs neither. See [memory integration](memory.md#automatic-sync-health-1173).
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.33.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
 ## Upgrading to 0.32.0
 
 Rooms on an ephemeral-capable broker now refresh signed presence every 30 seconds; three missed periods display advisory unknown without changing sending authority. A graceful stop attempts a signed offline snapshot within two seconds. Epoch-changing room commands list sealed outstanding delivery IDs before confirmation and immediately hold old-epoch work with the named cause. Upgrade the global CLI and plugin with the step below to see the new previews and advisory status: a 0.31.0 CLI ignores those additive fields, even in JSON. A broker without ephemeral support keeps state-change publication and reports liveness untracked, with no periodic aging. Protocol 16 through 17 and room v1 shapes remain; the N-1 baseline is published 0.31.0, with the same agent-mem 0.21.0 pin.
@@ -194,7 +204,7 @@ The restarted Claude planner gets the release-train tools (`hub_release_new`, `h
 
 Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.21.0. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
+Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.22.1. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
@@ -272,7 +282,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 ## Shared memory
 
-The hub exact-pins the first-party `@staix/agent-mem` 0.21.0 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
+The hub exact-pins the first-party `@staix/agent-mem` 0.22.1 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
 
 Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
