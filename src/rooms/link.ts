@@ -953,7 +953,7 @@ export class RoomLink {
           if (!this.publicationCurrent(session, row.current.digest)) return;
           const featureDigest = await this.frameDigest(featureWire);
           this.queueFrame(session, featureWire, featureDigest, false,
-            () => this.publicationCurrent(session, row.current.digest) && peers.every(peer => this.currentPresence(own.exposedPeers).some(value => value.id === peer.id)),
+            () => this.publicationCurrent(session, row.current.digest) && peers.every(({ id }) => this.currentPresence(own.exposedPeers).some(value => value.id === id)),
             true, undefined, undefined, undefined, true);
         }
         session.lastPresence = presenceKey; sent = true;
