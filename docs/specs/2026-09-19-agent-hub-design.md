@@ -1131,13 +1131,19 @@ clients that do not opt in. Missing advertisement means legacy presence frames,
 with dedupe/backoff still active. The broker withholds ephemeral frames from older member hubs
 until upgraded; application chat stays wire-compatible. See the [compatibility
 ceiling](../design/bus.md#room-wire-compatibility-1204-t1). Codec-aware presence
-uses the same upgrade header negotiation with value `2`. Only sessions whose
-ready reply explicitly confirms codec support receive signed feature-bearing
-presence. Legacy sessions receive the unchanged legacy presence bytes. Missing
-or unknown feature advertisements mean unsupported; they never grant exposure,
-roles, privacy clearance or native authority. A send needing a newer codec is
-refused before sequence reservation, sealing or room outbox writes and names the
-member upgrade step. Plain v1 chat remains usable across mixed versions.
+keeps `x-agent-hub-ephemeral: 1` and adds `x-agent-hub-codecs: 1` on that same
+WebSocket upgrade. Released brokers ignore the codec header while preserving
+ephemeral presence and liveness. Only explicitly opted-in clients receive the
+bounded current-roster peer connection inventory and signed feature snapshots.
+Feature evidence is tied to the observed source connection token and roster;
+ordinary presence never revokes a same-connection claim. Legacy members receive
+the unchanged legacy presence bytes. A missing observation is pending, grants no
+support, and defers a send under its original queue expiry. Known legacy members
+or signed feature lists missing the required codec refuse with an upgrade step.
+Fresh support and known-legacy observations wake only that member's codec waiters,
+including sends not yet admitted to the room outbox. Requeue rechecks the observation
+to avoid losing a wake that arrived during an await. These signals grant no exposure,
+roles, privacy clearance or native authority. Plain v1 chat stays compatible.
 
 ### Durable state and outbound link
 

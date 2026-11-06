@@ -114,9 +114,6 @@ async function mesh(options: MeshOptions = {}) {
   const token = await command(a, "invite", { name: "work" }), request = await command(b, "join", { name: "work", token: token.artifact, label: "beta" });
   const roster = await command(a, "invite", { name: "work", request: request.artifact }); await command(b, "join", { name: "work", roster: roster.artifact });
   await notify.wait(() => a.bus.stateOf("codex@beta") === "idle" && b.bus.stateOf("codex@alpha") === "idle", "authenticated room links online");
-  const alpha = a.context!.store.identity.public.fingerprint, beta = b.context!.store.identity.public.fingerprint;
-  await notify.wait(() => a.context!.link.codecSupported(beta, "person_inbox_v1") && b.context!.link.codecSupported(alpha, "person_inbox_v1"),
-    "authenticated person inbox codec advertisements received");
   return { root, broker, a, b, ...notify };
 }
 

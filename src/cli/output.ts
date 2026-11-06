@@ -15,6 +15,7 @@ import type { SpecsStatus } from "../hub/specs-task.ts";
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
   roomsUnavailable?: unknown;
+  roomsOpening?: boolean;
   controlWriteTiming?: { active: number; slowRequests: number; blockedLoopSamples: number; droppedActive: number; droppedRecent: number; droppedLogs: number; droppedSpans?: number; droppedMetadata?: number; expiredRequests?: number };
   specs?: SpecsStatus & { missingBlockHint?: boolean };
   queueBackpressure?: QueueBackpressureStatus;
@@ -264,6 +265,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     const text = ownerIsolationText(isolated, data.ownerIsolationNotes?.[id]);
     if (text) out.push(...detail(`${id} owner isolation`, text, columns, isolated ? undefined : "attention"));
   }
+  if (data.roomsOpening === true) out.push(...lines("rooms: opening; wait for local room storage initialization", columns, "muted"));
   if (data.roomsUnavailable !== undefined) out.push(...lines(roomsUnavailableLine(data.roomsUnavailable), columns, "failure"));
   if (data.deliveryError) out.push(...detail("delivery storage", `${data.deliveryError}; dispatch is stopped`, columns, "failure"));
   for (const [peer, count] of Object.entries(data.deliveryFailures ?? {})) {

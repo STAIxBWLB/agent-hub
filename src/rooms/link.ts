@@ -35,7 +35,6 @@ export interface RoomLinkApplication {
   receiptTtlMs?(context: RoomLinkContext): number;
   capacityChanged?(context: RoomLinkContext): void;
   codecsChanged?(context: RoomLinkContext, input: { member: string }): void;
-  gap?(context: RoomLinkContext, input: { sender: string; count: string }): void;
 }
 /** Host port signal: no application claim/effect occurred; the durable plaintext remains pending. */
 export class RoomApplicationDeferredError extends Error {
@@ -58,13 +57,21 @@ export class RoomNotSentError extends Error {
   readonly code = "not_sent";
   constructor() { super("room application was not queued; retry when the link is ready"); this.name = "RoomNotSentError"; }
 }
+/** No compatibility observation exists yet; retain work under its original queue deadline. */
+export class RoomCodecPendingError extends RoomNotSentError {
+  constructor(readonly changed: () => boolean) {
+    super(); this.name = "RoomCodecPendingError";
+    this.message = "Room codec observation is pending; wait for signed presence within the original queue lifetime.";
+  }
+}
+export type RoomCodecState = "pending" | "supported" | "unsupported";
 const RECEIPT_TTL_MS = 24 * 3_600_000;
 const LIMITS = Object.freeze({ packets: 8, queuedBytes: 2_097_152, packetBytes: 1_048_576, backpressure: 1_048_576, handshakeMs: 30_000, reconnectMaxMs: 300_000 });
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const STATES: readonly string[] = ["idle", "busy", "paused", "offline"];
-interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void; afterInboundAck?: string; codecFeatures?: boolean; supported?: () => boolean }
+interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void; afterInboundAck?: string; codecFeatures?: boolean; supported?: () => boolean; codecPending?: () => boolean }
 interface Session {
   closingHead?: PendingFrame;
   refresh?: ReturnType<typeof setTimeout>;
@@ -82,7 +89,9 @@ interface Session {
   lastPresence?: string;
   ephemeral?: boolean;
   codecFeatures?: boolean;
-  features?: Map<string, readonly string[]>;
+  codecSession?: string;
+  codecPeers?: Map<string, { session: string | null; supported: boolean }>;
+  features?: Map<string, { session: string; features: readonly string[] }>;
   ws: WebSocket;
   generation: number;
   room: string;
@@ -117,8 +126,8 @@ function packet(bytes: Uint8Array): Record<string, unknown> {
   return row;
 }
 function presence(bytes: Uint8Array, exposed: readonly string[]): RoomPresencePeer[] {
-  const decoded = packet(bytes), row = exact(decoded, ["v", "type", "peers", ...(Object.hasOwn(decoded, "requestReply") ? ["requestReply"] : []), ...(Object.hasOwn(decoded, "features") ? ["features"] : [])]);
-  if (Object.hasOwn(row, "features")) roomCodecFeatures(row.features);
+  const decoded = packet(bytes), row = exact(decoded, ["v", "type", "peers", ...(Object.hasOwn(decoded, "requestReply") ? ["requestReply"] : []), ...(Object.hasOwn(decoded, "features") ? ["features", "codecSession"] : [])]);
+  if (Object.hasOwn(row, "features")) { roomCodecFeatures(row.features); if (typeof row.codecSession !== "string" || !DIGEST.test(row.codecSession)) fail(); }
   if (row.requestReply !== undefined && typeof row.requestReply !== "boolean") fail();
   if (row.type !== "presence" || !Array.isArray(row.peers) || row.peers.length > 64) fail();
   const peers = row.peers.map(value => {
@@ -160,9 +169,23 @@ export class RoomLink {
   get connectionState(): RoomLinkState { return this.state; }
   get connectionCause(): RoomHealthCause | undefined { return this.cause; }
   /** Negotiated transport evidence only; unknown until this session is ready. */
-  codecSupported(recipient: string, feature: RoomCodecFeature): boolean {
+  codecState(recipient: string, feature: RoomCodecFeature): RoomCodecState {
     const session = this.session;
-    return !!session && session.phase === "ready" && session.codecFeatures === true && session.features?.get(recipient)?.includes(feature) === true;
+    if (!session || session.phase !== "ready") return "pending";
+    if (session.codecFeatures !== true) return "unsupported";
+    const peer = session.codecPeers?.get(recipient);
+    if (!peer || peer.session === null) return "pending";
+    if (!peer.supported) return "unsupported";
+    const advertised = session.features?.get(recipient);
+    if (!advertised || advertised.session !== peer.session) return "pending";
+    return advertised.features.includes(feature) ? "supported" : "unsupported";
+  }
+  codecSupported(recipient: string, feature: RoomCodecFeature): boolean { return this.codecState(recipient, feature) === "supported"; }
+  private codecRefusal(recipient: string, feature: RoomCodecFeature): RoomNotSentError | RoomCodecUnsupportedError {
+    if (this.codecState(recipient, feature) === "unsupported") return new RoomCodecUnsupportedError(feature);
+    const session = this.session, peer = session?.codecPeers?.get(recipient), advertisement = session?.features?.get(recipient);
+    return new RoomCodecPendingError(() => this.session !== session || session?.codecPeers?.get(recipient) !== peer
+      || session?.features?.get(recipient) !== advertisement || this.codecState(recipient, feature) !== "pending");
   }
   get livenessTracked(): boolean | undefined { return this.session?.phase === "ready" ? this.session.ephemeral : undefined; }
   status(): { state: RoomLinkState; members: number; cause?: RoomHealthCause; nextStep?: string } {
@@ -377,10 +400,14 @@ export class RoomLink {
   private retry(session?: Session, error?: unknown): void {
     if (this.stopping) return;
     if (session && this.session !== session) return;
-    const cause = error instanceof RoomStoreError ? roomHealthCause(error)
-      : this.cause === "broker_refused" || this.cause === "clock_rollback" ? this.cause
-      : error instanceof RoomLinkError ? error.code === "limit" ? "backpressure" : error.code === "invalid_wire" ? "untrusted" : error.code
-      : this.cause === "backpressure" ? this.cause : "transport_closed";
+    let cause: RoomHealthCause = "transport_closed";
+    if (error instanceof RoomStoreError) cause = roomHealthCause(error);
+    else if (this.cause === "broker_refused" || this.cause === "clock_rollback") cause = this.cause;
+    else if (error instanceof RoomLinkError) {
+      if (error.code === "limit") cause = "backpressure";
+      else if (error.code === "invalid_wire") cause = "untrusted";
+      else cause = error.code;
+    } else if (this.cause === "backpressure") cause = this.cause;
     this.disconnect(session, cause);
     if (!this.running || this.reconnect) return;
     const ceiling = Math.min(LIMITS.reconnectMaxMs, 1000 * 2 ** Math.min(this.attempts++, 9));
@@ -400,8 +427,8 @@ export class RoomLink {
     } catch { this.setState("offline", "untrusted"); return; }
     url.pathname = `/v1/rooms/${row.current.room}`;
     let ws: WebSocket;
-    // Version 2 of the existing opt-in adds codec advertisements; a legacy broker returns the legacy ready shape.
-    try { ws = new WebSocket(url.href, { headers: { "x-agent-hub-ephemeral": BROKER_CODEC_FEATURES_OPT_IN } }); } catch { this.retry(); return; }
+    // Preserve the released ephemeral header exactly; old brokers ignore the additional codec token.
+    try { ws = new WebSocket(url.href, { headers: { "x-agent-hub-ephemeral": "1", "x-agent-hub-codecs": BROKER_CODEC_FEATURES_OPT_IN } }); } catch { this.retry(); return; }
     ws.binaryType = "arraybuffer";
     const generation = ++this.generation;
     const session: Session = { ws, generation, room: row.current.room, broker: row.broker, phase: "challenge", pendingPresenceReplies: new Set(), presenceAsked: false, outbound: [], outboundBytes: 0, frameSent: false, retryAttempt: 0, queue: [], queuedBytes: 0, processing: false, initialRoster: true, requestPresenceReply: true,
@@ -418,7 +445,7 @@ export class RoomLink {
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
   }
-  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void, afterInboundAck?: string, codecFeatures = false, supported?: () => boolean): void {
+  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void, afterInboundAck?: string, codecFeatures = false, supported?: () => boolean, codecPending?: () => boolean): void {
     this.current(session, undefined, this.stopping);
     // Only an unsent observation may be replaced. Never reorder an attempted frame.
     if (presence) {
@@ -426,7 +453,7 @@ export class RoomLink {
       if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
     }
     if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
-    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent, afterInboundAck, codecFeatures, supported }); session.outboundBytes += wire.byteLength;
+    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent, afterInboundAck, codecFeatures, supported, codecPending }); session.outboundBytes += wire.byteLength;
     this.pumpFrames(session);
   }
   private pumpFrames(session: Session): void {
@@ -448,7 +475,7 @@ export class RoomLink {
       return;
     }
     if (frame.supported && !frame.supported()) {
-      this.setState(this.state, "codec_unsupported");
+      this.setState(this.state, frame.codecPending?.() ? "codec_pending" : "codec_unsupported");
       if (frame.retained) {
         // The durable intent owns retry. Withdraw only this unsent ciphertext so
         // later receipts can progress; a fresh codec observation reseals its retry.
@@ -461,7 +488,7 @@ export class RoomLink {
     // verification/storage of the receipt can pin the chat's one-packet slot.
     if (frame.afterInboundAck && session.processingFrame === frame.afterInboundAck && session.acknowledgedFrame !== frame.afterInboundAck) return;
     this.send(session, frame.wire); session.frameSent = true;
-    if (frame.supported && this.cause === "codec_unsupported") this.setState(this.state);
+    if (frame.supported && (this.cause === "codec_unsupported" || this.cause === "codec_pending")) this.setState(this.state);
     const onSent = frame.onSent; frame.onSent = undefined; onSent?.();
   }
   private storedFrame(session: Session, digest: string): void {
@@ -555,8 +582,8 @@ export class RoomLink {
       return;
     }
     if (message.type === "ready") {
-      const ready = exact(message, ["v", "type", "room", "member", "epoch", "digest", ...(Object.hasOwn(message, "ephemeral") ? ["ephemeral"] : []), ...(Object.hasOwn(message, "codecFeatures") ? ["codecFeatures"] : [])]), roster = session.roster;
-      if (ready.ephemeral !== undefined && ready.ephemeral !== true || ready.codecFeatures !== undefined && (ready.codecFeatures !== true || ready.ephemeral !== true)) fail();
+      const ready = exact(message, ["v", "type", "room", "member", "epoch", "digest", ...(Object.hasOwn(message, "ephemeral") ? ["ephemeral"] : []), ...(Object.hasOwn(message, "codecFeatures") ? ["codecFeatures", "codecSession"] : [])]), roster = session.roster;
+      if (ready.ephemeral !== undefined && ready.ephemeral !== true || ready.codecFeatures !== undefined && (ready.codecFeatures !== true || ready.ephemeral !== true || typeof ready.codecSession !== "string" || !DIGEST.test(ready.codecSession))) fail();
       if (!roster || ready.room !== local.current.room || ready.member !== this.options.store.identity.public.fingerprint || ready.epoch !== roster.epoch || ready.digest !== roster.digest) fail("untrusted");
       if (roster.digest !== local.current.digest) {
         if (roster.owner !== this.options.store.identity.public.fingerprint || BigInt(roster.epoch) >= BigInt(local.current.epoch)) fail("untrusted");
@@ -564,11 +591,12 @@ export class RoomLink {
         this.send(session, local.wire); return;
       }
       if (session.presenceRoster !== roster.digest) {
-        session.presenceRoster = roster.digest; session.features = new Map(); session.pendingPresenceReplies.clear(); session.presenceAsked = false;
+        session.presenceRoster = roster.digest; session.features = new Map(); session.codecPeers = new Map(); session.pendingPresenceReplies.clear(); session.presenceAsked = false;
         session.requestPresenceReply = true; session.lastPresence = undefined;
       }
       session.ephemeral = ready.ephemeral === true;
       session.codecFeatures = ready.codecFeatures === true;
+      session.codecSession = typeof ready.codecSession === "string" ? ready.codecSession : undefined;
       session.phase = "ready"; session.ownerUpgrading = false; clearTimeout(session.handshake); this.attempts = 0;
       if (session.deferredFrame) {
         session.queue.unshift(session.deferredFrame); session.queuedBytes += session.deferredFrame.byteLength; session.deferredFrame = undefined;
@@ -584,6 +612,28 @@ export class RoomLink {
       await this.options.application?.online(context);
       this.current(session, local.current.digest);
       void this.publishPresence().catch(() => this.retry(session));
+      return;
+    }
+    if (message.type === "codec_peers") {
+      const inventory = exact(message, ["v", "type", "peers", "digest"]);
+      if (!session.codecFeatures || session.phase !== "ready" || !Array.isArray(inventory.peers) || inventory.peers.length > 64) fail("untrusted");
+      if (inventory.digest !== local.current.digest) return; // A previous-roster observation cannot revoke or grant current support.
+      const members = roomMembers(local.current), seen = new Set<string>();
+      const peers = inventory.peers.map(value => {
+        const peer = exact(value, ["member", "session", "supported"]);
+        if (typeof peer.member !== "string" || !members.some(member => member.fingerprint === peer.member) || seen.has(peer.member)
+          || peer.member === this.options.store.identity.public.fingerprint || typeof peer.supported !== "boolean"
+          || peer.session !== null && (typeof peer.session !== "string" || !DIGEST.test(peer.session)) || peer.session === null && peer.supported) fail("untrusted");
+        seen.add(peer.member);
+        return { member: peer.member, session: peer.session as string | null, supported: peer.supported };
+      });
+      for (const peer of peers) {
+        const previous = session.codecPeers?.get(peer.member);
+        if (previous?.session === peer.session && previous.supported === peer.supported) continue;
+        (session.codecPeers ??= new Map()).set(peer.member, { session: peer.session, supported: peer.supported });
+        session.features?.delete(peer.member);
+        try { this.options.application?.codecsChanged?.(this.context(session, local.current.digest), { member: peer.member }); } catch { /* Compatibility evidence grants no authority. */ }
+      }
       return;
     }
     if (message.type === "frame") {
@@ -723,7 +773,6 @@ export class RoomLink {
       this.options.store.settleInbox(this.options.name, acceptedDigest);
       if (result?.status === "accepted") this.capacityChanged(session, digest);
     } else if (result?.status === "accepted") {
-      if (result.gap !== "0") try { this.options.application?.gap?.(this.context(session, digest), { sender: frame.sender, count: result.gap }); } catch { /* metadata observation cannot affect admission */ }
       const sender = roomMembers(latest.current).find(member => member.fingerprint === frame.sender);
       if (!sender) fail("untrusted");
       if (application && this.options.application) {
@@ -732,11 +781,13 @@ export class RoomLink {
         const peers = presence(result.plaintext, sender.exposedPeers);
         this.current(session, digest);
         if (frame.codecFeatures === true) {
-          (session.features ??= new Map()).set(frame.sender, roomCodecFeatures(packet(result.plaintext).features));
-          this.pumpFrames(session);
-          try { this.options.application?.codecsChanged?.(this.context(session, digest), { member: frame.sender }); } catch { /* Compatibility observations cannot change admission. */ }
+          const payload = packet(result.plaintext), peer = session.codecPeers?.get(frame.sender);
+          if (frame.epoch === latest.current.epoch && peer?.supported && peer.session !== null && payload.codecSession === peer.session) {
+            (session.features ??= new Map()).set(frame.sender, { session: peer.session, features: roomCodecFeatures(payload.features) });
+            this.pumpFrames(session);
+            try { this.options.application?.codecsChanged?.(this.context(session, digest), { member: frame.sender }); } catch { /* Compatibility observations cannot change admission. */ }
+          }
         } else {
-          session.features?.delete(frame.sender); // A new legacy observation cannot inherit an earlier remote process codec claim.
           session.pendingPresenceReplies.delete(frame.sender);
           if (session.presenceAsked && session.pendingPresenceReplies.size === 0) session.requestPresenceReply = false;
           try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
@@ -814,7 +865,7 @@ export class RoomLink {
     if (this.stopping || !this.running || !session || session.phase !== "ready") { if (metadata) throw new RoomNotSentError(); fail("unavailable"); }
     if (this.applicationPauses.size) { if (metadata) throw new RoomNotSentError(); fail("state_changed"); }
     const required = roomRequiredCodecFeature(message);
-    if (required && !this.codecSupported(recipient, required)) throw new RoomCodecUnsupportedError(required);
+    if (required && !this.codecSupported(recipient, required)) throw this.codecRefusal(recipient, required);
     const digest = this.current(session).current.digest;
     const allowed = () => this.publicationCurrent(session, digest) && current();
     const supported = () => required === undefined || this.codecSupported(recipient, required);
@@ -825,7 +876,7 @@ export class RoomLink {
     };
     const assertAdmitted = () => {
       if (admitted()) return;
-      if (codecLost && required) throw new RoomCodecUnsupportedError(required);
+      if (codecLost && required) throw this.codecRefusal(recipient, required);
       fail("state_changed");
     };
     let queueStarted = false;
@@ -868,7 +919,8 @@ export class RoomLink {
           if (codecLost && required && error instanceof RoomStoreError && error.code === "state_changed") {
             // The atomic fence refused this attempt. Positively distinguish a
             // never-admitted application from an earlier durable retry intent.
-            if (!this.options.store.applicationOutbox(this.options.name).some(row => row.deliveryId === metadata.deliveryId || row.application === metadata.application)) throw new RoomCodecUnsupportedError(required);
+            if (!this.options.store.applicationOutbox(this.options.name).some(row => row.deliveryId === metadata.deliveryId || row.application === metadata.application)) throw this.codecRefusal(recipient, required);
+            if (this.codecState(recipient, required) !== "unsupported") throw this.codecRefusal(recipient, required);
             throw new RoomNotSentError();
           }
           // An explicit atomic refusal plus absent durable intent is positive not-sent evidence.
@@ -889,7 +941,7 @@ export class RoomLink {
         this.queueFrame(session, wire, frameDigest, false, allowed, false,
           metadata ? () => this.options.store.applicationSendable(this.options.name, frameDigest)
             : message.type === "receipt" ? () => this.options.store.receiptSendable(this.options.name, frameDigest) : undefined,
-          undefined, message.type === "receipt" && message.frame === session.processingFrame ? message.frame : undefined, false, required ? supported : undefined);
+          undefined, message.type === "receipt" && message.frame === session.processingFrame ? message.frame : undefined, false, required ? supported : undefined, required ? () => this.codecState(recipient, required) === "pending" : undefined);
       } catch (error) {
         // The durable outbox owns retry after local backpressure; this is no uncertainty.
         if (!allowed() || !(error instanceof RoomLinkError) || error.code !== "limit" || !metadata && message.type !== "receipt") throw error;
@@ -897,7 +949,7 @@ export class RoomLink {
       }
       return frameDigest;
     }); } catch (error) {
-      if (error instanceof RoomCodecUnsupportedError) throw error;
+      if (error instanceof RoomCodecUnsupportedError || error instanceof RoomCodecPendingError) throw error;
       if (metadata && !queueStarted) throw new RoomNotSentError();
       throw error;
     }
@@ -946,9 +998,9 @@ export class RoomLink {
             session.requestPresenceReply = session.pendingPresenceReplies.size > 0;
             if (this.retiredPresenceBytes && this.options.store.ordinaryInboxAvailable(this.options.name, this.retiredPresenceBytes)) this.retiredPresenceBytes = 0;
           } : undefined);
-        if (session.codecFeatures) {
+        if (session.codecFeatures && session.codecSession) {
           const featureWire = await sealFrame({ epoch: row.current, identity, recipients,
-            plaintext: canonicalBytes({ v: 1, type: "presence", peers, features: ROOM_CODEC_FEATURES }),
+            plaintext: canonicalBytes({ v: 1, type: "presence", peers, features: ROOM_CODEC_FEATURES, codecSession: session.codecSession }),
             ephemeral: true, codecFeatures: true, sequence: this.options.store.sequence });
           if (!this.publicationCurrent(session, row.current.digest)) return;
           const featureDigest = await this.frameDigest(featureWire);

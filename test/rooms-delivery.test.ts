@@ -12,8 +12,8 @@ import { parseRouting } from "../src/hub/routing.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
 import { authorizeRoomInvocation } from "../src/rooms/boundary.ts";
-import { verifyPublicFrame, sealFrame, openFrame, roomMembers } from "../src/rooms/wire.ts";
-import { RoomNotSentError, type RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
+import { verifyPublicFrame, sealFrame, openFrame, roomMembers, canonicalBytes } from "../src/rooms/wire.ts";
+import { RoomCodecPendingError, RoomNotSentError, type RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
 import { RoomStore, RoomStoreError, RoomApplicationLimitError, ROOM_APPLICATION_RETENTION } from "../src/rooms/store.ts";
 import { encodeRoomMessage, decodeRoomMessage, type RoomMessage } from "../src/rooms/application.ts";
 import { encodeBase64url, sha256 } from "../src/rooms/crypto.ts";
@@ -61,6 +61,7 @@ test("delivery signals retain a notification arriving after an async check retur
   finally { signal.notify(); await pending; }
 });
 interface Control {
+  holdCodec?: string; codecEntered?: boolean; codecGate?: ReturnType<typeof deferred>; admitInvocation?: boolean; receivedInvocations?: string[];
   now: number; phase: string; holdSender?: string; hold: boolean; entered: boolean; gate: ReturnType<typeof deferred>;
   afterPublication?: (label: string, env: Envelope, result: PublishResult) => void;
   afterReceive?: (label: string, input: Parameters<RoomLinkApplication["receive"]>[1]) => void;
@@ -91,6 +92,10 @@ async function hub(root: string, label: string, event: Signal, control: Control,
   const routing = parseRouting('[local]\nfixed_model="fixture"\n');
   chat = new RoomChat({ bus, cwd, now: () => control.now, routing: () => routing, piiPaths: () => [], senderPrivate: () => false, taskPrivate: () => false, modelScreenOn: () => control.modelScreen === true,
     screen: async () => { if (control.screenHold) { control.screenEntered = true; event.notify(); await control.screenGate?.promise; } return { label: control.screenLabel ?? "clear", ms: 0 }; }, policyVersion: () => control.policyVersion ?? 1,
+    invocation: async input => {
+      if (!control.admitInvocation || !input.claim()) return "refused";
+      (control.receivedInvocations ??= []).push(input.envelope.id); event.notify(); return "admitted";
+    },
     invocationAuthorization: (env, identity) => control.authorizeInvocation && isInvocationKind(env) ? authorizeRoomInvocation(env, "codex", {
       invocation: env.id, capability: "command:probe", digest: `sha256:${"0".repeat(64)}`, class: "read", depth: 1, args: {},
     }, identity.current) : undefined,
@@ -101,6 +106,14 @@ async function hub(root: string, label: string, event: Signal, control: Control,
     ownedStore = context.store; ownedLink = context.link;
     if (!wrapped.has(context.store)) {
       wrapped.add(context.store);
+      const accept = context.store.replay.accept;
+      context.store.replay.accept = async input => {
+        const packet = JSON.parse(new TextDecoder().decode(input.plaintext)) as { type?: string; features?: unknown };
+        if (control.holdCodec === label && packet.type === "presence" && packet.features !== undefined) {
+          control.codecEntered = true; event.notify(); await control.codecGate?.promise;
+        }
+        return accept(input);
+      };
       const outgoingMessage = context.store.outgoingMessage.bind(context.store);
       context.store.outgoingMessage = async (name, application, current) => {
         if (control.countOutgoing === application) { control.outgoingReads = (control.outgoingReads ?? 0) + 1; event.notify(); }
@@ -168,9 +181,9 @@ function fillApplicationIdentityCap(receiver: Hub, remoteSender: string, now: nu
 }
 const meshes: Mesh[] = [];
 afterEach(async () => { for (const mesh of meshes.splice(0).reverse()) await mesh.close(); });
-async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = false): Promise<Mesh> {
+async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = false, holdInitialCodec = false): Promise<Mesh> {
   const root = mkdtempSync(join(tmpdir(), "ahub-room-delivery-")), event = signals();
-  const control: Control = { now: Date.now(), phase: "setup", hold: false, entered: false, gate: deferred() }, frames: Mesh["frames"] = [], brokerEvents: Mesh["brokerEvents"] = [];
+  const control: Control = { now: Date.now(), phase: "setup", hold: false, entered: false, gate: deferred(), ...(holdInitialCodec ? { holdCodec: "alpha", codecGate: deferred() } : {}) }, frames: Mesh["frames"] = [], brokerEvents: Mesh["brokerEvents"] = [];
   const brokerRoot = join(root, "broker");
   const broker = await startBroker({ stateDir: brokerRoot, port: 0, ...(brokerQueueCap ? { limits: { queuedPerRoom: brokerQueueCap } } : {}) }, {
     log: (kind, ids) => { brokerEvents.push({ event: kind, ...(ids.member ? { member: ids.member } : {}), ...(ids.code ? { code: ids.code } : {}) }); event.notify(); },
@@ -198,6 +211,7 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = fa
       await next.commands.start(); return next;
     },
     close: async () => {
+      control.codecGate?.release();
       for (const handle of handles.slice().reverse()) await handle.close();
       control.hold = false; control.gate.release(); await broker.stop(); rmSync(root, { recursive: true, force: true });
     },
@@ -209,7 +223,6 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = fa
   const roster = await command(a, "invite", { name: "work", request: request.artifact }); await command(b, "join", { name: "work", roster: roster.artifact });
   result.owner = owner; result.guest = guest;
   await event.wait(() => result.a.bus.stateOf("codex@beta") === "idle" && result.b.bus.stateOf("codex@alpha") === "idle", "both room peers online");
-  if (!legacyFrames) await event.wait(() => result.a.link?.codecSupported(guest, "person_inbox_v1") === true && result.b.link?.codecSupported(owner, "person_inbox_v1") === true, "signed codec advertisements reach both members");
   control.phase = "before"; return result;
 }
 async function acknowledgementDeadline(f: Mesh, side: Hub, application: string): Promise<void> {
@@ -1215,4 +1228,64 @@ test("a receive-only hub retries deferred admission on the journal recovery edge
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "storage recovery wakes the receive-only room");
   expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
   expect(f.b.store!.pendingInbox("work")).toEqual([]);
+});
+
+
+for (const kind of ["person", "invocation"] as const) test(`immediate online ${kind} waits for signed codec observation and preserves its original Bus queue`, async () => {
+  const f = await mesh(600, undefined, false, true);
+  f.control.authorizeInvocation = true; f.control.admitInvocation = true;
+  const env = newEnvelope(kind === "person" ? "codex" : HUB, `immediate online ${kind}`, { to: [kind === "person" ? "user@beta" : "codex@beta"], ...(kind === "invocation" ? { kind: "invocation" as const } : {}) });
+  f.a.bus.publish(env);
+  await f.event.wait(() => f.control.codecEntered === true && f.a.bus.stateOf(kind === "person" ? "user@beta" : "codex@beta") === "offline" && f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "queued"), "pending codec observation defers original Bus delivery");
+  expect(f.a.store!.applicationOutbox("work").some(row => row.application === env.id)).toBe(false);
+  expect(f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "failed")).toBe(false);
+  f.control.holdCodec = undefined; f.control.codecGate!.release();
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === (kind === "person" ? "completed (inbox)" : "completed (admitted)"), "fresh signed advertisement wakes the original queued send");
+  if (kind === "invocation") expect(f.control.receivedInvocations?.filter(id => id === env.id)).toHaveLength(1);
+});
+
+test("a signed codec observation arriving before pending-send requeue is not a lost wake", async () => {
+  const f = await mesh(600, undefined, false, true), publish = f.a.link!.publishApplication.bind(f.a.link!);
+  let raced = false;
+  f.a.link!.publishApplication = async (...args) => {
+    try { return await publish(...args); }
+    catch (error) {
+      if (error instanceof RoomCodecPendingError && !raced) {
+        raced = true; f.control.holdCodec = undefined; f.control.codecGate!.release();
+        await f.event.wait(() => f.a.link!.codecSupported(f.guest, "person_inbox_v1"), "advertisement arrives before RemotePeer handles the pending rejection");
+      }
+      throw error;
+    }
+  };
+  const env = newEnvelope("codex", "lost wake person send", { to: ["user@beta"] });
+  f.a.bus.publish(env);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (inbox)", "post-requeue observation recheck wakes the original delivery");
+  expect(raced).toBe(true);
+  expect(f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "failed")).toBe(false);
+});
+
+test("feature-required sends remain usable across repeated forced legacy and codec presence snapshots", async () => {
+  const f = await mesh();
+  for (let n = 0; n < 10; n++) {
+    (f.a.link as unknown as { forcePresenceRequest: boolean }).forcePresenceRequest = true;
+    await f.a.link!.publishPresence();
+    const env = newEnvelope("codex", `forced observation person send ${n}`, { to: ["user@beta"] });
+    f.a.bus.publish(env);
+    await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (inbox)", "forced publication does not create an unsupported compatibility gap");
+    expect(f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "failed")).toBe(false);
+  }
+}, 20000);
+
+test("a queued pending codec send wakes to a concrete upgrade refusal after current legacy-member evidence", async () => {
+  const f = await mesh(600, undefined, false, true);
+  const env = newEnvelope("codex", "pending becomes known legacy", { to: ["user@beta"] });
+  f.a.bus.publish(env);
+  await f.event.wait(() => f.a.bus.stateOf("user@beta") === "offline" && f.a.journal.list().some(row => row.state === "queued" && row.originals.some(original => original.id === env.id)), "pending send retains its Bus queue entry");
+  const link = f.a.link! as unknown as { session?: unknown; handle(session: unknown, wire: Uint8Array): Promise<void> };
+  await link.handle(link.session, canonicalBytes({ v: 1, type: "codec_peers", digest: f.a.store!.get("work")!.current.digest,
+    peers: [{ member: f.guest, session: "C".repeat(43), supported: false }] }));
+  await f.event.wait(() => f.a.journal.list().some(row => row.state === "failed" && row.originals.some(original => original.id === env.id)), "known legacy observation wakes pending refusal");
+  const failed = f.a.journal.list().find(row => row.state === "failed" && row.originals.some(original => original.id === env.id));
+  expect(failed?.reason).toContain("upgrade both hubs and the broker");
+  expect(f.a.store!.applicationOutbox("work").some(row => row.application === env.id)).toBe(false);
 });

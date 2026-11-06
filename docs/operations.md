@@ -6356,3 +6356,13 @@ Open retries back off from 1 s to at most 30 s and stop on shutdown. For
 time; do not edit stored replay or clock records. A receive-only hub retries
 blocked admission when a successful journal checkpoint clears its storage error.
 Status reads and idle ticks do not poll blocked plaintext.
+
+Codec negotiation keeps `x-agent-hub-ephemeral: 1` and adds
+`x-agent-hub-codecs: 1` on the same WebSocket upgrade. A released broker ignores
+the latter and retains its ephemeral/liveness behavior. A peer with a pending
+codec observation waits under the original queue expiry; it does not receive a
+false upgrade refusal. Known legacy or unsupported peers name the upgrade step.
+Ordinary presence refreshes preserve same-connection signed codec evidence.
+`ahub status` distinguishes local room storage opening from a failed broker
+connection; direct `ahub room status` failures expose only closed cause/action
+metadata. A healthy online link needs no broker repair advice.

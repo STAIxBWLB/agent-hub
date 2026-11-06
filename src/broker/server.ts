@@ -27,6 +27,9 @@ interface Client {
   room: string;
   ephemeral: boolean;
   codecFeatures: boolean;
+  codecSession: string;
+  pendingCodecMembers: Set<string>;
+  codecFlushQueued: boolean;
   challenge: BrokerChallenge;
   phase: "challenge" | "authenticating" | "roster" | "ready" | "closed";
   busy: boolean;
@@ -109,11 +112,13 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
   function close(client: Client, code: string): void {
     if (client.phase === "closed") return;
     client.phase = "closed";
+    client.pendingCodecMembers.clear(); client.codecFlushQueued = false;
     client.inFlight = undefined; client.inFlightEphemeral = undefined; client.inFlightExpiresAt = undefined; client.inFlightEpoch = undefined;
     queuedBytes -= client.inboxBytes; client.inboxBytes = 0; client.inbox.length = 0;
     if (client.member && members.get(memberKey(client)) === client) {
       members.delete(memberKey(client));
       try { store.disconnect(client.room, client.member); } catch { emit("refused", client, "state_unavailable"); }
+      notifyCodecPeers(client.room, client.member);
     }
     if (client.ws) { try { client.ws.close(4403, code); } catch { /* already closed */ } }
     else clients.delete(client);
@@ -138,15 +143,55 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
     if (!roster || !member || identityKey(member) !== client.key) throw new BrokerServerError("untrusted");
     return roster;
   }
+  /** Connection evidence only: the sender must still echo its session in signed presence. */
+  function sendCodecPeers(recipient: Client, memberIds: readonly string[]): void {
+    if (!recipient.codecFeatures || recipient.phase !== "ready") return;
+    try {
+      const roster = active(recipient);
+      const peers = memberIds.filter(member => member !== recipient.member && roster.members.some(row => row.fingerprint === member)).map(member => {
+        const source = members.get(`${recipient.room}|${member}`);
+        const current = source?.phase === "ready" && active(source).digest === roster.digest ? source : undefined;
+        return { member, session: current?.codecSession ?? null, supported: current?.codecFeatures === true };
+      });
+      if (peers.length) control(recipient, { v: 1, type: "codec_peers", digest: roster.digest, peers });
+    } catch { close(recipient, "state_changed"); }
+  }
+  function flushCodecPeers(client: Client): void {
+    const pending = [...client.pendingCodecMembers]; client.pendingCodecMembers.clear();
+    if (pending.length) sendCodecPeers(client, pending);
+  }
+  function notifyCodecPeers(room: string, member: string): void {
+    for (const recipient of clients) if (recipient.room === room && recipient.codecFeatures && recipient.phase === "ready") {
+      try {
+        const current = new Set(active(recipient).members.map(row => row.fingerprint));
+        // At most the signed roster's members can wait; churn replaces evidence
+        // rather than growing a control queue beyond the existing packet ceiling.
+        for (const pending of recipient.pendingCodecMembers) if (!current.has(pending)) recipient.pendingCodecMembers.delete(pending);
+        if (member === recipient.member || !current.has(member)) continue;
+        recipient.pendingCodecMembers.add(member);
+        if (!recipient.codecFlushQueued) {
+          recipient.codecFlushQueued = true;
+          queueMicrotask(() => { recipient.codecFlushQueued = false; flushCodecPeers(recipient); });
+        }
+      } catch { close(recipient, "state_changed"); }
+    }
+  }
+  function codecInventory(client: Client): void {
+    if (!client.codecFeatures || client.phase !== "ready") return;
+    client.pendingCodecMembers.clear();
+    sendCodecPeers(client, active(client).members.map(member => member.fingerprint));
+  }
   function sendRoster(client: Client): void {
     const roster = active(client);
     client.phase = "roster"; client.rosterDigest = roster.digest;
     client.rosterDeadline = now() + BROKER_SOCKET_LIMITS.rosterAckMs;
     // Legacy hubs have a closed ready grammar; advertise only after HTTP opt-in.
-    if (send(client, publicRosterWire(roster))) control(client, { v: 1, type: "ready", room: client.room, member: client.member, epoch: roster.epoch, digest: roster.digest, ...(client.ephemeral ? { ephemeral: true } : {}), ...(client.codecFeatures ? { codecFeatures: true } : {}) });
+    if (send(client, publicRosterWire(roster))) control(client, { v: 1, type: "ready", room: client.room, member: client.member, epoch: roster.epoch, digest: roster.digest, ...(client.ephemeral ? { ephemeral: true } : {}), ...(client.codecFeatures ? { codecFeatures: true, codecSession: client.codecSession } : {}) });
   }
   function pump(client: Client): void {
     if (stopping || client.phase === "closed" || !client.member) return;
+    flushCodecPeers(client); // Source-session invalidation always precedes ciphertext handoff.
+    if (members.get(memberKey(client)) !== client) return;
     const roster = active(client);
     const next = store.next(client.room, client.member);
     if (client.inFlightEphemeral && client.inFlightEpoch !== roster.epoch) {
@@ -193,6 +238,7 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
     if (previous && previous !== client) close(previous, "replaced");
     members.set(memberKey(client), client);
     client.phase = "roster";
+    notifyCodecPeers(client.room, client.member);
     sendRoster(client);
     emit("connected", client);
   }
@@ -242,6 +288,8 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
       const latest = active(client);
       if (packet.digest !== client.rosterDigest || packet.digest !== latest.digest) { sendRoster(client); return; }
       client.phase = "ready"; client.rosterDeadline = undefined;
+      codecInventory(client);
+      if (client.member) notifyCodecPeers(client.room, client.member);
       safePump(client); return;
     }
     if (packet.digest !== client.inFlight) { refused(client, "unexpected_ack", false); return; }
@@ -292,7 +340,7 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
           if (clients.size >= BROKER_SOCKET_LIMITS.connections) return new Response("busy", { status: 503 });
           const current = store.current(room)?.current;
           const transportOptIn = req.headers.get("x-agent-hub-ephemeral");
-          const client: Client = { room, ephemeral: transportOptIn === "1" || transportOptIn === BROKER_CODEC_FEATURES_OPT_IN, codecFeatures: transportOptIn === BROKER_CODEC_FEATURES_OPT_IN, challenge: { v: 1, type: "challenge", room, broker: publicUrl, nonce: encodeBase64url(randomBytes(32)), expiresAt: now() + BROKER_SOCKET_LIMITS.authMs, rosterDigest: current?.digest ?? null }, phase: "challenge", busy: false, inbox: [], inboxBytes: 0 };
+          const client: Client = { room, ephemeral: transportOptIn === "1", codecFeatures: transportOptIn === "1" && req.headers.get("x-agent-hub-codecs") === BROKER_CODEC_FEATURES_OPT_IN, codecSession: encodeBase64url(randomBytes(32)), pendingCodecMembers: new Set(), codecFlushQueued: false, challenge: { v: 1, type: "challenge", room, broker: publicUrl, nonce: encodeBase64url(randomBytes(32)), expiresAt: now() + BROKER_SOCKET_LIMITS.authMs, rosterDigest: current?.digest ?? null }, phase: "challenge", busy: false, inbox: [], inboxBytes: 0 };
           clients.add(client);
           if (host.upgrade(req, { data: client })) return;
           clients.delete(client); return new Response("websocket required", { status: 400 });

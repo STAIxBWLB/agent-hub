@@ -87,3 +87,14 @@ test("startup enumeration failure retries the already-open store instead of losi
   await recovered.promise;
   expect(opens).toBe(1); expect(lists).toBe(2); expect(commands.statusSnapshot()).toEqual({ rooms: [] });
 });
+
+test("an in-flight room store open is pending without a failure or broker diagnosis", async () => {
+  const options = fixture(), entered = signal(), gate = signal();
+  const commands = new RoomCommands({ ...options, openStore: async input => { entered.resolve(); await gate.promise; return RoomStore.open(input); } });
+  cleanups.push(() => commands.stop());
+  const starting = commands.start(); await entered.promise;
+  try {
+    expect(commands.statusSnapshot()).toEqual({ rooms: null, roomsOpening: true });
+    expect(commands.unavailable()).toBeUndefined();
+  } finally { gate.resolve(); await starting; }
+});

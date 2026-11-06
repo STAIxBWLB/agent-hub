@@ -329,10 +329,11 @@ test("room health counts refusals and preserves unknown ages without loading pay
   {
     value.recordRefused("work", encodeBase64url(new Uint8Array(32).fill(1)), "invalid_frame");
     value.recordRefused("work", encodeBase64url(new Uint8Array(32).fill(2)), "stale");
+    value.recordRefused("work", encodeBase64url(new Uint8Array(32).fill(3)), "invalid_frame");
     const before = db.query("SELECT value FROM meta WHERE key='clock'").get();
     now += 10;
     const health = value.health("work");
-    expect(health).toEqual({ refused: { invalid_presence: 0, wrong_epoch: 0, trust_changed: 0, stale: 1, invalid_frame: 1 }, outboxDepth: 0, oldestOutboxAgeMs: null, lastReceiptAgeMs: null });
+    expect(health).toEqual({ refused: { invalid_presence: 0, wrong_epoch: 0, trust_changed: 0, stale: 1, invalid_frame: 2 }, outboxDepth: 0, oldestOutboxAgeMs: null, lastReceiptAgeMs: null });
     expect(db.query("SELECT value FROM meta WHERE key='clock'").get()).toEqual(before);
     expect(JSON.stringify(health)).not.toContain(state.current.room);
   }

@@ -1326,8 +1326,13 @@ Person comment writes (`review_comment_put`, `review_comment_delete`, `review_co
 Room health projects closed cause codes, retained refusal counts and transport
 ages only. Raw store errors, broker URLs, bodies, titles and key material never
 enter status. Codec advertisements are signed compatibility evidence scoped to
-the current session and roster. Absence is unsupported. A broker-negotiated
-feature-presence variant reaches opted-in sessions only; legacy members retain
+the current local session, source connection token and roster. Missing observation
+is pending and permits no wire effect; only positively known legacy or unsupported
+members receive an upgrade refusal. Pending sends retain their original queue
+expiry and wake on a current member observation. Peer connection metadata is
+compatibility evidence only, never an authorization source. The existing ephemeral
+header remains exactly `1`; an extra ignored codec header preserves released
+broker behavior. A feature-presence variant reaches opted-in sessions only; legacy members retain
 the unchanged presence payload. Codec support grants no exposure, role, privacy,
 invocation or native permission. A storage-recovery wake retries deferred
 admission under its existing guards and never replays uncertain native work.

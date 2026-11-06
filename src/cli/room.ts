@@ -1,4 +1,4 @@
-import { projectRoomDiagnostics, type RoomStatusDiagnostics } from "../rooms/status.ts";
+import { projectRoomUnavailable, projectRoomDiagnostics, type RoomStatusDiagnostics } from "../rooms/status.ts";
 import { decodeBase64url } from "../rooms/crypto.ts";
 import { roomReceiptReasonText, type RoomReceiptReason } from "../rooms/application.ts";
 import { frame, type Envelope } from "../hub/envelope.ts";
@@ -18,8 +18,9 @@ export type RoomRequest = (message: Record<string, unknown>) => Promise<any>;
 export interface RoomConfirmationIO { isTTY(): boolean; answer(prompt: string): Promise<string> }
 
 export class RoomCliError extends Error {
-  constructor(readonly code: "usage" | "refused" | "invalid_reply" | "inbox_list_limit" | "confirmation_required" | "not_confirmed" | "confirmation_mismatch" | "epoch_rotated_hold_unavailable") {
-    const message = { refused: "operation refused", invalid_reply: "invalid control reply", inbox_list_limit: "inbox list exceeds the limit; choose a room name", confirmation_required: "confirmation required; use a TTY or --confirm with the member fingerprint prefix", not_confirmed: "not confirmed; nothing executed", confirmation_mismatch: "confirmation does not match the member fingerprint; nothing executed",
+  constructor(readonly code: "usage" | "refused" | "invalid_reply" | "inbox_list_limit" | "confirmation_required" | "not_confirmed" | "confirmation_mismatch" | "epoch_rotated_hold_unavailable" | "rooms_unavailable", availability?: unknown) {
+    const unavailable = projectRoomUnavailable(availability);
+    const message = { rooms_unavailable: `unavailable (${unavailable?.code ?? "unknown"}); ${unavailable?.nextStep ?? "Run ahub status to inspect room storage before retrying."}`, refused: "operation refused", invalid_reply: "invalid control reply", inbox_list_limit: "inbox list exceeds the limit; choose a room name", confirmation_required: "confirmation required; use a TTY or --confirm with the member fingerprint prefix", not_confirmed: "not confirmed; nothing executed", confirmation_mismatch: "confirmation does not match the member fingerprint; nothing executed",
       epoch_rotated_hold_unavailable: "epoch rotated but delivery journal holds are unavailable; inspect ahub room status and ahub queue show before another mutation" };
     super(code === "usage" ? ROOM_USAGE : `room: ${message[code]}`);
     this.name = "RoomCliError";
@@ -195,7 +196,10 @@ function record(value: unknown): Record<string, unknown> {
 }
 function success(value: unknown): Record<string, unknown> {
   const row = record(value);
-  if (row.ok !== true) fail(row.code === "epoch_rotated_hold_unavailable" ? "epoch_rotated_hold_unavailable" : "refused");
+  if (row.ok !== true) {
+    if (row.code === "rooms_unavailable") throw new RoomCliError("rooms_unavailable", row.roomsUnavailable);
+    fail(row.code === "epoch_rotated_hold_unavailable" ? "epoch_rotated_hold_unavailable" : "refused");
+  }
   return row;
 }
 function roomRows(value: unknown): RoomRow[] {
@@ -277,7 +281,8 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
       console.log(`${row.name} ${row.room} epoch ${row.epoch} ${row.state}\n  owner ${row.owner}\n  member ${row.member}`);
       if (command.op === "status") {
         const health = row.health, age = (value: number | null | undefined) => typeof value === "number" ? `${value}ms` : "unknown";
-        console.log(`  link cause ${row.linkCause ?? "unknown"}; next: ${row.linkNextStep ?? "Check broker availability, then read ahub room status again."}`);
+        if (row.state === "online" && (row.linkCause === null || row.linkCause === undefined)) console.log("  link online");
+        else console.log(`  link cause ${row.linkCause ?? "unknown"}; next: ${row.linkNextStep ?? "Check broker availability, then read ahub room status again."}`);
         console.log(`  outbox ${health?.outboxDepth ?? "unknown"}; oldest ${age(health?.oldestOutboxAgeMs)}; last receipt ${age(health?.lastReceiptAgeMs)}`);
         console.log(`  refused: ${health?.refused ? Object.entries(health.refused).map(([reason, count]) => `${reason} ${count}`).join(", ") : "unknown"}`);
       }

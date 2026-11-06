@@ -3,7 +3,7 @@ import { BasePeer, type DeliveryReceipt } from "../hub/peers.ts";
 import type { Envelope, PeerState } from "../hub/envelope.ts";
 import { encodeRoomMessage, parseRemotePeerId, type RoomChatEnvelope } from "./application.ts";
 import { readRoomOutbound, roomBoundary, type RoomBoundaryContext } from "./boundary.ts";
-import { RoomCodecUnsupportedError, RoomNotSentError } from "./link.ts";
+import { RoomCodecPendingError, RoomCodecUnsupportedError, RoomNotSentError } from "./link.ts";
 
 export interface RemotePeerPorts {
   member: string;
@@ -32,10 +32,12 @@ export class RemotePeer extends BasePeer {
   private running = false;
   private online = false;
   private blockedNotSent = false;
+  private codecWaiting = false;
   private observed: PeerState = "offline";
   private readonly pending = new Set<string>();
   private readonly waitingForReady = new Set<string>();
   private readonly sending = new Set<string>();
+  private readonly codecRechecks = new Map<string, () => boolean>();
   private readonly deadlines = new Map<string, number>();
   constructor(id: string, readonly remoteRoom: string, readonly remoteQueueTtlMs: number, private readonly ports: RemotePeerPorts) {
     super(id);
@@ -60,6 +62,7 @@ export class RemotePeer extends BasePeer {
     // Active journal rows and their sealed room frames survive a sender restart.
     // Stop only fences in-flight callbacks; it is not evidence of an uncertain send.
     this.pending.clear();
+    this.codecWaiting = false; this.codecRechecks.clear();
     this.waitingForReady.clear();
     this.deadlines.clear(); this.update();
   }
@@ -125,6 +128,7 @@ export class RemotePeer extends BasePeer {
   }
   /** A link becoming ready is an actual wake-up after a typed not-sent refusal. */
   wake(): void { this.blockedNotSent = false; this.update(); }
+  wakeCodec(): void { if (this.codecWaiting) { this.codecWaiting = false; this.wake(); } }
   setRemoteDeadline(envelopeId: string, expiresAt: number): void {
     if (Number.isSafeInteger(expiresAt) && expiresAt > 0 && this.deadlines.size < 200) this.deadlines.set(envelopeId, expiresAt);
   }
@@ -159,7 +163,11 @@ export class RemotePeer extends BasePeer {
     if (this.sending.has(deliveryId)) return;
     this.sending.add(deliveryId);
     try { await this.publishOnce(env, deliveryId, expiresAt, generation, immutable); }
-    finally { this.sending.delete(deliveryId); }
+    finally {
+      this.sending.delete(deliveryId);
+      const changed = this.codecRechecks.get(deliveryId); this.codecRechecks.delete(deliveryId);
+      if (changed?.()) { this.codecWaiting = false; this.wake(); } // Recheck only after this send lane released, closing observation-before-requeue races.
+    }
   }
   private async publishOnce(env: Envelope, deliveryId: string, expiresAt: number, generation: number, immutable?: RoomChatEnvelope): Promise<void> {
     let context: RoomBoundaryContext;
@@ -221,12 +229,14 @@ export class RemotePeer extends BasePeer {
         try { queued = this.ports.queued?.(deliveryId); } catch { queued = undefined; }
         if (queued === false) { this.receipt({ id: deliveryId, state: "failed_safe", reason: error.message }); return; }
       }
+      if (error instanceof RoomCodecPendingError) this.codecWaiting = true;
       if (error instanceof RoomNotSentError) {
         let retained: boolean | undefined;
         try { retained = this.ports.queued?.(deliveryId); } catch { retained = undefined; }
         if (immutable || retained === true) {
-          if (!this.ready()) this.waitForReady(deliveryId);
+          if (!this.ready() || error instanceof RoomCodecPendingError) this.waitForReady(deliveryId);
         } else this.notSent(deliveryId);
+        if (error instanceof RoomCodecPendingError) this.codecRechecks.set(deliveryId, error.changed);
         return;
       }
       if (!trusted()) {

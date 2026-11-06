@@ -213,11 +213,11 @@ export class RoomCommands {
     });
   }
   /** One metadata snapshot binds unavailable diagnostics to the reads that failed. */
-  statusSnapshot(): { rooms: RoomStatusView[] | null; roomsUnavailable?: { code: RoomHealthCause; nextStep: string } } {
+  statusSnapshot(): { rooms: RoomStatusView[] | null; roomsOpening?: true; roomsUnavailable?: { code: RoomHealthCause; nextStep: string } } {
     const unavailable = (code: RoomHealthCause) => ({ rooms: null, roomsUnavailable: { code, nextStep: roomHealthNextStep(code) } });
     if (this.stopped) return { rooms: null };
     if (this.openFailure) return unavailable(this.openFailure);
-    if (!this.store) return this.pending ? unavailable("connecting") : { rooms: [] };
+    if (!this.store) return this.pending ? { rooms: null, roomsOpening: true } : { rooms: [] };
     try {
       return { rooms: projectRoomStatus(this.store.statusMetadata().map(row => ({
         name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch,

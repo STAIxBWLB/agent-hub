@@ -11,7 +11,7 @@ import { runRoomCommand } from "../src/cli/room.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
-import { RoomStore, type RoomState } from "../src/rooms/store.ts";
+import { RoomStore, RoomStoreError, type RoomState } from "../src/rooms/store.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -307,4 +307,18 @@ test("person inbox disposition replies before a blocked network retry and a late
     f.person.close();
     expect(response.ok).toBe(true);
   } finally { release(); await pending; retry.mockRestore(); dispose.mockRestore(); }
+});
+
+test("room status during a store retry preserves the closed cause without a raw exception", async () => {
+  const f = await fixture(); mkdirSync(join(f.stateDir, "rooms"), { recursive: true });
+  const error = new RoomStoreError("busy"); error.message = "PRIVATE_ROOM_ERROR_CANARY";
+  const open = spyOn(RoomStore, "open").mockRejectedValue(error);
+  try {
+    const preview = await f.person.request({ t: "room", op: "preview", action: "create", input: { name: "work", broker: "ws://127.0.0.1:1/" } });
+    expect(preview.ok).toBe(false);
+    const status = await f.person.request({ t: "room", op: "status" });
+    expect(status).toMatchObject({ ok: false, code: "rooms_unavailable", roomsUnavailable: { code: "busy" } });
+    expect(status.roomsUnavailable.nextStep).toContain("competing room store writer");
+    expect(JSON.stringify(status)).not.toContain("CANARY");
+  } finally { open.mockRestore(); }
 });

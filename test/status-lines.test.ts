@@ -79,3 +79,9 @@ test("room unavailability names a closed cause and locally generated next step a
   expect(rendered).toContain("Run ahub room status");
   expect(reads).toBe(0);
 });
+
+test("pending room storage is opening rather than a broker failure", () => {
+  const output = renderStatus({ peers: {}, roomsOpening: true }).map(row => paint(row, false)).join("\n");
+  expect(output).toContain("rooms: opening; wait for local room storage initialization");
+  expect(output).not.toContain("unavailable"); expect(output).not.toContain("broker connection");
+});

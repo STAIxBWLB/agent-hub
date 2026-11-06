@@ -10799,7 +10799,11 @@ export async function startDaemon(opts: DaemonOptions) {
         if (msg.op === "list" || msg.op === "status") {
           if (msg.input !== undefined && (!msg.input || typeof msg.input !== "object" || Array.isArray(msg.input)
             || Object.keys(msg.input).some(key => key !== "name") || (msg.input.name !== undefined && typeof msg.input.name !== "string"))) return roomFailure();
-          void roomCommands.rows(msg.input?.name, msg.op === "status").then(rooms => reply({ ok: true, rooms }), roomFailure);
+          void roomCommands.rows(msg.input?.name, msg.op === "status").then(rooms => reply({ ok: true, rooms }), error => {
+            const roomsUnavailable = roomCommands.unavailable();
+            if (roomsUnavailable) reply({ ok: false, code: "rooms_unavailable", roomsUnavailable });
+            else roomFailure(error);
+          });
           return;
         }
         if (["inbox_list", "inbox_show", "inbox_done", "inbox_discard"].includes(msg.op)) {

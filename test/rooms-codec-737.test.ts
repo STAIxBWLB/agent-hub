@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { RoomCodecUnsupportedError, RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
+import { RoomCodecPendingError, RoomCodecUnsupportedError, RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
 import { ROOM_CODEC_FEATURES, ROOM_CODEC_FEATURE_LIMIT, roomCodecFeatures, type RoomMessage } from "../src/rooms/application.ts";
 import { RoomStore } from "../src/rooms/store.ts";
-import { canonicalBytes, createRoomEpoch, decodeFrame, openFrame, sealFrame } from "../src/rooms/wire.ts";
+import { canonicalBytes, createRoomEpoch, decodeFrame, openFrame, roomMembers, sealFrame } from "../src/rooms/wire.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,7 +21,8 @@ async function transport(features?: readonly string[]) {
   const sent: Uint8Array[] = [];
   const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (wire: Uint8Array) => { effects++; sent.push(Uint8Array.from(wire)); }, close() {} },
     generation: 1, room: epoch.room, broker: row.broker, phase: "ready", roster: { digest: epoch.digest },
-    ephemeral: true, codecFeatures: true, features: new Map(features ? [[recipient.public.fingerprint, features]] : []),
+    ephemeral: true, codecFeatures: true, codecSession: "A".repeat(43), codecPeers: new Map([[recipient.public.fingerprint, { session: "B".repeat(43), supported: true }]]),
+    features: new Map(features ? [[recipient.public.fingerprint, { session: "B".repeat(43), features }]] : []),
     outbound: [] as { wire: Uint8Array; digest: string }[], outboundBytes: 0, frameSent: false, retryAttempt: 0,
     pendingPresenceReplies: new Set<string>(), presenceAsked: false, requestPresenceReply: false, queue: [], queuedBytes: 0 };
   const subject = new RoomLink({ store, name: "work" });
@@ -33,8 +34,8 @@ function chat(to = "user"): RoomMessage {
     kind: "chat", priority: "status", body: "codec refusal body canary", ts: Date.now() } };
 }
 
-test("absent and unsupported signed features refuse before sequence, socket or storage effects", async () => {
-  for (const features of [undefined, [], ["chat_v1"], ["future_feature_v9"]]) {
+test("known unsupported signed features refuse before sequence, socket or storage effects", async () => {
+  for (const features of [[], ["chat_v1"], ["future_feature_v9"]]) {
     const f = await transport(features);
     try {
       const pending = f.subject.publishApplication(chat(), f.recipient.public.fingerprint);
@@ -86,7 +87,8 @@ async function durableTransport() {
   const sent: Uint8Array[] = [];
   const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (bytes: Uint8Array) => sent.push(Uint8Array.from(bytes)), close() {} },
     generation: 1, room: epoch.room, broker: "ws://127.0.0.1:1/", phase: "ready", roster: { digest: epoch.digest },
-    ephemeral: true, codecFeatures: true, features: new Map([[recipient.public.fingerprint, [...ROOM_CODEC_FEATURES] as readonly string[]]]),
+    ephemeral: true, codecFeatures: true, codecSession: "A".repeat(43), codecPeers: new Map([[recipient.public.fingerprint, { session: "B".repeat(43), supported: true }]]),
+    features: new Map([[recipient.public.fingerprint, { session: "B".repeat(43), features: ROOM_CODEC_FEATURES as readonly string[] }]]),
     outbound: [] as { wire: Uint8Array; digest: string }[], outboundBytes: 0, frameSent: false, retryAttempt: 0,
     pendingPresenceReplies: new Set<string>(), presenceAsked: false, requestPresenceReply: false, queue: [], queuedBytes: 0 };
   const callbacks: RoomLinkApplication = { members() {}, receive: async () => {}, online: async () => {}, stored() {} };
@@ -108,7 +110,7 @@ test("codec loss while a durable sequence seal is held refuses before applicatio
     const pending = f.subject.publishApplication(message, f.recipient.public.fingerprint, f.metadata(message));
     void pending.catch(() => {});
     await entered.promise; f.session.features.clear(); release.resolve();
-    await expect(pending).rejects.toBeInstanceOf(RoomCodecUnsupportedError);
+    await expect(pending).rejects.toBeInstanceOf(RoomCodecPendingError);
     expect(f.store.applicationOutbox("work")).toEqual([]);
     expect(f.sent).toEqual([]);
   } finally { release.resolve(); await f.close(); }
@@ -122,7 +124,7 @@ test("codec loss during outbox proof validation rolls back admission with the ty
     const message = chat(); if (message.type !== "chat") throw new Error("expected chat");
     const pending = f.subject.publishApplication(message, f.recipient.public.fingerprint, f.metadata(message));
     void pending.catch(() => {});
-    await entered.promise; f.session.features.clear(); release.resolve();
+    await entered.promise; f.session.codecPeers.set(f.recipient.public.fingerprint, { session: "C".repeat(43), supported: false }); f.session.features.clear(); release.resolve();
     await expect(pending).rejects.toThrow("upgrade both hubs and the broker");
     expect(f.store.applicationOutbox("work")).toEqual([]);
     expect(f.sent).toEqual([]);
@@ -140,14 +142,14 @@ test("actual socket publication withdraws an unsupported sealed attempt but pres
     expect(f.sent).toHaveLength(1);
     f.session.features.clear(); f.internal.storedFrame(f.session, head);
     expect(f.sent).toHaveLength(1);
-    expect(f.subject.connectionCause).toBe("codec_unsupported");
+    expect(f.subject.connectionCause).toBe("codec_pending");
     const retained = f.store.applicationOutbox("work");
     expect(retained).toHaveLength(1); expect(retained[0]?.state).toBe("dispatching"); expect(retained[0]?.disposition).toBeUndefined();
     expect(f.session.outbound).toEqual([]);
     let retry: Promise<string> | undefined;
     f.callbacks.codecsChanged = () => { retry = f.subject.publishApplication(message, f.recipient.public.fingerprint, metadata); };
     const featureWire = await sealFrame({ epoch: f.epoch, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
-      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ROOM_CODEC_FEATURES }),
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ROOM_CODEC_FEATURES, codecSession: "B".repeat(43) }),
       ephemeral: true, codecFeatures: true, sequence: { reserve: async () => "1", isCurrent: () => true } });
     await f.internal.receiveFrame(f.session, featureWire, f.store.get("work"));
     expect(retry).toBeDefined();
@@ -171,5 +173,71 @@ test("a clock rollback cause clears only after corrected observation and a real 
     expect(f.internal.observationTime()).toBe(highWater); expect(f.subject.connectionCause).toBe("clock_rollback");
     await f.subject.publishPresence();
     expect(f.subject.connectionCause).toBeUndefined(); expect(f.sent.length).toBeGreaterThan(0);
+  } finally { await f.close(); }
+});
+
+test("a fresh-session codec observation is pending, while a known legacy member is unsupported", async () => {
+  const f = await transport();
+  try {
+    expect(f.subject.codecState(f.recipient.public.fingerprint, "person_inbox_v1")).toBe("pending");
+    await expect(f.subject.publishApplication(chat(), f.recipient.public.fingerprint)).rejects.toBeInstanceOf(RoomCodecPendingError);
+    expect(f.effects()).toBe(0);
+    f.session.codecPeers.set(f.recipient.public.fingerprint, { session: "C".repeat(43), supported: false });
+    expect(f.subject.codecState(f.recipient.public.fingerprint, "person_inbox_v1")).toBe("unsupported");
+    await expect(f.subject.publishApplication(chat(), f.recipient.public.fingerprint)).rejects.toThrow("upgrade both hubs and the broker");
+    expect(f.effects()).toBe(0);
+  } finally { Object.assign(f.subject, { session: undefined }); await f.subject.stop(); }
+});
+
+test("codec support follows current broker session and roster evidence, never a legacy observation or stale signed advertisement", async () => {
+  const f = await durableTransport(), member = f.recipient.public.fingerprint;
+  const handle = (f.subject as unknown as { handle(session: unknown, bytes: Uint8Array): Promise<void> }).handle.bind(f.subject);
+  const inventory = (session: string | null, supported: boolean, digest = f.epoch.digest) => handle(f.session,
+    canonicalBytes({ v: 1, type: "codec_peers", digest, peers: [{ member, session, supported }] }));
+  let seq = 0;
+  const observation = async (token?: string) => {
+    const wire = await sealFrame({ epoch: f.epoch, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], ...(token ? { features: ROOM_CODEC_FEATURES, codecSession: token } : {}) }),
+      ephemeral: true, ...(token ? { codecFeatures: true as const } : {}), sequence: { reserve: async () => String(++seq), isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, wire, f.store.get("work"));
+  };
+  try {
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("supported");
+    await observation();
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("supported");
+    await inventory("C".repeat(43), true);
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("pending");
+    await observation("B".repeat(43));
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("pending");
+    await observation("C".repeat(43));
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("supported");
+    await inventory(null, false, "Z".repeat(43)); // Previous-roster controls cannot revoke current proof.
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("supported");
+    await inventory(null, false);
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("pending");
+    await observation("C".repeat(43));
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("pending");
+    await inventory("D".repeat(43), false);
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("unsupported");
+  } finally { await f.close(); }
+});
+
+
+test("a grace-epoch feature advertisement cannot establish support for the current roster", async () => {
+  const f = await durableTransport();
+  try {
+    const before = f.store.get("work")!;
+    const rotated = await f.store.rotate("work", roomMembers(before.current), before.current.digest);
+    f.session.roster = { digest: rotated.current.digest }; f.session.features.clear();
+    const old = await sealFrame({ epoch: before.current, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ROOM_CODEC_FEATURES, codecSession: "B".repeat(43) }),
+      ephemeral: true, codecFeatures: true, sequence: { reserve: async () => "1", isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, old, f.store.get("work"));
+    expect(f.subject.codecState(f.recipient.public.fingerprint, "person_inbox_v1")).toBe("pending");
+    const fresh = await sealFrame({ epoch: rotated.current, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ROOM_CODEC_FEATURES, codecSession: "B".repeat(43) }),
+      ephemeral: true, codecFeatures: true, sequence: { reserve: async () => "2", isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, fresh, f.store.get("work"));
+    expect(f.subject.codecState(f.recipient.public.fingerprint, "person_inbox_v1")).toBe("supported");
   } finally { await f.close(); }
 });

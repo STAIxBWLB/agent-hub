@@ -1567,7 +1567,7 @@ export class RoomStore {
     const now = this.now(); named(name); const state = this.rooms.get(name);
     if (!state) fail("untrusted");
     const refused: RoomHealth["refused"] = { invalid_presence: 0, wrong_epoch: 0, trust_changed: 0, stale: 0, invalid_frame: 0 };
-    for (const row of this.refused(name)) refused[row.reason] = (refused[row.reason] ?? 0) + 1;
+    for (const row of this.db.query<{ reason: RoomRefusalReason; count: number }, [string]>("SELECT reason,COUNT(*) AS count FROM refusals WHERE room=? GROUP BY reason").all(state.current.room)) refused[row.reason] = row.count;
     const pending = this.db.query<{ depth: number; dated: number; oldest: number | null }, [string, number]>(`SELECT COUNT(*) AS depth, COUNT(COALESCE(r.created_at,a.created_at)) AS dated, MIN(COALESCE(r.created_at,a.created_at)) AS oldest
       FROM outbox o LEFT JOIN application_attempts t ON t.room=o.room AND t.digest=o.digest
       LEFT JOIN application_outbox a ON a.room=t.room AND a.delivery_id=t.delivery_id
