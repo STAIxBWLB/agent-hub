@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { startBroker, type BrokerRuntime } from "../src/broker/server.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
-import { newEnvelope } from "../src/hub/envelope.ts";
+import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { parseRouting } from "../src/hub/routing.ts";
 import { RoomCommands } from "../src/rooms/commands.ts";
@@ -14,10 +14,11 @@ import type { RoomLink } from "../src/rooms/link.ts";
 import type { RoomStore } from "../src/rooms/store.ts";
 
 class LocalPeer extends BasePeer {
+  readonly got: Envelope[] = [];
   constructor() { super("codex"); }
   async start(): Promise<void> { this.setState("idle"); }
   async stop(): Promise<void> { this.setState("offline"); }
-  async deliver(): Promise<void> { this.setState("busy"); this.setState("idle"); }
+  async deliver(envelopes: Envelope[]): Promise<void> { this.got.push(...envelopes); this.setState("busy"); this.setState("idle"); }
 }
 
 function signal() {
@@ -118,3 +119,22 @@ test("stale presence settlement does not re-reserve the discarded Store head", a
   expect(f.a.chat.peers("work").find(peer => peer.id === "codex@beta")?.presence).toBe("unknown");
 });
 
+test("a graceful signed offline keeps work local until reconnect and delivers it once", async () => {
+  const { value: f } = await fixture();
+  f.releaseBlocked();
+  await f.b.close();
+  await f.events.wait(() => f.a.bus.stateOf("codex@beta") === "offline", "signed offline after graceful recipient stop");
+  const env = newEnvelope("user", "queued locally while the recipient is gracefully offline", { to: ["codex@beta"] });
+  expect(f.a.bus.publish(env)).toEqual(["codex@beta"]);
+  expect(f.a.bus.queueIds("codex@beta")).toContain(env.id);
+  expect(f.a.store!.applicationOutbox("work").some(row => row.application === env.id)).toBe(false);
+
+  const restarted = await side(f.root, "beta", f.events);
+  f.b = restarted;
+  await restarted.commands.start();
+  await f.events.wait(() => restarted.peer.got.some(row => row.id === env.id)
+    && f.a.store!.applicationOutbox("work").some(row => row.application === env.id && row.state === "completed"), "reconnected recipient admits and settles the queued envelope");
+  expect(restarted.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  expect(f.a.bus.queueIds("codex@beta")).not.toContain(env.id);
+  expect(f.a.store!.applicationOutbox("work").filter(row => row.application === env.id)).toHaveLength(1);
+});

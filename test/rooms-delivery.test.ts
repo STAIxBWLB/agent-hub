@@ -230,9 +230,9 @@ async function reverseBarrier(f: Mesh, body: string): Promise<void> {
 for (const state of ["dispatching", "accepted"] as const) test(`sender ${state} resumes the same application after restart`, async () => {
   const f = await mesh(), env = newEnvelope("codex", `uncertain ${state}`, { to: ["codex@beta"] });
   if (state === "dispatching") { f.control.holdSender = f.owner; f.control.hold = true; }
-  else f.control.afterPublication = (label, incoming) => { if (label === "beta" && incoming.id === env.id) throw new Error("fixture interrupted after durable local publication"); };
+  else { f.control.holdSender = f.guest; f.control.hold = true; }
   f.a.bus.publish(env);
-  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === state && (state !== "dispatching" || f.control.entered), `outbound ${state} persisted`);
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === state && f.control.entered, `outbound ${state} persisted`);
   const disconnectAt = f.brokerEvents.length;
   await f.a.close();
   await f.event.wait(() => f.brokerEvents.slice(disconnectAt).some(row => row.event === "disconnected" && row.member === f.owner), "old sender socket fenced");
@@ -882,7 +882,7 @@ test("ACK timeout retries, and only the room TTL moves a frame held before broke
 test("queue_full keeps the durable frame and retries its digest after broker capacity returns", async () => {
   const f = await mesh(600, 1);
   await f.event.wait(() => f.broker.stats().queuedFrames === 0, "initial ciphertext queues drained");
-  const at = f.brokerEvents.length; await f.b.close();
+  const at = f.brokerEvents.length; f.b.link!.refresh(); await f.b.close();
   await f.event.wait(() => f.brokerEvents.slice(at).some(row => row.event === "disconnected" && row.member === f.guest), "recipient link offline");
   // Presence is ephemeral now; use durable ciphertext to occupy the unchanged cap.
   const blocker: RoomMessage = { v: 1, type: "chat", envelope: { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: "durable broker capacity blocker", ts: f.control.now } };
@@ -913,7 +913,7 @@ test("queue_full keeps the durable frame and retries its digest after broker cap
 test("a receipt behind rejected reconnect presence lets a cap-one broker release the admitted chat", async () => {
   const f = await mesh(600, 1);
   await f.event.wait(() => f.broker.stats().queuedFrames === 0, "initial ciphertext queues drained");
-  const at = f.brokerEvents.length; await f.b.close();
+  const at = f.brokerEvents.length; f.b.link!.refresh(); await f.b.close();
   await f.event.wait(() => f.brokerEvents.slice(at).some(row => row.event === "disconnected" && row.member === f.guest), "recipient link offline");
   const env = newEnvelope("user", "admit once through cap-one reconnect", { to: ["codex@beta"] });
   f.a.bus.publish(env);
@@ -941,7 +941,7 @@ test("a receipt behind rejected reconnect presence lets a cap-one broker release
 test("a discarded queue_full application is never retried when broker capacity returns", async () => {
   const f = await mesh(600, 1);
   await f.event.wait(() => f.broker.stats().queuedFrames === 0, "initial ciphertext queues drained");
-  const at = f.brokerEvents.length; await f.b.close();
+  const at = f.brokerEvents.length; f.b.link!.refresh(); await f.b.close();
   await f.event.wait(() => f.brokerEvents.slice(at).some(row => row.event === "disconnected" && row.member === f.guest), "recipient link offline");
   const blocker: RoomMessage = { v: 1, type: "chat", envelope: { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: "durable blocker before discard", ts: f.control.now } };
   await f.a.link!.publishApplication(blocker, f.guest);
