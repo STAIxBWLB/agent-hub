@@ -382,7 +382,7 @@ var init_compat = __esm(() => {
       probe: ["qwen", "--version"],
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and Linux 0.26.8; real model turns remain unverified. Another version may change those contracts.",
+      trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); real model turns remain unverified. Another version may change those contracts.",
       receipt: "docs/verification/2026-11-06-qwen-0268-acp.md"
     },
     "qwen-dual": {
