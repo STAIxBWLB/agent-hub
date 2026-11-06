@@ -10265,7 +10265,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.21.0"
+      "@staix/agent-mem": "0.22.1"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -10454,6 +10454,13 @@ var init_aliases = __esm(() => {
   init_lifecycle_log();
 });
 
+// node_modules/@staix/agent-mem/src/memory/profile-lock-diagnostic.ts
+var recognised;
+var init_profile_lock_diagnostic = __esm(() => {
+  init_platform();
+  recognised = new WeakMap;
+});
+
 // node_modules/@staix/agent-mem/src/memory/shard.ts
 var init_shard = __esm(() => {
   init_sync_placement_active();
@@ -10462,6 +10469,7 @@ var init_shard = __esm(() => {
   init_public_prune_view();
   init_generation();
   init_aliases();
+  init_profile_lock_diagnostic();
   init_aliases();
 });
 
@@ -10498,6 +10506,7 @@ var init_generation = __esm(() => {
   init_platform();
   init_shard();
   init_public_prune_input_chain();
+  init_profile_lock_diagnostic();
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-plan.ts
@@ -10546,13 +10555,13 @@ var init_sync_placement_active = __esm(() => {
   init_public_prune_input_chain();
   init_shard();
 });
-
 // node_modules/@staix/agent-mem/src/memory/sync-placement-guard.ts
 var init_sync_placement_guard = __esm(() => {
   init_sync_placement_active();
   init_generation();
   init_shard();
   init_sync_placement_format();
+  init_profile_lock_diagnostic();
 });
 
 // node_modules/@staix/agent-mem/src/memory/formats.ts
@@ -10943,6 +10952,7 @@ var init_reader_lease = __esm(() => {
   init_mutation();
   init_platform();
   init_public_prune_view();
+  init_profile_lock_diagnostic();
   open = new Map;
 });
 
@@ -11146,205 +11156,12 @@ var init_sync_screen = __esm(() => {
   GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "promotedFrom", "supersedes", "expires", "tier", "scope", "kind", "source"]);
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-capture.ts
-var init_sync_placement_capture = __esm(() => {
-  init_sync_placement_journal_format();
-  init_generation();
-  init_sync_placement_format();
-  init_sync_placement_plan();
-  init_public_prune_view();
-  init_platform();
-  init_config();
-  init_policy();
-  init_bridge();
-  init_shard_bridge();
-  init_generation_index();
-  init_prune();
-  init_shard();
-  init_sync_placement_journal_format();
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-projection.ts
-var init_sync_placement_projection = __esm(() => {
-  init_generation();
-  init_sync_placement_journal_format();
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-publication-plan.ts
-var init_sync_placement_publication_plan = __esm(() => {
-  init_generation();
-  init_sync_placement_journal_format();
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-journal-storage.ts
-var inflight, publicationDurability;
-var init_sync_placement_journal_storage = __esm(() => {
-  init_generation();
-  init_platform();
-  init_mutation();
-  init_sync_placement_plan();
-  init_sync_placement_format();
-  init_sync_placement_journal_format();
-  init_sync_placement_publication_plan();
-  init_sync_placement_projection();
-  inflight = new WeakSet;
-  publicationDurability = new WeakMap;
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-publication-storage.ts
-var init_sync_placement_publication_storage = __esm(() => {
-  init_generation();
-  init_sync_placement_journal_format();
-  init_sync_placement_journal_storage();
-  init_sync_placement_publication_plan();
-});
-
-// node_modules/@staix/agent-mem/src/memory/shard-sync-graph.ts
-var init_shard_sync_graph = __esm(() => {
-  init_public_prune_inputs();
-  init_shard_sync_format();
-  init_public_prune_witness();
-});
-
-// node_modules/@staix/agent-mem/src/memory/shard-sync-history.ts
-var init_shard_sync_history = __esm(() => {
-  init_generation();
-  init_prune();
-  init_public_prune_witness();
-  init_shard_sync_graph();
-  init_shard_sync_format();
-});
-
-// node_modules/@staix/agent-mem/src/memory/public-prune-advance.ts
-var MAX;
-var init_public_prune_advance = __esm(() => {
-  init_sync_placement_format();
-  init_generation();
-  init_shard();
-  init_mutation();
-  init_public_prune_inputs();
-  init_public_prune_view();
-  init_platform();
-  MAX = 1024 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/prune-publisher-lineage.ts
-var init_prune_publisher_lineage = __esm(() => {
-  init_generation();
-  init_mutation();
-  init_platform();
-  init_prune();
-  init_shard();
-  init_sync_screen();
-});
-
-// node_modules/@staix/agent-mem/src/memory/shard-sync.ts
-var zero2, HOLD_MAX_BYTES;
-var init_shard_sync = __esm(() => {
-  init_sync_placement_transport();
-  init_shard_sync_applications();
-  init_shard_sync_history();
-  init_sync_placement_format();
-  init_sync_placement_guard();
-  init_prune_publisher_lineage();
-  init_public_prune_witness();
-  init_public_prune_inputs();
-  init_generation();
-  init_generation_sync();
-  init_mutation();
-  init_prune();
-  init_shard();
-  init_shard_sync_format();
-  init_sync();
-  zero2 = "0".repeat(40);
-  HOLD_MAX_BYTES = 128 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/shard-sync-applications.ts
-var init_shard_sync_applications = __esm(() => {
-  init_generation();
-  init_public_prune_advance();
-  init_public_prune_view();
-  init_shard_sync_graph();
-  init_public_prune_inputs();
-  init_shard_sync_format();
-  init_shard_sync();
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-dependencies.ts
-var init_sync_placement_dependencies = __esm(() => {
-  init_bridge();
-  init_generation();
-  init_ops_contract();
-  init_prune();
-  init_store();
-  init_sync_placement_journal_format();
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-git.ts
-var typedArrayPrototype, getBuffer, getOffset, getLength, mapSize;
-var init_sync_placement_git = __esm(() => {
-  init_public_prune_input_chain();
-  init_shard_sync_format();
-  typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
-  getBuffer = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer").get;
-  getOffset = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteOffset").get;
-  getLength = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteLength").get;
-  mapSize = Object.getOwnPropertyDescriptor(Map.prototype, "size").get;
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-materialize.ts
-var init_sync_placement_materialize = __esm(() => {
-  init_generation();
-  init_sync_screen();
-  init_sync_placement_dependencies();
-  init_sync_placement_git();
-  init_sync_placement_format();
-  init_sync_placement_journal_format();
-  init_shard_sync_format();
-  init_public_prune_witness();
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-cache.ts
-var init_sync_placement_cache = __esm(() => {
-  init_generation();
-  init_sync_placement_journal_format();
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-transport.ts
-var init_sync_placement_transport = __esm(() => {
-  init_generation();
-  init_generation_sync();
-  init_sync();
-  init_mutation();
-  init_shard();
-  init_policy();
-  init_sync_screen();
-  init_sync_placement_active();
-  init_sync_placement_guard();
-  init_sync_placement_capture();
-  init_sync_placement_format();
-  init_sync_placement_journal_format();
-  init_sync_placement_projection();
-  init_sync_placement_journal_storage();
-  init_sync_placement_publication_storage();
-  init_sync_placement_publication_plan();
-  init_shard_sync_history();
-  init_shard_sync_applications();
-  init_shard_sync();
-  init_shard_sync_format();
-  init_prune_publisher_lineage();
-  init_sync_placement_materialize();
-  init_sync_placement_cache();
-});
-
 // node_modules/@staix/agent-mem/src/memory/sync-binding.ts
 var init_sync_binding = () => {};
 
 // node_modules/@staix/agent-mem/src/memory/sync.ts
 var liveGroups;
 var init_sync = __esm(() => {
-  init_sync_placement_transport();
   init_sync_placement_guard();
   init_formats();
   init_generation();
@@ -11704,6 +11521,219 @@ var init_sync_policy_inspection = __esm(() => {
   init_sync_screen();
 });
 
+// node_modules/@staix/agent-mem/src/memory/public-prune-activation.ts
+var MAX;
+var init_public_prune_activation = __esm(() => {
+  init_generation();
+  init_shard();
+  init_mutation();
+  init_reader_lease();
+  init_aliases();
+  init_platform();
+  init_store();
+  init_public_prune_inputs();
+  init_public_prune_view();
+  MAX = 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-activation-storage.ts
+var MAX_BYTES7;
+var init_sync_placement_activation_storage = __esm(() => {
+  init_generation();
+  init_platform();
+  init_mutation();
+  init_sync_placement_format();
+  init_sync_placement_plan();
+  init_sync_placement_journal_format();
+  init_public_prune_activation();
+  MAX_BYTES7 = 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-activation-proof.ts
+var owners, captures;
+var init_sync_placement_activation_proof = __esm(() => {
+  init_generation();
+  init_mutation();
+  init_platform();
+  init_sync_placement_activation_storage();
+  owners = new WeakMap;
+  captures = new WeakMap;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-publication-plan.ts
+var init_sync_placement_publication_plan = __esm(() => {
+  init_generation();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-projection.ts
+var init_sync_placement_projection = __esm(() => {
+  init_generation();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-writers.ts
+var MAX_BYTES8, MAX_PACKAGE;
+var init_sync_placement_writers = __esm(() => {
+  init_generation();
+  init_platform();
+  init_sync_placement_format();
+  MAX_BYTES8 = 64 * 1024 * 1024;
+  MAX_PACKAGE = 64 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-writer-revision-format.ts
+var WRITER_REVISION_MAX_BYTES, WRITER_COMMIT_MAX_BYTES, WRITER_RENEWAL_INTENT_MAX_BYTES;
+var init_sync_placement_writer_revision_format = __esm(() => {
+  init_generation();
+  init_sync_placement_writers();
+  init_sync_placement_format();
+  WRITER_REVISION_MAX_BYTES = 512 * 1024;
+  WRITER_COMMIT_MAX_BYTES = 64 * 1024;
+  WRITER_RENEWAL_INTENT_MAX_BYTES = 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-writer-history.ts
+var init_sync_placement_writer_history = __esm(() => {
+  init_generation();
+  init_platform();
+  init_mutation();
+  init_sync_placement_writer_revision_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-journal-storage.ts
+var inflight, publicationDurability;
+var init_sync_placement_journal_storage = __esm(() => {
+  init_generation();
+  init_platform();
+  init_mutation();
+  init_sync_placement_plan();
+  init_sync_placement_format();
+  init_sync_placement_journal_format();
+  init_sync_placement_publication_plan();
+  init_sync_placement_projection();
+  init_sync_placement_writer_revision_format();
+  init_sync_placement_writer_history();
+  inflight = new WeakSet;
+  publicationDurability = new WeakMap;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-writer-roots.ts
+var MAX_BYTES9;
+var init_sync_placement_writer_roots = __esm(() => {
+  init_generation();
+  init_policy();
+  init_platform();
+  init_mutation();
+  init_sync_placement_guard();
+  init_sync_placement_active();
+  init_sync_placement_journal_storage();
+  init_public_prune_activation();
+  init_sync_placement_writers();
+  init_sync_placement_format();
+  MAX_BYTES9 = 256 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-prerequisites.ts
+var init_sync_placement_prerequisites = __esm(() => {
+  init_platform();
+  init_generation();
+  init_formats();
+  init_sync_placement_guard();
+  init_sync_placement_active();
+  init_sync_placement_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-effective-writers.ts
+var init_sync_placement_effective_writers = __esm(() => {
+  init_generation();
+  init_sync_placement_guard();
+  init_sync_placement_active();
+  init_sync_placement_journal_storage();
+  init_sync_placement_writer_history();
+  init_sync_placement_writer_revision_format();
+  init_sync_placement_writer_roots();
+  init_sync_placement_prerequisites();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-capture.ts
+var init_sync_placement_capture = __esm(() => {
+  init_sync_placement_journal_format();
+  init_generation();
+  init_sync_placement_format();
+  init_sync_placement_plan();
+  init_public_prune_view();
+  init_platform();
+  init_config();
+  init_policy();
+  init_bridge();
+  init_shard_bridge();
+  init_generation_index();
+  init_prune();
+  init_shard();
+  init_sync_placement_journal_format();
+  init_sync_placement_guard();
+  init_sync_placement_activation_proof();
+  init_sync_placement_effective_writers();
+  init_sync_placement_writer_revision_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-dependencies.ts
+var init_sync_placement_dependencies = __esm(() => {
+  init_bridge();
+  init_generation();
+  init_ops_contract();
+  init_prune();
+  init_store();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-git.ts
+var typedArrayPrototype, getBuffer, getOffset, getLength, mapSize;
+var init_sync_placement_git = __esm(() => {
+  init_public_prune_input_chain();
+  init_shard_sync_format();
+  typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+  getBuffer = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer").get;
+  getOffset = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteOffset").get;
+  getLength = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteLength").get;
+  mapSize = Object.getOwnPropertyDescriptor(Map.prototype, "size").get;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-materialize.ts
+var init_sync_placement_materialize = __esm(() => {
+  init_generation();
+  init_sync_screen();
+  init_sync_placement_dependencies();
+  init_sync_placement_git();
+  init_sync_placement_format();
+  init_sync_placement_journal_format();
+  init_shard_sync_format();
+  init_public_prune_witness();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-cache.ts
+var init_sync_placement_cache = __esm(() => {
+  init_generation();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-sync-graph.ts
+var init_shard_sync_graph = __esm(() => {
+  init_public_prune_inputs();
+  init_shard_sync_format();
+  init_public_prune_witness();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-sync-history.ts
+var init_shard_sync_history = __esm(() => {
+  init_generation();
+  init_prune();
+  init_public_prune_witness();
+  init_shard_sync_graph();
+  init_shard_sync_format();
+});
+
 // node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-evidence.ts
 var init_sync_placement_inspection_evidence = __esm(() => {
   init_sync_placement_journal_storage();
@@ -11718,6 +11748,16 @@ var init_sync_placement_inspection_evidence = __esm(() => {
   init_shard_sync_history();
   init_shard_sync_format();
   init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/prune-publisher-lineage.ts
+var init_prune_publisher_lineage = __esm(() => {
+  init_generation();
+  init_mutation();
+  init_platform();
+  init_prune();
+  init_shard();
+  init_sync_screen();
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-pending.ts
@@ -11748,6 +11788,7 @@ var init_sync_placement_inspection = __esm(() => {
   init_public_prune_inputs();
   init_prune_publisher_lineage();
   init_sync_placement_inspection_pending();
+  init_sync_placement_writer_revision_format();
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-journal.ts
@@ -11766,6 +11807,283 @@ var init_sync_placement_journal = __esm(() => {
   init_sync_placement_journal_format();
   init_sync_placement_projection();
   init_sync_placement_journal_storage();
+  init_sync_placement_writer_revision_format();
+});
+
+// node_modules/@staix/agent-mem/src/setup-toml.ts
+var SETUP_CONFIG_BYTES, temporal;
+var init_setup_toml = __esm(() => {
+  SETUP_CONFIG_BYTES = 8 * 1024 * 1024;
+  temporal = new Set(["[object Temporal.Instant]", "[object Temporal.PlainDate]", "[object Temporal.PlainTime]", "[object Temporal.PlainDateTime]"]);
+});
+
+// node_modules/@staix/agent-mem/src/setup-json.ts
+import { isDeepStrictEqual as isDeepStrictEqual2 } from "util";
+function createJsonMcpCodec(options) {
+  const { canonicalKey, label } = options, keys = new Set([canonicalKey, ...options.aliases ?? []]);
+  const fail = () => {
+    throw Error(`setup ${label} MCP configuration unavailable or ambiguous; no configuration changed`);
+  };
+  const whitespace = (text, start) => {
+    let at = start;
+    while (at < text.length && /[ \t\r\n]/.test(text[at]))
+      at++;
+    return at;
+  };
+  function stringEnd(text, start) {
+    let at = start + 1;
+    while (at < text.length) {
+      if (text[at] === "\\")
+        at += 2;
+      else if (text[at++] === '"')
+        return at;
+    }
+    return fail();
+  }
+  function valueEnd(text, start) {
+    if (text[start] === '"')
+      return stringEnd(text, start);
+    if (text[start] === "{" || text[start] === "[") {
+      let depth = 0, at = start;
+      while (at < text.length) {
+        const char = text[at];
+        if (char === '"') {
+          at = stringEnd(text, at);
+          continue;
+        }
+        if (char === "{" || char === "[")
+          depth++;
+        else if ((char === "}" || char === "]") && --depth === 0)
+          return at + 1;
+        at++;
+      }
+      return fail();
+    }
+    let at = start;
+    while (at < text.length && !/[ \t\r\n,}\]]/.test(text[at]))
+      at++;
+    return at;
+  }
+  function objectSpan(text, start) {
+    if (text[start] !== "{")
+      return fail();
+    const members = [];
+    let at = whitespace(text, start + 1);
+    while (text[at] !== "}") {
+      const keyStart = at, keyEnd = stringEnd(text, at), key = JSON.parse(text.slice(keyStart, keyEnd));
+      if (typeof key !== "string")
+        return fail();
+      const valueStart = whitespace(text, whitespace(text, keyEnd) + 1), end = valueEnd(text, valueStart), next = whitespace(text, end);
+      const comma = text[next] === "," ? next : undefined;
+      members.push({ key, keyStart, keyEnd, valueStart, valueEnd: end, ...comma === undefined ? {} : { comma } });
+      at = comma === undefined ? next : whitespace(text, comma + 1);
+    }
+    return { close: at, members };
+  }
+  function uniqueOwnedKeys(text, member) {
+    const objects = [];
+    let at = member.valueStart;
+    while (at < member.valueEnd) {
+      const char = text[at];
+      if (char === '"') {
+        const end = stringEnd(text, at), current = objects.at(-1);
+        if (text[whitespace(text, end)] === ":" && current) {
+          const key = JSON.parse(text.slice(at, end));
+          if (current.has(key))
+            return fail();
+          current.add(key);
+        }
+        at = end;
+      } else {
+        if (char === "{")
+          objects.push(new Set);
+        else if (char === "[")
+          objects.push(null);
+        else if (char === "}" || char === "]")
+          objects.pop();
+        at++;
+      }
+    }
+  }
+  function document(image) {
+    let text = "{}";
+    if (image.bytes !== null) {
+      if (image.bytes.length > Math.ceil(SETUP_CONFIG_BYTES / 3) * 4)
+        return fail();
+      const bytes = Buffer.from(image.bytes, "base64");
+      if (bytes.toString("base64") !== image.bytes || bytes.length > SETUP_CONFIG_BYTES)
+        return fail();
+      try {
+        text = decode.decode(bytes);
+      } catch {
+        return fail();
+      }
+    }
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return fail();
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return fail();
+    const root = objectSpan(text, whitespace(text, 0));
+    const containers = root.members.filter((member) => keys.has(member.key));
+    if (containers.length > 1)
+      return fail();
+    const container = containers[0];
+    if (!container)
+      return { text, root };
+    const servers = objectSpan(text, container.valueStart), owned = servers.members.filter((member) => member.key === "amem");
+    if (owned.length > 1)
+      return fail();
+    if (owned[0])
+      uniqueOwnedKeys(text, owned[0]);
+    return { text, root, container, servers, ...owned[0] ? { owned: owned[0] } : {} };
+  }
+  const entry = (doc) => doc.owned ? JSON.parse(doc.text.slice(doc.owned.valueStart, doc.owned.valueEnd)) : undefined;
+  function readMcp(image) {
+    return entry(document(image));
+  }
+  function insert(object, text) {
+    const last = object.members.at(-1);
+    const at = last?.valueEnd ?? object.close;
+    return { start: at, end: at, text: `${last ? "," : ""}${text}` };
+  }
+  function remove(object, member) {
+    if (member.comma !== undefined)
+      return { start: member.keyStart, end: member.comma + 1, text: "" };
+    const previous = object.members[object.members.indexOf(member) - 1];
+    return { start: previous?.comma ?? member.keyStart, end: member.valueEnd, text: "" };
+  }
+  function publish(image, doc, edits) {
+    let text = doc.text;
+    for (const edit of edits.sort((a, b) => b.start - a.start))
+      text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+    if (text === doc.text)
+      return image;
+    if (Buffer.byteLength(text) > SETUP_CONFIG_BYTES)
+      return fail();
+    const result = { bytes: Buffer.from(text).toString("base64"), mode: image.mode };
+    document(result);
+    return result;
+  }
+  function put(image, value, options = {}) {
+    const doc = document(image), edits = [], key = options.key ?? canonicalKey;
+    if (!doc.container) {
+      if (value === undefined && !options.keepEmpty)
+        return image;
+      const body = value === undefined ? options.emptyContainer ?? "{}" : `{"amem":${options.rawValue ?? JSON.stringify(value)}}`;
+      edits.push(insert(doc.root, `${JSON.stringify(key)}:${body}`));
+    } else if (value === undefined && !options.keepEmpty && doc.servers.members.every((member) => member.key === "amem")) {
+      edits.push(remove(doc.root, doc.container));
+    } else {
+      if (doc.container.key !== key)
+        edits.push({ start: doc.container.keyStart, end: doc.container.keyEnd, text: JSON.stringify(key) });
+      if (value === undefined && doc.owned)
+        edits.push(remove(doc.servers, doc.owned));
+      else if (value !== undefined && !isDeepStrictEqual2(entry(doc), value)) {
+        const rendered = options.rawValue ?? JSON.stringify(value);
+        if (rendered === undefined)
+          return fail();
+        edits.push(doc.owned ? { start: doc.owned.valueStart, end: doc.owned.valueEnd, text: rendered } : insert(doc.servers, `"amem":${rendered}`));
+      }
+    }
+    return publish(image, doc, edits);
+  }
+  function putMcp(image, value) {
+    return put(image, value);
+  }
+  function restoreMcp(before, after, current) {
+    const original = document(before), installed = document(after), live = document(current);
+    if (same(current, after))
+      return before;
+    if (same(current, before))
+      return current;
+    const previous = entry(original), expected = entry(installed), present = entry(live);
+    const previousRestored = isDeepStrictEqual2(present, previous);
+    const pendingLayout = !!original.container && !!installed.container && original.container.key !== installed.container.key && live.container?.key === installed.container.key;
+    if (previousRestored && !pendingLayout)
+      return current;
+    if (!previousRestored && !isDeepStrictEqual2(present, expected))
+      throw Error(`setup-owned ${label} MCP entry changed; refusing to overwrite it`);
+    const restored = put(current, previous, {
+      key: original.container?.key ?? canonicalKey,
+      keepEmpty: !!original.container && !original.servers.members.length,
+      ...original.owned ? { rawValue: original.text.slice(original.owned.valueStart, original.owned.valueEnd) } : {},
+      ...original.container && !original.servers.members.length ? { emptyContainer: original.text.slice(original.container.valueStart, original.container.valueEnd) } : {}
+    });
+    return before.bytes === null && !document(restored).root.members.length ? { bytes: null, mode: current.mode } : restored;
+  }
+  return { read: readMcp, put: putMcp, restore: restoreMcp };
+}
+var decode, same = (a, b) => a.bytes === b.bytes && a.mode === b.mode;
+var init_setup_json = __esm(() => {
+  init_setup_toml();
+  decode = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+});
+
+// node_modules/@staix/agent-mem/src/setup-jcode.ts
+var codec;
+var init_setup_jcode = __esm(() => {
+  init_setup_json();
+  init_setup_toml();
+  codec = createJsonMcpCodec({ canonicalKey: "servers", aliases: ["mcpServers"], label: "Jcode" });
+});
+
+// node_modules/@staix/agent-mem/src/setup-agy.ts
+var codec2;
+var init_setup_agy = __esm(() => {
+  init_setup_json();
+  codec2 = createJsonMcpCodec({ canonicalKey: "mcpServers", label: "Antigravity strict JSON" });
+});
+
+// node_modules/@staix/agent-mem/src/setup-opencode.ts
+var codec3;
+var init_setup_opencode = __esm(() => {
+  init_setup_json();
+  codec3 = createJsonMcpCodec({ canonicalKey: "mcp", label: "OpenCode strict JSON" });
+});
+
+// node_modules/@staix/agent-mem/src/setup-owned.ts
+var qwenHookControls;
+var init_setup_owned = __esm(() => {
+  init_setup_toml();
+  init_setup_jcode();
+  init_setup_agy();
+  init_setup_opencode();
+  qwenHookControls = new Set(["enabled", "disabled", "notifications"]);
+});
+
+// node_modules/@staix/agent-mem/src/setup-gemini.ts
+var init_setup_gemini = () => {};
+
+// node_modules/@staix/agent-mem/src/setup-paths.ts
+var init_setup_paths = __esm(() => {
+  init_platform();
+  init_setup_gemini();
+});
+
+// node_modules/@staix/agent-mem/src/setup.ts
+var SETUP_TARGETS, SETUP_ALL_TARGETS, MAX2, JOURNAL_MAX, PACKAGE_JSON_MAX;
+var init_setup = __esm(() => {
+  init_cli_attribution();
+  init_config();
+  init_setup_toml();
+  init_setup_owned();
+  init_setup_opencode();
+  init_setup_gemini();
+  init_setup_paths();
+  init_setup_jcode();
+  init_hook_contract();
+  init_home();
+  init_style();
+  init_platform();
+  SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy"];
+  SETUP_ALL_TARGETS = SETUP_TARGETS.filter((target) => target !== "agy");
+  MAX2 = SETUP_CONFIG_BYTES;
+  JOURNAL_MAX = 12 * MAX2;
+  PACKAGE_JSON_MAX = 64 * 1024;
 });
 
 // node_modules/@staix/agent-mem/src/index.ts
@@ -11775,6 +12093,10 @@ var init_src = __esm(() => {
   init_candidates();
   init_config();
   init_sync_screen();
+  init_sync_placement_writers();
+  init_sync_placement_writer_roots();
+  init_sync_placement_effective_writers();
+  init_setup();
   init_store();
   init_capture();
   init_shard();
@@ -30519,7 +30841,7 @@ var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse4 = /* @__PURE__ */ _safeParse(ZodRealError);
 var safeParseAsync2 = /* @__PURE__ */ _safeParseAsync(ZodRealError);
 var encode2 = /* @__PURE__ */ _encode(ZodRealError);
-var decode2 = /* @__PURE__ */ _decode(ZodRealError);
+var decode3 = /* @__PURE__ */ _decode(ZodRealError);
 var encodeAsync2 = /* @__PURE__ */ _encodeAsync(ZodRealError);
 var decodeAsync2 = /* @__PURE__ */ _decodeAsync(ZodRealError);
 var safeEncode2 = /* @__PURE__ */ _safeEncode(ZodRealError);
@@ -30677,7 +30999,7 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
     return encode2(this, data, params, { callee: _encode });
   },
   decode: function _decode(data, params) {
-    return decode2(this, data, params, { callee: _decode });
+    return decode3(this, data, params, { callee: _decode });
   },
   encodeAsync: async function _encodeAsync(data, params) {
     return await encodeAsync2(this, data, params, { callee: _encodeAsync });
