@@ -2219,6 +2219,7 @@
   "src/rooms/link.ts:delay:inline:Math.min=250 * 2 ** Math.min(session.retryAttempt++, 7)#0": "operational",
   "src/rooms/link.ts:delay:inline:Math.min=30_000#0": "operational",
   "src/rooms/link.ts:delay:inline:Math.min=7#0": "operational",
+  "src/rooms/link.ts:handle:inline:inventory.peers.length > 64=64#0": "contract",
   "src/rooms/link.ts:publishPresence:inline:setTimeout=0#0": "operational",
   "src/rooms/link.ts:retryAttempt:inline:retryAttempt=0#0": "operational",
   "src/rooms/link.ts:v:inline:v=1#1": "contract",

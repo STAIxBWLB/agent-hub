@@ -33,6 +33,7 @@ class LocalPeer extends BasePeer {
 }
 function deferred() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 function signals() {
+  let diagnostics: (() => unknown) | undefined;
   const listeners = new Set<() => void>();
   const notify = () => { for (const listener of listeners) listener(); };
   const wait = (check: () => boolean | Promise<boolean>, label: string): Promise<void> => new Promise((resolve, reject) => {
@@ -44,10 +45,14 @@ function signals() {
       checking = true;
       void (async () => { do { again = false; if (await check()) return finish(); } while (again && !done); })().catch(finish).finally(() => { checking = false; if (again && !done) inspect(); });
     };
-    const timer = setTimeout(() => finish(new Error(`room delivery barrier timed out: ${label}`)), 5000);
+    const timer = setTimeout(() => {
+      let state = "metadata unavailable";
+      try { state = JSON.stringify(diagnostics?.()) ?? state; } catch { /* Failure diagnostics never replace the original barrier failure. */ }
+      finish(new Error(`room delivery barrier timed out: ${label}; state=${state}`));
+    }, 5000);
     listeners.add(inspect); inspect();
   });
-  return { notify, wait };
+  return { notify, wait, diagnose: (read: () => unknown) => { diagnostics = read; } };
 }
 type Signal = ReturnType<typeof signals>;
 test("delivery signals retain a notification arriving after an async check returns", async () => {
@@ -216,13 +221,20 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = fa
       control.hold = false; control.gate.release(); await broker.stop(); rmSync(root, { recursive: true, force: true });
     },
   };
+  event.diagnose(() => ({ phase: control.phase, broker: result.broker.stats(), brokerEvents: brokerEvents.slice(-12),
+    sides: [result.a, result.b].map(side => ({ label: side.label, link: side.link?.status(), epoch: side.store?.get("work")?.current.epoch,
+      peers: [...side.bus.peers].map(([id, peer]) => ({ id, state: peer.state })),
+      journal: side.journal.list().map(row => ({ id: row.id, state: row.state, failureCause: row.failureCause,
+        revokedProof: row.reason?.includes("recipient proof no longer current") === true })),
+      outgoing: side.store?.applicationOutbox("work").map(row => ({ id: row.deliveryId, state: row.state, disposition: row.disposition, refusal: row.reason })) })) }));
   meshes.push(result);
   const created = await command(a, "create", { name: "work", broker: broker.publicUrl, label: "alpha" }); owner = created.owner!;
   await command(a, "expose", { name: "work", peers: ["codex"] });
   const invitation = await command(a, "invite", { name: "work" }), request = await command(b, "join", { name: "work", token: invitation.artifact, label: "beta" }); guest = request.member!;
   const roster = await command(a, "invite", { name: "work", request: request.artifact }); await command(b, "join", { name: "work", roster: roster.artifact });
   result.owner = owner; result.guest = guest;
-  await event.wait(() => result.a.bus.stateOf("codex@beta") === "idle" && result.b.bus.stateOf("codex@alpha") === "idle", "both room peers online");
+  if (holdInitialCodec) await event.wait(() => result.a.bus.stateOf("user@beta") === "idle" && result.b.bus.stateOf("user@alpha") === "idle", "application transport online before held initial observations");
+  else await event.wait(() => result.a.bus.stateOf("codex@beta") === "idle" && result.b.bus.stateOf("codex@alpha") === "idle", "both room peers online");
   control.phase = "before"; return result;
 }
 async function acknowledgementDeadline(f: Mesh, side: Hub, application: string): Promise<void> {
@@ -1236,7 +1248,7 @@ for (const kind of ["person", "invocation"] as const) test(`immediate online ${k
   f.control.authorizeInvocation = true; f.control.admitInvocation = true;
   const env = newEnvelope(kind === "person" ? "codex" : HUB, `immediate online ${kind}`, { to: [kind === "person" ? "user@beta" : "codex@beta"], ...(kind === "invocation" ? { kind: "invocation" as const } : {}) });
   f.a.bus.publish(env);
-  await f.event.wait(() => f.control.codecEntered === true && f.a.bus.stateOf(kind === "person" ? "user@beta" : "codex@beta") === "offline" && f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "queued"), "pending codec observation defers original Bus delivery");
+  await f.event.wait(() => f.control.codecEntered === true && (kind === "invocation" || f.a.bus.stateOf("user@beta") === "offline") && f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "queued"), "pending codec observation defers original Bus delivery");
   expect(f.a.store!.applicationOutbox("work").some(row => row.application === env.id)).toBe(false);
   expect(f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "failed")).toBe(false);
   f.control.holdCodec = undefined; f.control.codecGate!.release();
@@ -1273,6 +1285,9 @@ test("feature-required sends remain usable across repeated forced legacy and cod
     f.a.bus.publish(env);
     await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (inbox)", "forced publication does not create an unsupported compatibility gap");
     expect(f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "failed")).toBe(false);
+    // Respect the existing six-per-minute pair limit across all ten assertions;
+    // advance fixture time instead of sleeping or weakening production limits.
+    f.control.now += 60_000;
   }
 }, 20000);
 
