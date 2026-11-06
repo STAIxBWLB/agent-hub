@@ -26,7 +26,7 @@ agent-hub connects agents that can each run commands. This page says what the hu
 
 ## Native memory authority and profile selection
 
-The portable core is the exact-pinned first-party `@staix/agent-mem` 0.21.0 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.
+The portable core is the exact-pinned first-party `@staix/agent-mem` 0.22.1 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.
 
 `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` take the project from the daemon, require `memory_read`, refuse private turns and validate UTF-8 input before logs or storage work. Complete records and graph metadata are screened before counts and truncation. Search is at most 20 lines/4 KiB (default 8); show accepts at most 8 ids and returns at most 8 KiB; graph is at most 120 nodes/240 edges/6 KiB (default 60 nodes), with no edge lacking an endpoint. Unknown, ambiguous and withheld ids share one neutral refusal. Arguments and results are excluded from hub-managed capture; this does not govern a vendor's independent transcript or memory hooks.
 
@@ -824,8 +824,10 @@ result. Failure logs retain only the closed cause and known declined count.
 and uses bounded physical-row inspection to show IDs and rule categories, never
 note text or literal patterns; incomplete inspection is not a zero count.
 Default-host v3 sync remains unsupported because the hub supplies no fresh
-placement attestation. No activation proof is fabricated; the supported activation
-and attestation path remains agent-mem#281. Suggested graph edges are off by default
+placement attestation. No activation proof is fabricated. The native amem CLI
+provides person-only activation from 0.22.0; the hub does not invoke it, and
+default-host v3 sync still requires legitimate fresh host-attestation integration
+(#1173). Suggested graph edges are off by default
 and are not evidence until a person confirms them. Operational details and limits: [hub memory](memory.md).
 
 ## Floating pet retirement (#1012)
