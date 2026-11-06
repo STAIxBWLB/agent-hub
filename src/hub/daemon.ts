@@ -237,7 +237,7 @@ import { SourceRegistry } from "./sources.ts";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead, sourceRead, validateSourceRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
-import { classifyMemorySyncFailure, initialMemorySyncState, memorySyncDeclinedDetails, memorySyncFailureDetailHash, memorySyncView, reduceMemorySync } from "./memory-sync-state.ts";
+import { classifyMemorySyncFailure, initialMemorySyncState, memorySyncDeclinedDetails, memorySyncFailureDetailHash, memorySyncView, memorySyncPlacementCounts, reduceMemorySync } from "./memory-sync-state.ts";
 import { createMemorySyncPolicy, inspectDeclinedMemoryRows } from "./memory-sync-policy.ts";
 import { DEFAULT_SPECS_CONFIG, parseSpecsConfig, type SpecsConfig } from "./specs-config.ts";
 
@@ -2029,7 +2029,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Machine sync, when a person set a remote; one log line per failure, never a blocked turn. Stopping aborts and awaits it. */
   function syncNow(): Promise<void> {
     if (!memoryStore || syncRun || stopping) return syncRun ?? Promise.resolve();
-    const recordFailure = (cause: ReturnType<typeof classifyMemorySyncFailure> & { declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string }, errorText?: string) => {
+    const recordFailure = (cause: ReturnType<typeof classifyMemorySyncFailure> & { declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string; placementActive?: false }, errorText?: string) => {
       if (quietSyncError(errorText)) {
         const state = errorText?.startsWith("stopped") ? "stopped" : "not-configured";
         memorySyncState = reduceMemorySync(memorySyncState, { type: "quiet", at: Date.now(), state }).state;
@@ -2054,7 +2054,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const policyVersion = memorySyncPolicyVersion();
         const r = await (opts.memorySync ?? syncMemory)(memoryStore!, {
           signal: syncStop.signal,
-          screen: row => policy.screen(row).ok,
+          screen: row => policy.screen(row, true).ok,
           policyVersion: () => memorySyncPolicyVersion(),
         });
         if (memorySyncPolicyVersion() !== policyVersion) {
@@ -2063,13 +2063,13 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         checkMemory();
         if (r.ok) {
-          memorySyncState = reduceMemorySync(memorySyncState, { type: "success", at: Date.now() }).state;
+          memorySyncState = reduceMemorySync(memorySyncState, { type: "success", at: Date.now(), ...memorySyncPlacementCounts(r.placementPublication) }).state;
           if (r.warning) log("hub memory sync completed with a warning");
         } else {
           const failure = classifyMemorySyncFailure(r.error);
           if (failure.cause === "declined") {
-            const inspected = inspectDeclinedMemoryRows(memoryStore!, policy);
-            recordFailure(memorySyncDeclinedDetails(failure, inspected), r.error);
+            const inspected = inspectDeclinedMemoryRows(memoryStore!, policy, memorySyncPolicyVersion);
+            recordFailure({ ...memorySyncDeclinedDetails(failure, inspected), ...(memoryStore!.profile.publicationFormat !== "agent-mem.sync-placement/v1" ? { placementActive: false as const } : {}) }, r.error);
           } else recordFailure({ ...failure, failureDetailHash: memorySyncFailureDetailHash(r.error) }, r.error);
         }
       } catch (error) { recordUnexpectedFailure(error); }

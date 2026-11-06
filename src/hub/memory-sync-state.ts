@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 
 /** Safe, process-local view of the most recent machine memory sync. */
 export type MemorySyncCause = "declined" | "remote" | "binding" | "stopped" | "transport" | "unknown";
+export interface MemorySyncPlacementCounts { withheldCount: number; exportedCount: number }
 export type MemorySyncOutcome =
   | { state: "notrun" }
   | { state: "not-configured"; at: number }
   | { state: "stopped"; at: number }
-  | { state: "ok"; at: number }
-  | { state: "failed"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsKnown?: false };
+  | { state: "ok"; at: number; withheldCount?: number; exportedCount?: number }
+  | { state: "failed"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsKnown?: false; placementActive?: false };
 
 export interface MemorySyncState {
   outcome: MemorySyncOutcome;
@@ -16,21 +17,43 @@ export interface MemorySyncState {
 }
 
 export type MemorySyncEvent =
-  | { type: "success"; at: number }
+  | { type: "success"; at: number; withheldCount?: number; exportedCount?: number }
   | { type: "quiet"; at: number; state: "not-configured" | "stopped" }
-  | { type: "failure"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string };
+  | { type: "failure"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string; placementActive?: false };
 
 export const initialMemorySyncState = (): MemorySyncState => ({ outcome: { state: "notrun" } });
 const MAX_DECLINED_ROWS = 20_000;
 
+function placementCounts(withheldCount: unknown, exportedCount: unknown): MemorySyncPlacementCounts | undefined {
+  if (typeof withheldCount !== "number" || !Number.isSafeInteger(withheldCount) || withheldCount < 0
+    || typeof exportedCount !== "number" || !Number.isSafeInteger(exportedCount) || exportedCount < 0) return undefined;
+  return { withheldCount, exportedCount };
+}
+
+/** Project only public counts from a completed placement publication, never its retained hashes or policy metadata. */
+export function memorySyncPlacementCounts(value: unknown): MemorySyncPlacementCounts | undefined {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return undefined;
+    const read = (key: string): unknown => {
+      const field = Object.getOwnPropertyDescriptor(value, key);
+      return field?.enumerable && "value" in field ? field.value : undefined;
+    };
+    const outcome = read("outcome");
+    if (outcome !== "committed" && outcome !== "not-needed") return undefined;
+    return placementCounts(read("withheld"), read("exported"));
+  } catch { return undefined; }
+}
+
 /** Reduces one completed sync. The boolean says whether this failure is a new loggable episode. */
 export function reduceMemorySync(state: MemorySyncState, event: MemorySyncEvent): { state: MemorySyncState; logFailure: boolean } {
-  if (event.type === "success") return { state: { outcome: { state: "ok", at: event.at } }, logFailure: false };
+  if (event.type === "success") return { state: { outcome: { state: "ok", at: event.at, ...placementCounts(event.withheldCount, event.exportedCount) } }, logFailure: false };
   if (event.type === "quiet") return { state: { outcome: { state: event.state, at: event.at } }, logFailure: false };
   const signature = [event.cause, event.declinedCount ?? "", event.declinedIdsFingerprint ?? (event.declinedIdsKnown === false ? "ids-unknown" : ""), event.failureDetailHash ?? ""].join("\0");
   const changed = state.failureSignature !== signature;
   return {
-    state: { outcome: { state: "failed", at: event.at, cause: event.cause, ...(event.declinedCount === undefined ? {} : { declinedCount: event.declinedCount }), ...(event.declinedIdsKnown === false ? { declinedIdsKnown: false as const } : {}) }, failureSignature: signature },
+    state: { outcome: { state: "failed", at: event.at, cause: event.cause, ...(event.declinedCount === undefined ? {} : { declinedCount: event.declinedCount }), ...(event.declinedIdsKnown === false ? { declinedIdsKnown: false as const } : {}), ...(event.cause === "declined" && event.placementActive === false ? { placementActive: false as const } : {}) }, failureSignature: signature },
     logFailure: changed,
   };
 }
@@ -41,6 +64,9 @@ export interface MemorySyncView {
   cause?: MemorySyncCause;
   declinedCount?: number;
   declinedIdsKnown?: false;
+  withheldCount?: number;
+  exportedCount?: number;
+  placementActive?: false;
   nextStep?: string;
 }
 
@@ -59,11 +85,12 @@ export function memorySyncView(state: MemorySyncState, availability: "enabled" |
   if (outcome.state === "notrun") return { state: "notrun" };
   if (outcome.state === "not-configured") return { state: "not-configured", at: outcome.at, nextStep: memorySyncNextStep("remote") };
   if (outcome.state === "stopped") return { state: "stopped", at: outcome.at, nextStep: memorySyncNextStep("stopped") };
-  if (outcome.state === "ok") return { state: "ok", at: outcome.at };
+  if (outcome.state === "ok") return { state: "ok", at: outcome.at, ...placementCounts(outcome.withheldCount, outcome.exportedCount) };
   return {
     state: "failed", at: outcome.at, cause: outcome.cause,
     ...(outcome.declinedCount === undefined ? {} : { declinedCount: outcome.declinedCount }),
     ...(outcome.declinedIdsKnown === false ? { declinedIdsKnown: false } : {}),
+    ...(outcome.cause === "declined" && outcome.placementActive === false ? { placementActive: false } : {}),
     nextStep: memorySyncNextStep(outcome.cause),
   };
 }

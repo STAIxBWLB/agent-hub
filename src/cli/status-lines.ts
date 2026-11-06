@@ -4,7 +4,7 @@ import { memorySyncNextStep, type MemorySyncCause } from "../hub/memory-sync-sta
 
 export interface PeerRow { permissionMode?: string; context?: ContextView; state?: string; queued?: number; queuedImportant?: number; needsReview?: number; heldBy?: string; holdNote?: string; reviewObserverHoldNote?: string; liveAccepted?: string[]; oldestQueuedAt?: number; importantWaitingSince?: number; importantWaitingNote?: string; attached?: boolean; attachMode?: "channel" | "tools-only"; attachEvidence?: string; toolsOnly?: string; pullOnly?: boolean; lastInboxAt?: number | null; permissionNote?: string; reviewerUnavailable?: string; paused?: string; servedBy?: string; requestedModel?: string }
 export interface BackendRow { kind?: string; alias?: string; state?: string; active?: number; requestedModel?: string; actualModel?: string; provider?: string; coolingUntil?: string; failures?: number; failingUntil?: string }
-export interface MemorySyncRow { state?: string; at?: number; cause?: string; declinedCount?: number; declinedIdsKnown?: false; nextStep?: string }
+export interface MemorySyncRow { state?: string; at?: number; cause?: string; declinedCount?: number; declinedIdsKnown?: false; withheldCount?: number; exportedCount?: number; placementActive?: false; nextStep?: string }
 export interface ReviewInputHealthRow { state?: string; cause?: string | null }
 
 /** Aliases are already namespaced ("dgx/coding"); only an alias that is not gets its kind in front of it. */
@@ -27,9 +27,16 @@ export function memorySyncLine(sync: MemorySyncRow, time = (at: number) => new D
   const validTimestamp = Number.isSafeInteger(sync.at) && Math.abs(sync.at!) <= 8_640_000_000_000_000;
   const stamp = hasTimestamp ? `; automatic, last ${validTimestamp ? time(sync.at!) : "unknown"}` : "";
   if (state === "not-configured" || state === "stopped") return `${state}${stamp}; next: ${memorySyncNextStep(state === "stopped" ? "stopped" : "remote")}`;
+  if (state === "ok" && Number.isSafeInteger(sync.withheldCount) && sync.withheldCount! >= 0
+    && Number.isSafeInteger(sync.exportedCount) && sync.exportedCount! >= 0)
+    return `ok${stamp}; ${sync.withheldCount} row${sync.withheldCount === 1 ? "" : "s"} withheld locally; ${sync.exportedCount} exported`;
   if (state !== "failed") return `${state}${stamp}`;
   const causes = ["declined", "remote", "binding", "stopped", "transport", "unknown"];
   const cause = (causes.includes(sync.cause ?? "") ? sync.cause : "unknown") as MemorySyncCause;
+  if (cause === "declined" && sync.placementActive === false) {
+    const declined = Number.isSafeInteger(sync.declinedCount) && sync.declinedCount! >= 0 ? String(sync.declinedCount) : "unknown";
+    return "machine sync blocked: " + declined + " declined rows; per-row placement is not active on this store (agent-mem has no activation command yet, agent-mem#281). Inspect with `ahub memory declined`.";
+  }
   const count = Number.isSafeInteger(sync.declinedCount) && sync.declinedCount! >= 0 ? `, ${sync.declinedCount} declined` : "";
   const ids = cause === "declined" && sync.declinedIdsKnown === false ? "; declined ID set unknown" : "";
   return `failed (${cause}${count})${stamp}${ids}; next: ${memorySyncNextStep(cause)}`;

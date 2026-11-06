@@ -2668,9 +2668,15 @@ function memorySyncLine(sync) {
     const next = sync.state === 'stopped' ? 'retry after hub restart' : 'configure a private sync remote';
     return 'Machine sync: ' + sync.state + stamp + ' / next: ' + next;
   }
+  if (sync.state === 'ok' && Number.isSafeInteger(sync.withheldCount) && sync.withheldCount >= 0 && Number.isSafeInteger(sync.exportedCount) && sync.exportedCount >= 0)
+    return 'Machine sync: ok' + stamp + ' / ' + sync.withheldCount + ' row' + (sync.withheldCount === 1 ? '' : 's') + ' withheld locally / ' + sync.exportedCount + ' exported';
   if (sync.state !== 'failed') return 'Machine sync: ' + (['disabled','unavailable','notrun','ok','unknown'].includes(sync.state) ? sync.state : 'unknown') + stamp;
   const causes = ['declined','remote','binding','stopped','transport','unknown'];
   const cause = causes.includes(sync.cause) ? sync.cause : 'unknown';
+  if (cause === 'declined' && sync.placementActive === false) {
+    const declined = Number.isSafeInteger(sync.declinedCount) && sync.declinedCount >= 0 ? String(sync.declinedCount) : 'unknown';
+    return 'machine sync blocked: ' + declined + ' declined rows; per-row placement is not active on this store (agent-mem has no activation command yet, agent-mem#281). Inspect with `ahub memory declined`.';
+  }
   const count = Number.isSafeInteger(sync.declinedCount) && sync.declinedCount >= 0 ? ' / ' + sync.declinedCount + ' declined' : '';
   const ids = cause === 'declined' && sync.declinedIdsKnown === false ? ' / declined ID set unknown' : '';
   const next = cause === 'declined' ? 'ahub memory declined' : cause === 'remote' ? 'configure a private sync remote' : cause === 'binding' ? 'ahub memory profile-check' : cause === 'stopped' ? 'retry after hub restart' : 'run ahub memory sync as a person';
