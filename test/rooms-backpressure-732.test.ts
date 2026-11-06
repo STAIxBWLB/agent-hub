@@ -71,6 +71,8 @@ test("queued presence rechecks exposure at actual send and stop clears queue_ful
     const pending = f.session.outbound[0]!;
     f.internal.backoffFrame(f.session, pending.digest);
     expect(f.session.frameRetry).toBeDefined();
+    expect(f.link.status()).toMatchObject({ cause: "backpressure" });
+    expect(f.link.status().nextStep).toContain("retry automatically");
     await f.link.stop();
     expect(f.session.outbound).toHaveLength(0);
     expect(f.link.connectionState).toBe("offline");

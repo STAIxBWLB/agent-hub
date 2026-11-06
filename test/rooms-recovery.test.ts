@@ -244,7 +244,13 @@ async function fullPhysicalInbox(reserved: number, withPresence = false, junkKin
   }
   const target = pairs.at(-1)!;
   targetWire = await sealFrame({ epoch: roster.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: encodeRoomMessage(target.receipt) }); targetDigest = encodeBase64url(await sha256(targetWire));
-  const link = new RoomLink({ store: receiver, name: "work", onPresence: value => { observed.push(value); }, application: { members: () => {}, stored: () => {}, online: async () => {}, gap: (_context, input) => { gaps.push(input.count); }, receive: async (context, input) => {
+  const accept = receiver.replay.accept;
+  receiver.replay.accept = async input => {
+    const result = await accept(input);
+    if (result.status === "accepted") gaps.push(result.gap);
+    return result;
+  };
+  const link = new RoomLink({ store: receiver, name: "work", onPresence: value => { observed.push(value); }, application: { members: () => {}, stored: () => {}, online: async () => {}, receive: async (context, input) => {
     if (input.message?.type === "chat") receivedChats.push(input.message.envelope.id);
     if (input.message?.type !== "receipt" || input.digest !== targetDigest) throw new RoomApplicationDeferredError("capacity");
     context.store.applyApplicationReceipt("work", input.digest, context.current); context.store.settleInbox("work", input.digest);

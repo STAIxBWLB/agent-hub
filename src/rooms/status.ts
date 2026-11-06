@@ -2,6 +2,7 @@ import { types } from "node:util";
 import type { PeerState } from "../hub/envelope.ts";
 import { decodeBase64url, encodeBase64url } from "./crypto.ts";
 import { parseRemotePeerId } from "./application.ts";
+import { ROOM_HEALTH_CAUSES, roomHealthNextStep, type RoomHealthCause } from "./health.ts";
 
 const ROOM_LIMIT = 64;
 const REMOTE_PEER_LIMIT = 4096;
@@ -14,6 +15,13 @@ const FINGERPRINT = /^[0-9a-f]{64}$/;
 const EPOCH = /^[1-9][0-9]{0,19}$/;
 const LINK_STATES = new Set(["online", "connecting", "offline", "left"]);
 const PEER_STATES = new Set<PeerState>(["idle", "busy", "paused", "offline"]);
+
+export interface RoomStatusHealth {
+  refused: { invalid_presence: number; wrong_epoch: number; trust_changed: number; stale: number; invalid_frame: number } | null;
+  outboxDepth: number | null;
+  oldestOutboxAgeMs: number | null;
+  lastReceiptAgeMs: number | null;
+}
 
 export interface RoomStatusPeer {
   id: string;
@@ -29,8 +37,15 @@ export interface RoomRelayStats {
   withheld: number | null;
 }
 
+export interface RoomStatusDiagnostics {
+  health?: RoomStatusHealth | null;
+  linkCause?: RoomHealthCause | null;
+  linkNextStep?: string | null;
+}
+export interface RoomStatusUnavailable { code: RoomHealthCause | null; nextStep: string | null }
+
 /** Allowlisted room metadata. Missing member counts and peer lists stay unknown. */
-export interface RoomStatusView {
+export interface RoomStatusView extends RoomStatusDiagnostics {
   name: string;
   room: string;
   owner: string;
@@ -123,6 +138,42 @@ function relayStats(value: unknown): RoomRelayStats | null {
   return { since, outbound, inbound, withheld };
 }
 
+/** Counts and ages remain unknown when an older daemon cannot report them. */
+export function projectRoomHealth(value: unknown): RoomStatusHealth | null {
+  if (!plainRecord(value)) return null;
+  const rawRefused = ownData(value, "refused");
+  let refused: RoomStatusHealth["refused"] = null;
+  if (plainRecord(rawRefused)) {
+    const invalid_presence = relayCount(ownData(rawRefused, "invalid_presence")), wrong_epoch = relayCount(ownData(rawRefused, "wrong_epoch"));
+    const trust_changed = relayCount(ownData(rawRefused, "trust_changed")), stale = relayCount(ownData(rawRefused, "stale")), invalid_frame = relayCount(ownData(rawRefused, "invalid_frame"));
+    if (invalid_presence !== null && wrong_epoch !== null && trust_changed !== null && stale !== null && invalid_frame !== null)
+      refused = { invalid_presence, wrong_epoch, trust_changed, stale, invalid_frame };
+  }
+  return { refused, outboxDepth: relayCount(ownData(value, "outboxDepth")),
+    oldestOutboxAgeMs: relayCount(ownData(value, "oldestOutboxAgeMs")), lastReceiptAgeMs: relayCount(ownData(value, "lastReceiptAgeMs")) };
+}
+
+function healthCause(value: unknown): RoomHealthCause | null {
+  return typeof value === "string" && ROOM_HEALTH_CAUSES.includes(value as RoomHealthCause) ? value as RoomHealthCause : null;
+}
+
+/** Regenerate guidance from closed causes; arbitrary daemon text is never copied. */
+export function projectRoomDiagnostics(value: unknown): RoomStatusDiagnostics {
+  if (!plainRecord(value)) return {};
+  const cause = healthCause(ownData(value, "linkCause"));
+  return {
+    ...(ownField(value, "health").present ? { health: projectRoomHealth(ownData(value, "health")) } : {}),
+    ...(ownField(value, "linkCause").present ? { linkCause: cause, linkNextStep: cause === null ? null : roomHealthNextStep(cause) } : {}),
+  };
+}
+
+/** Absent or malformed availability metadata stays unknown without evaluating getters. */
+export function projectRoomUnavailable(value: unknown): RoomStatusUnavailable | null {
+  if (!plainRecord(value)) return null;
+  const code = healthCause(ownData(value, "code"));
+  return { code, nextStep: code === null ? null : roomHealthNextStep(code) };
+}
+
 /** Project RoomCommands.rows-compatible data to body-free room status metadata. */
 export function projectRoomStatus(value: unknown): RoomStatusView[] {
   try {
@@ -146,6 +197,7 @@ export function projectRoomStatus(value: unknown): RoomStatusView[] {
         memberCount: memberCount(rawMemberCount),
         remotePeers: peers,
         relays: relayStats(ownData(item, "relays")),
+        ...projectRoomDiagnostics(item),
       });
     }
     return views;

@@ -267,7 +267,9 @@ test("idle request reaches connected C after A's crossed broadcast reply replace
   const requested = signal<string>(), replied = signal<string>();
   observe = async wire => {
     const frame = decodeFrame(wire);
-    if (frame.sender !== f.owner.identity.public.fingerprint) return;
+    // The legacy recipient never receives codec advertisements. Observe the same
+    // legacy reply as C while retaining the crossed-request assertions below.
+    if (frame.codecFeatures || frame.sender !== f.owner.identity.public.fingerprint) return;
     const opened = await openFrame({ wire, identity: cStore.identity, current: cStore.get("work")!.current,
       replay: { accept: async () => ({ status: "accepted", gap: "0" }) } });
     if (opened.status !== "accepted") throw new Error("expected authenticated A presence");

@@ -220,3 +220,40 @@ test("every inbox form stays person-only including metadata lists and live-test 
     expect(String(output[0]) + String(output[1])).not.toContain("daemon is not running");
   }
 });
+
+test("room status renders safe health counts and ages in text and JSON with the link recovery step", async () => {
+  const health = { refused: { invalid_presence: 1, wrong_epoch: 2, trust_changed: 0, stale: 0, invalid_frame: 0 }, outboxDepth: 3, oldestOutboxAgeMs: 50, lastReceiptAgeMs: null };
+  const request: RoomRequest = async () => ({ ok: true, rooms: [{ ...row, state: "offline", health: { ...health, body: "PRIVATE_CANARY" }, linkCause: "transport_closed", linkNextStep: "PRIVATE_CANARY" }] });
+  const human = (await printed(async () => runRoomCommand(["status", "example"], request))).join("\n");
+  expect(human).toContain("link cause transport_closed; next: Check the broker address and network connection");
+  expect(human).toContain("outbox 3; oldest 50ms; last receipt unknown");
+  expect(human).toContain("refused: invalid_presence 1, wrong_epoch 2");
+  expect(human).not.toContain("CANARY");
+  const json = JSON.parse((await printed(async () => runRoomCommand(["status", "example", "--json"], request))).join("\n"));
+  expect(json[0].health).toEqual(health);
+  expect(json[0].linkCause).toBe("transport_closed");
+  expect(json[0].linkNextStep).toContain("link retries automatically");
+  expect(JSON.stringify(json)).not.toContain("CANARY");
+});
+
+test("room status reports absent health as unknown and ignores hostile health fields", async () => {
+  let reads = 0;
+  const source = { ...row, state: "offline", get health() { reads++; throw new Error("health getter ran"); }, get linkCause() { reads++; throw new Error("cause getter ran"); }, get linkNextStep() { reads++; throw new Error("next getter ran"); } };
+  const human = (await printed(async () => runRoomCommand(["status", "example"], async () => ({ ok: true, rooms: [source] })))).join("\n");
+  expect(human).toContain("outbox unknown; oldest unknown; last receipt unknown");
+  expect(human).toContain("refused: unknown");
+  expect(human).toContain("link cause unknown"); expect(reads).toBe(0);
+});
+
+test("a healthy online room prints its state without an unknown cause or broker repair advice", async () => {
+  const output = (await printed(async () => runRoomCommand(["status", "example"], async () => ({ ok: true, rooms: [{ ...row, state: "online", linkCause: null }] })))).join("\n");
+  expect(output).toContain("link online");
+  expect(output).not.toContain("cause unknown");
+  expect(output).not.toContain("Check broker");
+});
+
+test("a refused room status prints only its closed storage cause and generated action", async () => {
+  const request: RoomRequest = async () => ({ ok: false, code: "rooms_unavailable", roomsUnavailable: { code: "busy", nextStep: "PRIVATE_CANARY", error: "PRIVATE_CANARY" } });
+  await expect(runRoomCommand(["status", "example"], request)).rejects.toThrow("unavailable (busy); Release the competing room store writer");
+  await expect(runRoomCommand(["status", "example"], request)).rejects.not.toThrow("PRIVATE_CANARY");
+});

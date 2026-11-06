@@ -1320,3 +1320,19 @@ Person comment writes (`review_comment_put`, `review_comment_delete`, `review_co
 - **Material.** Placement material comes only from guarded immutable Git snapshots at the task's recorded head (declared refs, plan paths, or same-head verified PR paths), bounded per operation to eight files and eight seconds; a sent package is at most 12,000 bytes. `review_blob` refuses a PII task, and periodic snapshots make no comment-material Git or GitHub read. PII tasks and private paths keep comments on the board and count-only in every public view.
 - **Delivery.** A sent package carries the host-only `refs.reviewPackage` marker: the intended owner gets the body, while logs, stream projections, incoming labels, memory capture and observers get an ids-only stub; review markers a peer supplies are discarded. Open sent comments, anchored findings and unsettled review deliveries keep the original recipient's responses out of shared memory and observers until resolution, dismissal, task close or explicit disposition (#1192, #1205). The marker grants no task, console or PII authority.
 - **Retry and recovery.** A send is never retried automatically, and a queued receipt proves publication, not that the owner read it. A restart, upgrade or recovery onto a daemon lacking `review_comments` is refused while anchored comments are stored.
+
+### Room health and codec advertisements (#1204 T4)
+
+Room health projects closed cause codes, retained refusal counts and transport
+ages only. Raw store errors, broker URLs, bodies, titles and key material never
+enter status. Codec advertisements are signed compatibility evidence scoped to
+the current local session, source connection token and roster. Missing observation
+is pending and permits no wire effect; only positively known legacy or unsupported
+members receive an upgrade refusal. Pending sends retain their original queue
+expiry and wake on a current member observation. Peer connection metadata is
+compatibility evidence only, never an authorization source. The existing ephemeral
+header remains exactly `1`; an extra ignored codec header preserves released
+broker behavior. A feature-presence variant reaches opted-in sessions only; legacy members retain
+the unchanged presence payload. Codec support grants no exposure, role, privacy,
+invocation or native permission. A storage-recovery wake retries deferred
+admission under its existing guards and never replays uncertain native work.

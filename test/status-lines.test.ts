@@ -64,3 +64,24 @@ test("a disconnected recipient exposes pending age and uncertain work", () => {
   expect(peerFields("codex", peers)).toMatchObject({ STATE: "offline", Q: "2", "!": "1", REVIEW: "1", LINK: "detached" });
   expect(text(peers)).toContain("codex oldest queued  1m ago");
 });
+
+test("room unavailability names a closed cause and locally generated next step at narrow and wide widths", () => {
+  for (const columns of [80, 200]) {
+    const rendered = renderStatus({ peers: {}, roomsUnavailable: { code: "clock_rollback", nextStep: "PRIVATE_CANARY", error: "PRIVATE_CANARY" } }, columns).map(row => paint(row, false)).join("\n");
+    expect(rendered).toContain("rooms: unavailable (clock_rollback)");
+    expect(rendered).toContain("Correct the system clock");
+    expect(rendered).not.toContain("CANARY");
+  }
+  let reads = 0;
+  const unavailable = { get code() { reads++; throw new Error("code getter ran"); }, get nextStep() { reads++; throw new Error("next getter ran"); } };
+  const rendered = renderStatus({ peers: {}, roomsUnavailable: unavailable }).map(row => paint(row, false)).join("\n");
+  expect(rendered).toContain("rooms: unavailable (unknown)");
+  expect(rendered).toContain("Run ahub room status");
+  expect(reads).toBe(0);
+});
+
+test("pending room storage is opening rather than a broker failure", () => {
+  const output = renderStatus({ peers: {}, roomsOpening: true }).map(row => paint(row, false)).join("\n");
+  expect(output).toContain("rooms: opening; wait for local room storage initialization");
+  expect(output).not.toContain("unavailable"); expect(output).not.toContain("broker connection");
+});

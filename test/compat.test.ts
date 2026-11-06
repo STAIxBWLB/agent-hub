@@ -375,8 +375,8 @@ test("Qwen ACP 0.26.4 is exact-receipt verified; intermediate and nearby version
 
 
 test("Qwen ACP 0.26.5 is exact-receipt verified next to 0.26.4; 0.26.6 stays refused (#888)", () => {
-  expect(COMPAT.qwen.verified).toEqual(["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5"]);
-  expect(COMPAT.qwen.receipt).toBe("docs/verification/2026-11-03-qwen-0265-acp.md");
+  expect(COMPAT.qwen.verified).toEqual(["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8"]);
+  expect(COMPAT.qwen.receipt).toBe("docs/verification/2026-11-06-qwen-0268-acp.md");
   for (const version of ["0.26.4", "0.26.5"]) expect(assessVersion("qwen", version, []), version).toEqual({ ok: true, state: "verified", version });
   for (const near of ["0.26.6", "0.26.5-rc.1", "qwen 0.26.5"]) expect(assessVersion("qwen", near, []).ok, near).toBe(false);
   const acp = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-03-qwen-0265-acp.md"), "utf8");
@@ -401,6 +401,18 @@ test("the Pi 1.5.0 receipt names the exact package, isolation and every repeated
   const receipt = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-03-pi-150-compat.md"), "utf8");
   expect(receipt).toMatch(/[0-9a-f]{64}/);
   for (const leg of ["sha512-", "Native identity", "Real CLI extension load", "Installed SDK extension registration", "Managed tool callback", "Failed tool result", "Host permission modes", "Provider requests", "PASS", "Not verified"]) expect(receipt, leg).toContain(leg);
+});
+
+
+test("Qwen ACP 0.26.8 is exact-receipt verified while the Q2-unqualified dual entry stays refused (#888)", () => {
+  expect(assessVersion("qwen", "0.26.8", [])).toEqual({ ok: true, state: "verified", version: "0.26.8" });
+  for (const near of ["0.26.6", "0.26.7", "0.26.9", "0.26.8-rc.1", "qwen 0.26.8"]) expect(assessVersion("qwen", near, []).ok, near).toBe(false);
+  expect(assessVersion("qwen-dual", "0.26.8", [])).toMatchObject({ ok: false, state: "refused", version: "0.26.8" });
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
+  const acp = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-06-qwen-0268-acp.md"), "utf8");
+  const dual = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-06-qwen-0268-dual-output.md"), "utf8");
+  for (const leg of ["sha512-", "macOS arm64", "Linux x86_64", "Native ACP, no prompts", "Actual published permission handler", "Actual macOS arm64 repetition", "proceed_once", "Not verified"]) expect(acp, leg).toContain(leg);
+  for (const outcome of ["Q2 fewer than two user events", "Matched 0.26.1 control", "do not add 0.26.8"]) expect(dual, outcome).toContain(outcome);
 });
 
 

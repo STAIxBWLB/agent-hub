@@ -119,7 +119,7 @@ persistence, which belong to T2. Existing layer caps remain authoritative.
 
 ### Room wire compatibility (#1204 T1)
 
-The link requests only the ephemeral feature with the WebSocket upgrade header
+Version 1 requests only the ephemeral feature with the WebSocket upgrade header
 `x-agent-hub-ephemeral: 1`. A supporting broker includes `ephemeral: true` in its
 ready response only to an opted-in client, preserving the exact legacy ready
 shape for older hubs. Each new connection starts with the feature disabled.
@@ -130,7 +130,7 @@ members under its old queue rules. Upgrade the broker for ephemeral retention.
 A supporting broker forwards ephemeral presence only to ready members that
 opted in. Older members do not see upgraded members' presence until they upgrade. Application
 chat frames keep the legacy shape. This is the one-bit compatibility bridge;
-full codec feature advertisement belongs to #1204 T4.
+current links keep this header unchanged and add the codec opt-in described below.
 
 Ephemeral replacement preserves a recipient's outstanding one-packet transport
 slot until its matching ACK or the original TTL/grace bound expires. Only the
@@ -231,3 +231,69 @@ ACK after durable local commit of either the receipt or the inbox entry.
 Deferred application admission may ACK its durable crypto inbox entry so it does
 not pin broker capacity; later admission commits and replays the same durable
 receipt path before retiring its local work.
+
+## Room codec visibility and sequence diagnostics (#1204 T4)
+
+The room-wide signed sequence counter and durable replay floors stay unchanged.
+A chat addresses one recipient, so another member can legitimately observe a
+numeric gap. The host no longer turns that number into an operator loss notice;
+three-member selective traffic therefore produces no false sequence-gap alarm.
+The low-level replay result remains available to transport tests and does not
+relax authentication, permanent sequence floors or exactly-once application admission.
+
+Codec support is compatibility evidence from fresh authenticated presence, never
+a permission or privacy grant. Every link retains the released
+`x-agent-hub-ephemeral: 1` upgrade header byte for byte and adds
+`x-agent-hub-codecs: 1` in the same WebSocket upgrade. Released brokers ignore
+the codec header and retain ephemeral presence and liveness. A supporting
+broker adds `codecFeatures: true` and the connection's `codecSession` token
+only to an opted-in client's ready response. Legacy ready and presence shapes
+remain unchanged.
+
+Upgraded links keep the existing signed presence payload byte shape and send a
+separate presence snapshot carrying a bounded, sorted `features` list. That
+snapshot has signed `ephemeral: true` and `codecFeatures: true` headers. The
+broker routes it only to clients that opted into codec support; legacy clients
+receive only their original presence grammar. Legacy and codec snapshots have
+separate coalescing groups so neither can replace the other's pending state.
+The signed feature snapshot echoes its connection's `codecSession`; it does not
+request a reply or renew peer-state observations. Ordinary presence does not
+revoke support for that same connection.
+
+Before ciphertext delivery, the broker gives codec-aware recipients a bounded
+`codec_peers` inventory scoped to the current roster digest. A row names an
+authenticated member's current connection token and whether it opted into codec
+advertisements; a null token means the observation is pending or disconnected.
+Replacement, disconnect and roster change invalidate prior connection evidence.
+Only a fresh signed advertisement echoing the current token establishes support;
+a delayed advertisement from another session cannot establish it. New current
+peer-session evidence also triggers a coalesced feature-only advertisement from
+this hub, independently of legacy replies and snapshot dedupe; missed bootstrap
+advertisements therefore do not require unrelated application traffic to recover.
+
+An early ordinary live-state observation from a codec-capable session waits as
+bounded metadata until that session supplies signed codec evidence. Releasing
+it preserves its original local receive time; the signed advertisement does not
+renew liveness. Empty or offline snapshots and known legacy sessions remain
+immediate. The receive-time annotation is host-only and is never accepted from
+the room wire.
+
+The advertised codecs are `chat_v1`, `person_inbox_v1` and `read_invocation_v1`.
+Plain chat and status retain their legacy shape. Person-inbox sends require
+`person_inbox_v1`; invocation kinds require `read_invocation_v1`. Compatibility
+has three states: pending, supported and unsupported. Pending observations defer
+the original Bus queue entry without application, sequence or socket effects;
+the original queue lifetime still bounds this wait. A signed advertisement wakes
+that member's queued feature-required sends as well as retained durable intents.
+The pending path rechecks observations after requeue so an advertisement arriving
+during asynchronous refusal cannot be lost. No timer or grace period grants support.
+The private low-level link API has no Bus queue: it returns a typed not-sent
+pending outcome and the caller retries after signed evidence; it never waits
+inside the serialized receive lane. Codec-aware publication puts signed codec
+evidence before its ordinary peer-state observation on the outbound FIFO.
+Only a known legacy transport, an authenticated legacy member, or a signed
+advertisement missing the required feature refuses with the upgrade-and-reconnect
+step. Support is rechecked across awaited admission and at actual publication.
+Live signed observations are scoped to the current connection and roster; saved,
+stale or replayed presence never grants codec support. Existing native, exposure,
+privacy and invocation authorization checks still decide whether a send is allowed.

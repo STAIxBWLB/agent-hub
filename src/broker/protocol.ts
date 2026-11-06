@@ -8,6 +8,8 @@ import {
   type OwnerPin, type VerifiedPublicRoster,
 } from "../rooms/wire.ts";
 
+/** Optional codec header token; the existing ephemeral opt-in remains byte-for-byte unchanged. */
+export const BROKER_CODEC_FEATURES_OPT_IN = "1";
 export const BROKER_CONTROL_LIMITS = Object.freeze({ control: 1_048_576, challenge: 8192, nonceBytes: 32 });
 export type BrokerProtocolCode = "invalid_wire" | "limit" | "untrusted" | "expired" | "authentication_failed";
 export class BrokerProtocolError extends Error {
@@ -35,6 +37,9 @@ export interface BrokerAuth {
   roster: string | null;
   signature: string;
 }
+/** Broker-to-client transport evidence; never accepted as client control or authority. */
+export interface BrokerCodecPeer { member: string; session: string | null; supported: boolean }
+export interface BrokerCodecPeers { v: 1; type: "codec_peers"; digest: string; peers: BrokerCodecPeer[] }
 export interface BrokerRosterReady { v: 1; type: "roster_ready"; digest: string }
 export interface BrokerReceived { v: 1; type: "received"; digest: string }
 export type BrokerControl = BrokerAuth | BrokerRosterReady | BrokerReceived;

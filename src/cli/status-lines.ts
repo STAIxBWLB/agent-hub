@@ -1,3 +1,4 @@
+import { projectRoomUnavailable } from "../rooms/status.ts";
 import type { ContextView } from "../hub/context-window.ts";
 import { memorySyncNextStep, type MemorySyncCause } from "../hub/memory-sync-state.ts";
 // What `ahub status` prints for a peer and for a model backend, kept pure so it can be checked.
@@ -54,4 +55,10 @@ export function reviewInputHealthLine(health: ReviewInputHealthRow): string | un
     : "keep affected work held; inspect or repair only review-input provenance, preserving delivery and task state";
   const state = health.state === "incomplete" || health.state === "corrupt" ? health.state : "unknown";
   return `${state} (${cause}); next: ${next}`;
+}
+
+/** Room failures carry a closed cause and locally generated next step only. */
+export function roomsUnavailableLine(value: unknown): string {
+  const unavailable = projectRoomUnavailable(value);
+  return `rooms: unavailable (${unavailable?.code ?? "unknown"}); next: ${unavailable?.nextStep ?? "Run ahub room status to inspect room storage and broker availability."}`;
 }

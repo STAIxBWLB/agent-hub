@@ -707,3 +707,16 @@ test("ordinary inbox capacity is a read-only metadata hint and becomes available
   f.owner.leave("work"); expect(() => f.owner.ordinaryInboxAvailable("work", 1)).toThrow("untrusted");
   f.owner.close(); expect(() => f.owner.ordinaryInboxAvailable("work", 1)).toThrow("closed");
 });
+
+test("room health ages durable chat and signed receipts but preserves unknown generic-frame age", async () => {
+  const f = await pair(), q = await queued(f);
+  f.advance(75);
+  expect(f.owner.health("work")).toMatchObject({ outboxDepth: 1, oldestOutboxAgeMs: 75, lastReceiptAgeMs: null });
+  const signed = await receipt(f.guest, f.owner, { v: 1, type: "receipt", frame: q.outgoing.digest, application: q.envelope.id, peer: "claude", outcome: "completed", reason: "admitted" });
+  expect(f.owner.applyApplicationReceipt("work", signed)?.state).toBe("completed");
+  f.advance(25);
+  expect(f.owner.health("work")).toMatchObject({ outboxDepth: 0, oldestOutboxAgeMs: null, lastReceiptAgeMs: 25 });
+  const generic = await sealed(f.owner, f.guest, { v: 1, type: "chat", envelope: chat() });
+  await f.owner.enqueue("work", generic);
+  expect(f.owner.health("work")).toMatchObject({ outboxDepth: 1, oldestOutboxAgeMs: null, lastReceiptAgeMs: 25 });
+});

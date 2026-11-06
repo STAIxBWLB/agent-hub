@@ -2,6 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import * as roomCrypto from "../src/rooms/crypto.ts";
 import { generateHubIdentity, encodeBase64url, RoomCryptoError, type HubIdentity } from "../src/rooms/crypto.ts";
 import { canonicalBytes, createRoomEpoch, decodeFrame, roomMembers, sealFrame, verifyPublicFrame, type VerifiedEpoch, type SequencePort } from "../src/rooms/wire.ts";
@@ -9,6 +10,9 @@ import { createBrokerAuth, decodeBrokerChallenge } from "../src/broker/protocol.
 import { BrokerStore } from "../src/broker/store.ts";
 import { startBroker, type BrokerPorts, type BrokerRuntime } from "../src/broker/server.ts";
 import { FakeBrokerClient, packetObject } from "./fakes/broker-client.ts";
+import { RoomLink, type RoomLinkOptions } from "../src/rooms/link.ts";
+import { RoomStore } from "../src/rooms/store.ts";
+import type { RoomMessage } from "../src/rooms/application.ts";
 
 const text = new TextEncoder(), decode = new TextDecoder();
 const roots: string[] = [], servers: BrokerRuntime[] = [], clients: FakeBrokerClient[] = [];
@@ -365,4 +369,175 @@ test("ephemeral presence is withheld from legacy members while their chat remain
   await legacy.ack(String(stored.digest));
   expect(legacy.ws.readyState).toBe(WebSocket.OPEN);
   expect(f.server.stats().queuedFrames).toBe(0);
+});
+
+
+test("codec presence adds an ignored codec header without changing the legacy ephemeral opt-in", async () => {
+  const owner = await generateHubIdentity(), legacy = await generateHubIdentity(), upgraded = await generateHubIdentity();
+  const created = await createRoomEpoch({ owner, members: [member(owner, "owner"), member(legacy, "legacy"), member(upgraded, "upgraded")] });
+  const runtime = await setup();
+  const ready = async (identity: HubIdentity, codecOptIn: boolean, initial?: Uint8Array) => {
+    const client = await FakeBrokerClient.connect(runtime.url, created.epoch.room, { "x-agent-hub-ephemeral": "1", ...(codecOptIn ? { "x-agent-hub-codecs": "1" } : {}) }); clients.push(client);
+    const challenge = decodeBrokerChallenge(await client.take("challenge"));
+    client.send(await createBrokerAuth({ challenge, identity, broker: runtime.url, room: created.epoch.room, ...(initial ? { initialRoster: initial } : {}) }));
+    await client.take("roster");
+    const response = packetObject(await client.take("ready"));
+    client.control({ v: 1, type: "roster_ready", digest: response.digest });
+    return { client, response };
+  };
+  const sender = await ready(owner, true, created.wire), old = await ready(legacy, false), current = await ready(upgraded, true);
+  const base = { v: 1, type: "ready", room: created.epoch.room, epoch: created.epoch.epoch, digest: created.epoch.digest };
+  expect(old.response).toEqual({ ...base, member: legacy.public.fingerprint, ephemeral: true });
+  expect(typeof current.response.codecSession).toBe("string");
+  expect(String(current.response.codecSession)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(current.response).toEqual({ ...base, member: upgraded.public.fingerprint, ephemeral: true, codecFeatures: true, codecSession: current.response.codecSession });
+  const seq = sequence(), recipients = [legacy.public.fingerprint, upgraded.public.fingerprint].sort();
+  const legacyPresence = await sealFrame({ epoch: created.epoch, identity: owner, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }] }), sequence: seq, ephemeral: true });
+  sender.client.send(legacyPresence); const first = packetObject(await sender.client.take("stored"));
+  expect(await old.client.take("frame")).toEqual(legacyPresence);
+  expect(await current.client.take("frame")).toEqual(legacyPresence);
+  await old.client.ack(String(first.digest)); await current.client.ack(String(first.digest));
+  const codecPresence = await sealFrame({ epoch: created.epoch, identity: owner, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ["chat_v1", "person_inbox_v1", "read_invocation_v1"], codecSession: sender.response.codecSession }), sequence: seq, ephemeral: true, codecFeatures: true });
+  sender.client.send(codecPresence); const advertised = packetObject(await sender.client.take("stored"));
+  expect(await current.client.take("frame")).toEqual(codecPresence); await current.client.ack(String(advertised.digest));
+  // A durable FIFO barrier proves the legacy recipient had no feature frame
+  // waiting ahead of ordinary v1 chat, without a timing-based absence check.
+  const chat = await sealFrame({ epoch: created.epoch, identity: owner, recipients, plaintext: text.encode("legacy chat barrier"), sequence: seq });
+  sender.client.send(chat); const stored = packetObject(await sender.client.take("stored"));
+  expect(await old.client.take("frame")).toEqual(chat);
+  expect(await current.client.take("frame")).toEqual(chat);
+  await old.client.ack(String(stored.digest)); await current.client.ack(String(stored.digest));
+  expect(old.client.packets.some(wire => packetObject(wire).codecFeatures === true)).toBe(false);
+});
+
+test("unknown HTTP transport opt-in values retain the exact legacy broker ready shape", async () => {
+  const f = await fixture(), client = await FakeBrokerClient.connect(f.url, f.epoch.room, { "x-agent-hub-ephemeral": "future-unknown" }); clients.push(client);
+  const challenge = decodeBrokerChallenge(await client.take("challenge"));
+  client.send(await createBrokerAuth({ challenge, identity: f.guest, broker: f.url, room: f.epoch.room }));
+  await client.take("roster");
+  expect(packetObject(await client.take("ready"))).toEqual({ v: 1, type: "ready", room: f.epoch.room, member: f.guest.public.fingerprint, epoch: f.epoch.epoch, digest: f.epoch.digest });
+});
+
+
+test("published N-1 member keeps its strict presence parser and receives ordinary chat from an upgraded hub", async () => {
+  const publishedRoot = join(import.meta.dir, "fixtures/release-n-1/node_modules/@staix/agent-hub");
+  expect(JSON.parse(readFileSync(join(publishedRoot, "package.json"), "utf8")).version)
+    .toBe(JSON.parse(readFileSync(join(import.meta.dir, "fixtures/release-n-1/package.json"), "utf8")).dependencies["@staix/agent-hub"]);
+  // Computed file URLs load the installed, unchanged N-1 implementation without
+  // joining its sources to this version's TypeScript compilation graph.
+  const oldStoreModule = await import(pathToFileURL(join(publishedRoot, "src/rooms/store.ts")).href) as { RoomStore: typeof RoomStore };
+  const oldWire = await import(pathToFileURL(join(publishedRoot, "src/rooms/wire.ts")).href) as { createJoin: typeof import("../src/rooms/wire.ts").createJoin };
+  const oldLinkModule = await import(pathToFileURL(join(publishedRoot, "src/rooms/link.ts")).href) as { RoomLink: new (options: RoomLinkOptions) => RoomLink };
+  const runtime = await setup(), ownerStore = await RoomStore.open({ stateDir: join(runtime.stateDir, "owner") });
+  const legacyStore = await oldStoreModule.RoomStore.open({ stateDir: join(runtime.stateDir, "legacy") });
+  let current: RoomLink | undefined, legacy: RoomLink | undefined;
+  try {
+    const created = await createRoomEpoch({ owner: ownerStore.identity, members: [member(ownerStore.identity, "owner")] });
+    await ownerStore.install({ name: "work", broker: runtime.url, wire: created.wire, expectedDigest: null });
+    const invite = await import("../src/rooms/wire.ts").then(wire => wire.createInvite({ epoch: created.epoch, owner: ownerStore.identity, broker: runtime.url, expiresAt: Date.now() + 60000 }));
+    await ownerStore.saveInvite("work", invite);
+    const request = await oldWire.createJoin({ invite, identity: legacyStore.identity, label: "legacy", exposedPeers: ["codex"] });
+    legacyStore.savePendingJoin("work", { invite, request });
+    const joined = await ownerStore.enroll("work", request);
+    await legacyStore.install({ name: "work", broker: runtime.url, wire: joined.wire, expectedDigest: null });
+    const barrier = <T>() => {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>(done => { resolve = done; });
+      return { resolve, promise };
+    };
+    const ownerSeen = barrier<void>(), legacySeen = barrier<void>(), received = barrier<RoomMessage>();
+    const bounded = async <T>(pending: Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { return await Promise.race([pending, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("published N-1 room barrier timed out")), 5000); })]); }
+      finally { if (timer) clearTimeout(timer); }
+    };
+    current = new RoomLink({ store: ownerStore, name: "work", presence: () => [{ id: "codex", state: "idle" }], onPresence: value => { if (value.member === legacyStore.identity.public.fingerprint && value.peers.some(peer => peer.id === "codex")) legacySeen.resolve(); } });
+    legacy = new oldLinkModule.RoomLink({ store: legacyStore, name: "work", presence: () => [{ id: "codex", state: "idle" }],
+      onPresence: value => { if (value.member === ownerStore.identity.public.fingerprint && value.peers.some(peer => peer.id === "codex")) ownerSeen.resolve(); },
+      application: { members: () => {}, online: async () => {}, stored: () => {}, receive: async (_context, input) => { if (input.message?.type === "chat") received.resolve(input.message); } } });
+    await current.start(); await legacy.start();
+    await bounded(Promise.all([ownerSeen.promise, legacySeen.promise]));
+    const message: RoomMessage = { v: 1, type: "chat", envelope: { id: crypto.randomUUID(), trace: crypto.randomUUID(), hop: 0, from: "codex", to: "codex", kind: "chat", priority: "status", body: "ordinary mixed-version chat", ts: Date.now() } };
+    await current.publishApplication(message, legacyStore.identity.public.fingerprint);
+    expect(await bounded(received.promise)).toEqual(message);
+    expect(legacyStore.refused("work").some(row => row.reason === "invalid_presence" || row.reason === "invalid_frame")).toBe(false);
+  } finally { await Promise.all([current?.stop(), legacy?.stop()]); legacyStore.close(); ownerStore.close(); }
+}, 20000);
+
+
+test("an upgraded link keeps ephemeral liveness on the actual published N-1 broker", async () => {
+  const publishedRoot = join(import.meta.dir, "fixtures/release-n-1/node_modules/@staix/agent-hub");
+  expect(JSON.parse(readFileSync(join(publishedRoot, "package.json"), "utf8")).version)
+    .toBe(JSON.parse(readFileSync(join(import.meta.dir, "fixtures/release-n-1/package.json"), "utf8")).dependencies["@staix/agent-hub"]);
+  const oldBroker = await import(pathToFileURL(join(publishedRoot, "src/broker/server.ts")).href) as { startBroker: typeof startBroker };
+  const oldWire = await import(pathToFileURL(join(publishedRoot, "src/rooms/wire.ts")).href) as { verifyPublicFrame: typeof verifyPublicFrame };
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-old-broker-codec-")); roots.push(stateDir);
+  let ephemeralFrames = 0;
+  const broker = await oldBroker.startBroker({ stateDir: join(stateDir, "broker"), port: 0 }, { verifyFrame: async input => {
+    const proof = await oldWire.verifyPublicFrame(input); if (proof.ephemeral) ephemeralFrames++; return proof;
+  } }); servers.push(broker);
+  const ownerStore = await RoomStore.open({ stateDir: join(stateDir, "owner") }), guestStore = await RoomStore.open({ stateDir: join(stateDir, "guest") });
+  let owner: RoomLink | undefined, guest: RoomLink | undefined;
+  try {
+    const created = await createRoomEpoch({ owner: ownerStore.identity, members: [member(ownerStore.identity, "owner")] });
+    await ownerStore.install({ name: "work", broker: broker.publicUrl, wire: created.wire, expectedDigest: null });
+    const wire = await import("../src/rooms/wire.ts"), invite = await wire.createInvite({ epoch: created.epoch, owner: ownerStore.identity, broker: broker.publicUrl, expiresAt: Date.now() + 60000 });
+    await ownerStore.saveInvite("work", invite);
+    const request = await wire.createJoin({ invite, identity: guestStore.identity, label: "guest", exposedPeers: ["codex"] });
+    guestStore.savePendingJoin("work", { invite, request });
+    const joined = await ownerStore.enroll("work", request);
+    await guestStore.install({ name: "work", broker: broker.publicUrl, wire: joined.wire, expectedDigest: null });
+    let observeOwner!: () => void, observeGuest!: () => void;
+    const ownerSeen = new Promise<void>(resolve => { observeOwner = resolve; }), guestSeen = new Promise<void>(resolve => { observeGuest = resolve; });
+    owner = new RoomLink({ store: ownerStore, name: "work", presence: () => [{ id: "codex", state: "idle" }], onPresence: value => { if (value.member === guestStore.identity.public.fingerprint) observeGuest(); } });
+    guest = new RoomLink({ store: guestStore, name: "work", presence: () => [{ id: "codex", state: "idle" }], onPresence: value => { if (value.member === ownerStore.identity.public.fingerprint) observeOwner(); } });
+    await owner.start(); await guest.start();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([Promise.all([ownerSeen, guestSeen]), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("published N-1 broker presence barrier timed out")), 5000); })]); }
+    finally { if (timer) clearTimeout(timer); }
+    expect(owner.livenessTracked).toBe(true); expect(guest.livenessTracked).toBe(true);
+    expect(ephemeralFrames).toBeGreaterThan(0);
+    expect(owner.codecSupported(guestStore.identity.public.fingerprint, "read_invocation_v1")).toBe(false);
+    expect(ownerStore.refused("work")).toHaveLength(0); expect(guestStore.refused("work")).toHaveLength(0);
+  } finally { await Promise.all([owner?.stop(), guest?.stop()]); ownerStore.close(); guestStore.close(); }
+}, 20000);
+
+
+test("codec session inventory precedes queued frames and replacement invalidates only the owned connection", async () => {
+  const f = await fixture();
+  const ready = async (identity: HubIdentity, codecs: boolean) => {
+    const client = await FakeBrokerClient.connect(f.url, f.epoch.room, { "x-agent-hub-ephemeral": "1", ...(codecs ? { "x-agent-hub-codecs": "1" } : {}) }); clients.push(client);
+    const challenge = decodeBrokerChallenge(await client.take("challenge"));
+    client.send(await createBrokerAuth({ challenge, identity, broker: f.url, room: f.epoch.room }));
+    await client.take("roster"); const response = packetObject(await client.take("ready"));
+    const order: string[] = [];
+    client.ws.addEventListener("message", event => { order.push(String(packetObject(new Uint8Array(event.data as ArrayBuffer)).type)); });
+    client.control({ v: 1, type: "roster_ready", digest: response.digest });
+    return { client, response, order };
+  };
+  const owner = await ready(f.owner, true), codec = async () => packetObject(await owner.client.take("codec_peers"));
+  const absent = { member: f.guest.public.fingerprint, session: null, supported: false };
+  expect(await codec()).toEqual({ v: 1, type: "codec_peers", digest: f.epoch.digest, peers: [absent] });
+  const legacy = await ready(f.guest, false);
+  expect(await codec()).toEqual({ v: 1, type: "codec_peers", digest: f.epoch.digest, peers: [absent] });
+  const legacyReady = await codec(), legacyPeer = (legacyReady.peers as Record<string, unknown>[])[0]!;
+  expect(legacyPeer.member).toBe(f.guest.public.fingerprint); expect(legacyPeer.supported).toBe(false);
+  expect(String(legacyPeer.session)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  const chat = await seal(f.epoch, f.owner, f.guest.public.fingerprint, "inventory must precede queued frame", f.seq);
+  owner.client.send(chat); await owner.client.take("stored"); await legacy.client.take("frame"); // Keep its durable ACK pending across replacement.
+  const replacement = await ready(f.guest, true);
+  expect(await codec()).toEqual({ v: 1, type: "codec_peers", digest: f.epoch.digest, peers: [absent] }); // Old close and replacement pending coalesce into one invalidation.
+  expect(await codec()).toEqual({ v: 1, type: "codec_peers", digest: f.epoch.digest, peers: [{ member: f.guest.public.fingerprint, session: replacement.response.codecSession, supported: true }] });
+  expect(replacement.response.codecSession).not.toBe(legacyPeer.session);
+  const inventory = await replacement.client.take("codec_peers");
+  expect(packetObject(inventory)).toEqual({ v: 1, type: "codec_peers", digest: f.epoch.digest, peers: [{ member: f.owner.public.fingerprint, session: owner.response.codecSession, supported: true }] });
+  expect(await replacement.client.take("frame")).toEqual(chat);
+  expect(replacement.order.indexOf("codec_peers")).toBeLessThan(replacement.order.indexOf("frame"));
+  expect((await legacy.client.closed).code).toBe(4403);
+  // The old socket's later close callback cannot remove or invalidate its replacement.
+  await replacement.client.ack(encodeBase64url(await roomCrypto.sha256(chat)));
+  expect(f.server.stats().authenticated).toBe(2);
+  expect(owner.client.packets.filter(wire => packetObject(wire).type === "codec_peers")).toHaveLength(0); // No duplicate close/pending controls remain.
+  replacement.client.close();
+  expect(await codec()).toEqual({ v: 1, type: "codec_peers", digest: f.epoch.digest, peers: [absent] });
 });

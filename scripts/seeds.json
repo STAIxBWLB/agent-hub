@@ -4084,7 +4084,7 @@
     {
       "id": "room-x5-live-projection",
       "file": "src/hub/daemon.ts",
-      "search": "    rooms: roomCommands.statusView(),",
+      "search": "    ...roomCommands.statusSnapshot(),",
       "replacement": "    rooms: [],",
       "testFile": "test/rooms-daemon.test.ts",
       "testName": "X5 live status and dashboard publish only loaded room metadata without body title or detail reads"
