@@ -92,12 +92,12 @@ function createHubMemorySyncPolicy(cwd: string, home: string, boundProject: stri
 }
 
 /** Preserve any trusted caller's stricter sync screen and bind its epoch into the host policy stamp. */
-export function composeMemorySyncOptions(host: Pick<SyncOptions, "screen" | "policyVersion">, caller?: Omit<SyncOptions, "remote">): Omit<SyncOptions, "remote"> {
+export function composeMemorySyncOptions(host: Pick<SyncOptions, "screen" | "policyVersion">, caller?: Omit<SyncOptions, "remote">, canonical = false): Omit<SyncOptions, "remote"> {
   return {
     ...caller,
     screen: row => {
       try {
-        const content = projectMemorySyncText(row);
+        const content = projectMemorySyncText(row, canonical);
         return host.screen?.(content) === true && (caller?.screen ? caller.screen(content) === true : true);
       }
       catch { return false; }
@@ -163,16 +163,18 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
     const context = commandStores(opts.store, { project, deferPromotions: true, now: opts.now }, cwd);
     try {
       context.binding.assertCurrent();
-      const policy = createHubMemorySyncPolicy(cwd, context.binding.home, project, context.binding.status(context.store)).policy;
-      const result = inspectDeclinedMemoryRows(context.store, { screen: row => {
-        const content = projectMemorySyncText(row);
-        const host = policy.screen(content);
+      const boundPolicy = createHubMemorySyncPolicy(cwd, context.binding.home, project, context.binding.status(context.store));
+      const result = inspectDeclinedMemoryRows(context.store, { screen: (row, canonical) => {
+        const content = projectMemorySyncText(row, canonical);
+        const host = boundPolicy.policy.screen(content, true);
         if (!host.ok) return host;
         try { return opts.sync?.screen ? (opts.sync.screen(content) === true ? { ok: true } : { ok: false, rule: "caller sync policy" }) : { ok: true }; }
         catch { return { ok: false, rule: "caller sync policy" }; }
-      } });
+      } }, () => JSON.stringify([boundPolicy.version, opts.sync?.policyVersion?.() ?? null]));
       context.binding.assertCurrent();
       const profile = context.binding.status(context.store);
+      if (hostSyncPolicyInputs(cwd, context.binding.home, project, profile).version !== boundPolicy.version)
+        fail("memory declined policy changed during inspection; retry with stable privacy policy");
       if (args.includes("--json")) return JSON.stringify({ rows: result.rows, complete: result.complete, ...(result.reason ? { reason: result.reason } : {}), memoryProfile: profile });
       const text = result.complete
         ? result.rows.length
@@ -193,8 +195,8 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
     let boundSyncPolicy: ReturnType<typeof createHubMemorySyncPolicy> | undefined;
     const syncPolicy = () => boundSyncPolicy ??= createHubMemorySyncPolicy(cwd, context.binding.home, project, context.binding.status(context.store));
     const text = await rawMemoryCommand(args, cwd, { ...opts, names: AHUB_NAMES, project, store: context.store, open: () => context.store,
-      sync: composeMemorySyncOptions({ screen: row => syncPolicy().policy.screen(row).ok,
-        policyVersion: () => { context.binding.assertCurrent(); return hostSyncPolicyInputs(cwd, context.binding.home, project, context.binding.status(context.store)).version; } }, opts.sync),
+      sync: composeMemorySyncOptions({ screen: row => syncPolicy().policy.screen(row, true).ok,
+        policyVersion: () => { context.binding.assertCurrent(); return hostSyncPolicyInputs(cwd, context.binding.home, project, context.binding.status(context.store)).version; } }, opts.sync, true),
       readable: notes => {
       const paths = privatePaths(), visible = withoutPii(notes, currentRouting(cwd), cwd, paths);
       if (args[0] !== "show" || args.includes("--json")) return visible;

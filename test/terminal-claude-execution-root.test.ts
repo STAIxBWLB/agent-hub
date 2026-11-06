@@ -26,7 +26,7 @@ async function fixture(role: "implementer" | "verifier" = "implementer") {
   const workspaceGitCalls: string[][] = [];
   const instanceExecutionGit = ((args: string[], options: Parameters<typeof hubGitSync>[1]) => {
     workspaceGitCalls.push([...args]); return hubGitSync(args, options as never);
-  }) as typeof hubGitSync;
+  }) as unknown as typeof hubGitSync;
   const daemon = await startDaemon({ cwd: root, stateDir, config: loadConfig(root), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     configWatch: false, agentDrift: false, snapshotClock: () => 0, checkoutBranch: () => ({ branch: "fixture", defaultBranch: "main" }), instanceExecutionGit });
   const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });

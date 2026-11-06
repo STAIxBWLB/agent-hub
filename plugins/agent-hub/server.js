@@ -75,6 +75,12 @@ function isDenied(path, extra = []) {
 }
 function memoryGitEnv(env = process.env, options = {}) {
   const result = { ...env, GIT_TERMINAL_PROMPT: "0" };
+  if (options.readOnlyDiagnostic) {
+    for (const key of Object.keys(result))
+      if (key.startsWith("GIT_"))
+        delete result[key];
+    Object.assign(result, { GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" });
+  }
   if (options.repositoryIsolation) {
     for (const key of Object.keys(result))
       if (["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"].includes(key) || /^GIT_CONFIG_(KEY|VALUE)_/.test(key))
@@ -10259,7 +10265,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.20.1"
+      "@staix/agent-mem": "0.21.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -10432,27 +10438,10 @@ var init_review_comments = __esm(() => {
   init_review_anchor();
 });
 
-// node_modules/@staix/agent-mem/src/memory/formats.ts
-import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, openSync as openSync7, readFileSync as readFileSync8, readSync as readSync5 } from "fs";
-var MAX_BYTES3, SEMVER, READER_VERSION;
-var init_formats = __esm(() => {
-  MAX_BYTES3 = 64 * 1024;
-  SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
-  READER_VERSION = (() => {
-    try {
-      const { version } = JSON.parse(readFileSync8(new URL("../../package.json", import.meta.url), "utf8"));
-      return typeof version === "string" && SEMVER.test(version) ? version : undefined;
-    } catch {
-      return;
-    }
-  })();
-});
-
-// node_modules/@staix/agent-mem/src/memory/mutation.ts
-var mutations;
-var init_mutation = __esm(() => {
+// node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
+var init_public_prune_view = __esm(() => {
+  init_generation();
   init_platform();
-  mutations = new WeakMap;
 });
 // node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
 var MAX_LOG_BYTES;
@@ -10467,10 +10456,29 @@ var init_aliases = __esm(() => {
 
 // node_modules/@staix/agent-mem/src/memory/shard.ts
 var init_shard = __esm(() => {
+  init_sync_placement_active();
+  init_sync_placement_format();
+  init_sync_placement_guard();
   init_public_prune_view();
   init_generation();
   init_aliases();
   init_aliases();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-format.ts
+var METADATA_MAX, WIRE_MAX;
+var init_sync_placement_format = __esm(() => {
+  init_generation();
+  init_shard();
+  METADATA_MAX = 256 * 1024;
+  WIRE_MAX = 64 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/mutation.ts
+var mutations;
+var init_mutation = __esm(() => {
+  init_platform();
+  mutations = new WeakMap;
 });
 
 // node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
@@ -10483,6 +10491,8 @@ var init_public_prune_input_chain = __esm(() => {
 
 // node_modules/@staix/agent-mem/src/memory/generation.ts
 var init_generation = __esm(() => {
+  init_sync_placement_format();
+  init_sync_placement_guard();
   init_public_prune_view();
   init_mutation();
   init_platform();
@@ -10490,10 +10500,75 @@ var init_generation = __esm(() => {
   init_public_prune_input_chain();
 });
 
-// node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
-var init_public_prune_view = __esm(() => {
+// node_modules/@staix/agent-mem/src/memory/sync-placement-plan.ts
+var init_sync_placement_plan = __esm(() => {
+  init_generation();
+  init_sync_placement_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/screen.ts
+var init_screen = () => {};
+
+// node_modules/@staix/agent-mem/src/memory/project.ts
+var init_project2 = __esm(() => {
+  init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/memory/policy.ts
+var MAX_BYTES3, MAX_STRING_BYTES, flags;
+var init_policy = __esm(() => {
+  init_screen();
+  init_platform();
+  init_project2();
+  MAX_BYTES3 = 256 * 1024;
+  MAX_STRING_BYTES = 16 * 1024;
+  flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-journal-format.ts
+var PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_ROOT_MAX_BYTES;
+var init_sync_placement_journal_format = __esm(() => {
+  init_generation();
+  init_policy();
+  init_sync_placement_format();
+  PLACEMENT_JOURNAL_CHUNK_MAX_BYTES = 64 * 1024;
+  PLACEMENT_JOURNAL_ROOT_MAX_BYTES = 256 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-active.ts
+var init_sync_placement_active = __esm(() => {
   init_generation();
   init_platform();
+  init_sync_placement_format();
+  init_sync_placement_plan();
+  init_sync_placement_journal_format();
+  init_public_prune_view();
+  init_public_prune_input_chain();
+  init_shard();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-guard.ts
+var init_sync_placement_guard = __esm(() => {
+  init_sync_placement_active();
+  init_generation();
+  init_shard();
+  init_sync_placement_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/formats.ts
+import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, openSync as openSync7, readFileSync as readFileSync8, readSync as readSync5 } from "fs";
+var MAX_BYTES4, SEMVER, READER_VERSION;
+var init_formats = __esm(() => {
+  MAX_BYTES4 = 64 * 1024;
+  SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
+  READER_VERSION = (() => {
+    try {
+      const { version } = JSON.parse(readFileSync8(new URL("../../package.json", import.meta.url), "utf8"));
+      return typeof version === "string" && SEMVER.test(version) ? version : undefined;
+    } catch {
+      return;
+    }
+  })();
 });
 
 // node_modules/@staix/agent-mem/src/memory/ops-contract.ts
@@ -10693,25 +10768,6 @@ var init_cli_attribution = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/private-spans.ts
 var init_private_spans = () => {};
 
-// node_modules/@staix/agent-mem/src/memory/screen.ts
-var init_screen = () => {};
-
-// node_modules/@staix/agent-mem/src/memory/project.ts
-var init_project2 = __esm(() => {
-  init_platform();
-});
-
-// node_modules/@staix/agent-mem/src/memory/policy.ts
-var MAX_BYTES4, MAX_STRING_BYTES, flags;
-var init_policy = __esm(() => {
-  init_screen();
-  init_platform();
-  init_project2();
-  MAX_BYTES4 = 256 * 1024;
-  MAX_STRING_BYTES = 16 * 1024;
-  flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
-});
-
 // node_modules/@staix/agent-mem/src/memory/config.ts
 var MAX_CONFIG_BYTES2;
 var init_config = __esm(() => {
@@ -10831,6 +10887,8 @@ var init_public_prune_witness = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/shard-sync-format.ts
 var SHARD_PACK_MAX_BYTES;
 var init_shard_sync_format = __esm(() => {
+  init_sync_placement_format();
+  init_sync_placement_guard();
   init_bridge();
   init_generation();
   init_prune();
@@ -10891,6 +10949,7 @@ var init_reader_lease = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/store.ts
 var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
 var init_store = __esm(() => {
+  init_sync_placement_guard();
   init_formats();
   init_public_prune_view();
   init_shard_bridge();
@@ -11065,6 +11124,7 @@ var init_cross_project = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/generation-sync.ts
 var zero;
 var init_generation_sync = __esm(() => {
+  init_sync_placement_guard();
   init_bridge();
   init_generation();
   init_mutation();
@@ -11075,23 +11135,225 @@ var init_generation_sync = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-screen.ts
-var MAX_BYTES5, GENERATED;
+var SYNC_SCREEN_MAX_BYTES, GENERATED;
 var init_sync_screen = __esm(() => {
+  init_ops_contract();
+  init_store();
+  init_bridge();
   init_config();
   init_policy();
-  MAX_BYTES5 = 8 * 1024 * 1024;
-  GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "target", "promotedFrom", "supersedes", "expires", "by", "tier", "scope", "kind", "source"]);
+  SYNC_SCREEN_MAX_BYTES = 8 * 1024 * 1024;
+  GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "promotedFrom", "supersedes", "expires", "tier", "scope", "kind", "source"]);
 });
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-capture.ts
+var init_sync_placement_capture = __esm(() => {
+  init_sync_placement_journal_format();
+  init_generation();
+  init_sync_placement_format();
+  init_sync_placement_plan();
+  init_public_prune_view();
+  init_platform();
+  init_config();
+  init_policy();
+  init_bridge();
+  init_shard_bridge();
+  init_generation_index();
+  init_prune();
+  init_shard();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-projection.ts
+var init_sync_placement_projection = __esm(() => {
+  init_generation();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-publication-plan.ts
+var init_sync_placement_publication_plan = __esm(() => {
+  init_generation();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-journal-storage.ts
+var inflight, publicationDurability;
+var init_sync_placement_journal_storage = __esm(() => {
+  init_generation();
+  init_platform();
+  init_mutation();
+  init_sync_placement_plan();
+  init_sync_placement_format();
+  init_sync_placement_journal_format();
+  init_sync_placement_publication_plan();
+  init_sync_placement_projection();
+  inflight = new WeakSet;
+  publicationDurability = new WeakMap;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-publication-storage.ts
+var init_sync_placement_publication_storage = __esm(() => {
+  init_generation();
+  init_sync_placement_journal_format();
+  init_sync_placement_journal_storage();
+  init_sync_placement_publication_plan();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-sync-graph.ts
+var init_shard_sync_graph = __esm(() => {
+  init_public_prune_inputs();
+  init_shard_sync_format();
+  init_public_prune_witness();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-sync-history.ts
+var init_shard_sync_history = __esm(() => {
+  init_generation();
+  init_prune();
+  init_public_prune_witness();
+  init_shard_sync_graph();
+  init_shard_sync_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/public-prune-advance.ts
+var MAX;
+var init_public_prune_advance = __esm(() => {
+  init_sync_placement_format();
+  init_generation();
+  init_shard();
+  init_mutation();
+  init_public_prune_inputs();
+  init_public_prune_view();
+  init_platform();
+  MAX = 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/prune-publisher-lineage.ts
+var init_prune_publisher_lineage = __esm(() => {
+  init_generation();
+  init_mutation();
+  init_platform();
+  init_prune();
+  init_shard();
+  init_sync_screen();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-sync.ts
+var zero2, HOLD_MAX_BYTES;
+var init_shard_sync = __esm(() => {
+  init_sync_placement_transport();
+  init_shard_sync_applications();
+  init_shard_sync_history();
+  init_sync_placement_format();
+  init_sync_placement_guard();
+  init_prune_publisher_lineage();
+  init_public_prune_witness();
+  init_public_prune_inputs();
+  init_generation();
+  init_generation_sync();
+  init_mutation();
+  init_prune();
+  init_shard();
+  init_shard_sync_format();
+  init_sync();
+  zero2 = "0".repeat(40);
+  HOLD_MAX_BYTES = 128 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard-sync-applications.ts
+var init_shard_sync_applications = __esm(() => {
+  init_generation();
+  init_public_prune_advance();
+  init_public_prune_view();
+  init_shard_sync_graph();
+  init_public_prune_inputs();
+  init_shard_sync_format();
+  init_shard_sync();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-dependencies.ts
+var init_sync_placement_dependencies = __esm(() => {
+  init_bridge();
+  init_generation();
+  init_ops_contract();
+  init_prune();
+  init_store();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-git.ts
+var typedArrayPrototype, getBuffer, getOffset, getLength, mapSize;
+var init_sync_placement_git = __esm(() => {
+  init_public_prune_input_chain();
+  init_shard_sync_format();
+  typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+  getBuffer = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer").get;
+  getOffset = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteOffset").get;
+  getLength = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteLength").get;
+  mapSize = Object.getOwnPropertyDescriptor(Map.prototype, "size").get;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-materialize.ts
+var init_sync_placement_materialize = __esm(() => {
+  init_generation();
+  init_sync_screen();
+  init_sync_placement_dependencies();
+  init_sync_placement_git();
+  init_sync_placement_format();
+  init_sync_placement_journal_format();
+  init_shard_sync_format();
+  init_public_prune_witness();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-cache.ts
+var init_sync_placement_cache = __esm(() => {
+  init_generation();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-transport.ts
+var init_sync_placement_transport = __esm(() => {
+  init_generation();
+  init_generation_sync();
+  init_sync();
+  init_mutation();
+  init_shard();
+  init_policy();
+  init_sync_screen();
+  init_sync_placement_active();
+  init_sync_placement_guard();
+  init_sync_placement_capture();
+  init_sync_placement_format();
+  init_sync_placement_journal_format();
+  init_sync_placement_projection();
+  init_sync_placement_journal_storage();
+  init_sync_placement_publication_storage();
+  init_sync_placement_publication_plan();
+  init_shard_sync_history();
+  init_shard_sync_applications();
+  init_shard_sync();
+  init_shard_sync_format();
+  init_prune_publisher_lineage();
+  init_sync_placement_materialize();
+  init_sync_placement_cache();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-binding.ts
+var init_sync_binding = () => {};
 
 // node_modules/@staix/agent-mem/src/memory/sync.ts
 var liveGroups;
 var init_sync = __esm(() => {
+  init_sync_placement_transport();
+  init_sync_placement_guard();
   init_formats();
   init_generation();
   init_platform();
   init_mutation();
   init_generation_sync();
   init_sync_screen();
+  init_sync_binding();
+  init_sync_binding();
   liveGroups = new Set;
 });
 
@@ -11285,7 +11547,7 @@ var init_hook_contract = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/hook-spool.ts
-var RECORD_BYTES, MAX_BYTES6, HOOK_REPLAY_MAX_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
+var RECORD_BYTES, MAX_BYTES5, HOOK_REPLAY_MAX_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
 var init_hook_spool = __esm(() => {
   init_formats();
   init_capture_input();
@@ -11299,7 +11561,7 @@ var init_hook_spool = __esm(() => {
   init_lifecycle();
   init_hook_contract();
   RECORD_BYTES = HOOK_INPUT_BYTES + 8192;
-  MAX_BYTES6 = 2 * 1024 * 1024;
+  MAX_BYTES5 = 2 * 1024 * 1024;
   HOOK_REPLAY_MAX_BYTES = 256 * 1024;
   CAPACITY_BYTES = 256 * 1024;
   RETIRE_AFTER_MS = 7 * 24 * 3600000;
@@ -11367,7 +11629,7 @@ var init_hooks = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/ingest.ts
-var MAX_BYTES7, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
+var MAX_BYTES6, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
 var init_ingest = __esm(() => {
   init_capture();
   init_home();
@@ -11376,7 +11638,7 @@ var init_ingest = __esm(() => {
   init_config();
   init_project2();
   init_shard();
-  MAX_BYTES7 = 16 * 1024 * 1024;
+  MAX_BYTES6 = 16 * 1024 * 1024;
   DEFAULT_BYTES = 4 * 1024 * 1024;
   MAX_CURSOR_BYTES = 128 * 1024;
   utf8 = new TextDecoder("utf-8", { fatal: true });
@@ -11430,10 +11692,89 @@ var init_consolidate = __esm(() => {
   init_consolidation_model();
 });
 
+// node_modules/@staix/agent-mem/src/memory/sync-policy-inspection.ts
+var init_sync_policy_inspection = __esm(() => {
+  init_bridge();
+  init_platform();
+  init_policy();
+  init_config();
+  init_generation();
+  init_formats();
+  init_sync_binding();
+  init_sync_screen();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-evidence.ts
+var init_sync_placement_inspection_evidence = __esm(() => {
+  init_sync_placement_journal_storage();
+  init_sync_placement_projection();
+  init_sync_placement_journal_format();
+  init_generation();
+  init_platform();
+  init_sync_placement_cache();
+  init_sync_screen();
+  init_public_prune_input_chain();
+  init_public_prune_inputs();
+  init_shard_sync_history();
+  init_shard_sync_format();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-pending.ts
+var init_sync_placement_inspection_pending = __esm(() => {
+  init_generation();
+  init_platform();
+  init_sync_screen();
+  init_sync_placement_journal_format();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-inspection.ts
+var init_sync_placement_inspection = __esm(() => {
+  init_bridge();
+  init_generation();
+  init_formats();
+  init_sync_placement_guard();
+  init_sync_placement_active();
+  init_sync_placement_format();
+  init_sync_placement_capture();
+  init_sync_placement_journal_format();
+  init_sync_placement_materialize();
+  init_sync_placement_cache();
+  init_sync_placement_inspection_evidence();
+  init_sync_screen();
+  init_generation_index();
+  init_prune();
+  init_public_prune_view();
+  init_public_prune_inputs();
+  init_prune_publisher_lineage();
+  init_sync_placement_inspection_pending();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-journal.ts
+var init_sync_placement_journal = __esm(() => {
+  init_sync_placement_format();
+  init_sync_placement_active();
+  init_sync_placement_guard();
+  init_generation();
+  init_mutation();
+  init_policy();
+  init_sync_screen();
+  init_sync_placement_guard();
+  init_sync_placement_format();
+  init_sync_placement_plan();
+  init_sync_placement_capture();
+  init_sync_placement_journal_format();
+  init_sync_placement_projection();
+  init_sync_placement_journal_storage();
+});
+
 // node_modules/@staix/agent-mem/src/index.ts
 var init_src = __esm(() => {
   init_search_fts();
+  init_platform();
+  init_candidates();
   init_config();
+  init_sync_screen();
   init_store();
   init_capture();
   init_shard();
@@ -11450,9 +11791,7 @@ var init_src = __esm(() => {
   init_import();
   init_project2();
   init_home();
-  init_platform();
   init_commands();
-  init_candidates();
   init_ops_contract();
   init_generation();
   init_migrate();
@@ -11475,6 +11814,13 @@ var init_src = __esm(() => {
   init_consolidation_clusters();
   init_consolidation_model();
   init_evidence();
+  init_sync_policy_inspection();
+  init_sync_placement_inspection();
+  init_sync_placement_format();
+  init_sync_placement_plan();
+  init_sync_placement_journal_format();
+  init_sync_placement_projection();
+  init_sync_placement_journal();
 });
 
 // src/hub/deliverables.ts

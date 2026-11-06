@@ -36,8 +36,9 @@ test("policy matches configured sync rules for forgotten physical originals and 
   store.openedSyncTargets = () => { targetCalls++; return originalTargets(); };
   store.prunePort = () => { prunePortCalls++; return originalPrunePort(); };
   const inspected = inspectDeclinedMemoryRows(store, policy);
-  expect(inspected).toMatchObject({ complete: false, reason: "declined-row inspection requires a bounded public agent-mem API" });
-  expect([targetCalls, prunePortCalls]).toEqual([0, 0]);
+  expect(inspected).toMatchObject({ complete: true, rows: [{ id, rule: "personal-data" }] });
+  expect(targetCalls).toBeGreaterThan(0);
+  expect(prunePortCalls).toBe(0);
   store.openedSyncTargets = originalTargets;
   store.prunePort = originalPrunePort;
   expect(JSON.stringify(inspected)).not.toContain("decline-me");
