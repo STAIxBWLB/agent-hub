@@ -362,7 +362,7 @@ export class RoomChat {
       && this.policy.get(binding.name).includes(peer)
       && roomMembers(state.current).some(member => member.fingerprint === binding.store.identity.public.fingerprint && member.exposedPeers.includes(peer));
   }
-  presence(store: RoomStore, name: string, link: RoomLink, value: { member: string; peers: readonly RoomPresencePeer[]; restored?: true }): void {
+  presence(store: RoomStore, name: string, link: RoomLink, value: { member: string; peers: readonly RoomPresencePeer[]; restored?: true; observedAt?: number | null }): void {
     const binding = this.bindings.get(name), state = store.get(name);
     if (!binding || binding.store !== store || binding.link !== link || !state || !this.valid(binding)) return;
     const member = roomMembers(state.current).find(row => row.fingerprint === value.member);
@@ -373,7 +373,9 @@ export class RoomChat {
     const now = this.presenceNow();
     if (value.restored !== true) {
       binding.observedMembers.add(member.fingerprint);
-      if (now !== undefined) binding.observedAt.set(member.fingerprint, now);
+      const receivedAt = Object.hasOwn(value, "observedAt") ? value.observedAt : now;
+      if (typeof receivedAt === "number" && Number.isSafeInteger(receivedAt) && receivedAt >= 0 && now !== undefined && receivedAt <= now) binding.observedAt.set(member.fingerprint, receivedAt);
+      else binding.observedAt.delete(member.fingerprint);
     }
     this.refreshTargets();
     this.queueChanged();

@@ -66,8 +66,8 @@ test("delivery signals retain a notification arriving after an async check retur
   finally { signal.notify(); await pending; }
 });
 interface Control {
-  holdCodec?: string; codecEntered?: boolean; codecGate?: ReturnType<typeof deferred>; admitInvocation?: boolean; receivedInvocations?: string[];
-  now: number; phase: string; holdSender?: string; hold: boolean; entered: boolean; gate: ReturnType<typeof deferred>;
+  holdCodec?: string; holdCodecExceptSession?: string; codecEntered?: boolean; codecGate?: ReturnType<typeof deferred>; admitInvocation?: boolean; receivedInvocations?: string[];
+  now: number; phase: string; holdSender?: string; hold: boolean; entered: boolean; heldFrame?: { ephemeral: boolean; codecFeatures: boolean }; gate: ReturnType<typeof deferred>;
   afterPublication?: (label: string, env: Envelope, result: PublishResult) => void;
   afterReceive?: (label: string, input: Parameters<RoomLinkApplication["receive"]>[1]) => void;
   afterSend?: (label: string, message: RoomMessage) => Promise<void>;
@@ -113,8 +113,8 @@ async function hub(root: string, label: string, event: Signal, control: Control,
       wrapped.add(context.store);
       const accept = context.store.replay.accept;
       context.store.replay.accept = async input => {
-        const packet = JSON.parse(new TextDecoder().decode(input.plaintext)) as { type?: string; features?: unknown };
-        if (control.holdCodec === label && packet.type === "presence" && packet.features !== undefined) {
+        const packet = JSON.parse(new TextDecoder().decode(input.plaintext)) as { type?: string; features?: unknown; codecSession?: string };
+        if (control.holdCodec === label && packet.type === "presence" && packet.features !== undefined && packet.codecSession !== control.holdCodecExceptSession) {
           control.codecEntered = true; event.notify(); await control.codecGate?.promise;
         }
         return accept(input);
@@ -164,7 +164,7 @@ async function command(side: Hub, action: string, input: unknown) { return (awai
 async function rows(side: Hub): Promise<Record<string, unknown>[]> { return ((await side.commands.rows("work"))[0]?.deliveries ?? []) as Record<string, unknown>[]; }
 async function outbound(side: Hub, application: string) { return (await rows(side)).find(row => row.direction === "outbound" && row.application === application); }
 interface Mesh {
-  root: string; broker: BrokerRuntime; event: Signal; control: Control; frames: { sender: string; digest: string; phase: string; ephemeral: boolean }[];
+  root: string; broker: BrokerRuntime; event: Signal; control: Control; frames: { sender: string; digest: string; phase: string; ephemeral: boolean; codecFeatures: boolean }[];
   brokerEvents: { event: BrokerEvent; member?: string; code?: string }[]; a: Hub; b: Hub; owner: string; guest: string;
   restart(which: "a" | "b"): Promise<Hub>; close(): Promise<void>;
 }
@@ -198,8 +198,8 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = fa
         const oldKeys = ["v", "type", "room", "epoch", "sender", "recipients", "seq", "nonce", "ciphertext", "signature"];
         if (Object.keys(frame).sort().join(",") !== oldKeys.sort().join(",")) throw new Error("old broker closed frame grammar refused an added field");
       }
-      const proof = await verifyPublicFrame(input); frames.push({ sender: proof.sender, digest: proof.digest, phase: control.phase, ephemeral: proof.ephemeral === true });
-      if (control.hold && control.holdSender === proof.sender) { control.entered = true; event.notify(); await control.gate.promise; }
+      const proof = await verifyPublicFrame(input); frames.push({ sender: proof.sender, digest: proof.digest, phase: control.phase, ephemeral: proof.ephemeral === true, codecFeatures: proof.codecFeatures === true });
+      if (control.hold && control.holdSender === proof.sender) { control.heldFrame = { ephemeral: proof.ephemeral === true, codecFeatures: proof.codecFeatures === true }; control.entered = true; event.notify(); await control.gate.promise; }
       event.notify(); return proof;
     },
   });
@@ -221,8 +221,8 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = fa
       control.hold = false; control.gate.release(); await broker.stop(); rmSync(root, { recursive: true, force: true });
     },
   };
-  event.diagnose(() => ({ phase: control.phase, broker: result.broker.stats(), brokerEvents: brokerEvents.slice(-12),
-    sides: [result.a, result.b].map(side => ({ label: side.label, link: side.link?.status(), epoch: side.store?.get("work")?.current.epoch,
+  event.diagnose(() => ({ phase: control.phase, heldFrame: control.heldFrame, codecEntered: control.codecEntered, broker: result.broker.stats(), brokerEvents: brokerEvents.slice(-12),
+    sides: [result.a, result.b].map(side => ({ label: side.label, link: side.link?.status(), codec: side.link?.codecState(side.label === "alpha" ? result.guest : result.owner, "read_invocation_v1"), epoch: side.store?.get("work")?.current.epoch,
       peers: [...side.bus.peers].map(([id, peer]) => ({ id, state: peer.state })),
       journal: side.journal.list().map(row => ({ id: row.id, state: row.state, failureCause: row.failureCause,
         revokedProof: row.reason?.includes("recipient proof no longer current") === true })),
@@ -236,6 +236,24 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = fa
   if (holdInitialCodec) await event.wait(() => result.a.bus.stateOf("user@beta") === "idle" && result.b.bus.stateOf("user@alpha") === "idle", "application transport online before held initial observations");
   else await event.wait(() => result.a.bus.stateOf("codex@beta") === "idle" && result.b.bus.stateOf("codex@alpha") === "idle", "both room peers online");
   control.phase = "before"; return result;
+}
+async function assertQueuedApplicationLineage(f: Mesh, env: Envelope, queuedId: string): Promise<void> {
+  await f.event.wait(() => f.a.journal.list().some(row => row.state === "completed" && row.originals.some(original => original.id === env.id)), "final dispatch records the immutable application completion");
+  const intent = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
+  const dispatched = f.a.journal.get(intent.deliveryId)!;
+  expect(dispatched.originals).toEqual([env]);
+  // A never-sent queue attempt groups into a fresh dispatch, potentially through
+  // several deferrals. Application identity and expiry survive that lineage.
+  const lineage = new Set<string>(); let cursor = dispatched;
+  while (cursor.previousId && !lineage.has(cursor.previousId)) {
+    lineage.add(cursor.previousId);
+    const parent = f.a.journal.get(cursor.previousId); if (!parent) break; cursor = parent;
+  }
+  expect(lineage.has(queuedId)).toBe(true);
+  expect(f.a.journal.get(queuedId)?.state).toBe("discarded");
+  expect(f.a.journal.list().filter(row => ["queued", "dispatching", "accepted", "needs_review"].includes(row.state) && row.originals.some(original => original.id === env.id))).toEqual([]);
+  expect(f.a.store!.applicationOutbox("work").filter(row => row.application === env.id)).toHaveLength(1);
+  expect(f.a.journal.list().filter(row => row.state === "completed" && row.originals.some(original => original.id === env.id))).toHaveLength(1);
 }
 async function acknowledgementDeadline(f: Mesh, side: Hub, application: string): Promise<void> {
   await f.event.wait(() => side.store?.applicationOutbox("work").some(row => row.application === application && row.ackDeadline !== undefined) === true, "host acknowledgement deadline persisted");
@@ -637,6 +655,7 @@ test("a pause after durable enqueue resumes the same Bus delivery without resett
   }, "durable Store intent waits behind the Bus pause");
   const initial = store.applicationOutbox("work").find(row => row.application === env.id)!;
   expect(f.a.journal.list("codex@beta").find(row => row.originals.some(original => original.id === env.id))?.state).toBe("dispatching");
+  if (f.frames.filter(row => row.sender === f.owner).length !== framesBefore) console.error("pause frame classes", JSON.stringify(f.frames.filter(row => row.sender === f.owner).map(row => ({ ephemeral: row.ephemeral, codecFeatures: row.codecFeatures, digestMatchesInitialIntent: row.digest === initial.digest }))));
   expect(f.frames.filter(row => row.sender === f.owner)).toHaveLength(framesBefore);
   expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(0);
   f.a.bus.resume("codex@beta");
@@ -1248,6 +1267,7 @@ for (const kind of ["person", "invocation"] as const) test(`immediate online ${k
   f.control.authorizeInvocation = true; f.control.admitInvocation = true;
   if (kind === "invocation") {
     f.control.holdCodec = "alpha"; f.control.codecGate = deferred();
+    f.control.holdCodecExceptSession = (f.b.link as unknown as { session: { codecSession: string } }).session.codecSession;
     f.b.link!.refresh(); // A retains the last authenticated codex state, while the new source session needs a signed advertisement.
     await f.event.wait(() => f.control.codecEntered === true && f.a.link!.codecState(f.guest, "read_invocation_v1") === "pending"
       && f.a.bus.stateOf("codex@beta") === "idle", "established invocation target has a pending replacement-session codec observation");
@@ -1263,10 +1283,11 @@ for (const kind of ["person", "invocation"] as const) test(`immediate online ${k
   expect(f.a.journal.list().some(row => row.originals.some(original => original.id === env.id) && row.state === "failed")).toBe(false);
   f.control.holdCodec = undefined; f.control.codecGate!.release();
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === (kind === "person" ? "completed (inbox)" : "completed (admitted)"), "fresh signed advertisement wakes the original queued send");
-  expect((await outbound(f.a, env.id))?.id).toBe(queued.id);
+  await assertQueuedApplicationLineage(f, env, queued.id);
   const intent = f.a.store!.applicationOutbox("work").find(row => row.application === env.id)!;
   expect(intent.expiresAt).toBeLessThanOrEqual(deadline!);
   if (kind === "invocation") expect(f.control.receivedInvocations?.filter(id => id === env.id)).toHaveLength(1);
+  else expect(f.b.store!.listPersonInbox("work")).toHaveLength(1);
 });
 
 test("a signed codec observation arriving before pending-send requeue is not a lost wake", async () => {
@@ -1340,9 +1361,12 @@ test("a feature snapshot filtered while the receiver is offline is repaired by a
     f.a.bus.publish(env);
     await f.event.wait(() => f.a.bus.stateOf("user@beta") === "offline" && f.a.journal.list().some(row => row.state === "queued" && row.originals.some(original => original.id === env.id)), "missing advertisement keeps the original send queued");
     const queued = f.a.journal.list().find(row => row.state === "queued" && row.originals.some(original => original.id === env.id))!;
+    const deadline = f.a.bus.snapshot(false).remoteQueueExpires?.["user@beta"]?.[env.id]; expect(deadline).toBeDefined();
     release.release(); await publication;
     await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (inbox)", "the crossed signed presence reply supplies codec support and wakes the original queue");
-    expect((await outbound(f.a, env.id))?.id).toBe(queued.id);
+    await assertQueuedApplicationLineage(f, env, queued.id);
+    expect(f.a.store!.applicationOutbox("work").find(row => row.application === env.id)?.expiresAt).toBeLessThanOrEqual(deadline!);
+    expect(f.b.store!.listPersonInbox("work")).toHaveLength(1);
     expect(f.a.journal.list().some(row => row.state === "failed" && row.originals.some(original => original.id === env.id))).toBe(false);
   } finally { release.release(); f.b.store!.sequence.reserve = reserve; await publication.catch(() => {}); }
 }, 20000);

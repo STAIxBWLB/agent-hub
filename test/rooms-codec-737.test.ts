@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { RoomCodecPendingError, RoomCodecUnsupportedError, RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
+import { RoomCodecPendingError, RoomCodecUnsupportedError, RoomLink, type RoomLinkApplication, type RoomLinkOptions } from "../src/rooms/link.ts";
 import { ROOM_CODEC_FEATURES, ROOM_CODEC_FEATURE_LIMIT, roomCodecFeatures, type RoomMessage } from "../src/rooms/application.ts";
 import { RoomStore } from "../src/rooms/store.ts";
 import { canonicalBytes, createRoomEpoch, decodeFrame, openFrame, roomMembers, sealFrame } from "../src/rooms/wire.ts";
@@ -21,7 +21,7 @@ async function transport(features?: readonly string[]) {
   const sent: Uint8Array[] = [];
   const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (wire: Uint8Array) => { effects++; sent.push(Uint8Array.from(wire)); }, close() {} },
     generation: 1, room: epoch.room, broker: row.broker, phase: "ready", roster: { digest: epoch.digest },
-    ephemeral: true, codecFeatures: true, codecSession: "A".repeat(43), codecPeers: new Map([[recipient.public.fingerprint, { session: "B".repeat(43), supported: true }]]),
+    ephemeral: true, codecFeatures: true, codecSession: "A".repeat(43), codecPeers: new Map<string, { session: string | null; supported: boolean }>([[recipient.public.fingerprint, { session: "B".repeat(43), supported: true }]]),
     features: new Map(features ? [[recipient.public.fingerprint, { session: "B".repeat(43), features }]] : []),
     outbound: [] as { wire: Uint8Array; digest: string }[], outboundBytes: 0, frameSent: false, retryAttempt: 0,
     pendingPresenceReplies: new Set<string>(), presenceAsked: false, requestPresenceReply: false, queue: [], queuedBytes: 0 };
@@ -88,17 +88,18 @@ async function durableTransport(withOther = false) {
   const sent: Uint8Array[] = [];
   const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (bytes: Uint8Array) => sent.push(Uint8Array.from(bytes)), close() {} },
     generation: 1, room: epoch.room, broker: "ws://127.0.0.1:1/", phase: "ready", roster: { digest: epoch.digest },
-    ephemeral: true, codecFeatures: true, codecSession: "A".repeat(43), codecPeers: new Map([[recipient.public.fingerprint, { session: "B".repeat(43), supported: true }]]),
+    ephemeral: true, codecFeatures: true, codecSession: "A".repeat(43), codecPeers: new Map<string, { session: string | null; supported: boolean }>([[recipient.public.fingerprint, { session: "B".repeat(43), supported: true }]]),
     features: new Map([[recipient.public.fingerprint, { session: "B".repeat(43), features: ROOM_CODEC_FEATURES as readonly string[] }]]),
     outbound: [] as { wire: Uint8Array; digest: string }[], outboundBytes: 0, frameSent: false, retryAttempt: 0,
     pendingPresenceReplies: new Set<string>(), presenceAsked: false, requestPresenceReply: false, queue: [], queuedBytes: 0 };
   const callbacks: RoomLinkApplication = { members() {}, receive: async () => {}, online: async () => {}, stored() {} };
-  const subject = new RoomLink({ store, name: "work", now: () => now, application: callbacks });
+  const observed: Parameters<NonNullable<RoomLinkOptions["onPresence"]>>[0][] = [];
+  const subject = new RoomLink({ store, name: "work", now: () => now, application: callbacks, onPresence: value => observed.push(value) });
   Object.assign(subject, { running: true, generation: 1, session });
   const metadata = (message: Extract<RoomMessage, { type: "chat" }>) => ({ deliveryId: crypto.randomUUID(), application: message.envelope.id,
     remotePeer: "user@guest", recipient: recipient.public.fingerprint, peer: "user", ackTimeoutMs: 1000, ttlMs: 60000 });
   const internal = subject as unknown as { storedFrame(session: unknown, digest: string): void; observationTime(): number | undefined; receiveFrame(session: unknown, bytes: Uint8Array, local: ReturnType<RoomStore["get"]>): Promise<void> };
-  return { store, subject, internal, session, sent, recipient, other, metadata, callbacks, epoch, now: () => now, time: (value: number) => { now = value; },
+  return { store, subject, internal, session, sent, recipient, other, metadata, callbacks, observed, epoch, now: () => now, time: (value: number) => { now = value; },
     close: async () => { Object.assign(subject, { session: undefined }); await subject.stop(); store.close(); rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -272,5 +273,84 @@ test("a withdrawn codec diagnostic follows only its blocked member and feature",
     expect(f.subject.connectionCause).toBeUndefined();
     const retained = f.store.applicationOutbox("work").find(row => row.deliveryId === metadata.deliveryId)!;
     expect(retained.state).toBe("dispatching"); expect(retained.disposition).toBeUndefined();
+  } finally { await f.close(); }
+});
+
+
+test("an early legacy idle observation waits for current signed codec proof without renewing its local observation time", async () => {
+  const f = await durableTransport(), member = f.recipient.public.fingerprint;
+  try {
+    f.session.features.clear();
+    const receivedAt = f.now();
+    const legacy = await sealFrame({ epoch: f.epoch, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }] }),
+      ephemeral: true, sequence: { reserve: async () => "1", isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, legacy, f.store.get("work"));
+    expect(f.observed).toEqual([]);
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("pending");
+    f.time(receivedAt + 1000);
+    const ad = await sealFrame({ epoch: f.epoch, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ROOM_CODEC_FEATURES, codecSession: "B".repeat(43) }),
+      ephemeral: true, codecFeatures: true, sequence: { reserve: async () => "2", isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, ad, f.store.get("work"));
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("supported");
+    expect(f.observed).toEqual([{ member, peers: [{ id: "codex", state: "idle" }], observedAt: receivedAt }]);
+  } finally { await f.close(); }
+});
+
+
+test("null-session peer evidence defers live idle while offline and empty observations remain immediate", async () => {
+  const f = await durableTransport(), member = f.recipient.public.fingerprint;
+  let seq = 0;
+  const observe = async (peers: { id: string; state: string }[]) => {
+    const wire = await sealFrame({ epoch: f.epoch, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers }), ephemeral: true,
+      sequence: { reserve: async () => String(++seq), isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, wire, f.store.get("work"));
+  };
+  try {
+    f.session.features.clear(); f.session.codecPeers.set(member, { session: null, supported: false });
+    await observe([{ id: "codex", state: "idle" }]);
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("pending");
+    expect(f.observed).toEqual([]);
+    await observe([{ id: "codex", state: "offline" }]);
+    expect(f.observed).toEqual([{ member, peers: [{ id: "codex", state: "offline" }] }]);
+    await observe([]);
+    expect(f.observed).toEqual([{ member, peers: [{ id: "codex", state: "offline" }] }, { member, peers: [] }]);
+    f.session.codecPeers.set(member, { session: "B".repeat(43), supported: true });
+    await observe([{ id: "codex", state: "idle" }]);
+    await observe([{ id: "codex", state: "offline" }]);
+    const negativeCount = f.observed.length;
+    const ad = await sealFrame({ epoch: f.epoch, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ROOM_CODEC_FEATURES, codecSession: "B".repeat(43) }),
+      ephemeral: true, codecFeatures: true, sequence: { reserve: async () => String(++seq), isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, ad, f.store.get("work"));
+    expect(f.observed).toHaveLength(negativeCount);
+    expect(f.observed.at(-1)?.peers).toEqual([{ id: "codex", state: "offline" }]);
+  } finally { await f.close(); }
+});
+
+test("current signed codec proof cannot release a legacy observation from a previous grace epoch", async () => {
+  const f = await durableTransport(), member = f.recipient.public.fingerprint;
+  try {
+    const before = f.store.get("work")!;
+    const rotated = await f.store.rotate("work", roomMembers(before.current), before.current.digest);
+    f.session.roster = { digest: rotated.current.digest }; f.session.features.clear();
+    const oldLegacy = await sealFrame({ epoch: before.current, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }] }), ephemeral: true,
+      sequence: { reserve: async () => "1", isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, oldLegacy, f.store.get("work"));
+    expect(f.observed).toEqual([]);
+    const freshAd = await sealFrame({ epoch: rotated.current, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ROOM_CODEC_FEATURES, codecSession: "B".repeat(43) }),
+      ephemeral: true, codecFeatures: true, sequence: { reserve: async () => "2", isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, freshAd, f.store.get("work"));
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("supported");
+    expect(f.observed).toEqual([]);
+    const freshLegacy = await sealFrame({ epoch: rotated.current, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }] }), ephemeral: true,
+      sequence: { reserve: async () => "3", isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, freshLegacy, f.store.get("work"));
+    expect(f.observed).toEqual([{ member, peers: [{ id: "codex", state: "idle" }] }]);
   } finally { await f.close(); }
 });

@@ -266,7 +266,17 @@ authenticated member's current connection token and whether it opted into codec
 advertisements; a null token means the observation is pending or disconnected.
 Replacement, disconnect and roster change invalidate prior connection evidence.
 Only a fresh signed advertisement echoing the current token establishes support;
-a delayed advertisement from another session cannot establish it.
+a delayed advertisement from another session cannot establish it. New current
+peer-session evidence also triggers a coalesced feature-only advertisement from
+this hub, independently of legacy replies and snapshot dedupe; missed bootstrap
+advertisements therefore do not require unrelated application traffic to recover.
+
+An early ordinary live-state observation from a codec-capable session waits as
+bounded metadata until that session supplies signed codec evidence. Releasing
+it preserves its original local receive time; the signed advertisement does not
+renew liveness. Empty or offline snapshots and known legacy sessions remain
+immediate. The receive-time annotation is host-only and is never accepted from
+the room wire.
 
 The advertised codecs are `chat_v1`, `person_inbox_v1` and `read_invocation_v1`.
 Plain chat and status retain their legacy shape. Person-inbox sends require

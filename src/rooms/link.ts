@@ -15,7 +15,7 @@ export interface RoomLinkOptions {
   store: RoomStore;
   name: string;
   presence?: () => readonly { id: string; state: string }[];
-  onPresence?: (value: { member: string; peers: readonly RoomPresencePeer[]; restored?: true }) => void;
+  onPresence?: (value: { member: string; peers: readonly RoomPresencePeer[]; restored?: true; observedAt?: number | null }) => void;
   onState?: (state: RoomLinkState) => void;
   application?: RoomLinkApplication;
   refreshMs?: number;
@@ -90,6 +90,9 @@ interface Session {
   ephemeral?: boolean;
   codecFeatures?: boolean;
   codecSession?: string;
+  codecPublishing?: Promise<void>;
+  codecDirty?: boolean;
+  pendingPresence?: Map<string, { session: string | null; epoch: string; peers: RoomPresencePeer[]; observedAt: number | null }>;
   codecPeers?: Map<string, { session: string | null; supported: boolean }>;
   features?: Map<string, { session: string; features: readonly string[] }>;
   ws: WebSocket;
@@ -602,7 +605,7 @@ export class RoomLink {
       }
       if (session.presenceRoster !== roster.digest) {
         if (this.blockedCodec) this.setState(this.state);
-        session.presenceRoster = roster.digest; session.features = new Map(); session.codecPeers = new Map(); session.pendingPresenceReplies.clear(); session.presenceAsked = false;
+        session.presenceRoster = roster.digest; session.features = new Map(); session.codecPeers = new Map(); session.pendingPresence = new Map(); session.pendingPresenceReplies.clear(); session.presenceAsked = false;
         session.requestPresenceReply = true; session.lastPresence = undefined;
       }
       session.ephemeral = ready.ephemeral === true;
@@ -639,14 +642,17 @@ export class RoomLink {
         seen.add(peer.member);
         return { member: peer.member, session: peer.session as string | null, supported: peer.supported };
       });
+      let advertise = false;
       for (const peer of peers) {
         const previous = session.codecPeers?.get(peer.member);
         if (previous?.session === peer.session && previous.supported === peer.supported) continue;
         (session.codecPeers ??= new Map()).set(peer.member, { session: peer.session, supported: peer.supported });
-        session.features?.delete(peer.member);
+        session.features?.delete(peer.member); session.pendingPresence?.delete(peer.member);
+        if (peer.supported && peer.session !== null) advertise = true;
         this.refreshCodecCause(peer.member);
         try { this.options.application?.codecsChanged?.(this.context(session, local.current.digest), { member: peer.member }); } catch { /* Compatibility evidence grants no authority. */ }
       }
+      if (advertise) void this.publishCodecPresence(session).catch(error => this.retry(session, error));
       return;
     }
     if (message.type === "frame") {
@@ -798,13 +804,25 @@ export class RoomLink {
           if (frame.epoch === latest.current.epoch && peer?.supported && peer.session !== null && payload.codecSession === peer.session) {
             (session.features ??= new Map()).set(frame.sender, { session: peer.session, features: roomCodecFeatures(payload.features) });
             this.refreshCodecCause(frame.sender);
+            const pending = session.pendingPresence?.get(frame.sender);
+            session.pendingPresence?.delete(frame.sender);
+            if (pending?.session === peer.session && pending.epoch === latest.current.epoch) {
+              try { this.options.onPresence?.({ member: frame.sender, peers: pending.peers, observedAt: pending.observedAt }); } catch { /* Observation only, with the original local receive time. */ }
+            }
             this.pumpFrames(session);
             try { this.options.application?.codecsChanged?.(this.context(session, digest), { member: frame.sender }); } catch { /* Compatibility observations cannot change admission. */ }
           }
         } else {
           session.pendingPresenceReplies.delete(frame.sender);
           if (session.presenceAsked && session.pendingPresenceReplies.size === 0) session.requestPresenceReply = false;
-          try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
+          const peer = session.codecPeers?.get(frame.sender), advertisement = session.features?.get(frame.sender);
+          const knownLegacy = peer !== undefined && peer.session !== null && peer.supported === false;
+          if (session.codecFeatures && peers.some(peer => peer.state !== "offline") && !knownLegacy && (!peer?.session || advertisement?.session !== peer.session)) {
+            (session.pendingPresence ??= new Map()).set(frame.sender, { session: peer?.session ?? null, epoch: frame.epoch, peers, observedAt: this.observationTime() ?? null });
+          } else {
+            session.pendingPresence?.delete(frame.sender); // A newer negative or admitted observation supersedes any deferred live state.
+            try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
+          }
         }
         this.current(session, digest);
         this.options.store.settleInbox(this.options.name, acceptedDigest);
@@ -967,6 +985,36 @@ export class RoomLink {
       if (metadata && !queueStarted) throw new RoomNotSentError();
       throw error;
     }
+  }
+  /** A newly ready member may have missed our first advertisement. Repair it
+   * independently of legacy request/reply and snapshot dedupe, without a timer. */
+  private publishCodecPresence(session: Session): Promise<void> {
+    if (session.codecPublishing) { session.codecDirty = true; return session.codecPublishing; }
+    const work = (async () => {
+      do {
+        session.codecDirty = false;
+        await this.serialSend(async () => {
+          if (!this.running || this.stopping || this.session !== session || !session.codecFeatures || !session.codecSession || session.phase !== "ready") return;
+          const row = this.current(session), identity = this.options.store.identity;
+          if (!this.publicationCurrent(session, row.current.digest)) return;
+          const own = roomMembers(row.current).find(member => member.fingerprint === identity.public.fingerprint);
+          if (!own) fail("untrusted");
+          const peers = this.currentPresence(own.exposedPeers), recipients = roomMembers(row.current).map(member => member.fingerprint).filter(member => member !== identity.public.fingerprint).sort();
+          if (!recipients.length) return;
+          const wire = await sealFrame({ epoch: row.current, identity, recipients,
+            plaintext: canonicalBytes({ v: 1, type: "presence", peers, features: ROOM_CODEC_FEATURES, codecSession: session.codecSession }),
+            ephemeral: true, codecFeatures: true, sequence: this.options.store.sequence });
+          if (!this.publicationCurrent(session, row.current.digest)) return;
+          const digest = await this.frameDigest(wire);
+          this.queueFrame(session, wire, digest, false,
+            () => this.publicationCurrent(session, row.current.digest) && peers.every(({ id }) => this.currentPresence(own.exposedPeers).some(value => value.id === id)),
+            true, undefined, undefined, undefined, true);
+        });
+      } while (session.codecDirty && this.session === session && this.running && !this.stopping);
+    })();
+    session.codecPublishing = work;
+    void work.finally(() => { if (session.codecPublishing === work) session.codecPublishing = undefined; }).catch(() => undefined);
+    return work;
   }
   async publishPresence(): Promise<void> {
     const session = this.session;
