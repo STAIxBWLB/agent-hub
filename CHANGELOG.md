@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Record the single authorized Codex 0.167.0 reviewer tool-call attempt (Refs #888, task 751): startup isolation and the rendered marker precondition passed, but the harness readiness/readback leg did not produce a complete verdict result. No retry; 0.167.0 remains unverified (`docs/verification/2026-11-06-codex-0167-reviewer-tool-call.md`).
 - Verify exactly Qwen ACP 0.26.8 with model-free native macOS arm64 initialization, session, mode and published permission-handler receipts, plus Linux x86_64 evidence (#888, task 749). Qwen dual-output 0.26.8 stays unqualified: required queued-submit Q2 fails identically on the matched 0.26.1 control; its verified entry stays at 0.26.1. Real account/model behavior remains unverified.
 - Kimi Code 2.5.1 is an exact receipt-verified fresh-reviewer version (#888, task 748): the official macOS arm64 artifact passes the production preparation and native two-tool/Write controls in fixture-trust and verified/no-trust runs (`docs/verification/2026-11-06-kimi-251-reviewer-compat.md`). Runtime preparation remains required; real account, model and quota behavior remain unverified.
 - Claude Code 2.1.319 is a receipt-verified headless implementer version (#888, task 750): the model-free permission-transport and host shell-wrapper producers pass on it with 2.1.318 as the control (`docs/verification/2026-11-06-claude-implementer-2.1.319.md`).
