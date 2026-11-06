@@ -9,7 +9,7 @@ import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { packageDigest, preserveRuntimePackage } from "../src/cli/recovery-package.ts";
 import { parseVersion } from "../scripts/lib/release-plan.ts";
-import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
+import { SYNTHETIC_CLAUDE_PARENT_COMMAND, syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 // Installed separately by the gate with its own frozen lock. No fixture package is installed or fetched by a test.
 // The bounded preservation helper copies unchanged executable assets and each release's exact amem dependency to unique
@@ -117,6 +117,24 @@ async function plugin(entry: string, f: Awaited<ReturnType<typeof fixture>>) {
     // the published self-contained plugins remain completely unchanged.
     program = join(f.root, "current-channel-parent.ts");
     writeFileSync(program, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(entry)});`);
+  } else {
+    // The published bundle inlines its observer port. Supply only the direct
+    // parent's raw ps row before importing it; keep its bytes and classifier intact.
+    program = join(f.root, "published-channel-parent.ts");
+    writeFileSync(program, `import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+const rawSpawnSync = childProcess.spawnSync;
+childProcess.spawnSync = (file, args, options) => {
+  if (file === "/bin/ps" && Array.isArray(args) && args.length === 5
+    && args[0] === "-ww" && args[1] === "-p" && args[2] === String(process.ppid)
+    && args[3] === "-o" && args[4] === "command=") {
+    const row = ${JSON.stringify(SYNTHETIC_CLAUDE_PARENT_COMMAND)};
+    return { status: 0, signal: null, error: undefined, stdout: row, stderr: "", output: [null, row, ""], pid: process.pid };
+  }
+  return rawSpawnSync(file, args, options);
+};
+syncBuiltinESMExports();
+await import(${JSON.stringify(entry)});`);
   }
   const child = Bun.spawn([process.execPath, program], { cwd: f.root, env: f.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const replies = new Map<number, (value: Record<string, unknown>) => void>(), notifications: Record<string, unknown>[] = [];
