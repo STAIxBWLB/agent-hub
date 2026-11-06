@@ -32,6 +32,14 @@ terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
 
+## Upgrading to 0.33.0
+
+Rooms now show refused-frame counts, outbox depth/ages and a closed link cause with a recovery step. Store-open failures retry, receive-only work wakes after journal recovery, and selective traffic no longer produces false sequence-gap notices. For a rolling room upgrade, update the broker first, then every member, then reconnect: 0.33.0 person-inbox (`user@label`) and invocation sends to a released 0.32.0 member, or through a released 0.32.0 broker are refused before effects with the upgrade step; plain chat keeps working. Use the matching CLI for the new diagnostics: 0.32.0 `ahub room status` drops the new fields, including in its JSON output, while `ahub status --json` passes raw daemon fields through.
+
+Orca recovery now recognizes its gone-terminal codes. The compat policy adds exactly Claude headless implementer 2.1.319, Kimi reviewer 2.5.1 and Qwen ACP 0.26.8 based on their model-free receipts. Codex reviewer 0.167.0 remains unverified after an unknown tool-call outcome, and Qwen dual-output remains at 0.26.1. These entries do not install agent CLIs or prove real-account/model behavior. N-1 is published 0.32.0; control remains 16 through 17 and agent-mem stays 0.21.0, with no memory layout or format-floor change.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.33.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
 ## Upgrading to 0.32.0
 
 Rooms on an ephemeral-capable broker now refresh signed presence every 30 seconds; three missed periods display advisory unknown without changing sending authority. A graceful stop attempts a signed offline snapshot within two seconds. Epoch-changing room commands list sealed outstanding delivery IDs before confirmation and immediately hold old-epoch work with the named cause. Upgrade the global CLI and plugin with the step below to see the new previews and advisory status: a 0.31.0 CLI ignores those additive fields, even in JSON. A broker without ephemeral support keeps state-change publication and reports liveness untracked, with no periodic aging. Protocol 16 through 17 and room v1 shapes remain; the N-1 baseline is published 0.31.0, with the same agent-mem 0.21.0 pin.
