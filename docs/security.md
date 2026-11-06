@@ -26,7 +26,7 @@ agent-hub connects agents that can each run commands. This page says what the hu
 
 ## Native memory authority and profile selection
 
-The portable core is the exact-pinned first-party `@staix/agent-mem` 0.18.0 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.
+The portable core is the exact-pinned first-party `@staix/agent-mem` 0.21.0 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.
 
 `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` take the project from the daemon, require `memory_read`, refuse private turns and validate UTF-8 input before logs or storage work. Complete records and graph metadata are screened before counts and truncation. Search is at most 20 lines/4 KiB (default 8); show accepts at most 8 ids and returns at most 8 KiB; graph is at most 120 nodes/240 edges/6 KiB (default 60 nodes), with no edge lacking an endpoint. Unknown, ambiguous and withheld ids share one neutral refusal. Arguments and results are excluded from hub-managed capture; this does not govern a vendor's independent transcript or memory hooks.
 
@@ -793,11 +793,16 @@ refused; unknown visibility proceeds with a warning for the configured remote.
 Short-term segments, machine identity and the derived index are excluded from
 sync. Sync and direct long-term writes apply the configured agent-mem sync policy
 narrowed by the hub's deny paths, PII patterns and project-private paths; a promotion
-that fails it leaves the note short-term (#1173). Status and logs carry only a closed
-cause and a declined count. `ahub memory declined` is person-only (refused to agent
-shells and `--live-test`) and shows row ids and rule categories, never note text or
-literal patterns. Suggested graph edges are off by default and are not evidence until a
-person confirms them. Operational details and limits: [hub memory](memory.md).
+that fails it leaves the note short-term (#1173). Status exposes safe sync state and
+counts, including verified withheld/exported counts from a successful SDK placement
+result. Failure logs retain only the closed cause and known declined count.
+`ahub memory declined` is person-only (refused to agent shells and `--live-test`)
+and uses bounded physical-row inspection to show IDs and rule categories, never
+note text or literal patterns; incomplete inspection is not a zero count.
+Default-host v3 sync remains unsupported because the hub supplies no fresh
+placement attestation. No activation proof is fabricated; the supported activation
+and attestation path remains agent-mem#281. Suggested graph edges are off by default
+and are not evidence until a person confirms them. Operational details and limits: [hub memory](memory.md).
 
 ## Floating pet retirement (#1012)
 
