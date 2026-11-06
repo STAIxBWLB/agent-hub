@@ -64,7 +64,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const STATES: readonly string[] = ["idle", "busy", "paused", "offline"];
-interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void; afterInboundAck?: string; codecFeatures?: boolean }
+interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void; afterInboundAck?: string; codecFeatures?: boolean; supported?: () => boolean }
 interface Session {
   closingHead?: PendingFrame;
   refresh?: ReturnType<typeof setTimeout>;
@@ -266,6 +266,10 @@ export class RoomLink {
     this.clockHighWater = now;
     return now;
   }
+  /** Called only after the Store-backed sequence port committed a reservation. */
+  private clockRecoveredAfterWrite(): void {
+    if (this.cause === "clock_rollback" && this.observationTime() !== undefined) this.setState(this.state);
+  }
   private setState(state: RoomLinkState, cause?: RoomHealthCause): void {
     if (this.state === state && this.cause === cause) return;
     this.state = state; this.cause = cause;
@@ -414,7 +418,7 @@ export class RoomLink {
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
   }
-  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void, afterInboundAck?: string, codecFeatures = false): void {
+  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void, afterInboundAck?: string, codecFeatures = false, supported?: () => boolean): void {
     this.current(session, undefined, this.stopping);
     // Only an unsent observation may be replaced. Never reorder an attempted frame.
     if (presence) {
@@ -422,7 +426,7 @@ export class RoomLink {
       if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
     }
     if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
-    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent, afterInboundAck, codecFeatures }); session.outboundBytes += wire.byteLength;
+    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent, afterInboundAck, codecFeatures, supported }); session.outboundBytes += wire.byteLength;
     this.pumpFrames(session);
   }
   private pumpFrames(session: Session): void {
@@ -443,10 +447,21 @@ export class RoomLink {
       void this.publishPresence().catch(() => this.retry(session));
       return;
     }
+    if (frame.supported && !frame.supported()) {
+      this.setState(this.state, "codec_unsupported");
+      if (frame.retained) {
+        // The durable intent owns retry. Withdraw only this unsent ciphertext so
+        // later receipts can progress; a fresh codec observation reseals its retry.
+        session.outbound.shift(); session.outboundBytes -= frame.wire.byteLength; session.retryAttempt = 0;
+        this.pumpFrames(session);
+      }
+      return;
+    }
     // A foreground receipt follows the chat ACK on the socket. Otherwise broker
     // verification/storage of the receipt can pin the chat's one-packet slot.
     if (frame.afterInboundAck && session.processingFrame === frame.afterInboundAck && session.acknowledgedFrame !== frame.afterInboundAck) return;
     this.send(session, frame.wire); session.frameSent = true;
+    if (frame.supported && this.cause === "codec_unsupported") this.setState(this.state);
     const onSent = frame.onSent; frame.onSent = undefined; onSent?.();
   }
   private storedFrame(session: Session, digest: string): void {
@@ -718,6 +733,7 @@ export class RoomLink {
         this.current(session, digest);
         if (frame.codecFeatures === true) {
           (session.features ??= new Map()).set(frame.sender, roomCodecFeatures(packet(result.plaintext).features));
+          this.pumpFrames(session);
           try { this.options.application?.codecsChanged?.(this.context(session, digest), { member: frame.sender }); } catch { /* Compatibility observations cannot change admission. */ }
         } else {
           session.features?.delete(frame.sender); // A new legacy observation cannot inherit an earlier remote process codec claim.
@@ -801,7 +817,17 @@ export class RoomLink {
     if (required && !this.codecSupported(recipient, required)) throw new RoomCodecUnsupportedError(required);
     const digest = this.current(session).current.digest;
     const allowed = () => this.publicationCurrent(session, digest) && current();
-    const admitted = () => this.applicationPauses.size === 0 && allowed();
+    const supported = () => required === undefined || this.codecSupported(recipient, required);
+    let codecLost = false;
+    const admitted = () => {
+      if (!supported()) { codecLost = true; return false; }
+      return this.applicationPauses.size === 0 && allowed();
+    };
+    const assertAdmitted = () => {
+      if (admitted()) return;
+      if (codecLost && required) throw new RoomCodecUnsupportedError(required);
+      fail("state_changed");
+    };
     let queueStarted = false;
     try {
       let presenceWork: Promise<void> | undefined;
@@ -817,8 +843,7 @@ export class RoomLink {
       // Reserve this chat's FIFO slot before yielding to the earlier observation.
       return await this.serialSend(async () => {
       if (presenceWork) await presenceWork;
-      if (!admitted()) fail("state_changed");
-      if (required && !this.codecSupported(recipient, required)) throw new RoomCodecUnsupportedError(required);
+      assertAdmitted();
       if (metadata && (session.outbound.length >= LIMITS.packets || session.outboundBytes + plaintext.byteLength > LIMITS.queuedBytes
         || session.ws.bufferedAmount > LIMITS.backpressure)) throw new RoomNotSentError();
       if (message.type === "receipt") {
@@ -832,13 +857,20 @@ export class RoomLink {
       const row = this.current(session, digest);
       if (!roomMembers(row.current).some(member => member.fingerprint === recipient) || recipient === this.options.store.identity.public.fingerprint) fail("untrusted");
       let wire = await sealFrame({ epoch: row.current, identity: this.options.store.identity, recipients: [recipient], plaintext, sequence: this.options.store.sequence });
-      if (!admitted()) fail("state_changed");
+      this.clockRecoveredAfterWrite();
+      assertAdmitted();
       let frameDigest: string;
       if (metadata) {
         queueStarted = true;
         let record: Awaited<ReturnType<RoomStore["queueApplication"]>>;
         try { record = await this.options.store.queueApplication(this.options.name, wire, metadata, admitted); }
         catch (error) {
+          if (codecLost && required && error instanceof RoomStoreError && error.code === "state_changed") {
+            // The atomic fence refused this attempt. Positively distinguish a
+            // never-admitted application from an earlier durable retry intent.
+            if (!this.options.store.applicationOutbox(this.options.name).some(row => row.deliveryId === metadata.deliveryId || row.application === metadata.application)) throw new RoomCodecUnsupportedError(required);
+            throw new RoomNotSentError();
+          }
           // An explicit atomic refusal plus absent durable intent is positive not-sent evidence.
           if (error instanceof RoomStoreError && ["limit", "invalid", "untrusted", "state_changed"].includes(error.code)
             && !this.options.store.applicationOutbox(this.options.name).some(row => row.deliveryId === metadata.deliveryId || row.application === metadata.application)) throw new RoomNotSentError();
@@ -857,7 +889,7 @@ export class RoomLink {
         this.queueFrame(session, wire, frameDigest, false, allowed, false,
           metadata ? () => this.options.store.applicationSendable(this.options.name, frameDigest)
             : message.type === "receipt" ? () => this.options.store.receiptSendable(this.options.name, frameDigest) : undefined,
-          undefined, message.type === "receipt" && message.frame === session.processingFrame ? message.frame : undefined);
+          undefined, message.type === "receipt" && message.frame === session.processingFrame ? message.frame : undefined, false, required ? supported : undefined);
       } catch (error) {
         // The durable outbox owns retry after local backpressure; this is no uncertainty.
         if (!allowed() || !(error instanceof RoomLinkError) || error.code !== "limit" || !metadata && message.type !== "receipt") throw error;
@@ -899,6 +931,7 @@ export class RoomLink {
         const presenceKey = JSON.stringify([row.current.digest, recipients, peers, requestReply]);
         if (!response && !forceRequest && session.lastPresence === presenceKey) return;
         const wire = await sealFrame({ epoch: row.current, identity, recipients, plaintext: canonicalBytes({ v: 1, type: "presence", peers, ...(requestReply ? { requestReply: true } : {}) }), ...(session.ephemeral ? { ephemeral: true as const } : {}), sequence: this.options.store.sequence });
+        this.clockRecoveredAfterWrite();
         if (!this.publicationCurrent(session, row.current.digest)) return;
         // Machine-local exposure can change during reserve/encryption/signing even
         // when the signed roster is unchanged. Never emit an id it now withholds.

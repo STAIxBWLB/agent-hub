@@ -1,7 +1,7 @@
 import { RoomStoreError } from "./store.ts";
 
 /** Closed diagnostics only; never carry a filesystem error, path or message body. */
-export const ROOM_HEALTH_CAUSES = ["invalid", "busy", "corrupt", "unsupported", "limit", "untrusted", "state_changed", "clock_rollback", "closed", "inbox_list_limit", "unavailable", "connecting", "transport_closed", "backpressure", "broker_refused"] as const;
+export const ROOM_HEALTH_CAUSES = ["invalid", "busy", "corrupt", "unsupported", "limit", "untrusted", "state_changed", "clock_rollback", "closed", "inbox_list_limit", "unavailable", "connecting", "transport_closed", "backpressure", "broker_refused", "codec_unsupported"] as const;
 export type RoomHealthCause = typeof ROOM_HEALTH_CAUSES[number];
 export function roomHealthCause(error: unknown): RoomHealthCause {
   return error instanceof RoomStoreError && ROOM_HEALTH_CAUSES.includes(error.code) ? error.code : "unavailable";
@@ -15,6 +15,7 @@ export function roomHealthNextStep(code: RoomHealthCause): string {
     case "limit": case "inbox_list_limit": return "Inspect ahub room status and ahub room inbox; resolve pending work before retrying.";
     case "connecting": return "Wait for the broker connection; inspect ahub room status if it stays connecting.";
     case "backpressure": return "Wait for the broker queue to drain; stored frames retry automatically.";
+    case "codec_unsupported": return "Upgrade both hubs and the broker, reconnect the room, then retry after signed codec support is available.";
     case "broker_refused": return "Check broker availability and the signed room membership, then retry.";
     case "transport_closed": return "Check the broker address and network connection; the link retries automatically.";
     case "closed": return "Restart the hub to reopen room storage.";

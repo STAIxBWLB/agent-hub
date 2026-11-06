@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
-import { RoomCodecUnsupportedError, RoomLink } from "../src/rooms/link.ts";
+import { RoomCodecUnsupportedError, RoomLink, type RoomLinkApplication } from "../src/rooms/link.ts";
 import { ROOM_CODEC_FEATURES, ROOM_CODEC_FEATURE_LIMIT, roomCodecFeatures, type RoomMessage } from "../src/rooms/application.ts";
-import type { RoomStore } from "../src/rooms/store.ts";
-import { createRoomEpoch, openFrame } from "../src/rooms/wire.ts";
+import { RoomStore } from "../src/rooms/store.ts";
+import { canonicalBytes, createRoomEpoch, decodeFrame, openFrame, sealFrame } from "../src/rooms/wire.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { generateHubIdentity } from "../src/rooms/crypto.ts";
 
 async function transport(features?: readonly string[]) {
@@ -63,4 +66,110 @@ test("codec advertisements have a bounded canonical vocabulary without inferring
     Array.from({ length: ROOM_CODEC_FEATURE_LIMIT + 1 }, (_, n) => `feature_${n}`)]) {
     expect(() => roomCodecFeatures(value)).toThrow();
   }
+});
+
+
+function gate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+async function durableTransport() {
+  const root = mkdtempSync(join(tmpdir(), "ahub-codec-race-"));
+  let now = Date.now();
+  const store = await RoomStore.open({ stateDir: root, clock: () => now }), recipient = await generateHubIdentity();
+  const { epoch, wire } = await createRoomEpoch({ owner: store.identity, members: [
+    { ...store.identity.public, label: "owner", exposedPeers: ["codex"] },
+    { ...recipient.public, label: "guest", exposedPeers: ["codex"] },
+  ] });
+  await store.install({ name: "work", broker: "ws://127.0.0.1:1/", wire, expectedDigest: null });
+  const sent: Uint8Array[] = [];
+  const session = { ws: { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (bytes: Uint8Array) => sent.push(Uint8Array.from(bytes)), close() {} },
+    generation: 1, room: epoch.room, broker: "ws://127.0.0.1:1/", phase: "ready", roster: { digest: epoch.digest },
+    ephemeral: true, codecFeatures: true, features: new Map([[recipient.public.fingerprint, [...ROOM_CODEC_FEATURES] as readonly string[]]]),
+    outbound: [] as { wire: Uint8Array; digest: string }[], outboundBytes: 0, frameSent: false, retryAttempt: 0,
+    pendingPresenceReplies: new Set<string>(), presenceAsked: false, requestPresenceReply: false, queue: [], queuedBytes: 0 };
+  const callbacks: RoomLinkApplication = { members() {}, receive: async () => {}, online: async () => {}, stored() {} };
+  const subject = new RoomLink({ store, name: "work", now: () => now, application: callbacks });
+  Object.assign(subject, { running: true, generation: 1, session });
+  const metadata = (message: Extract<RoomMessage, { type: "chat" }>) => ({ deliveryId: crypto.randomUUID(), application: message.envelope.id,
+    remotePeer: "user@guest", recipient: recipient.public.fingerprint, peer: "user", ackTimeoutMs: 1000, ttlMs: 60000 });
+  const internal = subject as unknown as { storedFrame(session: unknown, digest: string): void; observationTime(): number | undefined; receiveFrame(session: unknown, bytes: Uint8Array, local: ReturnType<RoomStore["get"]>): Promise<void> };
+  return { store, subject, internal, session, sent, recipient, metadata, callbacks, epoch, now: () => now, time: (value: number) => { now = value; },
+    close: async () => { Object.assign(subject, { session: undefined }); await subject.stop(); store.close(); rmSync(root, { recursive: true, force: true }); } };
+}
+
+test("codec loss while a durable sequence seal is held refuses before application commit", async () => {
+  const f = await durableTransport(), entered = gate(), release = gate();
+  const reserve = f.store.sequence.reserve;
+  f.store.sequence.reserve = async binding => { entered.resolve(); await release.promise; return reserve(binding); };
+  try {
+    const message = chat(); if (message.type !== "chat") throw new Error("expected chat");
+    const pending = f.subject.publishApplication(message, f.recipient.public.fingerprint, f.metadata(message));
+    void pending.catch(() => {});
+    await entered.promise; f.session.features.clear(); release.resolve();
+    await expect(pending).rejects.toBeInstanceOf(RoomCodecUnsupportedError);
+    expect(f.store.applicationOutbox("work")).toEqual([]);
+    expect(f.sent).toEqual([]);
+  } finally { release.resolve(); await f.close(); }
+});
+
+test("codec loss during outbox proof validation rolls back admission with the typed upgrade refusal", async () => {
+  const f = await durableTransport(), entered = gate(), release = gate();
+  const queue = f.store.queueApplication.bind(f.store);
+  f.store.queueApplication = async (name, wire, input, current) => { entered.resolve(); await release.promise; return queue(name, wire, input, current); };
+  try {
+    const message = chat(); if (message.type !== "chat") throw new Error("expected chat");
+    const pending = f.subject.publishApplication(message, f.recipient.public.fingerprint, f.metadata(message));
+    void pending.catch(() => {});
+    await entered.promise; f.session.features.clear(); release.resolve();
+    await expect(pending).rejects.toThrow("upgrade both hubs and the broker");
+    expect(f.store.applicationOutbox("work")).toEqual([]);
+    expect(f.sent).toEqual([]);
+  } finally { release.resolve(); await f.close(); }
+});
+
+test("actual socket publication withdraws an unsupported sealed attempt but preserves its durable application for a fresh-ad retry", async () => {
+  const f = await durableTransport();
+  try {
+    await f.subject.publishApplication(chat("codex"), f.recipient.public.fingerprint); // One attempted FIFO head delays the feature-required frame.
+    const head = f.session.outbound[0]!.digest;
+    const message = chat(); if (message.type !== "chat") throw new Error("expected chat");
+    const metadata = f.metadata(message);
+    const withdrawn = await f.subject.publishApplication(message, f.recipient.public.fingerprint, metadata);
+    expect(f.sent).toHaveLength(1);
+    f.session.features.clear(); f.internal.storedFrame(f.session, head);
+    expect(f.sent).toHaveLength(1);
+    expect(f.subject.connectionCause).toBe("codec_unsupported");
+    const retained = f.store.applicationOutbox("work");
+    expect(retained).toHaveLength(1); expect(retained[0]?.state).toBe("dispatching"); expect(retained[0]?.disposition).toBeUndefined();
+    expect(f.session.outbound).toEqual([]);
+    let retry: Promise<string> | undefined;
+    f.callbacks.codecsChanged = () => { retry = f.subject.publishApplication(message, f.recipient.public.fingerprint, metadata); };
+    const featureWire = await sealFrame({ epoch: f.epoch, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features: ROOM_CODEC_FEATURES }),
+      ephemeral: true, codecFeatures: true, sequence: { reserve: async () => "1", isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, featureWire, f.store.get("work"));
+    expect(retry).toBeDefined();
+    const resumed = await retry;
+    const sentFrames = f.sent.filter(wire => JSON.parse(new TextDecoder().decode(wire)).type === "frame");
+    expect(resumed).not.toBe(withdrawn); expect(sentFrames).toHaveLength(2);
+    expect(BigInt(decodeFrame(sentFrames[1]!).seq)).toBeGreaterThan(BigInt(decodeFrame(sentFrames[0]!).seq));
+    expect(f.store.applicationOutbox("work")).toHaveLength(1);
+    expect(f.store.applicationOutbox("work")[0]?.deliveryId).toBe(metadata.deliveryId);
+    expect(f.subject.connectionCause).toBeUndefined();
+  } finally { await f.close(); }
+});
+
+test("a clock rollback cause clears only after corrected observation and a real durable presence reservation", async () => {
+  const f = await durableTransport();
+  try {
+    expect(f.internal.observationTime()).toBe(f.now());
+    const highWater = f.now(); f.time(highWater - 1);
+    expect(f.internal.observationTime()).toBeUndefined(); expect(f.subject.connectionCause).toBe("clock_rollback");
+    f.time(highWater);
+    expect(f.internal.observationTime()).toBe(highWater); expect(f.subject.connectionCause).toBe("clock_rollback");
+    await f.subject.publishPresence();
+    expect(f.subject.connectionCause).toBeUndefined(); expect(f.sent.length).toBeGreaterThan(0);
+  } finally { await f.close(); }
 });
