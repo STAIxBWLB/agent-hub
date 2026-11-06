@@ -36,7 +36,7 @@ export function memorySyncLine(sync: MemorySyncRow, time = (at: number) => new D
   const cause = (causes.includes(sync.cause ?? "") ? sync.cause : "unknown") as MemorySyncCause;
   if (cause === "declined" && sync.placementActive === false) {
     const declined = Number.isSafeInteger(sync.declinedCount) && sync.declinedCount! >= 0 ? String(sync.declinedCount) : "unknown";
-    return "machine sync blocked: " + declined + " declined rows; per-row placement is not active on this store (agent-mem has no activation command yet, agent-mem#281). Inspect with `ahub memory declined`.";
+    return "machine sync blocked: " + declined + " declined rows; per-row placement is not active on this store. Activation is person-only: preview with `amem migrate --sync-placement --dry-run` and declare every writer via --writer-root. The hub does not yet supply the fresh placementAttestation required for active-placement sync (#1173). Inspect with `ahub memory declined`.";
   }
   const count = Number.isSafeInteger(sync.declinedCount) && sync.declinedCount! >= 0 ? `, ${sync.declinedCount} declined` : "";
   const ids = cause === "declined" && sync.declinedIdsKnown === false ? "; declined ID set unknown" : "";
