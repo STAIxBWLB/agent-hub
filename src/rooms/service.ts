@@ -32,7 +32,7 @@ export interface RoomChatOptions {
   roster?: (ids: readonly string[]) => void;
   changed?: () => void;
   limits?: () => LimitsConfig;
-  notice?: (value: { code: "application_capacity"; room: string; count: number } | { code: "sequence_gap"; room: string; sender: string; count: string }) => void;
+  notice?: (value: { code: "application_capacity"; room: string; count: number }) => void;
 }
 export interface RoomMetrics { since: number; outbound: number | null; inbound: number | null; withheld: number | null }
 interface Binding { store: RoomStore; name: string; room: string; link: RoomLink; digest: string; rosterMembers: string; online: boolean; states: Map<string, PeerState>; observedAt: Map<string, number>; observedMembers: Set<string>; tracked?: boolean }
@@ -105,10 +105,9 @@ export class RoomChat {
         if (row) this.outcome(this.bindings.get(context.name)!, row);
         const binding = this.bindings.get(context.name); if (binding) this.wakeRemotes(binding);
       },
-      capacityChanged: context => { if (context.current()) { const binding = this.bindings.get(context.name); if (binding) this.wakeRemotes(binding); this.capacityChanged(); } },
-      gap: (context, input) => {
-        if (context.current()) this.options.notice?.({ code: "sequence_gap", room: context.store.get(context.name)!.current.room, sender: input.sender, count: input.count });
-      },
+      capacityChanged: context => { if (context.current()) { const binding = this.bindings.get(context.name); if (binding) { this.wakeRemotes(binding); void this.resumeActive(binding); } this.capacityChanged(); } },
+      // The signed sequence is room-wide, while chat recipients are selective.
+      // A numeric gap is not evidence of loss and must not become an operator notice.
     };
   }
   private now(): number { return this.options.now?.() ?? Date.now(); }

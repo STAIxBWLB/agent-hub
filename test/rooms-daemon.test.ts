@@ -77,7 +77,8 @@ test("X5 live status and dashboard publish only loaded room metadata without bod
         expect(rows).toHaveLength(1);
         expect(rows[0]).toMatchObject({ name: "test", epoch: "1", memberCount: 1,
           relays: { since: 123456, outbound: 0, inbound: 0, withheld: 0 } });
-        expect(Object.keys(rows[0]).sort()).toEqual(["epoch", "link", "member", "memberCount", "name", "owner", "relays", "remotePeers", "room"]);
+        expect(Object.keys(rows[0]).sort()).toEqual(["epoch", "health", "link", "linkCause", "linkNextStep", "member", "memberCount", "name", "owner", "relays", "remotePeers", "room"]);
+        expect(rows[0].health).toEqual({ refused: { invalid_presence: 0, wrong_epoch: 0, trust_changed: 0, stale: 0, invalid_frame: 0 }, outboxDepth: 0, oldestOutboxAgeMs: null, lastReceiptAgeMs: null });
       }
       expect(JSON.stringify([status, snapshot])).not.toContain(canary);
     }
@@ -88,7 +89,11 @@ test("X5 live status and dashboard publish only loaded room metadata without bod
     const internal = (store as unknown as { rooms: Map<string, RoomState> }).rooms.get("test")!;
     const wire = internal.wire;
     Object.defineProperty(internal, "wire", { configurable: true, get() { getterReads++; throw new Error(canary); } });
-    try { expect(metadata.call(store!)[0]?.members).toBe(1); expect(getterReads).toBe(0); }
+    try {
+      expect(metadata.call(store!)[0]?.members).toBe(1);
+      expect((await f.person.request({ t: "status" })).status.rooms).toHaveLength(1);
+      expect(getterReads).toBe(0);
+    }
     finally { Object.defineProperty(internal, "wire", { configurable: true, enumerable: true, writable: true, value: wire }); }
     for (const name of ["status.json", "hub.log", "events.jsonl"]) expect(readFileSync(join(f.stateDir, name), "utf8")).not.toContain(canary);
   } finally { metrics.mockRestore(); details.mockRestore(); meta.mockRestore(); }

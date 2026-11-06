@@ -3,7 +3,7 @@ import { BasePeer, type DeliveryReceipt } from "../hub/peers.ts";
 import type { Envelope, PeerState } from "../hub/envelope.ts";
 import { encodeRoomMessage, parseRemotePeerId, type RoomChatEnvelope } from "./application.ts";
 import { readRoomOutbound, roomBoundary, type RoomBoundaryContext } from "./boundary.ts";
-import { RoomNotSentError } from "./link.ts";
+import { RoomCodecUnsupportedError, RoomNotSentError } from "./link.ts";
 
 export interface RemotePeerPorts {
   member: string;
@@ -216,6 +216,11 @@ export class RemotePeer extends BasePeer {
       }
     } catch (error) {
       if (!this.pending.has(deliveryId)) return;
+      if (error instanceof RoomCodecUnsupportedError && !immutable) {
+        let queued: boolean | undefined;
+        try { queued = this.ports.queued?.(deliveryId); } catch { queued = undefined; }
+        if (queued === false) { this.receipt({ id: deliveryId, state: "failed_safe", reason: error.message }); return; }
+      }
       if (error instanceof RoomNotSentError) {
         let retained: boolean | undefined;
         try { retained = this.ports.queued?.(deliveryId); } catch { retained = undefined; }

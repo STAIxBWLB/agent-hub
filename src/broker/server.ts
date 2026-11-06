@@ -2,7 +2,7 @@
 import type { ServerWebSocket } from "bun";
 import { assertRoomCryptoReady, decodeBase64url, encodeBase64url, randomBytes } from "../rooms/crypto.ts";
 import { brokerUrl, canonicalBytes, decodeFrame, decodeRoster, publicRosterWire, verifyPublicFrame, verifyPublicRoster, type VerifiedPublicRoster } from "../rooms/wire.ts";
-import { BROKER_CONTROL_LIMITS, decodeBrokerControl, encodeBrokerChallenge, verifyBrokerAuth, type BrokerChallenge } from "./protocol.ts";
+import { BROKER_CODEC_FEATURES_OPT_IN, BROKER_CONTROL_LIMITS, decodeBrokerControl, encodeBrokerChallenge, verifyBrokerAuth, type BrokerChallenge } from "./protocol.ts";
 import { BrokerStore, BrokerStoreError, type BrokerLimits } from "./store.ts";
 
 export const BROKER_SOCKET_LIMITS = Object.freeze({ connections: 128, verifications: 16, authMs: 10_000, rosterAckMs: 30_000, backpressureBytes: 1_048_576, queuedMessages: 8, queuedBytes: 2_097_152, globalQueuedBytes: 33_554_432 });
@@ -26,6 +26,7 @@ interface Client {
   ws?: ServerWebSocket<Client>;
   room: string;
   ephemeral: boolean;
+  codecFeatures: boolean;
   challenge: BrokerChallenge;
   phase: "challenge" | "authenticating" | "roster" | "ready" | "closed";
   busy: boolean;
@@ -142,7 +143,7 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
     client.phase = "roster"; client.rosterDigest = roster.digest;
     client.rosterDeadline = now() + BROKER_SOCKET_LIMITS.rosterAckMs;
     // Legacy hubs have a closed ready grammar; advertise only after HTTP opt-in.
-    if (send(client, publicRosterWire(roster))) control(client, { v: 1, type: "ready", room: client.room, member: client.member, epoch: roster.epoch, digest: roster.digest, ...(client.ephemeral ? { ephemeral: true } : {}) });
+    if (send(client, publicRosterWire(roster))) control(client, { v: 1, type: "ready", room: client.room, member: client.member, epoch: roster.epoch, digest: roster.digest, ...(client.ephemeral ? { ephemeral: true } : {}), ...(client.codecFeatures ? { codecFeatures: true } : {}) });
   }
   function pump(client: Client): void {
     if (stopping || client.phase === "closed" || !client.member) return;
@@ -218,7 +219,7 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
       const proof = await (ports.verifyFrame ?? verifyPublicFrame)({ wire: bytes, roster: selected });
       const onlineRecipients = proof.recipients.filter(recipient => {
         const target = members.get(`${client.room}|${recipient}`);
-        return target?.phase === "ready" && (!proof.ephemeral || target.ephemeral);
+        return target?.phase === "ready" && (!proof.ephemeral || target.ephemeral) && (!proof.codecFeatures || target.codecFeatures);
       });
       try {
         active(client);
@@ -290,7 +291,8 @@ export async function startBroker(options: BrokerOptions, ports: BrokerPorts = {
           const room = roomId(url.pathname.slice("/v1/rooms/".length));
           if (clients.size >= BROKER_SOCKET_LIMITS.connections) return new Response("busy", { status: 503 });
           const current = store.current(room)?.current;
-          const client: Client = { room, ephemeral: req.headers.get("x-agent-hub-ephemeral") === "1", challenge: { v: 1, type: "challenge", room, broker: publicUrl, nonce: encodeBase64url(randomBytes(32)), expiresAt: now() + BROKER_SOCKET_LIMITS.authMs, rosterDigest: current?.digest ?? null }, phase: "challenge", busy: false, inbox: [], inboxBytes: 0 };
+          const transportOptIn = req.headers.get("x-agent-hub-ephemeral");
+          const client: Client = { room, ephemeral: transportOptIn === "1" || transportOptIn === BROKER_CODEC_FEATURES_OPT_IN, codecFeatures: transportOptIn === BROKER_CODEC_FEATURES_OPT_IN, challenge: { v: 1, type: "challenge", room, broker: publicUrl, nonce: encodeBase64url(randomBytes(32)), expiresAt: now() + BROKER_SOCKET_LIMITS.authMs, rosterDigest: current?.digest ?? null }, phase: "challenge", busy: false, inbox: [], inboxBytes: 0 };
           clients.add(client);
           if (host.upgrade(req, { data: client })) return;
           clients.delete(client); return new Response("websocket required", { status: 400 });

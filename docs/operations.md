@@ -6340,3 +6340,19 @@ A legacy store without active per-row placement still blocks a sync containing d
 The bounded diagnostic addresses #1173 AC4; AC5 has result projection only; supported activation and fresh host-attestation integration remain necessary for default-host v3 sync. #1173 remains open until #281 ships and its supported path is adopted here.
 
 For a transport or unknown failure, run `ahub memory sync` as a person to see the local diagnostic. Logs keep only the cause class and known declined count, once per unchanged failure episode. Complete declined-ID sets can distinguish a changed failure without placing IDs or bodies in the log; incomplete inspection keeps the set unknown. Existing write-time screening and profile/privacy fences remain. SDK adoption and isolated fixtures do not prove live rollout or a successful sync of the person's memory home.
+
+### Room health diagnostics (#1204 T4)
+
+`ahub room status [name]` prints retained refused-frame counts by reason, room
+outbox depth, oldest age, last signed receipt age and the link cause with a next
+step. `--json` contains the same allowlisted metadata. Unknown age is not zero;
+legacy generic outbox rows have no creation timestamp. Refusal counts cover only
+retained diagnostics, not lifetime failures. No message body, key, broker URL or
+raw exception appears in these projections.
+
+`ahub status` names `rooms: unavailable (<code>)` if room storage cannot open.
+Open retries back off from 1 s to at most 30 s and stop on shutdown. For
+`clock_rollback`, correct the system clock to at least the last recorded room
+time; do not edit stored replay or clock records. A receive-only hub retries
+blocked admission when a successful journal checkpoint clears its storage error.
+Status reads and idle ticks do not poll blocked plaintext.

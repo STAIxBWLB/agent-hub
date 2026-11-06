@@ -231,3 +231,38 @@ ACK after durable local commit of either the receipt or the inbox entry.
 Deferred application admission may ACK its durable crypto inbox entry so it does
 not pin broker capacity; later admission commits and replays the same durable
 receipt path before retiring its local work.
+
+## Room codec visibility and sequence diagnostics (#1204 T4)
+
+The room-wide signed sequence counter and durable replay floors stay unchanged.
+A chat addresses one recipient, so another member can legitimately observe a
+numeric gap. The host no longer turns that number into an operator loss notice;
+three-member selective traffic therefore produces no false sequence-gap alarm.
+The low-level replay result remains available to transport tests and does not
+relax authentication, permanent sequence floors or exactly-once application admission.
+
+Codec support is compatibility evidence from fresh authenticated presence, never
+a permission or privacy grant. Version `2` of the existing
+`x-agent-hub-ephemeral` upgrade opt-in requests codec advertisements as well as
+ephemeral presence. A supporting broker returns `codecFeatures: true` only to
+that client. Version `1` keeps its existing ready response and presence grammar;
+an older broker that ignores version `2` returns the legacy ready shape and the
+new hub sends legacy frames.
+
+Upgraded links keep the existing signed presence payload byte shape and send a
+separate presence snapshot carrying a bounded, sorted `features` list. That
+snapshot has signed `ephemeral: true` and `codecFeatures: true` headers. The
+broker routes it only to clients that opted into codec support; legacy clients
+receive only their original presence grammar. Legacy and codec snapshots have
+separate coalescing groups so neither can replace the other's pending state.
+The feature snapshot does not request a reply or renew peer-state observations.
+
+The advertised codecs are `chat_v1`, `person_inbox_v1` and `read_invocation_v1`.
+Plain chat and status retain their legacy shape. Person-inbox sends require
+`person_inbox_v1`; invocation kinds require `read_invocation_v1`. An absent,
+unknown or missing advertisement refuses before sequence reservation, outbox
+enqueue, presence flush or socket publication, names the unavailable codec and
+asks the person to upgrade both hubs and the broker and reconnect before retrying.
+Live signed observations are scoped to the current connection and roster; saved,
+stale or replayed presence never grants codec support. Existing native, exposure,
+privacy and invocation authorization checks still decide whether a send is allowed.

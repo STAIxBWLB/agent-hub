@@ -1130,8 +1130,14 @@ The optional ephemeral field is used only after an opted-in connection receives
 clients that do not opt in. Missing advertisement means legacy presence frames,
 with dedupe/backoff still active. The broker withholds ephemeral frames from older member hubs
 until upgraded; application chat stays wire-compatible. See the [compatibility
-ceiling](../design/bus.md#room-wire-compatibility-1204-t1); #1204 T4 owns full codec
-feature negotiation.
+ceiling](../design/bus.md#room-wire-compatibility-1204-t1). Codec-aware presence
+uses the same upgrade header negotiation with value `2`. Only sessions whose
+ready reply explicitly confirms codec support receive signed feature-bearing
+presence. Legacy sessions receive the unchanged legacy presence bytes. Missing
+or unknown feature advertisements mean unsupported; they never grant exposure,
+roles, privacy clearance or native authority. A send needing a newer codec is
+refused before sequence reservation, sealing or room outbox writes and names the
+member upgrade step. Plain v1 chat remains usable across mixed versions.
 
 ### Durable state and outbound link
 
@@ -1402,10 +1408,25 @@ confirmed local admissions. Withheld counts are a subset of outbound handoffs,
 not an additional total. Missing or unreadable values stay `null`/unknown, never
 zero. These counters do not prove application completion or lifetime traffic.
 
-The projection contains no message body/title, reason, broker URL, key material
-or delivery history. This projection never reads a person inbox body; X5b below
+Room health additionally exposes retained refused-frame counts by closed reason,
+current outbox depth, oldest outbox age and last retained signed receipt age, and
+a closed link cause with a locally generated next step (#1204 T4). Unknown ages
+remain null, including generic legacy outbox rows without creation time. Counts
+are bounded retained diagnostics, not lifetime totals or delivery authority.
+The projection contains no message body/title, arbitrary error reason, broker URL,
+key material or delivery history. This projection never reads a person inbox body; X5b below
 provides that separate person-only CLI. Native/account and X7 two-machine
 receipts remain separate live verification.
+
+A failed store open is shown as `rooms: unavailable (<code>)` with a next step,
+and retried with exponential delay from one second to a thirty-second ceiling.
+Shutdown cancels the owned retry. Clock rollback is explicitly named; status
+reads never advance the durable clock. A verified Bus journal recovery write
+wakes deferred inbound room admission once without unrelated traffic or plaintext
+polling. This wake preserves recovery, PII, exposure and person-disposition fences.
+The signed sequence remains room-wide. Recipient-selective traffic makes gaps
+unobservable at a member, so operator gap notices are removed; monotone replay
+floors, dedupe and receipt evidence remain unchanged.
 
 ## Encrypted rooms: X5b person inbox (#446)
 

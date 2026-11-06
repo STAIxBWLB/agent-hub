@@ -136,6 +136,7 @@ async function hub(root: string, label: string, event: Signal, control: Control,
   const peer = new LocalPeer(); bus.add(peer); await peer.start();
   const commands = new RoomCommands({ cwd, stateDir, clock: () => control.now, chat, presence: () => [{ id: "codex", state: bus.stateOf("codex") }] });
   bus.onQueues = () => { chat!.queueChanged(); event.notify(); };
+  bus.onStorageRecovered = () => { void chat!.retryPending(); };
   let nativeStates = 0;
   bus.tap(eventRow => { if (eventRow.t === "state" && !eventRow.peer.includes("@")) { nativeStates++; commands.changed(); } event.notify(); });
   let closed = false;
@@ -208,6 +209,7 @@ async function mesh(ackSeconds = 600, brokerQueueCap?: number, legacyFrames = fa
   const roster = await command(a, "invite", { name: "work", request: request.artifact }); await command(b, "join", { name: "work", roster: roster.artifact });
   result.owner = owner; result.guest = guest;
   await event.wait(() => result.a.bus.stateOf("codex@beta") === "idle" && result.b.bus.stateOf("codex@alpha") === "idle", "both room peers online");
+  if (!legacyFrames) await event.wait(() => result.a.link?.codecSupported(guest, "person_inbox_v1") === true && result.b.link?.codecSupported(owner, "person_inbox_v1") === true, "signed codec advertisements reach both members");
   control.phase = "before"; return result;
 }
 async function acknowledgementDeadline(f: Mesh, side: Hub, application: string): Promise<void> {
@@ -1169,11 +1171,48 @@ test("a verified stale classification resends the retained signed receipt withou
   } finally { f.b.store!.replay.accept = accept; }
 });
 
-test("a durable sequence reservation gap is reported as fixed metadata without waiting for missing frames", async () => {
+test("a room-wide sequence reservation gap emits no operator loss notice", async () => {
   const f = await mesh(), state = f.a.store!.get("work")!, binding = { room: state.current.room, sender: f.owner, epoch: state.current.epoch, rosterDigest: state.current.digest };
   await f.a.store!.sequence.reserve(binding); await f.a.store!.sequence.reserve(binding);
   const env = newEnvelope("user", "chat after deliberately consumed sequence numbers", { to: ["codex@beta"] }); f.a.bus.publish(env);
   await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "gap does not hold later chat");
-  expect(f.b.notices.some(row => row.code === "sequence_gap" && row.room === binding.room && row.sender === f.owner && BigInt(String(row.count)) >= 2n)).toBe(true);
+  expect(f.b.notices.some(row => row.code === "sequence_gap")).toBe(false);
   expect(JSON.stringify(f.b.notices)).not.toContain(env.body);
+});
+
+
+test("three-member selective traffic raises no sequence-gap notice", async () => {
+  const f = await mesh(), c = await hub(f.root, "gamma", f.event, f.control, 600);
+  try {
+    const invitation = await command(f.a, "invite", { name: "work" });
+    const request = await command(c, "join", { name: "work", token: invitation.artifact, label: "gamma" });
+    const roster = await command(f.a, "invite", { name: "work", request: request.artifact });
+    await command(c, "join", { name: "work", roster: roster.artifact });
+    await f.event.wait(() => f.a.bus.stateOf("codex@gamma") === "idle" && f.b.bus.stateOf("codex@gamma") === "idle", "three signed memberships observed");
+    const onlyGamma = newEnvelope("codex", "selective gamma chat", { to: ["codex@gamma"] });
+    f.a.bus.publish(onlyGamma);
+    await f.event.wait(async () => (await outbound(f.a, onlyGamma.id))?.state === "completed (admitted)", "gamma selectively admits first application");
+    const onlyBeta = newEnvelope("codex", "selective beta chat", { to: ["codex@beta"] });
+    f.a.bus.publish(onlyBeta);
+    await f.event.wait(async () => (await outbound(f.a, onlyBeta.id))?.state === "completed (admitted)", "beta selectively admits later application");
+    expect(f.b.peer.got.some(row => row.id === onlyGamma.id)).toBe(false);
+    expect(c.peer.got.some(row => row.id === onlyBeta.id)).toBe(false);
+    expect(f.b.peer.got.filter(row => row.id === onlyBeta.id)).toHaveLength(1);
+    expect([...f.a.notices, ...f.b.notices, ...c.notices].some(row => row.code === "sequence_gap")).toBe(false);
+  } finally { await c.close(); }
+}, 20000);
+
+
+test("a receive-only hub retries deferred admission on the journal recovery edge", async () => {
+  const f = await mesh();
+  f.b.bus.storageError = "fixture unavailable journal";
+  const env = newEnvelope("codex", "receive-only journal recovery", { to: ["codex@beta"] });
+  f.a.bus.publish(env);
+  await f.event.wait(() => f.b.store!.pendingApplications("work").length === 1 && f.b.store!.pendingInbox("work").length === 1,
+    "signed incoming plaintext stays deferred without journal admission");
+  expect(f.b.peer.got.some(row => row.id === env.id)).toBe(false);
+  f.b.bus.setManualPaused([]); // Legitimate durable write verifies recovery, without outgoing traffic or explicit room retry.
+  await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (admitted)", "storage recovery wakes the receive-only room");
+  expect(f.b.peer.got.filter(row => row.id === env.id)).toHaveLength(1);
+  expect(f.b.store!.pendingInbox("work")).toEqual([]);
 });

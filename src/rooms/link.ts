@@ -1,11 +1,12 @@
 /** Outbound room transport. The local bus and application delivery boundary belong to X4. */
-import { createBrokerAuth, decodeBrokerChallenge, encodeBrokerControl } from "../broker/protocol.ts";
+import { BROKER_CODEC_FEATURES_OPT_IN, createBrokerAuth, decodeBrokerChallenge, encodeBrokerControl } from "../broker/protocol.ts";
 import { assertRoomCryptoReady, encodeBase64url, sha256, RoomCryptoError } from "./crypto.ts";
 import { brokerUrl, canonicalBytes, decodeFrame, decodeRoster, openFrame, roomMembers, sealFrame, verifyPublicRoster, RoomWireError, type FrameWire, type FrameOpenResult, type VerifiedPublicRoster } from "./wire.ts";
 import type { RoomRefusalReason, RoomState, RoomStore } from "./store.ts";
 import { RoomUnmatchedReceiptError, RoomFreshChatCapacityError, RoomStoreError, type RoomOutgoingInput } from "./store.ts";
 import { ROOM_STOP_TIMEOUT_MS, roomRefreshPeriod } from "./liveness.ts";
-import { decodeRoomMessage, encodeRoomMessage, type RoomMessage } from "./application.ts";
+import { roomHealthCause, roomHealthNextStep, type RoomHealthCause } from "./health.ts";
+import { ROOM_CODEC_FEATURES, roomCodecFeatures, roomRequiredCodecFeature, decodeRoomMessage, encodeRoomMessage, type RoomCodecFeature, type RoomMessage } from "./application.ts";
 
 export type RoomLinkState = "offline" | "connecting" | "online";
 export type RoomPresenceState = "idle" | "busy" | "paused" | "offline";
@@ -45,6 +46,13 @@ export class RoomLinkError extends Error {
   }
 }
 /** Only before durable application enqueue: the Bus may retain its original queue item. */
+export class RoomCodecUnsupportedError extends Error {
+  readonly code = "codec_unsupported";
+  constructor(readonly feature: RoomCodecFeature) {
+    super(`Room send refused: recipient codec support for ${feature} is unavailable; upgrade both hubs and the broker, reconnect the room, then retry.`);
+    this.name = "RoomCodecUnsupportedError";
+  }
+}
 export class RoomNotSentError extends Error {
   readonly code = "not_sent";
   constructor() { super("room application was not queued; retry when the link is ready"); this.name = "RoomNotSentError"; }
@@ -55,7 +63,7 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const STATES: readonly string[] = ["idle", "busy", "paused", "offline"];
-interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void; afterInboundAck?: string }
+interface PendingFrame { wire: Uint8Array; digest: string; presence: boolean; requestReply: boolean; current: () => boolean; retained?: () => boolean; onSent?: () => void; afterInboundAck?: string; codecFeatures?: boolean }
 interface Session {
   closingHead?: PendingFrame;
   refresh?: ReturnType<typeof setTimeout>;
@@ -72,6 +80,8 @@ interface Session {
   frameRetry?: ReturnType<typeof setTimeout>;
   lastPresence?: string;
   ephemeral?: boolean;
+  codecFeatures?: boolean;
+  features?: Map<string, readonly string[]>;
   ws: WebSocket;
   generation: number;
   room: string;
@@ -106,7 +116,8 @@ function packet(bytes: Uint8Array): Record<string, unknown> {
   return row;
 }
 function presence(bytes: Uint8Array, exposed: readonly string[]): RoomPresencePeer[] {
-  const decoded = packet(bytes), row = exact(decoded, Object.hasOwn(decoded, "requestReply") ? ["v", "type", "peers", "requestReply"] : ["v", "type", "peers"]);
+  const decoded = packet(bytes), row = exact(decoded, ["v", "type", "peers", ...(Object.hasOwn(decoded, "requestReply") ? ["requestReply"] : []), ...(Object.hasOwn(decoded, "features") ? ["features"] : [])]);
+  if (Object.hasOwn(row, "features")) roomCodecFeatures(row.features);
   if (row.requestReply !== undefined && typeof row.requestReply !== "boolean") fail();
   if (row.type !== "presence" || !Array.isArray(row.peers) || row.peers.length > 64) fail();
   const peers = row.peers.map(value => {
@@ -131,6 +142,8 @@ export class RoomLink {
   private reconnect?: ReturnType<typeof setTimeout>;
   private attempts = 0;
   private state: RoomLinkState = "offline";
+  private cause?: RoomHealthCause;
+  private clockHighWater?: number;
   private publishing = false;
   private publishDirty = false;
   private replyPresence = false;
@@ -144,13 +157,19 @@ export class RoomLink {
 
   /** Advisory transport state without copying or decoding a room epoch for a status poll. */
   get connectionState(): RoomLinkState { return this.state; }
+  get connectionCause(): RoomHealthCause | undefined { return this.cause; }
   /** Negotiated transport evidence only; unknown until this session is ready. */
+  codecSupported(recipient: string, feature: RoomCodecFeature): boolean {
+    const session = this.session;
+    return !!session && session.phase === "ready" && session.codecFeatures === true && session.features?.get(recipient)?.includes(feature) === true;
+  }
   get livenessTracked(): boolean | undefined { return this.session?.phase === "ready" ? this.session.ephemeral : undefined; }
-  status(): { state: RoomLinkState; members: number } {
+  status(): { state: RoomLinkState; members: number; cause?: RoomHealthCause; nextStep?: string } {
     try {
       const row = this.options.store.get(this.options.name);
-      return { state: this.state, members: row && !row.left ? roomMembers(row.current).length : 0 };
-    } catch { return { state: "offline", members: 0 }; }
+      return { state: this.state, members: row && !row.left ? roomMembers(row.current).length : 0,
+        ...(this.cause ? { cause: this.cause, nextStep: roomHealthNextStep(this.cause) } : {}) };
+    } catch (error) { const cause = roomHealthCause(error); return { state: "offline", members: 0, cause, nextStep: roomHealthNextStep(cause) }; }
   }
   async start(): Promise<void> {
     if (this.running || this.stopping) return;
@@ -224,12 +243,12 @@ export class RoomLink {
     if (session.refresh) clearTimeout(session.refresh);
     // Legacy brokers retain state-change/dedupe publication without periodic traffic.
     if (!session.ephemeral || !this.running || this.stopping) return;
-    session.refreshedAt = (this.options.now ?? Date.now)();
+    session.refreshedAt = this.observationTime();
     session.refresh = setTimeout(() => {
       session.refresh = undefined;
       if (this.session !== session || !this.running || this.stopping || session.phase !== "ready") return;
-      const now = (this.options.now ?? Date.now)();
-      if (now - session.refreshedAt! >= this.refreshMs) {
+      const now = this.observationTime();
+      if (now !== undefined && session.refreshedAt !== undefined && now - session.refreshedAt >= this.refreshMs) {
         session.pendingPresenceReplies.clear(); session.presenceAsked = false;
         session.requestPresenceReply = true; this.forcePresenceRequest = true;
         void this.publishPresence().catch(() => this.retry(session));
@@ -238,15 +257,23 @@ export class RoomLink {
     }, this.refreshMs);
     session.refresh.unref?.();
   }
-  private setState(state: RoomLinkState): void {
-    if (this.state === state) return;
-    this.state = state;
+  private observationTime(): number | undefined {
+    let now: number;
+    try { now = (this.options.now ?? Date.now)(); } catch { this.setState(this.state, "unavailable"); return undefined; }
+    if (!Number.isSafeInteger(now) || now < 0) { this.setState(this.state, "unavailable"); return undefined; }
+    if (this.clockHighWater !== undefined && now < this.clockHighWater) { this.setState(this.state, "clock_rollback"); return undefined; }
+    this.clockHighWater = now;
+    return now;
+  }
+  private setState(state: RoomLinkState, cause?: RoomHealthCause): void {
+    if (this.state === state && this.cause === cause) return;
+    this.state = state; this.cause = cause;
     try { this.options.onState?.(state); } catch { /* observation never changes transport authority */ }
   }
   private current(session: Session, digest?: string, final = false): RoomState {
     if ((!this.running && !(final && this.stopping)) || this.session !== session || session.generation !== this.generation || session.ws.readyState !== WebSocket.OPEN) fail("state_changed");
     let row: RoomState | undefined;
-    try { row = this.options.store.get(this.options.name); } catch { fail("unavailable"); }
+    try { row = this.options.store.get(this.options.name); } catch (error) { this.setState(this.state, roomHealthCause(error)); fail("unavailable"); }
     if (!row || row.left || row.current.room !== session.room || row.broker !== session.broker || (digest !== undefined && row.current.digest !== digest)) fail("state_changed");
     return row;
   }
@@ -324,7 +351,7 @@ export class RoomLink {
     }).catch(() => undefined);
     return work;
   }
-  private disconnect(session = this.session): void {
+  private disconnect(session = this.session, cause?: RoomHealthCause): void {
     if (session && session !== this.session) return;
     this.generation++;
     this.session = undefined;
@@ -340,12 +367,16 @@ export class RoomLink {
       session.queue.length = 0; session.queuedBytes = 0; session.deferredFrame = undefined;
       try { session.ws.close(1000, "disconnected"); } catch { /* already closed */ }
     }
-    this.setState("offline");
+    this.setState("offline", cause);
   }
-  private retry(session?: Session): void {
+  private retry(session?: Session, error?: unknown): void {
     if (this.stopping) return;
     if (session && this.session !== session) return;
-    this.disconnect(session);
+    const cause = error instanceof RoomStoreError ? roomHealthCause(error)
+      : this.cause === "broker_refused" || this.cause === "clock_rollback" ? this.cause
+      : error instanceof RoomLinkError ? error.code === "limit" ? "backpressure" : error.code === "invalid_wire" ? "untrusted" : error.code
+      : this.cause === "backpressure" ? this.cause : "transport_closed";
+    this.disconnect(session, cause);
     if (!this.running || this.reconnect) return;
     const ceiling = Math.min(LIMITS.reconnectMaxMs, 1000 * 2 ** Math.min(this.attempts++, 9));
     const delay = Math.floor(ceiling / 2 + Math.random() * ceiling / 2);
@@ -355,24 +386,24 @@ export class RoomLink {
   private connect(): void {
     if (!this.running || this.session) return;
     let row: RoomState | undefined;
-    try { row = this.options.store.get(this.options.name); } catch { this.setState("offline"); return; }
+    try { row = this.options.store.get(this.options.name); } catch (error) { this.retry(undefined, error); return; }
     if (!row || row.left) { this.setState("offline"); return; }
     let url: URL;
     try {
       url = new URL(brokerUrl(row.broker));
       if (url.pathname !== "/" || url.search) fail("untrusted");
-    } catch { this.setState("offline"); return; }
+    } catch { this.setState("offline", "untrusted"); return; }
     url.pathname = `/v1/rooms/${row.current.room}`;
     let ws: WebSocket;
-    // ponytail: negotiate only ephemeral here; replace this opt-in with #1204 T4 codec capabilities.
-    try { ws = new WebSocket(url.href, { headers: { "x-agent-hub-ephemeral": "1" } }); } catch { this.retry(); return; }
+    // Version 2 of the existing opt-in adds codec advertisements; a legacy broker returns the legacy ready shape.
+    try { ws = new WebSocket(url.href, { headers: { "x-agent-hub-ephemeral": BROKER_CODEC_FEATURES_OPT_IN } }); } catch { this.retry(); return; }
     ws.binaryType = "arraybuffer";
     const generation = ++this.generation;
     const session: Session = { ws, generation, room: row.current.room, broker: row.broker, phase: "challenge", pendingPresenceReplies: new Set(), presenceAsked: false, outbound: [], outboundBytes: 0, frameSent: false, retryAttempt: 0, queue: [], queuedBytes: 0, processing: false, initialRoster: true, requestPresenceReply: true,
       handshake: setTimeout(() => this.retry(session), LIMITS.handshakeMs) };
     session.handshake.unref?.();
     this.session = session;
-    this.setState("connecting");
+    this.setState("connecting", "connecting");
     ws.addEventListener("message", event => this.receive(session, event.data));
     ws.addEventListener("close", () => this.retry(session));
     ws.addEventListener("error", () => this.retry(session));
@@ -382,15 +413,15 @@ export class RoomLink {
     if (bytes.length > LIMITS.packetBytes || session.ws.bufferedAmount > LIMITS.backpressure) fail("limit");
     session.ws.send(bytes);
   }
-  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void, afterInboundAck?: string): void {
+  private queueFrame(session: Session, wire: Uint8Array, digest: string, requestReply = false, current: () => boolean = () => true, presence = false, retained?: () => boolean, onSent?: () => void, afterInboundAck?: string, codecFeatures = false): void {
     this.current(session, undefined, this.stopping);
     // Only an unsent observation may be replaced. Never reorder an attempted frame.
     if (presence) {
-      const at = session.outbound.findIndex((frame, index) => frame !== session.closingHead && frame.presence && (!frame.requestReply || requestReply) && (index > 0 || !session.frameSent && !session.frameRetry));
+      const at = session.outbound.findIndex((frame, index) => frame !== session.closingHead && frame.presence && !!frame.codecFeatures === codecFeatures && (!frame.requestReply || requestReply) && (index > 0 || !session.frameSent && !session.frameRetry));
       if (at >= 0) session.outboundBytes -= session.outbound.splice(at, 1)[0]!.wire.byteLength;
     }
     if (session.outbound.length >= LIMITS.packets || session.outboundBytes + wire.byteLength > LIMITS.queuedBytes) fail("limit");
-    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent, afterInboundAck }); session.outboundBytes += wire.byteLength;
+    session.outbound.push({ wire, digest, presence, requestReply, current, retained, onSent, afterInboundAck, codecFeatures }); session.outboundBytes += wire.byteLength;
     this.pumpFrames(session);
   }
   private pumpFrames(session: Session): void {
@@ -424,12 +455,14 @@ export class RoomLink {
     session.frameSent = false; session.retryAttempt = 0;
     if (session.frameRetry) clearTimeout(session.frameRetry);
     session.frameRetry = undefined;
+    if (this.cause === "backpressure") this.setState(this.state);
     if (this.stoppedFrame?.digest === digest) this.stoppedFrame.resolve();
     this.pumpFrames(session);
   }
   private backoffFrame(session: Session, digest: string): void {
     if (session.outbound[0]?.digest !== digest || session.frameRetry) return;
     session.frameSent = false;
+    this.setState(this.state, "backpressure");
     const delay = Math.min(30_000, 250 * 2 ** Math.min(session.retryAttempt++, 7));
     session.frameRetry = setTimeout(() => {
       session.frameRetry = undefined;
@@ -466,7 +499,7 @@ export class RoomLink {
     if (session.processing || this.session !== session || !session.queue.length) return;
     const bytes = session.queue.shift()!; session.queuedBytes -= bytes.length;
     session.processing = true;
-    void this.handle(session, bytes).catch(() => this.retry(session)).finally(() => {
+    void this.handle(session, bytes).catch(error => this.retry(session, error)).finally(() => {
       session.processing = false;
       this.drain(session);
     });
@@ -506,8 +539,8 @@ export class RoomLink {
       return;
     }
     if (message.type === "ready") {
-      const ready = exact(message, ["v", "type", "room", "member", "epoch", "digest", ...(Object.hasOwn(message, "ephemeral") ? ["ephemeral"] : [])]), roster = session.roster;
-      if (ready.ephemeral !== undefined && ready.ephemeral !== true) fail();
+      const ready = exact(message, ["v", "type", "room", "member", "epoch", "digest", ...(Object.hasOwn(message, "ephemeral") ? ["ephemeral"] : []), ...(Object.hasOwn(message, "codecFeatures") ? ["codecFeatures"] : [])]), roster = session.roster;
+      if (ready.ephemeral !== undefined && ready.ephemeral !== true || ready.codecFeatures !== undefined && (ready.codecFeatures !== true || ready.ephemeral !== true)) fail();
       if (!roster || ready.room !== local.current.room || ready.member !== this.options.store.identity.public.fingerprint || ready.epoch !== roster.epoch || ready.digest !== roster.digest) fail("untrusted");
       if (roster.digest !== local.current.digest) {
         if (roster.owner !== this.options.store.identity.public.fingerprint || BigInt(roster.epoch) >= BigInt(local.current.epoch)) fail("untrusted");
@@ -515,17 +548,18 @@ export class RoomLink {
         this.send(session, local.wire); return;
       }
       if (session.presenceRoster !== roster.digest) {
-        session.presenceRoster = roster.digest; session.pendingPresenceReplies.clear(); session.presenceAsked = false;
+        session.presenceRoster = roster.digest; session.features = new Map(); session.pendingPresenceReplies.clear(); session.presenceAsked = false;
         session.requestPresenceReply = true; session.lastPresence = undefined;
       }
       session.ephemeral = ready.ephemeral === true;
+      session.codecFeatures = ready.codecFeatures === true;
       session.phase = "ready"; session.ownerUpgrading = false; clearTimeout(session.handshake); this.attempts = 0;
       if (session.deferredFrame) {
         session.queue.unshift(session.deferredFrame); session.queuedBytes += session.deferredFrame.byteLength; session.deferredFrame = undefined;
       }
       if (!this.running || this.stopping) return;
-      this.armPresenceRefresh(session);
       this.setState("online");
+      this.armPresenceRefresh(session);
       const context = this.context(session, local.current.digest);
       this.options.application?.members(context);
       this.restoreReceipts(session);
@@ -587,6 +621,7 @@ export class RoomLink {
       // X2 declares these refusal controls nonterminal. Their unsigned control
       // cannot settle any application; its local ACK deadline records uncertainty.
       if (error.code === "replay_refused" || error.code === "unexpected_ack") return;
+      this.setState(this.state, "broker_refused");
       fail("unavailable");
     }
     fail();
@@ -615,9 +650,15 @@ export class RoomLink {
         if (!sender) return { status: "trust_changed" };
         let validPresence = false;
         try {
-          if (packet(input.plaintext).type === "presence") { presence(input.plaintext, sender.exposedPeers); validPresence = true; }
+          if (packet(input.plaintext).type === "presence") {
+            presence(input.plaintext, sender.exposedPeers);
+            const features = packet(input.plaintext).features;
+            if (frame.codecFeatures === true ? !session.codecFeatures || features === undefined : features !== undefined) fail();
+            validPresence = true;
+          }
           else {
             invalidApplication = true;
+            if (frame.codecFeatures) fail("untrusted");
             if (!this.options.application) fail("untrusted");
             application = decodeRoomMessage(input.plaintext);
             if (application.type === "chat" && application.envelope.from !== "user" && !sender.exposedPeers.includes(application.envelope.from)) fail("untrusted");
@@ -674,9 +715,14 @@ export class RoomLink {
       } else {
         const peers = presence(result.plaintext, sender.exposedPeers);
         this.current(session, digest);
-        session.pendingPresenceReplies.delete(frame.sender);
-        if (session.presenceAsked && session.pendingPresenceReplies.size === 0) session.requestPresenceReply = false;
-        try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
+        if (frame.codecFeatures === true) {
+          (session.features ??= new Map()).set(frame.sender, roomCodecFeatures(packet(result.plaintext).features));
+        } else {
+          session.features?.delete(frame.sender); // A new legacy observation cannot inherit an earlier remote process codec claim.
+          session.pendingPresenceReplies.delete(frame.sender);
+          if (session.presenceAsked && session.pendingPresenceReplies.size === 0) session.requestPresenceReply = false;
+          try { this.options.onPresence?.({ member: frame.sender, peers }); } catch { /* validated observation only */ }
+        }
         this.current(session, digest);
         this.options.store.settleInbox(this.options.name, acceptedDigest);
         this.capacityChanged(session, digest);
@@ -749,6 +795,8 @@ export class RoomLink {
     const session = this.session;
     if (this.stopping || !this.running || !session || session.phase !== "ready") { if (metadata) throw new RoomNotSentError(); fail("unavailable"); }
     if (this.applicationPauses.size) { if (metadata) throw new RoomNotSentError(); fail("state_changed"); }
+    const required = roomRequiredCodecFeature(message);
+    if (required && !this.codecSupported(recipient, required)) throw new RoomCodecUnsupportedError(required);
     const digest = this.current(session).current.digest;
     const allowed = () => this.publicationCurrent(session, digest) && current();
     const admitted = () => this.applicationPauses.size === 0 && allowed();
@@ -768,6 +816,7 @@ export class RoomLink {
       return await this.serialSend(async () => {
       if (presenceWork) await presenceWork;
       if (!admitted()) fail("state_changed");
+      if (required && !this.codecSupported(recipient, required)) throw new RoomCodecUnsupportedError(required);
       if (metadata && (session.outbound.length >= LIMITS.packets || session.outboundBytes + plaintext.byteLength > LIMITS.queuedBytes
         || session.ws.bufferedAmount > LIMITS.backpressure)) throw new RoomNotSentError();
       if (message.type === "receipt") {
@@ -814,6 +863,7 @@ export class RoomLink {
       }
       return frameDigest;
     }); } catch (error) {
+      if (error instanceof RoomCodecUnsupportedError) throw error;
       if (metadata && !queueStarted) throw new RoomNotSentError();
       throw error;
     }
@@ -861,10 +911,20 @@ export class RoomLink {
             session.requestPresenceReply = session.pendingPresenceReplies.size > 0;
             if (this.retiredPresenceBytes && this.options.store.ordinaryInboxAvailable(this.options.name, this.retiredPresenceBytes)) this.retiredPresenceBytes = 0;
           } : undefined);
+        if (session.codecFeatures) {
+          const featureWire = await sealFrame({ epoch: row.current, identity, recipients,
+            plaintext: canonicalBytes({ v: 1, type: "presence", peers, features: ROOM_CODEC_FEATURES }),
+            ephemeral: true, codecFeatures: true, sequence: this.options.store.sequence });
+          if (!this.publicationCurrent(session, row.current.digest)) return;
+          const featureDigest = await this.frameDigest(featureWire);
+          this.queueFrame(session, featureWire, featureDigest, false,
+            () => this.publicationCurrent(session, row.current.digest) && peers.every(peer => this.currentPresence(own.exposedPeers).some(value => value.id === peer.id)),
+            true, undefined, undefined, undefined, true);
+        }
         session.lastPresence = presenceKey; sent = true;
       });
     } catch (error) {
-      this.retry(session); // Existing bounded reconnect, never a self-polling refresh retry.
+      this.retry(session, error); // Existing bounded reconnect, never a self-polling refresh retry.
       throw error;
     } finally {
       this.publishing = false;

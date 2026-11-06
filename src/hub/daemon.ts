@@ -5693,7 +5693,7 @@ export async function startDaemon(opts: DaemonOptions) {
     screen: opts.piiScreen ?? (text => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),
     policyVersion: () => configRevision,
     limits: () => config.limits,
-    notice: value => notify(value.code === "application_capacity" ? `room ${value.room}: application capacity reached (${value.count}); resolve incoming uncertainty with ahub room resolve` : `room ${value.room}: signed frame sequence gap ${value.count} from ${value.sender}`),
+    notice: value => notify(`room ${value.room}: application capacity reached (${value.count}); resolve incoming uncertainty with ahub room resolve`),
     invocationAuthorization: (env, identity) => roomInvocations.authorization(env, identity), invocation: input => roomInvocations.receive(input),
     roster: ids => { remoteRoster.clear(); for (const id of ids) remoteRoster.add(id); },
     changed: () => { if (ready && !stopping) writeStatus(); },
@@ -5702,9 +5702,14 @@ export async function startDaemon(opts: DaemonOptions) {
   remoteQueueChanged = () => roomChat.queueChanged();
   const roomCommands = new RoomCommands({ stateDir: opts.stateDir, cwd: opts.cwd,
     presence: () => [...bus.peers].filter(([id]) => !id.includes("@") && membershipAllowed(id)).map(([id, peer]) => ({ id, state: peer.state })), chat: roomChat,
+    changed: () => { if (ready && !stopping) writeStatus(); },
   });
   // Room crypto/state failure disables only this optional outbound service, never local work.
-  void roomCommands.start().catch(() => log("rooms unavailable"));
+  bus.onStorageRecovered = () => { if (!stopping) void roomChat.retryPending().catch(() => undefined); };
+  void roomCommands.start().catch(() => {
+    const failure = roomCommands.unavailable();
+    log(`rooms unavailable (${failure?.code ?? "unavailable"}); ${failure?.nextStep ?? "check room storage and restart the hub"}`);
+  });
   let roomInboxExpiryFailed = false;
   const roomInboxExpiry = setInterval(() => {
     if (stopping || recoveryActive() || bus.isRecoveryHeld) return;
@@ -6015,6 +6020,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const queueBackpressure = tasks.queuePressureStatus(peerIds);
     const crashLines = crashView();
     const deliveryFailures = bus.failedDeliveryCounts();
+    const roomsUnavailable = roomCommands.unavailable();
     const view = {
     ...(deliveryFailures ? { deliveryFailures } : {}),
     ...(queueBackpressure ? { queueBackpressure } : {}),
@@ -6022,6 +6028,7 @@ export async function startDaemon(opts: DaemonOptions) {
     projectId,
     instanceId,
     rooms: roomCommands.statusView(),
+    ...(roomsUnavailable ? { roomsUnavailable } : {}),
     version: VERSION,
     pluginBundle: SERVER_JS,
     pendingRestart: allPendingRestart(),

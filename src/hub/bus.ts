@@ -266,6 +266,8 @@ export class Bus {
   private condensing = 0;
   private closed = false;
   storageError?: string;
+  /** Verified durable-write recovery edge; observation never changes settlement. */
+  onStorageRecovered?: () => void;
 
   constructor(opts: Partial<BusOptions> = {}) {
     this.opts = { ...DEFAULT_BUS, ...opts };
@@ -423,6 +425,7 @@ export class Bus {
   private persist(): void {
     if (!this.journal) return;
     const tracking = this.trackingQueuePressure();
+    const wasUnavailable = this.storageError !== undefined;
     try {
       this.journal.transaction(() => {
         for (const outcome of this.pendingOutcomes) this.journal!.createDelivery(outcome);
@@ -430,6 +433,10 @@ export class Bus {
       });
       this.pendingOutcomes.length = 0;
       this.storageError = undefined;
+      if (wasUnavailable) queueMicrotask(() => {
+        if (this.closed || this.storageError) return;
+        try { this.onStorageRecovered?.(); } catch { /* Recovery observers cannot undo the durable write. */ }
+      });
     }
     catch { this.storageError = "delivery journal unavailable"; throw new Error("delivery journal unavailable"); }
   }

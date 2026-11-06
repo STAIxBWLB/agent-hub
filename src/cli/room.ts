@@ -1,3 +1,4 @@
+import { projectRoomDiagnostics, type RoomStatusDiagnostics } from "../rooms/status.ts";
 import { decodeBase64url } from "../rooms/crypto.ts";
 import { roomReceiptReasonText, type RoomReceiptReason } from "../rooms/application.ts";
 import { frame, type Envelope } from "../hub/envelope.ts";
@@ -145,7 +146,7 @@ type DeliveryState = "pending" | "dispatching" | "accepted" | "completed" | "com
 interface DeliveryRow { direction: "inbound" | "outbound"; id: string; application: string; peer: string; state: DeliveryState; disposition?: "accept" | "completed" | "retry" | "discard"; lateReceipt?: "completed (admitted)" | "completed (inbox)" | "failed_safe"; refusalReason?: RoomReceiptReason; holdReason?: "epoch rotated" }
 interface DeliverySummary { direction: "inbound"; pending: number; needsReview: number; truncated: boolean }
 interface RemotePeerRow { id: string; state: "idle" | "busy" | "paused" | "offline"; presence?: "idle" | "busy" | "paused" | "offline" | "unknown"; liveness?: "untracked" }
-interface RoomRow { name: string; room: string; owner: string; member: string; epoch: string; state: string; deliveries?: (DeliveryRow | DeliverySummary)[]; remotePeers?: RemotePeerRow[] }
+interface RoomRow extends RoomStatusDiagnostics { name: string; room: string; owner: string; member: string; epoch: string; state: string; deliveries?: (DeliveryRow | DeliverySummary)[]; remotePeers?: RemotePeerRow[] }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REMOTE_ID = /^[a-z][a-z0-9-]{0,31}@[a-z][a-z0-9-]{0,31}$/;
 const REFUSAL_REASONS: readonly RoomReceiptReason[] = ["admitted", "not_exposed", "boundary_refused", "invalid_message", "rate_limited", "hop", "person_inbox_unsupported", "inbox_admitted", "inbox_full", "inbox_oversize", "inbox_expired", "inbox_age_unavailable"];
@@ -206,7 +207,7 @@ function roomRows(value: unknown): RoomRow[] {
       || typeof row.epoch !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(row.epoch)
       || typeof row.state !== "string" || !/^[a-z][a-z_-]{0,31}$/.test(row.state)) return fail("invalid_reply");
     // Ignore all other fields, even from a newer daemon: read output never grows into room bodies or secrets.
-    return { name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch, state: row.state,
+    return { name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch, state: row.state, ...projectRoomDiagnostics(row),
       ...(row.deliveries !== undefined ? { deliveries: deliveryRows(row.deliveries) } : {}), ...(row.remotePeers !== undefined ? { remotePeers: remotePeerRows(row.remotePeers) } : {}) };
   });
 }
@@ -274,6 +275,12 @@ export async function runRoomCommand(args: readonly string[], request: RoomReque
     console.log(`Rooms (${rows.length})`);
     for (const row of rows) {
       console.log(`${row.name} ${row.room} epoch ${row.epoch} ${row.state}\n  owner ${row.owner}\n  member ${row.member}`);
+      if (command.op === "status") {
+        const health = row.health, age = (value: number | null | undefined) => typeof value === "number" ? `${value}ms` : "unknown";
+        console.log(`  link cause ${row.linkCause ?? "unknown"}; next: ${row.linkNextStep ?? "Check broker availability, then read ahub room status again."}`);
+        console.log(`  outbox ${health?.outboxDepth ?? "unknown"}; oldest ${age(health?.oldestOutboxAgeMs)}; last receipt ${age(health?.lastReceiptAgeMs)}`);
+        console.log(`  refused: ${health?.refused ? Object.entries(health.refused).map(([reason, count]) => `${reason} ${count}`).join(", ") : "unknown"}`);
+      }
       for (const peer of row.remotePeers ?? []) console.log(`  peer ${peer.id}: ${peer.presence ?? peer.state}${peer.liveness === "untracked" ? "; liveness not tracked (broker without ephemeral); upgrade the broker to track liveness" : ""}`);
       for (const delivery of row.deliveries ?? []) {
         if (!("id" in delivery)) console.log(`  inbound: pending ${delivery.pending}, needs_review ${delivery.needsReview}${delivery.truncated ? "; truncated" : ""}`);

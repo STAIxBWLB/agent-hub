@@ -2,6 +2,7 @@
 import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
+import type { RoomHealth } from "./health.ts";
 import { realPath } from "../hub/project.ts";
 import { MAX_HOP, USER } from "../hub/envelope.ts";
 import { assertRoomCryptoReady, exportHubIdentityForStorage, generateHubIdentity, importHubIdentity, decodeBase64url, encodeBase64url, sha256, type HubIdentity, type LocalIdentityRecord } from "./crypto.ts";
@@ -1558,8 +1559,26 @@ export class RoomStore {
     });
   }
   refused(name: string): RoomRefusal[] {
-    const state = this.get(name); if (!state) return [];
+    this.now(); named(name); const state = this.rooms.get(name); if (!state) return [];
     return this.db.query<RoomRefusal, [string]>("SELECT digest,reason,at FROM refusals WHERE room=? ORDER BY rowid").all(state.current.room);
+  }
+  /** Metadata-only diagnostics. No durable clock write, sealed frame or plaintext read. */
+  health(name: string): RoomHealth {
+    const now = this.now(); named(name); const state = this.rooms.get(name);
+    if (!state) fail("untrusted");
+    const refused: RoomHealth["refused"] = { invalid_presence: 0, wrong_epoch: 0, trust_changed: 0, stale: 0, invalid_frame: 0 };
+    for (const row of this.refused(name)) refused[row.reason] = (refused[row.reason] ?? 0) + 1;
+    const pending = this.db.query<{ depth: number; dated: number; oldest: number | null }, [string, number]>(`SELECT COUNT(*) AS depth, COUNT(COALESCE(r.created_at,a.created_at)) AS dated, MIN(COALESCE(r.created_at,a.created_at)) AS oldest
+      FROM outbox o LEFT JOIN application_attempts t ON t.room=o.room AND t.digest=o.digest
+      LEFT JOIN application_outbox a ON a.room=t.room AND a.delivery_id=t.delivery_id
+      LEFT JOIN receipt_outbox r ON r.room=o.room AND r.receipt_digest=o.digest
+      WHERE o.room=? AND (t.digest IS NULL OR a.state IN ('dispatching','accepted'))
+      AND (r.receipt_digest IS NULL OR r.state='dispatching' AND r.expires_at>?)`).get(state.current.room, now)!;
+    const receipt = this.db.query<{ at: number | null }, [string]>(`SELECT MAX(i.received_at) AS at FROM inbox i
+      JOIN application_outbox a ON a.room=i.room AND a.receipt_digest=i.digest WHERE i.room=?`).get(state.current.room)?.at;
+    return { refused, outboxDepth: pending.depth,
+      oldestOutboxAgeMs: pending.depth > 0 && pending.dated === pending.depth && pending.oldest !== null ? now - pending.oldest : null,
+      lastReceiptAgeMs: receipt != null ? now - receipt : null };
   }
   /** Read-only physical-cap hint for a validated host payload; no body is loaded and no replay/clock row is written. */
   ordinaryInboxAvailable(name: string, bytes: number): boolean {

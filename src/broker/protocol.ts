@@ -8,6 +8,8 @@ import {
   type OwnerPin, type VerifiedPublicRoster,
 } from "../rooms/wire.ts";
 
+/** One HTTP opt-in ceiling: 1 supports ephemeral presence; 2 also supports codec presence. */
+export const BROKER_CODEC_FEATURES_OPT_IN = "2";
 export const BROKER_CONTROL_LIMITS = Object.freeze({ control: 1_048_576, challenge: 8192, nonceBytes: 32 });
 export type BrokerProtocolCode = "invalid_wire" | "limit" | "untrusted" | "expired" | "authentication_failed";
 export class BrokerProtocolError extends Error {
