@@ -67,6 +67,15 @@ Truncations (`.slice`, `.substring`) are decided by what is cut:
 6. The **hub's own list** cut to N (`pending.slice(0, 64)`, `history.slice(-5)`) is **operational**, and so is a **display cap on the hub's own report** (`pool.walk.length > 16`, `paths.length > 20`, a held-rows cap).
 7. **Text cut for a log line, notice or reply** is a **safety floor** only when the cut text **originates outside the hub process**: a model, a peer, a person, another project, a native hook process, or a subprocess, network, git or file-parse error that can carry external content. The hub's own composed message, or its own internal error text logged locally, is **operational**. Ask where the text comes from, not where it goes.
 
+Rulings of #741 (the conductor, 2026-11-06), added after a fresh blind sample (seed 741001) agreed on 70% and the misses fell into six shapes. They extend lines 1 to 7; where one differs, the later line decides its shape:
+
+8. A cap on **the hub's own cache, set, map or concurrency limiter** is **operational**, and so is the line 3 reading of lists, batches and reports. Exception: decide by **what one insert is caused by, not by the name**. A set or map that gains one entry per event **another process controls** (a peer's envelope, a remote room frame, a native hook's tool call, a file a person or agent writes, an acknowledgement a caller names) is a **safety floor**: it bounds memory against outside input. A set the hub fills only from its own decisions (a check run, a launch candidate, an approval, a prepared review) is operational.
+9. A **silent truncation of a tool argument** (the hub cuts it and goes on, with no refusal) is a **contract** when the limit is stated in that tool's schema (`maxLength` in `hub-tools.ts`) or in `docs/operations.md`; otherwise it is a **safety floor**. The same argument in two tools is decided per tool: `hub_backlog_split` states `title` 300 and `detail` 8000, `hub_task_propose` does not, so its cut is a safety floor.
+10. **Error or stack text** cut for a log, notice or reply is a **safety floor**, unless the text is a **fixed phrase the hub composed**: then the cut is a display cap and **operational**.
+11. A cap on **what a read tool returns** (edges, lines, bytes of one result) is a **contract**: it is the documented shape of that result.
+12. A bound on **a field of a documented message or envelope** (a task handoff key's project id, the `refs.paths` of a deferred envelope, a hub task envelope's `refs.backlog`) is a **contract** under line 1, as is a shortened id or hash (`lease.holder.slice(0, 8)`).
+13. A bound on something **parsed from git, GitHub or a subprocess** (a path inventory, a control line, a config key listing, a documents list, a tail of runner output) is a **safety floor**: it fails closed against content the hub does not write.
+
 A number is never evidence by itself. Many unrelated schema entries share `32`, `64`, `256` or `4096`, so "the same number appears in `hub-tools.ts`" decides nothing: the first measurement of #739 counted 280 of 378 `src/hub` bounds as mirrors of a schema by number, and only a handful really repeat a tool schema's limit once the call sites are read.
 
 ### What the committed file did before this change (measured on `8e44babc`)
@@ -254,4 +263,49 @@ Round 2 clears the 85% bar. It is **in-sample in one respect**: lines 5 to 7 and
 
 Round 2's nine misses: three are keys the first list left out (`workflow.ts` criteria 32, criterion refs 8 and `claude-launch-proof.ts` launchId 128, relabelled contract above); `check-runner.ts` `lines.slice(-40)` (a cut of a subprocess's output, which line 7 calls safety floor, labelled by me operational) and `version.stdout.trim().slice(0, 80)` (the converse); `daemon.ts` `schedules pass failed: ...message.slice(0, 160)` and `tasks.ts` `task.title.slice(0, 120)` (a memory title from the task's own title, where whether the origin is outside the hub is a judgement); `execution-budget.ts` `input.id.length > 200` and `delivery-hints.ts` `held.rows.length > 32`. The remaining disagreements are about where text originates, and line 7 is the place to sharpen if a later sample falls short.
 
-No baseline key is labelled in this change. That is #741.
+No baseline key is labelled in this change. That is #741 (below).
+
+## Batch 1 of #741: 149 `src/hub` length bounds (#741)
+
+Date: 2026-11-06. Refs #1180. The population is the 187 baseline keys in `src/hub` that are a length or size bound and not a truncation. The 38 left in the baseline are the keys no line decides without a ruling or a caller trace: lower bounds that only say "not empty" or "at least N" (`< 1`, `>= 2`, `< 8`, `before.size < 1`), bounds whose message the key does not name (`daemon.ts` `values.length > 256`, `tool-request.ts` scope and bucket 4096, `operational-view.ts` metadata lists, `specs.ts` `base.length > 200`), research-campaign and experiment bounds in `board.ts` (`owners`, `hostEvidence`, runner receipts), and read-side display caps in `publicReadValue`. A key left here is reported for a ruling, not guessed. Truncations (`.slice`, `.substring`) are batch 2.
+
+### Calibration
+
+| Round | Seed | File state | Reader | Agreement | Result |
+| --- | --- | --- | --- | ---: | --- |
+| 1 | 741001 | after #739, lines 1 to 7 | blind reader, lines 1 to 7 | 56 of 80 (70.0%) | below the bar: 24 misses in six shapes (below) |
+| 2 | 741002 | after the 17 relabels below, lines 1 to 13 | blind reader, lines 1 to 13 | 68 of 80 (85.0%) | meets the 85% bar |
+
+Both samples are drawn from the decided `src/hub` bounds and truncations (`hub-tools.ts` excluded), without replacement across rounds (round 2 excludes round 1's 80 keys). The reader read each key at its call site with the committed label hidden and wrote every label before scoring.
+
+Round 1's misses, by shape: 6 bounds on a message or envelope field the file called safety floor or operational (line 12); 5 bounds on content parsed from git, GitHub or a subprocess (line 13); 4 caches, sets and limiters (line 8); 4 cuts of error or stack text (line 10); 3 silent truncations of a tool argument (line 9); 2 caps on a read tool's output (line 11). The conductor ruled each; the rulings are lines 8 to 13 above.
+
+Round 2's 12 misses. Five are **relabelled** in this PR (the rule decides and the file contradicted it, so they follow #739's practice of changing a contradicting entry by name): `plan-conformance.ts` `planPaths.length > 1000` (operational to safety floor, rule 13: it is the same check as `completePlanInventory`, on the plan paths compared with a PR's file list read from GitHub), `usage.ts` transcript size 32 MiB (operational to safety floor, rule 13: it bounds a file a Claude process writes), `github-import.ts` 2 MiB read (operational to safety floor, rule 13: GitHub's output), `deferred-hub.ts` `env.to.length > 256` (safety floor to contract, rule 12: a field of the deferred envelope, like its `refs.paths`) and `deliverable-files.ts` `message.replace(path, "the path").slice(0, 160)` (safety floor to operational, rule 10: a guardPath refusal the hub composed). One is **decided and left**: `delivery-journal.ts` `Object.keys(queues).length > 4096` stays safety floor, because `queues` is a field of the journal snapshot the hub writes and reads back, which no document names, so rule 12 does not apply and rule 13 reads a damaged file as outside content. Six **stay open for batch 2**: `settings.ts` `presetValue` 4096, `dogfood-read.ts` `line.slice(0, 24)`, `claude-launch-proof.ts` `executionCwd` 4096, `board.ts` `failure.head.length > 300`, `code-facts.ts` `a.at.length < 9` and `spec-read.ts` `issues.size > 3`: no line decides them without a ruling.
+
+### Existing labels changed by the rulings (17, by key, old to new; the five round 2 relabels are listed in the round 2 paragraph above)
+
+| Rule | Key | Old | New |
+| --- | --- | --- | --- |
+| 8 | `check-runner.ts` `this.entries.size >= 3` (in `start`) | safety floor | operational |
+| 8 | `code-facts.ts` `this.cache.size>128` (in `query`) | safety floor | operational |
+| 8 | `memory-observations.ts` `this.pending.size > 2048` (in `delivery`) | safety floor | operational |
+| 8 | `daemon.ts` `injected.size > 512` (in `readTranscript`, one entry per hook line a native process writes) | operational | safety floor |
+| 8 | `limits.ts` `this.recent.size > 1000` (in `admit`, one entry per distinct message a peer sends) | operational | safety floor |
+| 8 | `daemon.ts` `retainedCliAudits.size > 4096` (in `drainCliAuditsNow`, one entry per audit a CLI process sends) | operational | safety floor |
+| 10 | `daemon.ts` `sanitize(error.message).slice=1000` (in `error`, a fixed Pi version refusal) | safety floor | operational |
+| 12 | `deferred-hub.ts` `refs.paths.length > 256` (in `validateDeferredEnvelope`) | safety floor | contract |
+| 12 | `tasks.ts` `projectId.length > 200` (in `handoffStateByKey`) | safety floor | contract |
+| 12 | `bus.ts` `backlog.length > 64` (in `queuedBacklogIds`) | safety floor | contract |
+| 12 | `daemon.ts` `g.lease.holder.slice=8` (in `goalLine`) | operational | contract |
+| 13 | `plan-conformance.ts` `evidence.paths.length > 1000` (in `completePlanInventory`) | operational | safety floor |
+| 13 | `code-facts.ts` `keys.length>128` (in `nativeEnv`) | operational | safety floor |
+| 13 | `code-facts.ts` `control.length>64` (in an anonymous stream handler) | operational | safety floor |
+| 13 | `sdlc-release-authorization.ts` `value.documents.length > 128` (in `docsVerdict`) | contract | safety floor |
+| 13 | `check-runner.ts` `lines.length > 40` (in `cut`) | operational | safety floor |
+| 13 | `check-runner.ts` `Buffer.byteLength(result) > 4096` (in `cut`) | operational | safety floor |
+
+(The 17 are the 15 of the first pass and two found when rule 8 was read by cause. `daemon.ts` `error` is the Pi refusal, a fixed phrase, and the other `sanitize(error.message).slice=1000` keeps safety floor.)
+
+### The 149 keys labelled, by label
+
+Each key was read at its call site and decided by the rule named. 25 operational (rule 8 for the hub's own caches and display caps, rule 6 for a hub-built report), 77 safety floor (rule 13 for content parsed from git, GitHub or a subprocess, the config or environment values the hub reads and fails closed on, rule 8 for sets one outside event fills, rule 2 for free text no message defines), 47 contract (rule 1 and 12 for a documented message or envelope field, rule 4 for a documented file the person writes, rule 11 for a read tool's result). The keys are in `scripts/inventory-hardcoded-values.classifications.json`; the baseline file lost exactly those 149 and gained none (1155 to 1006).
