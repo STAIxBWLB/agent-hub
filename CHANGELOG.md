@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Codex 0.167.0 joins the verified reviewer versions (#888, task 747): all four model-free isolation legs passed with 0.166.0 as the control (`docs/verification/2026-11-06-codex-0167-reviewer-isolation.md`). The single model-backed tool-call run was not performed and stays unverified. verified is now 0.146.0, 0.163.0, 0.164.0, 0.166.0 and 0.167.0.
+
 ## 0.32.0
 
 - Rooms gain advisory liveness and person-visible epoch changes (T3 of #1204, task 736). An ephemeral-capable broker enables 30-second presence refresh and unknown status after three missed periods; aging never changes sending authority. Graceful stop fences new work and attempts a signed offline snapshot within two seconds without overtaking an attempted FIFO head. Legacy brokers report liveness untracked with an upgrade step. Epoch-changing commands preview sealed outstanding delivery IDs, recheck the exact set and roster, and immediately hold old-epoch work as needs_review with the cause "epoch rotated". Bus-only work and person/terminal dispositions are preserved; T4 remains open.
