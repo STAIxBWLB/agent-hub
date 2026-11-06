@@ -685,7 +685,9 @@ test("a pause after durable enqueue resumes the same Bus delivery without resett
         return packet as { type?: unknown };
       } catch { throw new Error("paused-send packet is malformed; inspect the synthetic transport grammar without printing payloads"); }
     };
-    for (const wire of [...sourceBytes]) {
+    for (let sourceIndex = 0; sourceIndex < sourceBytes.length; sourceIndex++) {
+      // Crypto verification yields; include packets captured during earlier checks.
+      const wire = sourceBytes[sourceIndex]!;
       const packet = packetOf(wire);
       let payload: string;
       if (packet.type === "frame") {
@@ -1417,3 +1419,47 @@ test("a feature snapshot filtered while the receiver is offline is repaired by a
     expect(f.a.journal.list().some(row => row.state === "failed" && row.originals.some(original => original.id === env.id))).toBe(false);
   } finally { release.release(); f.b.store!.sequence.reserve = reserve; await publication.catch(() => {}); }
 }, 20000);
+
+test("identical signed codec advertisements do not resend or recount an active person intent", async () => {
+  const f = await mesh(), env = newEnvelope("codex", "one person handoff across duplicate advertisements", { to: ["user@beta"] });
+  const store = f.a.store!, queue = store.queueApplication.bind(store), changed = f.a.chat.application.codecsChanged;
+  const transport = f.a.link as unknown as { receiveFrame(session: unknown, bytes: Uint8Array, local: NonNullable<ReturnType<RoomStore["get"]>>): Promise<void> };
+  const receive = transport.receiveFrame.bind(f.a.link);
+  let queueCalls = 0, notifications = 0, advertisements = 0;
+  store.queueApplication = async (...args) => { queueCalls++; try { return await queue(...args); } finally { f.event.notify(); } };
+  f.a.chat.application.codecsChanged = (context, input) => { notifications++; changed?.(context, input); };
+  transport.receiveFrame = async (...args) => {
+    await receive(...args);
+    const frame = JSON.parse(new TextDecoder().decode(args[1])) as { sender?: string; codecFeatures?: boolean };
+    if (frame.sender === f.guest && frame.codecFeatures === true) { advertisements++; f.event.notify(); }
+  };
+  f.control.holdSender = f.owner; f.control.hold = true;
+  try {
+    f.a.bus.publish(env);
+    await f.event.wait(() => f.control.entered && store.applicationOutbox("work").some(row => row.application === env.id && row.state === "dispatching")
+      && f.a.chat.metrics("work")?.outbound === 1, "the original person intent is counted once and held before broker storage");
+    const initial = store.applicationOutbox("work").find(row => row.application === env.id)!;
+    for (let n = 0; n < 3; n++) {
+      const before = advertisements;
+      (f.b.link as unknown as { forcePresenceRequest: boolean }).forcePresenceRequest = true;
+      await f.b.link!.publishPresence();
+      await f.event.wait(() => advertisements > before, "the sender processed the complete duplicate signed advertisement");
+      expect(notifications).toBe(0);
+      expect(queueCalls).toBe(1);
+      expect(f.a.chat.metrics("work")?.outbound).toBe(1);
+      const active = store.applicationOutbox("work").filter(row => row.application === env.id);
+      expect(active).toHaveLength(1);
+      expect(active[0]?.deliveryId).toBe(initial.deliveryId);
+      expect(active[0]?.expiresAt).toBe(initial.expiresAt);
+    }
+    f.control.hold = false; f.control.gate.release();
+    await f.event.wait(async () => (await outbound(f.a, env.id))?.state === "completed (inbox)", "release admits the original application once");
+    expect(f.b.store!.listPersonInbox("work")).toHaveLength(1);
+    expect(f.a.chat.metrics("work")?.outbound).toBe(1);
+    expect(f.b.chat.metrics("work")?.inbound).toBe(1);
+    expect(queueCalls).toBe(1);
+  } finally {
+    f.control.hold = false; f.control.gate.release();
+    store.queueApplication = queue; transport.receiveFrame = receive; f.a.chat.application.codecsChanged = changed;
+  }
+});

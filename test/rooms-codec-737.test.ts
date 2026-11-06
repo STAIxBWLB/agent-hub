@@ -404,3 +404,36 @@ for (const fence of ["replaced", "stopping"] as const) test(`a late bootstrap no
     expect(f.session.outbound).toHaveLength(1);
   } finally { release.resolve(); internal.serialSend = serialSend; await f.close(); }
 });
+
+
+test("same-session identical codec advertisements are idempotent and only known feature transitions notify", async () => {
+  const f = await durableTransport(), member = f.recipient.public.fingerprint;
+  const changes: { member: string; features?: readonly string[] }[] = [];
+  f.callbacks.codecsChanged = (_context, input) => changes.push(input);
+  let seq = 0;
+  const advertise = async (features: readonly string[], token = "B".repeat(43)) => {
+    const wire = await sealFrame({ epoch: f.epoch, identity: f.recipient, recipients: [f.store.identity.public.fingerprint],
+      plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], features, codecSession: token }),
+      ephemeral: true, codecFeatures: true, sequence: { reserve: async () => String(++seq), isCurrent: () => true } });
+    await f.internal.receiveFrame(f.session, wire, f.store.get("work"));
+  };
+  try {
+    const original = f.session.features.get(member);
+    await advertise(ROOM_CODEC_FEATURES); await advertise(ROOM_CODEC_FEATURES);
+    expect(changes).toEqual([]); expect(f.session.features.get(member)).toBe(original);
+    await advertise(["chat_v1", "read_invocation_v1"]);
+    expect(changes).toEqual([{ member, features: ["person_inbox_v1"] }]);
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("unsupported");
+    await advertise(["chat_v1", "future_v9", "read_invocation_v1"]);
+    expect(changes).toHaveLength(1);
+    await advertise(ROOM_CODEC_FEATURES);
+    expect(changes.at(-1)).toEqual({ member, features: ["person_inbox_v1"] });
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("supported");
+    const handle = (f.subject as unknown as { handle(session: unknown, bytes: Uint8Array): Promise<void> }).handle.bind(f.subject);
+    await handle(f.session, canonicalBytes({ v: 1, type: "codec_peers", digest: f.epoch.digest, peers: [{ member, session: "C".repeat(43), supported: true }] }));
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("pending");
+    await advertise(ROOM_CODEC_FEATURES, "C".repeat(43));
+    expect(changes.at(-1)).toEqual({ member, features: ROOM_CODEC_FEATURES });
+    expect(f.subject.codecState(member, "person_inbox_v1")).toBe("supported");
+  } finally { await f.close(); }
+});

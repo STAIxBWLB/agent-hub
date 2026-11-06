@@ -106,7 +106,7 @@ export class RoomChat {
         const binding = this.bindings.get(context.name); if (binding) this.wakeRemotes(binding);
       },
       capacityChanged: context => { if (context.current()) { const binding = this.bindings.get(context.name); if (binding) this.wakeRemotes(binding); this.capacityChanged(); } },
-      codecsChanged: (context, input) => { if (context.current()) { const binding = this.bindings.get(context.name); if (binding) { this.wakeRemotes(binding, input.member, true); void this.resumeActive(binding, input.member); } } },
+      codecsChanged: (context, input) => { if (context.current()) { const binding = this.bindings.get(context.name); if (binding) { this.wakeRemotes(binding, input.member, true); void this.resumeActive(binding, input.member, input.features); } } },
       // The signed sequence is room-wide, while chat recipients are selective.
       // A numeric gap is not evidence of loss and must not become an operator notice.
     };
@@ -690,12 +690,18 @@ export class RoomChat {
     }
     void this.retryPending(); this.queueChanged();
   }
-  private async resumeActive(binding: Binding, codecMember?: string): Promise<void> {
+  private async resumeActive(binding: Binding, codecMember?: string, changedFeatures?: readonly RoomCodecFeature[]): Promise<void> {
     if (!binding.online || !this.valid(binding)) return;
     try {
-      const active = binding.store.applicationOutbox(binding.name, true).filter(row => (row.state === "dispatching" || row.state === "accepted")
-        && !this.personHeldInvocations.get(binding.name)?.has(row.deliveryId)
-        && (codecMember === undefined || row.recipient === codecMember && (row.peer === USER || this.options.bus.queueShow(row.deliveryId)?.originals.some(isInvocationKind))));
+      const active = binding.store.applicationOutbox(binding.name, true).filter(row => {
+        if (row.state !== "dispatching" && row.state !== "accepted" || this.personHeldInvocations.get(binding.name)?.has(row.deliveryId)) return false;
+        if (codecMember === undefined) return true;
+        if (row.recipient !== codecMember) return false;
+        let required: RoomCodecFeature | undefined;
+        if (row.peer === USER) required = "person_inbox_v1";
+        else if (this.options.bus.queueShow(row.deliveryId)?.originals.some(isInvocationKind)) required = "read_invocation_v1";
+        return required !== undefined && (changedFeatures === undefined || changedFeatures.includes(required));
+      });
       for (const row of active) this.remotes.get(row.remotePeer)?.reservePending(row.deliveryId);
       for (const row of active) this.launchResume(binding, row);
     } catch { /* The next authenticated online edge will retry durable rows. */ }

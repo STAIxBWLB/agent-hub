@@ -34,7 +34,7 @@ export interface RoomLinkApplication {
   transportAck?(context: RoomLinkContext, input: { digest: string }): void;
   receiptTtlMs?(context: RoomLinkContext): number;
   capacityChanged?(context: RoomLinkContext): void;
-  codecsChanged?(context: RoomLinkContext, input: { member: string }): void;
+  codecsChanged?(context: RoomLinkContext, input: { member: string; features?: readonly RoomCodecFeature[] }): void;
 }
 /** Host port signal: no application claim/effect occurred; the durable plaintext remains pending. */
 export class RoomApplicationDeferredError extends Error {
@@ -802,7 +802,11 @@ export class RoomLink {
         if (frame.codecFeatures === true) {
           const payload = packet(result.plaintext), peer = session.codecPeers?.get(frame.sender);
           if (frame.epoch === latest.current.epoch && peer?.supported && peer.session !== null && payload.codecSession === peer.session) {
-            (session.features ??= new Map()).set(frame.sender, { session: peer.session, features: roomCodecFeatures(payload.features) });
+            const features = roomCodecFeatures(payload.features), previous = session.features?.get(frame.sender);
+            const changed = ROOM_CODEC_FEATURES.filter(feature => previous === undefined || previous.session !== peer.session || previous.features.includes(feature) !== features.includes(feature));
+            if (!previous || previous.session !== peer.session || previous.features.length !== features.length || previous.features.some((feature, index) => feature !== features[index])) {
+              (session.features ??= new Map()).set(frame.sender, { session: peer.session, features });
+            }
             this.refreshCodecCause(frame.sender);
             const pending = session.pendingPresence?.get(frame.sender);
             session.pendingPresence?.delete(frame.sender);
@@ -810,7 +814,7 @@ export class RoomLink {
               try { this.options.onPresence?.({ member: frame.sender, peers: pending.peers, observedAt: pending.observedAt }); } catch { /* Observation only, with the original local receive time. */ }
             }
             this.pumpFrames(session);
-            try { this.options.application?.codecsChanged?.(this.context(session, digest), { member: frame.sender }); } catch { /* Compatibility observations cannot change admission. */ }
+            if (changed.length) try { this.options.application?.codecsChanged?.(this.context(session, digest), { member: frame.sender, features: changed }); } catch { /* Compatibility observations cannot change admission. */ }
           }
         } else {
           session.pendingPresenceReplies.delete(frame.sender);
