@@ -91,8 +91,20 @@ export class RoomCommands {
   }
   async start(): Promise<void> {
     if (this.stopped || !existsSync(join(this.options.stateDir, "rooms"))) return;
-    const store = await this.open();
-    if (!this.stopped) for (const state of store.list()) if (!state.left) this.link(state.name);
+    try {
+      const store = await this.open();
+      if (!this.stopped) for (const state of store.list()) if (!state.left) this.link(state.name);
+      const recovered = this.openFailure !== undefined;
+      this.openFailure = undefined; this.openAttempts = 0;
+      if (recovered) this.changedAvailability();
+    } catch (error) {
+      if (!this.stopped && !this.openRetry) {
+        const cause = roomHealthCause(error), changed = this.openFailure !== cause;
+        this.openFailure = cause; this.retryOpen();
+        if (changed) this.changedAvailability();
+      }
+      throw error;
+    }
   }
   stop(): Promise<void> {
     if (this.stopWork) return this.stopWork;
@@ -196,33 +208,30 @@ export class RoomCommands {
     return store.list().filter(row => name === undefined || row.name === name).map(row => {
       const link = this.links.get(row.name)?.status();
       return { name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch,
-        state: row.left ? "left" : link?.state ?? "offline", linkCause: row.left ? null : link?.cause ?? null,
-        ...(details ? { health: store.health(row.name), ...(this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) } : {}) };
+        state: row.left ? "left" : link?.state ?? "offline",
+        ...(details ? { linkCause: row.left ? null : link?.cause ?? null, health: store.health(row.name), ...(this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) } : {}) };
     });
   }
-  /** Closed cause metadata only, never raw errors; unavailable is distinct from no rooms. */
-  unavailable(): { code: RoomHealthCause; nextStep: string } | undefined {
-    let code = this.openFailure;
-    if (this.store && !this.stopped) {
-      try { this.store.statusMetadata(); } catch (error) { code = roomHealthCause(error); }
-    } else if (this.pending && !this.store) code ??= "connecting";
-    return code ? { code, nextStep: roomHealthNextStep(code) } : undefined;
-  }
-
-  /** Polling uses loaded public metadata and aggregate counts; never opens storage or loads payloads. */
-  statusView(): RoomStatusView[] | null {
-    if (this.stopped) return null;
-    if (!this.store) return this.pending || this.openFailure ? null : [];
+  /** One metadata snapshot binds unavailable diagnostics to the reads that failed. */
+  statusSnapshot(): { rooms: RoomStatusView[] | null; roomsUnavailable?: { code: RoomHealthCause; nextStep: string } } {
+    const unavailable = (code: RoomHealthCause) => ({ rooms: null, roomsUnavailable: { code, nextStep: roomHealthNextStep(code) } });
+    if (this.stopped) return { rooms: null };
+    if (this.openFailure) return unavailable(this.openFailure);
+    if (!this.store) return this.pending ? unavailable("connecting") : { rooms: [] };
     try {
-      return projectRoomStatus(this.store.statusMetadata().map(row => ({
+      return { rooms: projectRoomStatus(this.store.statusMetadata().map(row => ({
         name: row.name, room: row.room, owner: row.owner, member: row.member, epoch: row.epoch,
         state: row.left ? "left" : this.links.get(row.name)?.connectionState ?? "offline", members: row.members,
         linkCause: row.left ? null : this.links.get(row.name)?.connectionCause ?? null, health: this.store!.health(row.name),
         remotePeers: this.options.chat?.peersForStatus(row.name) ?? null,
         relays: this.options.chat?.metrics(row.name, row.room) ?? null,
-      })));
-    } catch { return null; }
+      }))) };
+    } catch (error) { return unavailable(roomHealthCause(error)); }
   }
+  /** Closed cause metadata only, never raw errors; unavailable is distinct from no rooms. */
+  unavailable(): { code: RoomHealthCause; nextStep: string } | undefined { return this.statusSnapshot().roomsUnavailable; }
+  /** Polling uses loaded public metadata and aggregate counts; never opens storage or loads payloads. */
+  statusView(): RoomStatusView[] | null { return this.statusSnapshot().rooms; }
   async preview(action: unknown, raw: unknown, check: () => boolean): Promise<RoomPreview> {
     if (typeof action !== "string") refuse("invalid_operation");
     await assertRoomCryptoReady(); this.current(check);

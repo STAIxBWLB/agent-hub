@@ -6020,15 +6020,13 @@ export async function startDaemon(opts: DaemonOptions) {
     const queueBackpressure = tasks.queuePressureStatus(peerIds);
     const crashLines = crashView();
     const deliveryFailures = bus.failedDeliveryCounts();
-    const roomsUnavailable = roomCommands.unavailable();
     const view = {
     ...(deliveryFailures ? { deliveryFailures } : {}),
     ...(queueBackpressure ? { queueBackpressure } : {}),
     ...(crashLines.length ? { crash: crashLines } : {}),
     projectId,
     instanceId,
-    rooms: roomCommands.statusView(),
-    ...(roomsUnavailable ? { roomsUnavailable } : {}),
+    ...roomCommands.statusSnapshot(),
     version: VERSION,
     pluginBundle: SERVER_JS,
     pendingRestart: allPendingRestart(),

@@ -419,7 +419,8 @@ test("unknown HTTP transport opt-in values retain the exact legacy broker ready 
 
 test("published N-1 member keeps its strict presence parser and receives ordinary chat from an upgraded hub", async () => {
   const publishedRoot = join(import.meta.dir, "fixtures/release-n-1/node_modules/@staix/agent-hub");
-  expect(JSON.parse(readFileSync(join(publishedRoot, "package.json"), "utf8")).version).toBe("0.31.0");
+  expect(JSON.parse(readFileSync(join(publishedRoot, "package.json"), "utf8")).version)
+    .toBe(JSON.parse(readFileSync(join(import.meta.dir, "fixtures/release-n-1/package.json"), "utf8")).dependencies["@staix/agent-hub"]);
   // Computed file URLs load the installed, unchanged N-1 implementation without
   // joining its sources to this version's TypeScript compilation graph.
   const oldStoreModule = await import(pathToFileURL(join(publishedRoot, "src/rooms/store.ts")).href) as { RoomStore: typeof RoomStore };

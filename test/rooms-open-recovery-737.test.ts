@@ -59,3 +59,31 @@ test("room clock rollback is named without writing clock state or leaking a raw 
   cleanups.push(() => bad.stop()); await expect(bad.start()).rejects.toThrow();
   expect(bad.unavailable()?.code).toBe("unavailable"); expect(JSON.stringify(bad.unavailable())).not.toContain("CANARY");
 });
+
+test("an aggregate-only health failure publishes unavailable in the same snapshot and clears on recovery", async () => {
+  const options = fixture(); let store: RoomStore | undefined;
+  const commands = new RoomCommands({ ...options, openStore: async input => store = await RoomStore.open(input) });
+  cleanups.push(() => commands.stop());
+  const preview = await commands.preview("create", { name: "work", broker: "ws://127.0.0.1:1/" }, () => true); await preview.commit();
+  const health = store!.health.bind(store!);
+  store!.health = () => { throw new RoomStoreError("corrupt"); };
+  expect(store!.statusMetadata()).toHaveLength(1);
+  expect(commands.statusSnapshot()).toMatchObject({ rooms: null, roomsUnavailable: { code: "corrupt" } });
+  store!.health = health;
+  expect(commands.statusSnapshot().rooms).toHaveLength(1);
+  expect(commands.statusSnapshot().roomsUnavailable).toBeUndefined();
+});
+
+test("startup enumeration failure retries the already-open store instead of losing all links", async () => {
+  const options = fixture(), recovered = signal(); let opens = 0, lists = 0;
+  const commands = new RoomCommands({ ...options, retryMs: 1, openStore: async input => {
+    opens++; const store = await RoomStore.open(input), list = store.list.bind(store);
+    store.list = () => { if (++lists === 1) throw new RoomStoreError("busy"); return list(); };
+    return store;
+  }, changed: () => { if (lists >= 2 && !commands.unavailable()) recovered.resolve(); } });
+  cleanups.push(() => commands.stop());
+  await expect(commands.start()).rejects.toMatchObject({ code: "busy" });
+  expect(commands.statusSnapshot()).toMatchObject({ rooms: null, roomsUnavailable: { code: "busy" } });
+  await recovered.promise;
+  expect(opens).toBe(1); expect(lists).toBe(2); expect(commands.statusSnapshot()).toEqual({ rooms: [] });
+});

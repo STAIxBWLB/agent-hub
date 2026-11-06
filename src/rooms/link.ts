@@ -34,6 +34,7 @@ export interface RoomLinkApplication {
   transportAck?(context: RoomLinkContext, input: { digest: string }): void;
   receiptTtlMs?(context: RoomLinkContext): number;
   capacityChanged?(context: RoomLinkContext): void;
+  codecsChanged?(context: RoomLinkContext, input: { member: string }): void;
   gap?(context: RoomLinkContext, input: { sender: string; count: string }): void;
 }
 /** Host port signal: no application claim/effect occurred; the durable plaintext remains pending. */
@@ -717,6 +718,7 @@ export class RoomLink {
         this.current(session, digest);
         if (frame.codecFeatures === true) {
           (session.features ??= new Map()).set(frame.sender, roomCodecFeatures(packet(result.plaintext).features));
+          try { this.options.application?.codecsChanged?.(this.context(session, digest), { member: frame.sender }); } catch { /* Compatibility observations cannot change admission. */ }
         } else {
           session.features?.delete(frame.sender); // A new legacy observation cannot inherit an earlier remote process codec claim.
           session.pendingPresenceReplies.delete(frame.sender);

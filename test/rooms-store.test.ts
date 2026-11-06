@@ -325,8 +325,8 @@ test("a consumed JoinWire cannot re-enroll a member after owner revocation", asy
 
 test("room health counts refusals and preserves unknown ages without loading payloads or writing clocks", async () => {
   let now = Date.now(); const value = await store(undefined, () => now), state = await created(value);
-  const db = new Database(join(locations.get(value)!, "rooms.db"), { readonly: true });
-  try {
+  const db = (value as unknown as { db: Database }).db;
+  {
     value.recordRefused("work", encodeBase64url(new Uint8Array(32).fill(1)), "invalid_frame");
     value.recordRefused("work", encodeBase64url(new Uint8Array(32).fill(2)), "stale");
     const before = db.query("SELECT value FROM meta WHERE key='clock'").get();
@@ -335,5 +335,5 @@ test("room health counts refusals and preserves unknown ages without loading pay
     expect(health).toEqual({ refused: { invalid_presence: 0, wrong_epoch: 0, trust_changed: 0, stale: 1, invalid_frame: 1 }, outboxDepth: 0, oldestOutboxAgeMs: null, lastReceiptAgeMs: null });
     expect(db.query("SELECT value FROM meta WHERE key='clock'").get()).toEqual(before);
     expect(JSON.stringify(health)).not.toContain(state.current.room);
-  } finally { db.close(); }
+  }
 });

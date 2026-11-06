@@ -119,7 +119,7 @@ persistence, which belong to T2. Existing layer caps remain authoritative.
 
 ### Room wire compatibility (#1204 T1)
 
-The link requests only the ephemeral feature with the WebSocket upgrade header
+Version 1 requests only the ephemeral feature with the WebSocket upgrade header
 `x-agent-hub-ephemeral: 1`. A supporting broker includes `ephemeral: true` in its
 ready response only to an opted-in client, preserving the exact legacy ready
 shape for older hubs. Each new connection starts with the feature disabled.
@@ -130,7 +130,7 @@ members under its old queue rules. Upgrade the broker for ephemeral retention.
 A supporting broker forwards ephemeral presence only to ready members that
 opted in. Older members do not see upgraded members' presence until they upgrade. Application
 chat frames keep the legacy shape. This is the one-bit compatibility bridge;
-full codec feature advertisement belongs to #1204 T4.
+current links use version 2 for the codec advertisements described below.
 
 Ephemeral replacement preserves a recipient's outstanding one-packet transport
 slot until its matching ACK or the original TTL/grace bound expires. Only the
