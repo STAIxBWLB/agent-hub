@@ -282,7 +282,7 @@ function nativeSetupFixture() {
   const packages = [packageAt("A"), packageAt("B")];
   for (const packageRoot of packages) {
     mkdirSync(join(packageRoot, "src/cli"), { recursive: true }); mkdirSync(join(packageRoot, "plugins/agent-hub"), { recursive: true });
-    writeFileSync(join(packageRoot, "src/cli/main.js"), "// fake installed CLI operand, never executed\n");
+    writeFileSync(join(packageRoot, "src/cli/main.js"), "// fake installed CLI operand, never executed\n", { mode: 0o755 });
     writeFileSync(join(packageRoot, "src/cli/claude-profile-hook.ts"), "// fake hook path, never executed\n");
     writeFileSync(join(packageRoot, "plugins/agent-hub/server.js"), "fixture bundle");
     writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version: VERSION }));
