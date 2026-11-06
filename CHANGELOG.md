@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Claude Code 2.1.319 is a receipt-verified headless implementer version (#888, task 750): the model-free permission-transport and host shell-wrapper producers pass on it with 2.1.318 as the control (`docs/verification/2026-11-06-claude-implementer-2.1.319.md`).
+
 ## 0.32.0
 
 - Rooms gain advisory liveness and person-visible epoch changes (T3 of #1204, task 736). An ephemeral-capable broker enables 30-second presence refresh and unknown status after three missed periods; aging never changes sending authority. Graceful stop fences new work and attempts a signed offline snapshot within two seconds without overtaking an attempted FIFO head. Legacy brokers report liveness untracked with an upgrade step. Epoch-changing commands preview sealed outstanding delivery IDs, recheck the exact set and roster, and immediately hold old-epoch work as needs_review with the cause "epoch rotated". Bus-only work and person/terminal dispositions are preserved; T4 remains open.
