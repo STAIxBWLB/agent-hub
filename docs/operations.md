@@ -2317,15 +2317,48 @@ A newly initialized `ahub init` project inherits a trusted machine opt-in and sa
 
 `ahub setup` selects the explicit `CLAUDE_CONFIG_DIR`, otherwise an existing default Claude home (or the not-yet-created default when no other home is selected), plus distinct homes proven in use by live registered Claude launcher records. It does not scan arbitrary profile directories. Each native plugin command receives that home's environment. One confirmation covers plugin setup and a project-neutral PreToolUse hook while preserving unrelated hooks and statusLine settings. The profile fallback requires the inherited hub state and peer identity and does nothing for a managed launch that already has its session hook, preventing duplicate delivery. Installing a hook proves configuration, not live enforcement.
 
+Setup preserves a stable package alias from the `ahub` executable on PATH only
+when its bounded symlink chain (at most eight leaf links) ends at this running
+package's `src/cli/main.js`. A versioned install can therefore keep its `current`
+parent alias in marketplace and profile-hook paths across upgrades. Another copy
+on PATH, a missing target or an unproven alias uses the resolved running package
+instead. The hook uses the PATH spelling of `bun` only when it resolves to the
+same runtime as this process; otherwise it keeps the observed runtime path.
+
+The generated single-command profile-hook shape identifies managed entries,
+including entries from an older install whose script is now missing. Setup
+replaces the first managed entry in place and removes duplicate managed entries,
+preserving that entry's matcher/timeout metadata, unrelated hook commands and
+statusLine.
+Doctor reports missing managed script or runtime paths in every home it inspects.
+Its read-only inventory also includes an existing default Claude home even when
+`CLAUDE_CONFIG_DIR` selected another home for setup; that inspection neither
+selects the default home for writes nor repairs it automatically. Run setup for
+the intended home to refresh its managed hook.
+
 Setup manages only the user-scope `agent-hub@agent-hub` plugin row (`claude
 plugin install|uninstall ... --scope user`). A project- or local-scope row of that
 plugin is kept and named in a notice (`... plugin row preserved ...; setup never
 removes non-user scopes`). While such a row exists, setup is blocked rather than
 removing an agent-hub marketplace that points at another source (#1073). The
-semver check on installed plugin versions applies only to agent-hub rows, so
+refusal names every blocking row's scope, projectPath, version and installPath.
+Hub-launched Claude sessions load their plugin from the hub's release runtime,
+not those plugin-cache rows; standalone sessions may still use them. Back up the
+selected home's `plugins/installed_plugins.json`, review every listed row, and
+manually remove only rows confirmed stale and unused while preserving all other
+rows; then rerun `ahub setup`. For a project row whose projectPath is `$HOME`, do
+not run `claude plugin uninstall --scope project` from `$HOME`: its project
+settings path is also the default home's `~/.claude/settings.json`. Setup leaves
+these non-user rows unchanged on refusal. The semver check on installed plugin versions applies only to agent-hub rows, so
 another plugin recorded with a git SHA no longer fails the inventory (#1074). When
 a Claude home step fails, setup still records the `start.agents` answer before it
 reports the failure.
+
+Updating a project's daemon does not update the global CLI or shared plugin.
+When a global CLI update is needed, upgrade and doctor guidance names its running
+installation path outside a proven Bun-global prefix: update it using the method
+that installed it, then run `ahub setup`. A Bun-global command is suggested only for a running
+package verified inside that prefix, avoiding an update to a second CLI copy.
 
 `ahub autonomy status [--json]` includes the machine default and each discovered Claude home's plugin/hook state. Missing, unsafe, stale, unavailable or incomplete evidence is explicit; a missing selected home is reported without starting a native inventory command that could create it. The native Orca zero-prompt receipt remains T4.
 

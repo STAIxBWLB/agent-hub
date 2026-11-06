@@ -1,6 +1,6 @@
 import { globalCliUpdateStep } from "./install-paths.ts";
 // Human output for the commands #814 T3 converts: the non-interactive restart/upgrade plan, `recovery status`, and
-// `budget execution configure|disable`. Pure: data in, lines out. It only composes the renderers the interactive
+// `budget execution configure|disable`. Recovery rendering is data in, lines out; CLI update advice inspects the install path. It composes the renderers the interactive
 // screens already use (`planLines`, `renderPlan`, `renderOperation`, `renderBlocked`, `choiceInstruction`), so the
 // non-interactive text never says something the screens would not. `--json` is the caller's branch and prints the
 // document exactly as before.

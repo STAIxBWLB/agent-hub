@@ -43,6 +43,7 @@ import { readAutonomyDefaults, writeAutonomyDefaults } from "../hub/autonomy-def
 import { inheritMachineAutonomy, prepareAutonomyProject, runAllProjectAutonomy, type PreparedAutonomyProject } from "./autonomy-projects.ts";
 import { offlineAutonomyStatus } from "./autonomy-offline.ts";
 import { autonomyHomeStatus, usedClaudeHomes } from "./autonomy-homes.ts";
+import { shellQuote } from "./shell-quote.ts";
 import { discoverClaudeHomes } from "./claude-homes.ts";
 import { setupClaudeHomes } from "./setup-homes.ts";
 import { registerAconPlugin } from "./acon-register.ts";
@@ -2931,6 +2932,23 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       const plugin = pluginState(parseList<InstalledPlugin>(spawnSync(DOCTOR_PLUGIN_PROBE.command, [...DOCTOR_PLUGIN_PROBE.argv], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
       row(plugin.state === "current", DOCTOR_PLUGIN_PROBE.name, plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
+      let profileRegistry: Registry | undefined;
+      try {
+        profileRegistry = new Registry();
+        const profiles = await autonomyHomeStatus(profileRegistry, homedir(), process.env, join(import.meta.dir, "..", ".."), (argv, options) => {
+          const result = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: options.env, timeout: options.timeoutMs, maxBuffer: 1024 * 1024 });
+          return { status: result.status ?? -1, stdout: result.stdout ?? "" };
+        });
+        for (const profile of profiles.homes) {
+          const installed = profile.hook.state === "installed";
+          checks.push({ name: `Claude profile hook: ${profile.home.path}`, section: "Hub", level: installed ? "ok" : "warn",
+            detail: installed ? profile.hook.reason : `${profile.hook.reason} Run CLAUDE_CONFIG_DIR=${shellQuote(profile.home.path)} ahub setup.` });
+        }
+        if (!profiles.complete) checks.push({ name: "Claude profile discovery", section: "Hub", level: "unknown",
+          detail: profiles.notices.join("; ") || "Claude profile discovery is incomplete; inspect the registered projects and selected homes before setup." });
+      } catch {
+        checks.push({ name: "Claude profile discovery", section: "Hub", level: "unknown", detail: "Claude profile inventory is unavailable; inspect the machine registry and selected homes before setup." });
+      } finally { profileRegistry?.close(); }
       if (up) checks.push(...runtimeVersionWarnings(daemonVersion, VERSION, plugin.state === "missing" ? undefined : plugin.version));
 
       const config = loadConfig(cwd);
