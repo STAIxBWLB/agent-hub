@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Rooms gain advisory liveness and person-visible epoch changes (T3 of #1204, task 736). An ephemeral-capable broker enables 30-second presence refresh and unknown status after three missed periods; aging never changes sending authority. Graceful stop fences new work and attempts a signed offline snapshot within two seconds without overtaking an attempted FIFO head. Legacy brokers report liveness untracked with an upgrade step. Epoch-changing commands preview sealed outstanding delivery IDs, recheck the exact set and roster, and immediately hold old-epoch work as needs_review with the cause "epoch rotated". Bus-only work and person/terminal dispositions are preserved; T4 remains open.
 - Classify 149 more baseline keys of the hard-coded values inventory, the `src/hub` length bounds (#741 batch 1, refs #1180): 25 operational, 77 safety floor, 47 contract. A fresh blind sample first scored 70%, six rulings (docs/verification/2026-11-05-hardcoded-values-classification-rules.md, lines 8 to 13) and 17 relabels followed, and a second sample scored 85%. The baseline shrinks from 1155 to 1006 keys; `--check` passes.
 
 ## 0.31.0

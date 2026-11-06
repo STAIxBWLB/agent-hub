@@ -1674,8 +1674,10 @@ function renderRooms(rooms) {
       const peers = el('div', undefined, 'peer-summary');
       for (const peer of room.remotePeers) {
         const id = roomMetadataText(peer.id, /^[a-z][a-z0-9-]{0,31}@[a-z][a-z0-9-]{0,31}$/, 65);
-        const state = ['idle', 'busy', 'paused', 'offline'].includes(peer.state) ? peer.state : 'unknown';
-        peers.append(el('span', id + ': ' + state, 'meta'));
+        const observed = peer.presence ?? peer.state;
+        const state = ['idle', 'busy', 'paused', 'offline', 'unknown'].includes(observed) ? observed : 'unknown';
+        const note = peer.liveness === 'untracked' ? '; liveness not tracked (broker without ephemeral); upgrade the broker to track liveness' : '';
+        peers.append(el('span', id + ': ' + state + note, 'meta'));
       }
       row.append(peers);
     }

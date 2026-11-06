@@ -673,6 +673,12 @@ export class RoomStore {
       ON CONFLICT(name) DO UPDATE SET epoch=excluded.epoch,digest=excluded.digest,wire=excluded.wire,previous_wire=excluded.previous_wire,previous_digest=excluded.previous_digest,previous_epoch=excluded.previous_epoch,previous_expires=excluded.previous_expires,left=0`)
       .run(name, current.room, broker, decodeRoster(wire).owner, current.epoch, current.digest, wire, prior ? priorWire! : null, prior?.epoch.digest ?? null, prior?.epoch.epoch ?? null, prior?.expiresAt ?? null);
     this.db.query("DELETE FROM pending_joins WHERE name=?").run(name);
+    if (previous && !same) {
+      // Epoch adoption and the old sealed intents' send fence commit together.
+      // The local Bus names the rotation; no new signed receipt reason is introduced.
+      this.db.query("UPDATE application_outbox SET state='needs_review',reason='boundary_refused' WHERE room=? AND state IN ('dispatching','accepted') AND disposition IS NULL").run(current.room);
+      this.db.query("DELETE FROM outbox WHERE room=? AND digest IN (SELECT t.digest FROM application_attempts t JOIN application_outbox a ON a.room=t.room AND a.delivery_id=t.delivery_id WHERE t.room=? AND a.state='needs_review' AND a.reason='boundary_refused')").run(current.room, current.room);
+    }
     return next;
   }
   async install(input: { name: string; broker: string; wire: Uint8Array; expectedDigest: string | null; current?: () => boolean; reactivate?: boolean }): Promise<RoomState> {
@@ -1101,6 +1107,10 @@ export class RoomStore {
     const state = this.get(name); if (!state) return [];
     const filter = activeOnly ? " AND state IN ('dispatching','accepted','needs_review') AND disposition IS NULL" : "";
     return this.db.query<OutgoingRow, [string]>(`SELECT * FROM application_outbox WHERE room=?${filter} ORDER BY rowid`).all(state.current.room).map(outgoing);
+  }
+  /** Sealed, unresolved intents that a person must see before changing the epoch. */
+  rotationPending(name: string): RoomOutgoing[] {
+    return this.applicationOutbox(name, true).filter(row => row.state === "dispatching" || row.state === "accepted");
   }
   /** Compatibility no-op for retryable rows; only original TTL expiry creates needs_review. */
   quarantineOutgoing(name: string, deliveryId: string): RoomOutgoing | undefined {

@@ -91,7 +91,7 @@ async function side(root: string, label: string, notify: ReturnType<typeof signa
   bus.onQueues = () => { chat!.queueChanged(); notify.notify(); };
   bus.onMemoryDelivery = (...args) => memory.push(args);
   bus.tap(event => { events.push(event); notify.notify(); });
-  const close = async () => { commands.stop(); await peer.stop(); bus.closeJournal(); };
+  const close = async () => { await commands.stop(); await peer.stop(); bus.closeJournal(); };
   return { cwd, stateDir, journal, bus, peer, commands, chat, events, condensed, memory, close, transportAcks, get context() { return context; }, get lastChat() { return lastChat; }, get screenCalls() { return screenCalls; }, signals: notify };
 }
 
@@ -180,7 +180,7 @@ test("a real room chat to user@label is durably admitted once, body-free to obse
   expect(f.a.chat.metrics("work")).toMatchObject({ inbound: 1 });
   expect((await deliveries(f.b)).filter(row => row.application === env.id)).toHaveLength(1);
 
-  f.a.commands.stop();
+  await f.a.commands.stop();
   const reopened = await RoomStore.open({ stateDir: join(f.a.stateDir, "rooms") });
   try {
     const afterRestart = reopened.listPersonInbox("work");

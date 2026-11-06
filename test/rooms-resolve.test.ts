@@ -11,8 +11,8 @@ import { encodeRoomMessage } from "../src/rooms/application.ts";
 import { createInvite, createJoin, createRoomEpoch, openFrame, sealFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, sha256 } from "../src/rooms/crypto.ts";
 
-const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const fixedFrame = encodeBase64url(new Uint8Array(32)), ownerFp = "1".repeat(64), senderFp = "2".repeat(64), ticket = "a".repeat(43);
 const nonTTY: RoomConfirmationIO = { isTTY: () => false, answer: async () => { throw new Error("must not prompt"); } };
 test("resolve accepts a canonical frame digest that starts with dashes", () => {
@@ -103,7 +103,7 @@ test("actual RoomCommands disposition works for a left room without dialing, pub
       expect(result.artifact).toBeUndefined();
       await new Promise<void>(resolve => setImmediate(resolve)); expect(dials).toBe(0);
       await expect(commands.preview("resolve", { name: "work", frame: f.frame, action }, () => true)).rejects.toThrow("resolution_unavailable");
-    } finally { commands.stop(); globalThis.WebSocket = original; }
+    } finally { await commands.stop(); globalThis.WebSocket = original; }
     const restored = await RoomStore.open({ stateDir: f.directory }); cleanups.push(() => restored.close());
     expect(restored.get("work")?.left).toBe(true);
     expect(restored.incomingApplication("work", f.frame)).toMatchObject({ sender: f.member, application: f.application, state: "disposed", disposition: action, disposedBy: "user" });
@@ -119,7 +119,7 @@ test("actual incoming resolve preview refuses changed frame disposition and curr
   await expect(stale.commit()).rejects.toThrow("state_changed");
   const first = await commands.preview("resolve", { name: "work", frame: f.frame, action: "accept" }, () => true);
   const second = await commands.preview("resolve", { name: "work", frame: f.frame, action: "discard" }, () => true);
-  await second.commit(); await expect(first.commit()).rejects.toThrow("state_changed"); commands.stop();
+  await second.commit(); await expect(first.commit()).rejects.toThrow("state_changed"); await commands.stop();
   const restored = await RoomStore.open({ stateDir: f.directory }); cleanups.push(() => restored.close());
   expect(restored.incomingApplication("work", f.frame)).toMatchObject({ state: "disposed", disposition: "discard" });
   expect(restored.claimApplication("work", f.frame)).toBe(false); expect(restored.applicationReceipt("work", f.frame)).toBeUndefined();

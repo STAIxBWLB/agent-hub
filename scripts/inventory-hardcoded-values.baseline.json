@@ -921,7 +921,6 @@
   "src/rooms/service.ts:queueChanged:inline:Math.min=2_147_483_647#0",
   "src/rooms/service.ts:receive:inline:context.store.applicationTraceHop(chat.trace) ?? 0=0#0",
   "src/rooms/service.ts:refreshTargets:inline:ids.length >= 32=32#0",
-  "src/rooms/service.ts:rows:inline:binding.store.applicationOutbox(name).sort((a, b) => Number(!ACTIVE.has(a.state) || !!a.disposition) - Number(!ACTIVE.has(b.state) || !!b.disposition) || b.createdAt - a.createdAt).slice=200#0",
   "src/rooms/service.ts:withheld:inline:withheld=0#0",
   "src/rooms/status.ts:DATE_MAX_MS:constant:DATE_MAX_MS=8640000000000000#0",
   "src/rooms/status.ts:MEMBER_LIMIT:constant:MEMBER_LIMIT=64#0",

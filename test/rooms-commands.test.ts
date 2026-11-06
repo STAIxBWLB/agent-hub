@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RoomCommands } from "../src/rooms/commands.ts";
-const close: (() => void)[] = [];
-afterEach(() => { for (const fn of close.splice(0).reverse()) fn(); });
+const close: (() => void | Promise<void>)[] = [];
+afterEach(async () => { for (const fn of close.splice(0).reverse()) await fn(); });
 function service() {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-room-command-")); close.push(() => rmSync(cwd, { recursive: true, force: true }));
   expect(Bun.spawnSync(["git", "init", "-q", cwd]).exitCode).toBe(0); mkdirSync(join(cwd, ".agenthub"));

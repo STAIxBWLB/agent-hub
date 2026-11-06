@@ -82,7 +82,7 @@ async function side(root: string, label: string, signals: ReturnType<typeof chan
   bus.onQueues = () => { chat!.queueChanged(); signals.notify(); };
   bus.onMemoryDelivery = (...args) => memory.push(args);
   bus.tap(event => { events.push(event); appendFileSync(publicLog, JSON.stringify(event) + "\n"); if (event.t === "state" && !event.peer.includes("@")) commands.changed(); signals.notify(); });
-  const close = async () => { commands.stop(); await peer.stop(); bus.closeJournal(); };
+  const close = async () => { await commands.stop(); await peer.stop(); bus.closeJournal(); };
   return { cwd, stateDir, label, journal, bus, peer, commands, chat, events, condensed, memory, publicLog, close, replayLastChat, get context() { return context; } };
 }
 async function command(side: Side, action: string, input: unknown) { return (await side.commands.preview(action, input, () => true)).commit(); }

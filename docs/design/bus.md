@@ -140,8 +140,47 @@ packet's deadline. Unsupported recipients never receive the new frame shape.
 A refresh request
 remains on non-reply snapshots until all asked members supply validated presence;
 replies never request a reply. The bounded round resets on reconnect or roster
-change. The latest-per-sender crossing ceiling and its #736 upgrade path are
-recorded in the rooms spec.
+change. Periodic idle refresh in T3 repairs a crossed request even without a peer-state
+change; latest-per-sender coalescing and the existing dedupe ceiling remain.
+
+## Room liveness and epoch changes (#1204 T3)
+
+Only a connection whose broker negotiated ephemeral presence publishes periodic
+`requestReply` snapshots, every 30 seconds by default. Replies never request
+replies. Three missed local refresh periods (90 seconds) make that member's room
+presence `unknown` in its exposed-peer status. Aging is advisory only: it changes
+no outbound admissibility, native peer state or authority. Sending remains governed
+by the signed roster, exposure, link and Bus proofs; the broker can queue for a
+member that is not live. An explicit signed offline presence keeps its existing
+handling. Freshness uses local observation time, never a saved snapshot or a sender
+clock; restart needs a fresh observation for its displayed liveness. Invalid time
+or clock rollback makes that advisory view unknown without changing transport gates.
+Status computes the advisory view without mutating the clock or delivery state.
+The refresh period and clock are injectable for fixtures.
+
+A legacy broker gets no periodic refresh or aging. Identical-snapshot dedupe and
+state-change publication remain, with at most one final offline observation at
+stop. Its view says `liveness not tracked (broker without ephemeral)` and asks
+the person to upgrade the broker. Optional room-only `presence` and `liveness`
+metadata keep the closed native `PeerState` type unchanged; older readers ignore
+the added fields. No new codec or full capability handshake is introduced; T4
+remains separate.
+
+Stop is asynchronous and idempotent, with a synchronous publication fence. It
+attempts one signed final offline observation behind an already attempted FIFO
+head, then disconnects within two seconds. Durable application intents and
+receipts survive. A blocked or failed final observation falls back to aging at
+supporting brokers; it does not stop a remote process or grant native authority.
+
+Before an actual epoch change, the person preview lists only already sealed,
+unresolved RoomStore delivery ids. The commit quiesces link application
+publication and rechecks that exact id set and the current roster digest.
+RoomStore atomically quarantines old active intents as `needs_review` with the
+existing `boundary_refused` reason and drops their sendable ciphertext. The local
+Bus holds use `room epoch rotated; inspect ahub queue show <id>`; current room status exposes `holdReason: "epoch rotated"`.
+Bus-only unsealed work stays queued. This is no completion, replay or cancellation;
+terminal rows and person dispositions remain unchanged. T2 already supplied the
+crash-gap quarantine; T3 adds the person preview and named local hold.
 
 ## Room application retry and settlement (#1204 T2)
 

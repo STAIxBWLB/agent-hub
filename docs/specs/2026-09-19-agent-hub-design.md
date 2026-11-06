@@ -1171,7 +1171,7 @@ at most 8 pending packets/2 MiB per link, 1 MiB packet/backpressure limits and a
 minutes and do not block local work. Stop, leave, replacement and rotation fence
 all awaited work by link generation.
 
-With latest-per-sender coalescing, A awaiting C can have its queued request replaced by A's broadcast reply to B, so C sees the request only on A's next state change or reconnect; task #736 idle refresh or per-(sender,recipient) coalescing is the upgrade path.
+With latest-per-sender coalescing, A awaiting C can have its queued request replaced by A's broadcast reply to B. T3's periodic idle refresh requests another observation without waiting for a state change or reconnect; per-(sender,recipient) coalescing remains a possible stronger transport design. Legacy brokers retain the state-change/reconnect behavior without periodic refresh.
 
 Presence is an encrypted, signed frame containing only exposed peer ids and closed
 idle/busy/paused/offline states. It is sent on connection and coalesced peer-state
@@ -6522,3 +6522,46 @@ permanent refusal remains inspectable. A signed late receipt may settle an
 unresolved ordinary remote hold once without overriding a person disposition.
 Invocation uncertainty retains its person-only ledger hold. Receiver application
 deduplication, current identity/privacy fences and all caps remain.
+
+
+### Room liveness and person-visible rotation (#1204 T3)
+
+The T3 contract is [room liveness and epoch changes](../design/bus.md#room-liveness-and-epoch-changes-1204-t3).
+The broker's existing negotiated ephemeral bit alone enables 30-second periodic
+`requestReply` publication and three-period (90-second) local observation aging.
+It adds no wire payload kind, codec advertisement or native `PeerState` value.
+Legacy brokers have no periodic refresh or aging and explicitly report liveness
+untracked, with a broker upgrade step. The existing state-change dedupe,
+request/reply fencing, caps, privacy and T2 receipt/dedupe ceilings remain.
+
+An asynchronous, idempotent stop fences publication synchronously, attempts one
+signed offline snapshot in FIFO order behind an attempted head, and disconnects
+within two seconds while retaining durable intents and receipt outbox rows.
+Failure leaves supporting recipients to age the observation; it grants no
+remote process-stop or execution authority. Refresh period and observation clock
+are fixture seams. Restored observations cannot establish freshness; clock
+rollback makes displayed liveness unknown and status reads mutate neither time
+nor delivery state. Aging is advisory only and never changes outbound admissibility;
+signed roster, exposure, link and Bus proofs remain authoritative. Explicit signed
+offline presence keeps its existing handling, and the broker can queue for members
+that are not live.
+
+Person previews for epoch-changing owner exposure, invite acceptance, revocation
+and existing-room `join --roster` adoption bind the current roster digest and the
+sorted, exact set of already sealed unresolved Store delivery ids. Link
+application publication is quiesced before the final recheck and commit; a new or
+settled id invalidates the preview. Bus-only unsealed work is excluded.
+RoomStore uses its existing schema and `boundary_refused` reason to quarantine
+old active intents atomically with the epoch and remove sendable ciphertext.
+T2's crash-gap quarantine remains the recovery fence, not a new T3 repair.
+T3 gives matching local Bus deliveries `needs_review` with fixed journal reason
+`room epoch rotated; inspect ahub queue show <id>` and room-status
+`holdReason: "epoch rotated"`. Terminal rows and person
+dispositions remain authoritative; rotation is not completion, replay or
+cancellation. A committed rotation whose local journal hold cannot be written
+returns `epoch_rotated_hold_unavailable` with an inspection step, without
+restoring old sendability.
+
+Source and isolated fixture coverage are listed in [dogfood](../dogfood.md).
+Those fixtures do not establish installed or two-machine liveness. #1204 remains
+open for T4's full capability advertisement and compatibility work.
