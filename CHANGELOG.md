@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Classify 149 more baseline keys of the hard-coded values inventory, the `src/hub` length bounds (#741 batch 1, refs #1180): 25 operational, 77 safety floor, 47 contract. A fresh blind sample first scored 70%, six rulings (docs/verification/2026-11-05-hardcoded-values-classification-rules.md, lines 8 to 13) and 17 relabels followed, and a second sample scored 85%. The baseline shrinks from 1155 to 1006 keys; `--check` passes.
+
 ## 0.31.0
 
 - Delivery failures carry one bounded diagnostic cause: peer offline, adapter refused, push error, turn aborted or timeout (#1178, PR #1224, task 714). `ahub queue show` and JSON listings expose it without message text; legacy rows say when no cause was recorded. Status shows each peer's unresolved failed count and the discard next step, excluding explicitly resolved rows; inspect the causes with `ahub queue list` or `show`. Causes do not authorize replay or alter settlement.
