@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Codex 0.167.0 joins the verified reviewer versions (#888, task 747): all four model-free isolation legs passed with 0.166.0 as the control (`docs/verification/2026-11-06-codex-0167-reviewer-isolation.md`). The single model-backed tool-call run was not performed and stays unverified. verified is now 0.146.0, 0.163.0, 0.164.0, 0.166.0 and 0.167.0.
+- Codex 0.167.0 passed the model-free reviewer isolation procedure (#888, task 747): all four legs passed with 0.166.0 as the control (`docs/verification/2026-11-06-codex-0167-reviewer-isolation.md`). It stays out of the verified set and joins it after the separately authorized model-backed tool-call run; until then the person can run `ahub agents trust codex-review 0.167.0`, and every runtime proof still runs. verified stays 0.146.0, 0.163.0, 0.164.0 and 0.166.0.
 
 ## 0.32.0
 

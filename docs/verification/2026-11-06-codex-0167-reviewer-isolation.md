@@ -2,7 +2,7 @@
 
 Date: 2026-11-06. Platform: macOS arm64, Bun 1.4.3. Scope: issue #888, task 747. This repeats the [0.166.0 model-free production preparation](2026-10-31-codex-0166-reviewer-isolation.md) with 0.166.0 as the control. Source base: `f7cbefda` (0.32.0 on main). No `codex exec`, model request, login, credential copy or live reviewer run was performed. The returned launch was inspected, never started. The person's real HOME, `~/.codex`, the Orca codex account home and the global Codex install were never supplied to a Codex process or modified.
 
-Result: all four model-free legs returned the expected outcome, so 0.167.0 is added to the verified reviewer set. The single model-backed tool-call run (the [2026-11-02 receipt](2026-11-02-codex-0166-reviewer-tool-call.md) for 0.166.0) needs the person's separate authorization and was not run. It is unverified for 0.167.0, as is everything a model turn would show (tool selection, verdict delivery, the synthetic marker readback, real account authentication).
+Result: all four model-free legs returned the expected outcome. 0.167.0 passed the model-free procedure and joins the verified reviewer set after the separately authorized model-backed run. This receipt does not add it, because `docs/agent-notes/adapters.md` requires a successful model-backed hub tool call before a reviewer version is marked verified (0.166.0 was reverted once for the same reason). That single run (the [2026-11-02 receipt](2026-11-02-codex-0166-reviewer-tool-call.md) is the 0.166.0 precedent) needs the person's separate authorization and was not run. It is unverified for 0.167.0, as is everything a model turn would show (tool selection, verdict delivery, the synthetic marker readback, real account authentication). Until then the person can run `ahub agents trust codex-review 0.167.0`, and every runtime proof still runs.
 
 ## Source identity and re-read regions
 
@@ -27,8 +27,8 @@ Both Codex versions were installed with `npm install --prefix` into separate pri
 | Leg | Outcome | Elapsed |
 | --- | --- | --- |
 | Before compat edit, 0.167.0, empty homes | Refused only at version admission, `causeClass: version`; previous verified set 0.146.0, 0.163.0, 0.164.0, 0.166.0 | 160.67 ms |
-| After exact 0.167.0 addition, empty homes | All production preparation legs pass | 261.26 ms |
-| After addition, synthetic ambient config | All production preparation legs pass | 261.83 ms |
+| With 0.167.0 provisionally in the local verified array (a stand-in for the person's machine trust), empty homes | All production preparation legs pass | 261.26 ms |
+| Same provisional entry, synthetic ambient config | All production preparation legs pass | 261.83 ms |
 | Control 0.166.0, empty homes (run before the edit) | All production preparation legs pass | 302.52 ms |
 | Control 0.166.0, synthetic ambient config (run after the edit) | All production preparation legs pass | 252.46 ms |
 
@@ -45,7 +45,7 @@ Production's own native canaries passed for 0.167.0: public read, denied exact p
 
 ## Compatibility and evidence boundaries
 
-The verified reviewer versions are now 0.146.0, 0.163.0, 0.164.0, 0.166.0 and 0.167.0. 0.165.0 stays unverified. The exact-version test refuses 0.167.1, 0.168.0, a prerelease and a prefixed string. The attached Codex adapter's capability pins (`NATIVE_PINS.codex`, still 0.166.0) are a separate contract and unchanged. No isolation implementation, sandbox ceiling or trust bypass changes. `docs/verified.json` is not restamped.
+The verified reviewer versions stay 0.146.0, 0.163.0, 0.164.0 and 0.166.0. 0.167.0 is not added: the area note requires the model-backed hub tool call first, and a connector review on the first revision of this PR correctly flagged that I had added it. The two passing 0.167.0 legs above ran with 0.167.0 in a local, uncommitted copy of the verified array, which is the same admission outcome the person's `ahub agents trust codex-review 0.167.0` produces, since trust lifts only the version pin and every proof still runs. The committed tree refuses 0.167.0 at version admission, as the first leg showed. 0.165.0 stays unverified. The attached Codex adapter's capability pins (`NATIVE_PINS.codex`, still 0.166.0) are a separate contract and unchanged. No isolation implementation, sandbox ceiling or trust bypass changes. The compat receipt pointer names this receipt. `docs/verified.json` is not restamped.
 
 Unverified for 0.167.0: the single model-backed tool-call run (marker, head, verdict and cleanup readback), which needs the person's separate authorization; exec selecting the named default profile; model tool selection; real account authentication; and effective web-search mode. The network setting is configured disabled without a separate probe. No native Linux result is claimed. Same-user mutation after the final metadata check is outside atomic snapshot guarantees, and the bounded credential-root list is not a classifier for every private host file.
 
