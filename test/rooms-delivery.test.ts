@@ -989,7 +989,7 @@ test("a replaced presence snapshot keeps its pending reply request until the rec
   let entered = false, prime = true;
   const observe = (recipient: "alpha" | "beta", input: Parameters<typeof alphaAccept>[0]) => {
     const packet = JSON.parse(new TextDecoder().decode(input.plaintext)) as { type: string; requestReply?: boolean; peers?: { id: string; state: string }[] };
-    if (packet.type === "presence") {
+    if (packet.type === "presence" && !Object.hasOwn(packet, "features")) {
       observations.push({ recipient, requestReply: packet.requestReply === true, state: packet.peers?.find(peer => peer.id === "codex")?.state });
       f.event.notify();
     }
@@ -1015,7 +1015,7 @@ test("a replaced presence snapshot keeps its pending reply request until the rec
     const freshObservations = () => observations.slice(beforeReplacement);
     f.control.phase = "replacement-presence";
     f.a.bus.pause("codex"); await f.a.link!.publishPresence();
-    await f.event.wait(() => f.frames.some(frame => frame.sender === f.owner && frame.ephemeral && frame.phase === "replacement-presence") && f.broker.stats().queuedFrames === 2, "normal state update replaces the pending broker presence");
+    await f.event.wait(() => f.frames.some(frame => frame.sender === f.owner && frame.ephemeral && frame.phase === "replacement-presence") && f.broker.stats().queuedFrames === 3, "normal state update replaces pending presence in its legacy and codec groups behind one durable packet");
     expect(observations.filter(row => row.recipient === "beta")).toHaveLength(betaBeforeReplacement);
     gate.release();
     await f.event.wait(() => freshObservations().some(row => row.recipient === "beta" && row.state === "paused" && row.requestReply) && freshObservations().some(row => row.recipient === "alpha"), "recipient answers the request carried by the replacement snapshot");
