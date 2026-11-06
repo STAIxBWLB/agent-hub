@@ -206,17 +206,32 @@ function decoded(result: CommandResult): unknown {
   }
 }
 
+/** Orca's structured error, from the JSON it prints on stdout or stderr. */
+function orcaError(result: CommandResult): Record<string, unknown> {
+  const fromStdout = object(object(decoded(result)).error);
+  if (fromStdout.code !== undefined) return fromStdout;
+  try { return object(object(JSON.parse(bytes(result.stderr))).error); } catch { return {}; }
+}
+
+function errorCode(result: CommandResult): unknown {
+  return orcaError(result).code;
+}
+
+/** #1233: Orca prints its error as JSON on stdout with an empty stderr, so its code comes before the exit-status fallback. */
 function errorText(result: CommandResult): string {
+  const { code, message } = orcaError(result);
+  if (typeof code === "string") return typeof message === "string" && message !== code ? `${code}: ${message.slice(0, 200)}` : code;
   const stderr = bytes(result.stderr).trim();
   return stderr || `exit status ${commandStatus(result)}`;
 }
 
-/** Orca's structured error code, from the JSON it prints on stdout or stderr. */
-function errorCode(result: CommandResult): unknown {
-  const fromStdout = object(object(decoded(result)).error).code;
-  if (fromStdout !== undefined) return fromStdout;
-  try { return object(object(JSON.parse(bytes(result.stderr))).error).code; } catch { return undefined; }
-}
+/**
+ * Orca 1.4.250 answers a terminal it can no longer reach with one of these codes, and its own CLI groups all four as
+ * gone (docs/verification/2026-11-06-orca-1.4.250-cli-contract.md). A wait on a pane whose process ended throws
+ * terminal_exited, so restoration must read it as gone and check the launcher, not stop on a command error (#1233).
+ */
+const GONE_CODES = new Set(["terminal_handle_stale", "terminal_exited", "terminal_gone", "no_connected_pty"]);
+const GONE_STATES: Record<string, string> = { terminal_handle_stale: "no longer exists", terminal_exited: "exited (terminal_exited)" };
 
 function runnerFailure(argv: readonly string[], result: CommandResult): RecoveryBlocker {
   return { code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} failed: ${errorText(result)}` };
@@ -226,9 +241,11 @@ async function run(runner: CommandRunner, argv: readonly string[]): Promise<unkn
   const result = await runner(argv);
   if (commandStatus(result) !== 0) {
     // Orca 1.4.223 and, rechecked read-only, 1.4.245 (docs/verification/2026-11-02-orca-1.4.245-cli-contract.md) answer a handle whose terminal was removed with `{"ok":false,"error":{"code":"terminal_handle_stale"}}`.
-    if (errorCode(result) === "terminal_handle_stale") {
+    const code = errorCode(result);
+    if (typeof code === "string" && GONE_CODES.has(code)) {
       const handle = argv.includes("--terminal") ? argv[argv.indexOf("--terminal") + 1] : undefined;
-      throw new OrcaCommandError({ code: "terminal-gone", message: `the Orca terminal${handle ? ` ${handle}` : ""} no longer exists` });
+      const state = GONE_STATES[code] ?? `is gone (${code})`;
+      throw new OrcaCommandError({ code: "terminal-gone", message: `the Orca terminal${handle ? ` ${handle}` : ""} ${state}` });
     }
     throw new OrcaCommandError(runnerFailure(argv, result));
   }
@@ -236,7 +253,9 @@ async function run(runner: CommandRunner, argv: readonly string[]): Promise<unkn
   const root = object(value);
   const payload = responseResult(value);
   if (root.ok === false || payload.ok === false) {
-    throw new OrcaCommandError({ code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} returned ok:false${typeof root.error === "string" ? `: ${root.error}` : ""}` });
+    const error = root.error ?? payload.error;
+    const detail = typeof error === "string" ? error : object(error).code;
+    throw new OrcaCommandError({ code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} returned ok:false${typeof detail === "string" && detail ? `: ${detail}` : ""}` });
   }
   return value;
 }
@@ -816,14 +835,17 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
 
 /**
  * One bounded Orca wait. Orca 1.4.223 and, rechecked read-only, 1.4.245 (docs/verification/2026-11-02-orca-1.4.245-cli-contract.md) answer a wait that timed out with exit 1 and `{"ok":false,"error":{"code":"timeout"}}`:
- * that is "not satisfied", not a failure. Any other failure still throws.
+ * that is "not satisfied", not a failure. Any other failure still throws. 1.4.250 also answers ok with `satisfied: false`
+ * and a `blockedReason` (seen: `agent-update-prompt`) when the TUI waits on a prompt; the reason is passed on (#1233).
  */
-async function waitSatisfied(runner: CommandRunner, handle: string, timeoutMs: number): Promise<boolean> {
+async function waitSatisfied(runner: CommandRunner, handle: string, timeoutMs: number): Promise<{ satisfied: boolean; blockedReason?: string }> {
   const argv = ["terminal", "wait", "--terminal", handle, "--for", "tui-idle", "--timeout-ms", String(timeoutMs), "--json"];
   const result = await runner(argv);
-  if (commandStatus(result) !== 0 && errorCode(result) === "timeout") return false;
+  if (commandStatus(result) !== 0 && errorCode(result) === "timeout") return { satisfied: false };
   const root = responseResult(await run(async () => result, argv));
-  return root.satisfied === true || object(root.wait).satisfied === true;
+  if (root.satisfied === true || object(root.wait).satisfied === true) return { satisfied: true };
+  const reason = root.blockedReason ?? object(root.wait).blockedReason;
+  return typeof reason === "string" ? { satisfied: false, blockedReason: reason.slice(0, 100) } : { satisfied: false };
 }
 
 /** Wait only on the captured terminal and only for Orca's supported TUI-idle condition. */
@@ -832,8 +854,8 @@ export async function waitForIdle(binding: TerminalBinding, timeoutMs: number, o
   const timeout = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? Math.min(Math.floor(timeoutMs), MAX_WAIT_MS) : 0;
   try {
     await showBinding(binding, config);
-    const satisfied = await waitSatisfied(config.runner, binding.handle, timeout);
-    const blockers = satisfied ? [] : [blocker("terminal-unready", `terminal ${binding.handle} did not become idle before the bounded wait`, binding.peer, binding.handle)];
+    const { satisfied, blockedReason } = await waitSatisfied(config.runner, binding.handle, timeout);
+    const blockers = satisfied ? [] : [blocker("terminal-unready", `terminal ${binding.handle} did not become idle before the bounded wait${blockedReason ? ` (Orca: blocked by ${blockedReason})` : ""}`, binding.peer, binding.handle)];
     return { satisfied, manualRequired: !satisfied, blockers };
   } catch (error) {
     const item = error instanceof OrcaCommandError ? error.blocker : blocker("command-error", String(error), binding.peer, binding.handle);
