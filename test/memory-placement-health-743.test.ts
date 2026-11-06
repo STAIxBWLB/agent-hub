@@ -73,7 +73,7 @@ test("CLI and dashboard show ok with verified local and exported counts without 
 });
 
 test("legacy declined status uses the exact package-activation limitation and only the inspection step (#1173)", () => {
-  const copy = (count: string) => "machine sync blocked: " + count + " declined rows; per-row placement is not active on this store (agent-mem has no activation command yet, agent-mem#281). Inspect with `ahub memory declined`.";
+  const copy = (count: string) => "machine sync blocked: " + count + " declined rows; per-row placement is not active on this store. Activation is person-only: preview with `amem migrate --sync-placement --dry-run` and declare every writer via --writer-root. The hub does not yet supply the fresh placementAttestation required for active-placement sync (#1173). Inspect with `ahub memory declined`.";
   for (const declinedCount of [2, 0]) {
     const sync = { state: "failed", cause: "declined", declinedCount, placementActive: false as const, at: 1000, nextStep: "PRIVATE-STEP-743", error: "PRIVATE-ERROR-743", ids: ["PRIVATE-ID-743"] };
     expect(memorySyncLine(sync)).toBe(copy(String(declinedCount)));
