@@ -50,3 +50,7 @@ The verified reviewer versions stay 0.146.0, 0.163.0, 0.164.0 and 0.166.0. 0.167
 Unverified for 0.167.0: the single model-backed tool-call run (marker, head, verdict and cleanup readback), which needs the person's separate authorization; exec selecting the named default profile; model tool selection; real account authentication; and effective web-search mode. The network setting is configured disabled without a separate probe. No native Linux result is claimed. Same-user mutation after the final metadata check is outside atomic snapshot guarantees, and the bounded credential-root list is not a classifier for every private host file.
 
 Source claims apply to the two peeled commits only. Each upgrade repeats the procedure; the throwaway producer is not a supported command and its raw records carry temporary paths, so they stay outside git. The changed-source gate on dgx02 and exact-head hosted CI are separate evidence recorded on the PR.
+
+## Separately authorized model-backed attempt
+
+The [2026-11-06 single tool-call attempt](2026-11-06-codex-0167-reviewer-tool-call.md) passed native startup isolation and the rendered accepted-plan marker precondition, then failed the harness readiness/readback leg before a complete persisted verdict/head/marker result was recorded. Its one-attempt fence was consumed once; no retry was made. The model/tool outcome remains unknown, not a proven missing verdict. This does not qualify 0.167.0, and the verified set remains unchanged.
