@@ -32,6 +32,12 @@ terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
 
+## Upgrading to 0.32.0
+
+Rooms on an ephemeral-capable broker now refresh signed presence every 30 seconds; three missed periods display advisory unknown without changing sending authority. A graceful stop attempts a signed offline snapshot within two seconds. Epoch-changing room commands list sealed outstanding delivery IDs before confirmation and immediately hold old-epoch work with the named cause. Upgrade the global CLI and plugin with the step below to see the new previews and advisory status: a 0.31.0 CLI ignores those additive fields, even in JSON. A broker without ephemeral support keeps state-change publication and reports liveness untracked, with no periodic aging. Protocol 16 through 17 and room v1 shapes remain; the N-1 baseline is published 0.31.0, with the same agent-mem 0.21.0 pin.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.32.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
 ## Upgrading to 0.31.0
 
 The control protocol stays at 16 through 17 and hub.db keeps schema version 2, but this release adds the nullable `deliveries.failure_cause` diagnostic column. N-1 recovery ignores the extra snapshot key, and older rows without it remain unknown. The exact `@staix/agent-mem` pin moves from 0.20.1 to 0.21.0; upgrading does not activate placement or migrate a memory home. `ahub memory declined` now lists complete bounded physical IDs and safe rule categories when inspection succeeds. Automatic v3 sync remains unsupported until agent-mem#281 provides activation and fresh host attestation. The [N-1 statement](../CHANGELOG.md) distinguishes the hub 0.30.0 fixture from agent-mem's own 0.20.3 compatibility proof.

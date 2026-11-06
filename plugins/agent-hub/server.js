@@ -10248,7 +10248,7 @@ var package_default;
 var init_package = __esm(() => {
   package_default = {
     name: "@staix/agent-hub",
-    version: "0.31.0",
+    version: "0.32.0",
     description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
     license: "MIT",
     type: "module",

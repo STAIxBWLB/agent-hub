@@ -9,7 +9,7 @@ import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { packageDigest, preserveRuntimePackage } from "../src/cli/recovery-package.ts";
 import { parseVersion } from "../scripts/lib/release-plan.ts";
-import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
+import { SYNTHETIC_CLAUDE_PARENT_COMMAND, syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-parent.ts";
 
 // Installed separately by the gate with its own frozen lock. No fixture package is installed or fetched by a test.
 // The bounded preservation helper copies unchanged executable assets and each release's exact amem dependency to unique
@@ -18,7 +18,7 @@ import { syntheticClaudeParentEvidenceSetup } from "./fakes/claude-channel-paren
 // verified SDK1.30.0. Neither installed nor copied old source is patched.
 const PUBLISHED_FIXTURES = [
   { directory: "protocol-v16", version: "0.25.0", memoryVersion: "0.18.0", protocol: 16, role: "protocol floor" },
-  { directory: "release-n-1", version: "0.30.0", memoryVersion: "0.20.1", protocol: 17, role: "release N-1" },
+  { directory: "release-n-1", version: "0.31.0", memoryVersion: "0.21.0", protocol: 17, role: "release N-1" },
 ] as const;
 type PublishedFixture = typeof PUBLISHED_FIXTURES[number];
 const CURRENT_ROOT = join(import.meta.dir, "..");
@@ -117,6 +117,26 @@ async function plugin(entry: string, f: Awaited<ReturnType<typeof fixture>>) {
     // the published self-contained plugins remain completely unchanged.
     program = join(f.root, "current-channel-parent.ts");
     writeFileSync(program, `${syntheticClaudeParentEvidenceSetup()} await import(${JSON.stringify(entry)});`);
+  } else {
+    // The published bundle inlines its observer port. Supply only the direct
+    // parent's raw ps row before importing it; keep its bytes and classifier intact.
+    program = join(f.root, "published-channel-parent.ts");
+    writeFileSync(program, `import * as childProcess from "node:child_process";
+import { mock } from "bun:test";
+const rawSpawnSync = childProcess.spawnSync;
+const nativeExports = { ...childProcess };
+const hostSpawnSync = (file, args, options) => {
+  if (file === "/bin/ps" && Array.isArray(args) && args.length === 5
+    && args[0] === "-ww" && args[1] === "-p" && args[2] === String(process.ppid)
+    && args[3] === "-o" && args[4] === "command=") {
+    const row = ${JSON.stringify(SYNTHETIC_CLAUDE_PARENT_COMMAND)};
+    return { status: 0, signal: null, error: undefined, stdout: row, stderr: "", output: [null, row, ""], pid: process.pid };
+  }
+  return rawSpawnSync(file, args, options);
+};
+mock.module("child_process", () => ({ ...nativeExports, spawnSync: hostSpawnSync }));
+mock.module("node:child_process", () => ({ ...nativeExports, spawnSync: hostSpawnSync }));
+await import(${JSON.stringify(entry)});`);
   }
   const child = Bun.spawn([process.execPath, program], { cwd: f.root, env: f.env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const replies = new Map<number, (value: Record<string, unknown>) => void>(), notifications: Record<string, unknown>[] = [];
