@@ -697,13 +697,13 @@ export async function reattachOrphanedTerminal(terminal: OrphanedTerminal, optio
     if (before.orphaned === false) return "reattached";
     if (before.orphaned !== true || before.connected !== true) return "unavailable";
     await run(config.runner, ["terminal", "switch", "--terminal", terminal.handle, "--json"]);
-    const deadline = Date.now() + Math.max(0, boundMs);
+    const deadline = Date.now() + boundMs;
     for (;;) {
       const shown = await read();
       if (!shown) return "unavailable";
       if (shown.orphaned === false) return "reattached";
       if (Date.now() >= deadline) return "still-orphaned";
-      await Bun.sleep(Math.max(1, Math.min(REATTACH_POLL_MS, deadline - Date.now())));
+      await Bun.sleep(Math.min(REATTACH_POLL_MS, deadline - Date.now()));
     }
   } catch { return "unavailable"; }
 }
