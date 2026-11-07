@@ -126,6 +126,21 @@ test("release metadata negotiates JSON while archive and checksum requests negot
   expect(installed.command).toEqual([join(context.prefix, "dist", "jcode")]);
   expect(seen).toEqual(["metadata:application/json", "asset:application/octet-stream", "asset:application/octet-stream"]);
 });
+test("release recipe selects its unique platform-qualified executable without rewriting it", async () => {
+  const { context, releaseEntry, fetcher } = await releaseFixture(archive("dist/jcode-linux-x86_64"));
+  const installed = await installCompatArtifact(context, { ...releaseEntry, install: { ...releaseEntry.install, executable: "jcode-linux-x86_64" } }, fetcher);
+  expect(installed.command).toEqual([join(context.prefix, "dist", "jcode-linux-x86_64")]);
+});
+for (const executable of ["../jcode", "/jcode", "dir/jcode", "jcode\\escape", "", "."]) {
+  test(`unsafe release executable selector ${JSON.stringify(executable)} refuses before effects`, async () => {
+    const { context, releaseEntry } = await releaseFixture(archive("jcode"));
+    let fetched = false;
+    const fetcher = (async () => { fetched = true; throw new Error("must not fetch"); }) as ReceiptFetch;
+    await expect(installCompatArtifact(context, { ...releaseEntry, install: { ...releaseEntry.install, executable } }, fetcher)).rejects.toMatchObject({ causeCode: "input" });
+    expect(fetched).toBe(false);
+    expect((await readdir(context.root)).sort()).toEqual(["cwd", "home", "prefix"]);
+  });
+}
 test("archive expanded-byte ceiling refuses before writes", async () => {
   const { context, releaseEntry, fetcher } = await releaseFixture(archive("jcode")); context.limits.expandedBytes = 0;
   await expect(installCompatArtifact(context, releaseEntry, fetcher)).rejects.toMatchObject({ causeCode: "integrity" });

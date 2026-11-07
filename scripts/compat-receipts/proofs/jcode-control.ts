@@ -13,7 +13,7 @@ export async function runJcodeControl(out: string): Promise<ReceiptSummary> {
     runnerOS: ["linux"],
     nativePlatform: "linux-x64-control-only",
     autoAdmit: false,
-    install: { ...original.install, asset: "jcode-linux-x86_64.tar.gz" },
+    install: { ...original.install, asset: "jcode-linux-x86_64.tar.gz", executable: "jcode-linux-x86_64" },
     legs: original.legs.map(leg => leg.category === "macos-runner"
       ? { ...leg, category: "linux-ci", runnerOS: ["linux"] }
       : leg),

@@ -125,6 +125,8 @@ async function npmArtifact(context: ReceiptContext, entry: ManifestEntry, fetche
 async function releaseArtifact(context: ReceiptContext, entry: ManifestEntry, fetcher: ReceiptFetch, signal: AbortSignal): Promise<InstalledArtifact> {
   const { repository, tagTemplate, asset, checksumAsset } = entry.install;
   if (!repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || !tagTemplate?.includes("{version}") || !asset || !checksumAsset || basename(asset) !== asset || basename(checksumAsset) !== checksumAsset) throw new ReceiptError("input");
+  const cli = entry.install.executable ?? COMPAT[context.id].probe[0]!;
+  if (typeof cli !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(cli)) throw new ReceiptError("input");
   const tag = tagTemplate.replace("{version}", context.version);
   const release = await json<ReleaseMetadata>(fetcher, `https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, signal, context.limits.outputBytes);
   if (release.tag_name !== tag || !Array.isArray(release.assets) || release.assets.some(item => !item || typeof item !== "object")) throw new ReceiptError("integrity");
@@ -153,7 +155,6 @@ async function releaseArtifact(context: ReceiptContext, entry: ManifestEntry, fe
   await mkdir(context.prefix, { recursive: true, mode: 0o700 });
   const helper = fileURLToPath(new URL("./extract-archive.py", import.meta.url));
   await run(context, signal, ["python3", helper, archive, context.prefix, String(context.limits.archiveEntries), String(context.limits.expandedBytes)], privateEnv(context), "integrity");
-  const cli = COMPAT[context.id].probe[0]!;
   const candidates: string[] = [];
   const walk = async (dir: string): Promise<void> => {
     for (const name of await readdir(dir)) {
