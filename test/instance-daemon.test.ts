@@ -111,7 +111,7 @@ test("I2 optional Qwen and its declared sibling share the quota pause without lo
     expect(await f.console_.request({ t: "start", peer, args: { mode: "headless" } })).toMatchObject({ ok: true });
     expect(await f.console_.request({ t: "watch", peer })).toMatchObject({ ok: true });
   }
-  expect(await f.console_.request({ t: "budget", set: { peer: "qwen-a", used: 0.97, window: "5h", resetsInMs: 60_000 } })).toMatchObject({ ok: true });
+  expect(await f.console_.request({ t: "budget", set: { peer: "qwen-a", used: 0.995, window: "5h", resetsInMs: 60_000 } })).toMatchObject({ ok: true });
   await until(() => f.daemon.bus.isPaused("qwen") && f.daemon.bus.isPaused("qwen-a"), "both optional-account native owners paused");
   const snapshot = await f.console_.request({ t: "ui_snapshot" });
   expect(snapshot.budget.qwen.paused).toBeDefined();

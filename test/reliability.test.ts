@@ -68,7 +68,7 @@ async function attach(daemon: Awaited<ReturnType<typeof startDaemon>>, id: strin
 
 test("#95 an idle peer without work pauses without paying for a checkpoint turn", async () => {
   const h = await hub(); const p = await attach(h.daemon, "codex");
-  await h.console_.request({ t: "budget", set: { peer: "codex", used: 0.95, resetsInMs: 3600000 } });
+  await h.console_.request({ t: "budget", set: { peer: "codex", used: 0.99, resetsInMs: 3600000 } });
   await until(() => h.daemon.bus.stateOf("codex") === "paused");
   expect(p.calls).toBe(0);
   expect(readFileSync(join(h.stateDir, "hub.log"), "utf8")).toContain("no open work, no checkpoint");
@@ -81,7 +81,7 @@ test("#95 a reviewer with a pending review still receives a checkpoint", async (
   await h.op("hub_task_accept", { id: 1 }); await h.op("hub_task_done", { id: 1, summary: "done" });
   await until(() => reviewer.state === "idle" && reviewer.calls > 0);
   const before = reviewer.calls;
-  await h.console_.request({ t: "budget", set: { peer: "codex", used: 0.95, resetsInMs: 3600000 } });
+  await h.console_.request({ t: "budget", set: { peer: "codex", used: 0.99, resetsInMs: 3600000 } });
   await until(() => reviewer.calls > before);
   expect(reviewer.got.flat().some((e) => e.kind === "budget")).toBe(true);
   const tools = await ControlClient.connect(h.stateDir, { role: "tools", peer: "codex" });

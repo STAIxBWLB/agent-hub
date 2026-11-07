@@ -70,6 +70,8 @@ import { loadConfig } from "../hub/daemon.ts";
 import { factsHook } from "./facts-hook.ts";
 import { hubHome, projectContext, projectRoot, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
+import { datasetInputFor, exportResearchDataset, projectFamilyOf } from "../hub/research-dataset.ts";
+import { readEvidence } from "../hub/research-record.ts";
 import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
@@ -114,7 +116,7 @@ import { renderTidyPreview, renderTidyResult, renderWorktrees } from "./worktree
 import { formatMemoryStaleAnchors } from "../hub/memory-stale-anchors.ts";
 import { AGENT_MEM_VERSION, assertAgentMemVersion, selectedMemoryProfile } from "../hub/memory-profile.ts";
 import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
-import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
+import { addonReport, appendRecords, closedAtOf, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { readDogfood } from "../hub/dogfood-read.ts";
 import { dogfoodSince, formatDogfood } from "../hub/dogfood.ts";
@@ -851,11 +853,14 @@ function benchRunArgs(rest: string[]) {
 }
 /** Another project is `ahub --project <dir> research`; anything unknown is refused rather than ignored. */
 function researchArgs(): void {
-  const sub = args[0], flags = new Set(["--all", "--json", "--since", "--format"]), valued = new Set(["--since", "--format"]);
+  const sub = args[0], flags = new Set(["--all", "--json", "--since", "--format", "--dataset"]), valued = new Set(["--since", "--format", "--dataset"]);
   for (let i = sub === "export" || sub === "backfill" || sub === "addons" ? 1 : 0; i < args.length; i++) {
     if (!flags.has(args[i]!)) fail(`ahub research: unknown argument ${args[i]} (another project: ahub --project <dir> research)`);
     if (valued.has(args[i]!)) i++;
   }
+  if (args.includes("--dataset") && (sub !== "export" || args.includes("--format"))) fail("ahub research: --dataset belongs to export and replaces --format (usage: ahub research export --dataset <dir> [--since] [--all])");
+  const at = args.indexOf("--dataset");
+  if (at >= 0 && (args[at + 1] === undefined || args[at + 1]!.startsWith("--"))) fail("ahub research: --dataset takes a directory");
 }
 const SOURCE_USAGE = "usage: ahub source add <path|url> [--json] [--color=auto|always|never] | list [--json] [--color=auto|always|never]";
 /** #933: a local conductor form's argument check, run before the `admit` handshake so a usage error leaves no admitted row. */
@@ -2526,17 +2531,31 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [sub] = args;
     researchArgs();
     if (sub === "backfill") {
-      const project = researchProject();
-      const written = appendRecords(project.id, taskRecords(readEvents(join(stateDir, "events.jsonl")), project.id, { version: VERSION, source: "backfill" }));
+      const project = researchProject(), familyOf = projectFamilyOf(cwd);
+      const written = appendRecords(project.id, taskRecords(readEvents(join(stateDir, "events.jsonl")), project.id, { version: VERSION, source: "backfill" }, { ...readEvidence(stateDir, project.id), ...(familyOf ? { familyOf } : {}) }));
       return console.log(`${written} research record${written === 1 ? "" : "s"} written from this project's events`);
     }
     const all = args.includes("--all");
-    const records = readStores(all ? undefined : researchProject(false).id);
     const from = since();
+    if (sub === "export" && args.includes("--dataset")) {
+      // #1277: the dataset is read-only over the stores; a project that was never researched has no file and no directory. The target is refused inside any registered project.
+      const registry = new Registry();
+      let registered: Project[];
+      try { registered = registry.list(); } finally { registry.close(); }
+      const here = researchProject(false), chosen = all ? registered : [here];
+      const inputs = chosen.flatMap(p => { const input = datasetInputFor(p); return input ? [input] : []; });
+      if (!inputs.length) return fail(all ? "no registered project has research records" : "this project has no research records; turn research on and run ahub research backfill");
+      try {
+        const written = exportResearchDataset(args[args.indexOf("--dataset") + 1]!, inputs, { ...(from > 0 ? { since: from } : {}) }, [...registered, here]);
+        for (const w of written) console.log(`${w.projectKeyHash}: ${w.counts.tasks} task${w.counts.tasks === 1 ? "" : "s"} (${w.counts.approved} approved, ${w.counts.cancelled} cancelled), ${w.counts.labels} label${w.counts.labels === 1 ? "" : "s"} -> ${w.dir}`);
+      } catch (error) { return fail((error as Error).message); }
+      return;
+    }
+    const records = readStores(all ? undefined : researchProject(false).id);
     if (sub === "export") {
       const format = args[args.indexOf("--format") + 1] ?? "jsonl";
       if (args.includes("--format") && !["jsonl", "csv"].includes(format)) fail("--format takes jsonl or csv");
-      const kept = records.filter((r) => r.kind === "label" || Date.parse(r.approvedAt) >= from);
+      const kept = records.filter((r) => r.kind === "label" || Date.parse(closedAtOf(r) ?? "") >= from);
       return void process.stdout.write(args.includes("--format") && format === "csv" ? toCsv(kept) : kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length ? "\n" : ""));
     }
     if (sub === "addons") {
@@ -2544,7 +2563,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const rows = addonReport(records, from);
       return console.log(args.includes("--json") ? JSON.stringify(rows, null, 2) : formatAddons(rows).join("\n"));
     }
-    if (sub !== undefined && !sub.startsWith("--")) fail("usage: ahub research [--since 30d] [--all] [--json] | addons [--since] [--all] [--json] | export [--format jsonl|csv] [--since] [--all] | backfill");
+    if (sub !== undefined && !sub.startsWith("--")) fail("usage: ahub research [--since 30d] [--all] [--json] | addons [--since] [--all] [--json] | export [--format jsonl|csv | --dataset <dir>] [--since] [--all] | backfill");
     const r = researchReport(records, from);
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatResearch(r).join("\n"));
   },
