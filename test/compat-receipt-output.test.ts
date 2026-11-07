@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,7 +58,7 @@ test("a late occupied output is never overwritten and a closed handle cannot wri
 
 
 test("missing trusted Python refuses before creating the output directory", () => {
-  const root = fixture(), out = join(root, "out"), which = spyOn(Bun, "which").mockReturnValue(null);
-  try { expect(() => openReceiptOutput(out)).toThrow(); expect(existsSync(out)).toBe(false); }
-  finally { which.mockRestore(); }
+  const root = fixture(), out = join(root, "out");
+  expect(() => openReceiptOutput(out, () => null)).toThrow();
+  expect(existsSync(out)).toBe(false);
 });

@@ -36,12 +36,12 @@ function safeAncestors(directory: string, uid: number): void {
 }
 
 /** The native/installer processes never receive this FD; only the fixed isolated Python writer does. */
-export function openReceiptOutput(out: string): ReceiptOutput {
+export function openReceiptOutput(out: string, findPython: () => string | null = () => Bun.which("python3", { PATH: "/usr/bin:/bin" })): ReceiptOutput {
   let descriptor: number | undefined;
   try {
     if (!out || /\p{Cc}/u.test(out) || !process.getuid) reject();
     const uid = process.getuid(), directory = resolve(out);
-    const python = Bun.which("python3", { PATH: "/usr/bin:/bin" });
+    const python = findPython();
     if (!python) reject();
     safeAncestors(directory, uid);
     const previous = lstatSync(directory, { throwIfNoEntry: false });
