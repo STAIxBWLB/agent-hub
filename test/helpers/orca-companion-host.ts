@@ -70,7 +70,7 @@ export class FakeOrcaCompanionHost {
   private externalResult: HostMethods["shell.openExternal"] = { opened: true };
   private readonly state: OrcaCompanionFixtureState;
   constructor(options: FakeOrcaCompanionHostOptions) {
-    if (!Array.isArray(options.offeredMethods) || options.offeredMethods.some(method => !Object.hasOwn(METHODS, method))) return fail("invalid_params");
+    if (!Array.isArray(options.offeredMethods) || options.offeredMethods.some(method => !Object.hasOwn(METHODS, method))) throw new OrcaCompanionFixtureError("invalid_params");
     this.options = structuredClone(options);
     this.offered = new Set(options.offeredMethods);
     this.roster = structuredClone([...options.workspaces]);

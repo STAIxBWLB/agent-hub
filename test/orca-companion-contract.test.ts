@@ -29,7 +29,7 @@ test("workspace list keeps exact identity, host, opaque roots and truncation", a
   listed.workspaces[0]!.path = "consumer mutation";
   expect((await fake.call("workspace.list")).workspaces[0]!.path).toBe(path);
   fake.setRoster([workspaces[1]!], true);
-  expect(await fake.call("workspace.list")).toEqual({ workspaces: [workspaces[1]], truncated: true });
+  expect(await fake.call("workspace.list")).toEqual({ workspaces: [workspaces[1]!], truncated: true });
 });
 test("readContext is nullable metadata and never invents workspace or host identity", async () => {
   const fake = host(); expect(await fake.call("workspace.readContext")).toBeNull();
