@@ -1,7 +1,7 @@
 import type { CompatId } from "../../src/adapters/compat.ts";
 
 export type LegStatus = "pass" | "fail" | "not-run";
-export const CAUSES = ["ok", "proof-failed", "timeout", "cancelled", "platform", "model-required", "tui-required", "producer-not-committed", "producer-not-importable", "not-applicable", "source-review-required", "install-unavailable", "integrity", "input", "cleanup"] as const;
+export const CAUSES = ["ok", "proof-failed", "timeout", "cancelled", "platform", "model-required", "tui-required", "producer-not-committed", "producer-not-importable", "not-applicable", "disposable-required", "process-cleanup-unproven", "source-review-required", "install-unavailable", "integrity", "input", "cleanup"] as const;
 export type Cause = typeof CAUSES[number];
 export interface ManifestLeg { id: string; label: string; category: string; runnerOS: string[]; requiredForAdmission: boolean }
 export interface ManifestEntry {
@@ -14,7 +14,7 @@ export interface ManifestEntry {
 }
 export interface ReceiptLimits { totalMs: number; installMs: number; legMs: number; outputBytes: number; artifactBytes: number; expandedBytes: number; archiveEntries: number }
 export interface CommandOptions { cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal; timeoutMs: number; maxBytes?: number }
-export interface CommandResult { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; cleanup: boolean }
+export interface CommandResult { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; ownedStopConfirmed: boolean; processCleanup: "proven" | "unproven"; processCleanupReason: string; survivorDetected?: boolean }
 export type ReceiptFetch = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
 export type ReceiptCommand = (argv: readonly string[], options: CommandOptions) => Promise<CommandResult>;
 export interface ReceiptContext {
@@ -49,7 +49,10 @@ export interface ReceiptSummary {
   procedureReceipt: string;
   generatedAt: string;
   bounds: { totalMs: number; legMs: number; cleanupMs: number };
-  cleanupConfirmed: boolean;
+  ownedStopConfirmed: boolean;
+  processCleanup: "proven" | "unproven";
+  processCleanupReason: string;
+  containment: "disposable-runner-lifetime";
   installation: ProofResult & { reason: string; nextStep: string };
   artifact: { method: string; integrity: string } | null;
   integrity: string | null;
@@ -60,6 +63,8 @@ export interface ReceiptSummary {
   legs: LegResult[];
 }
 export interface ReceiptPorts {
+  /** Trusted fake-runner attestation, never selectable through CLI/config. */
+  disposable?: boolean;
   fetch?: ReceiptFetch;
   run?: ReceiptCommand;
   install?: (context: ReceiptContext, entry: ManifestEntry, fetcher: ReceiptFetch) => Promise<InstalledArtifact>;

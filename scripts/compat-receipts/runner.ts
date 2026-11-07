@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { parseProcessTable, stopOwnedProcess, trackGroup, type ProcRow } from "../../src/hub/child-process.ts";
+import { descendantsOf, parseProcessTable, stopOwnedProcess, trackGroup, type ProcRow } from "../../src/hub/child-process.ts";
+import { dirname } from "node:path";
 import type { CommandResult, ReceiptCommand } from "./types.ts";
 
 // Operational cleanup bounds; diagnostics never inherit the caller's credential environment.
@@ -22,7 +23,7 @@ async function cleanProcessTable(): Promise<ProcRow[] | undefined> {
 
 /** Uses the production owned-group/descendant teardown, including on normal exit. */
 export const runBoundedReceiptCommand: ReceiptCommand = async (argv, options) => {
-  if (!argv.length || options.signal.aborted) return { exitCode: null, stdout: "", stderr: "", timedOut: false, cleanup: true };
+  if (!argv.length || options.signal.aborted) return { exitCode: null, stdout: "", stderr: "", timedOut: false, ownedStopConfirmed: true, processCleanup: "proven", processCleanupReason: "No process was started." };
   return new Promise<CommandResult>(resolve => {
     const child = spawn(argv[0]!, argv.slice(1), { cwd: options.cwd, env: options.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     trackGroup(child);
@@ -32,18 +33,30 @@ export const runBoundedReceiptCommand: ReceiptCommand = async (argv, options) =>
       if (settled) return;
       settled = true; clearTimeout(timer); options.signal.removeEventListener("abort", aborted);
       let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
-      const cleanup = await Promise.race([
+      let survivorDetected = false;
+      const ownedStopConfirmed = await Promise.race([
         (async () => {
           try {
-            const observed = !!(await cleanProcessTable());
+            const before = await cleanProcessTable();
+            const known = child.pid && before ? descendantsOf(before, child.pid) : [];
             await stopOwnedProcess(child, { group: true, termMs: TERM_MS, killMs: KILL_MS, table: cleanProcessTable });
-            return observed;
+            const after = await cleanProcessTable();
+            const runRoot = options.env.AGENTHUB_HOME ? dirname(options.env.AGENTHUB_HOME) : undefined;
+            // Observed identities or a private-run path are sufficient to report a
+            // survivor, never authority to signal an otherwise unowned process.
+            survivorDetected = !!after?.some(row => known.some(owned => owned.pid === row.pid && owned.started === row.started) ||
+              runRoot?.includes("/ahub-compat-receipt-") && row.command.includes(`${runRoot}/`));
+            return !!before && !!after && !survivorDetected;
           } catch { return false; }
         })(),
         new Promise<false>(done => { cleanupTimer = setTimeout(() => done(false), RECEIPT_CLEANUP_MS); }),
       ]);
       if (cleanupTimer) clearTimeout(cleanupTimer);
-      resolve({ exitCode: overflow ? 1 : exitCode, stdout, stderr, timedOut, cleanup });
+      // An exited leader and an empty original PGID cannot prove that no helper
+      // detached into a new group with ignored pipes. Runner destruction supplies
+      // containment; a portable process supervisor is outside T1.
+      resolve({ exitCode: overflow ? 1 : exitCode, stdout, stderr, timedOut, ownedStopConfirmed, survivorDetected,
+        processCleanup: "unproven", processCleanupReason: "Detached helpers can outlive an exited leader outside its original process group; disposable runner destruction is the containment boundary." });
     };
     const aborted = () => { void finish(null); };
     const timer = setTimeout(() => { timedOut = true; void finish(null); }, options.timeoutMs);

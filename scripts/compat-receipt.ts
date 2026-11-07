@@ -1,9 +1,10 @@
-import { closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { isCompatId } from "../src/adapters/compat.ts";
 import { realPath } from "../src/hub/project.ts";
+import { openReceiptOutput } from "./compat-receipts/output.ts";
 import { installCompatArtifact } from "./compat-receipts/install.ts";
 import { runManifestProofs } from "./compat-receipts/proofs.ts";
 import { RECEIPT_CLEANUP_MS, runBoundedReceiptCommand } from "./compat-receipts/runner.ts";
@@ -22,6 +23,8 @@ const DIAGNOSTICS: Record<Cause, readonly [string, string]> = {
   "producer-not-committed": ["producer not committed; see follow-up task", "Complete and review the per-id producer follow-up before treating this leg as proved."],
   "producer-not-importable": ["The historical producer is not import-safe or candidate-parameterized.", "Extract and review its callable proof in the producer follow-up; do not copy its assertions into this harness."],
   "not-applicable": ["The original pre-admission negative condition does not apply to this already-admitted candidate.", "Use an unverified candidate for the negative check; do not remove verified versions or change machine trust to force it."],
+  "disposable-required": ["The harness requires an explicitly disposable runner; a personal Mac is not contained by a temporary HOME.", "Use a GitHub-hosted runner or disposable Linux container and pass --disposable-runner; never run on a personal host."],
+  "process-cleanup-unproven": ["Lifetime process cleanup is unproven; a helper can detach outside the original process group.", "Use runner destruction for containment and complete the process-supervision follow-up before claiming this cleanup leg."],
   "source-review-required": ["The receipt requires scoped source or lifecycle review that this harness cannot certify.", "Complete the recorded human review; a fetched diff or successful install is not that review."],
   "install-unavailable": ["The exact artifact could not be installed with the recorded public method.", "Inspect the public artifact and installer on the required platform; no global installer or trust change is performed."],
   integrity: ["The exact artifact identity or integrity binding did not match.", "Check the publisher's exact-version metadata and checksum before any execution."],
@@ -31,16 +34,6 @@ const DIAGNOSTICS: Record<Cause, readonly [string, string]> = {
 function proof(status: LegResult["status"], cause: Cause, id: string, required: boolean): LegResult {
   const [reason, nextStep] = DIAGNOSTICS[cause];
   return { id, requiredForAdmission: required, status, cause, reason, nextStep };
-}
-function outputDirectory(value: string): string {
-  if (!value || /\p{Cc}/u.test(value)) throw new ReceiptError("input");
-  const directory = resolve(value), previous = lstatSync(directory, { throwIfNoEntry: false });
-  if (previous?.isSymbolicLink() || previous && !previous.isDirectory()) throw new ReceiptError("input");
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const info = lstatSync(directory);
-  if (!process.getuid || info.uid !== process.getuid() || (info.mode & 0o022) !== 0) throw new ReceiptError("input");
-  for (const name of ["summary.json", "receipt.md"]) if (lstatSync(join(directory, name), { throwIfNoEntry: false })) throw new ReceiptError("input");
-  return directory;
 }
 function limitsFor(overrides: ReceiptPorts["limits"]): ReceiptLimits {
   const limits = { ...DEFAULT_LIMITS, ...overrides };
@@ -80,7 +73,7 @@ function blockedCause(leg: ManifestEntry["legs"][number], os: string, architectu
   if (!leg.runnerOS.includes(os) || leg.category === "macos-runner" && entry.nativePlatform === "macos-arm64" && architecture !== "arm64") return "platform";
   if (["source-impact", "source-review", "source-comparison", "upstream-impact-review", "tag-binding", "reviewed-optional-lifecycle-replay"].includes(leg.id)) return "source-review-required";
 }
-function writeOutput(out: string, summary: ReceiptSummary): void {
+function renderReceipt(summary: ReceiptSummary): string {
   const markdown = [`# ${summary.id} ${summary.version} model-free compatibility receipt`, "", `Date: ${summary.generatedAt}.`, "",
     `Procedure: ${summary.procedureReceipt}. Runner: ${summary.runnerOS} ${summary.architecture}.`, "",
     `Artifact: ${summary.artifact ? `${summary.artifact.method}, ${summary.artifact.integrity}` : "not installed"}.`,
@@ -88,39 +81,48 @@ function writeOutput(out: string, summary: ReceiptSummary): void {
     "No real account, API key or model is supplied. A not-run leg is not admission evidence.", "",
     "| Leg | Required | Status | Cause | Next step |", "| --- | --- | --- | --- | --- |",
     ...summary.legs.map(leg => `| ${leg.id} | ${leg.requiredForAdmission} | ${leg.status} | ${leg.reason} | ${leg.nextStep} |`), "",
-    `Cleanup confirmed: ${summary.cleanupConfirmed}. Elapsed: ${summary.elapsedMs} ms.`, ""].join("\n");
-  for (const [name, contents] of [["summary.json", `${JSON.stringify(summary, null, 2)}\n`], ["receipt.md", markdown]]) {
-    const fd = openSync(join(out, name!), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    try { writeFileSync(fd, contents!); } finally { closeSync(fd); }
-  }
+    `Owned stop confirmed: ${summary.ownedStopConfirmed}. Process cleanup: ${summary.processCleanup}. ${summary.processCleanupReason}`,
+    "Containment: disposable runner lifetime; the runner VM/container must be destroyed after the job.",
+    `Elapsed: ${summary.elapsedMs} ms.`, ""].join("\n");
+  return markdown;
 }
 
 /** Host/test ports are programmatic only; the CLI never selects code or credentials from configuration. */
-export async function runCompatReceipt(input: { id: string; version: string; out: string }, ports: ReceiptPorts = {}): Promise<ReceiptSummary> {
+export async function runCompatReceipt(input: { id: string; version: string; out: string; disposableRunner?: boolean }, ports: ReceiptPorts = {}): Promise<ReceiptSummary> {
   if (!isCompatId(input.id) || input.version.length > 64 || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(input.version)) throw new ReceiptError("input");
+  const disposableHost = ports.disposable ?? ( process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted" ||
+    process.platform === "linux" && existsSync("/.dockerenv"));
+  if (!input.disposableRunner || !disposableHost) throw new ReceiptError("disposable-required");
   const manifest = JSON.parse(readFileSync(fileURLToPath(new URL("./compat-receipts/manifest.json", import.meta.url)), "utf8")) as { entries: Record<string, ManifestEntry> };
   const entry = ports.entry ?? manifest.entries[input.id]!;
   const categories = new Set(["linux-ci", "macos-runner", "account-or-model", "tui-desktop"]);
   if (!entry?.legs.length || !entry.legs.some(leg => leg.requiredForAdmission) || new Set(entry.legs.map(leg => leg.id)).size !== entry.legs.length ||
     entry.legs.some(leg => !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(leg.id) || !categories.has(leg.category) || typeof leg.requiredForAdmission !== "boolean")) throw new ReceiptError("input");
-  const limits = limitsFor(ports.limits), out = outputDirectory(input.out), started = performance.now();
+  const limits = limitsFor(ports.limits), out = openReceiptOutput(input.out), started = performance.now();
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-compat-receipt-"))), home = join(root, "home"), prefix = join(root, "prefix"), cwd = join(root, "project");
   let env: NodeJS.ProcessEnv;
   try {
     for (const folder of [home, prefix, cwd]) mkdirSync(folder, { mode: 0o700 });
     env = isolatedEnvironment(root, home);
-  } catch { rmSync(root, { recursive: true, force: true }); throw new ReceiptError("input"); }
+  } catch { rmSync(root, { recursive: true, force: true }); out.close(); throw new ReceiptError("input"); }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), limits.totalMs);
   const active = new Set<Promise<unknown>>();
-  let cleanup = true;
+  let ownedStopConfirmed = true, processCleanup: "proven" | "unproven" = "proven", survivorDetected = false;
+  let processCleanupReason = "No external command was started.";
   const context: ReceiptContext = { id: input.id, version: input.version, root, home, prefix, cwd, env, signal: controller.signal, limits,
     run: async (argv, options) => {
       if (options.signal.aborted || controller.signal.aborted || performance.now() - started >= limits.totalMs) throw new ReceiptError("timeout");
       const task = (ports.run ?? runBoundedReceiptCommand)(argv, { ...options, signal: AbortSignal.any([controller.signal, options.signal]),
         timeoutMs: Math.min(options.timeoutMs, Math.max(1, limits.totalMs - (performance.now() - started))) });
       active.add(task);
-      try { const result = await task; if (!result.cleanup) cleanup = false; return result; }
+      try {
+        const result = await task;
+        if (!result.ownedStopConfirmed) ownedStopConfirmed = false;
+        if (result.processCleanup !== "proven") { processCleanup = "unproven"; processCleanupReason = DIAGNOSTICS["process-cleanup-unproven"][0]; }
+        if (result.survivorDetected) { survivorDetected = true; ownedStopConfirmed = false; }
+        return result;
+      } catch (error) { ownedStopConfirmed = false; processCleanup = "unproven"; processCleanupReason = DIAGNOSTICS["process-cleanup-unproven"][0]; throw error; }
       finally { active.delete(task); }
     } };
   const platform = ports.platform ?? process.platform, os = platform === "darwin" ? "macos" : platform, architecture = ports.architecture ?? process.arch;
@@ -132,7 +134,7 @@ export async function runCompatReceipt(input: { id: string; version: string; out
       installation = proof("pass", "ok", "installation", true);
     } catch (error) {
       const cause = error instanceof ReceiptError ? error.causeCode : "install-unavailable";
-      if (cause === "cleanup") cleanup = false;
+      if (cause === "cleanup") ownedStopConfirmed = false;
       installation = proof(cause === "install-unavailable" || cause === "platform" ? "not-run" : "fail", cause, "installation", true);
     }
     if (artifact) {
@@ -145,11 +147,11 @@ export async function runCompatReceipt(input: { id: string; version: string; out
           if (!result || !["pass", "fail", "not-run"].includes(result.status) || !Object.hasOwn(DIAGNOSTICS, result.cause) ||
             (result.status === "pass") !== (result.cause === "ok")) throw new ReceiptError("proof-failed");
           legs[entry.legs.indexOf(leg)] = proof(result.status, result.cause, leg.id, leg.requiredForAdmission);
-          if (result.cause === "cleanup") cleanup = false;
+          if (result.cause === "cleanup") ownedStopConfirmed = false;
         }
       } catch (error) {
         const cause = error instanceof ReceiptError ? error.causeCode : "proof-failed";
-        if (cause === "cleanup") cleanup = false;
+        if (cause === "cleanup") ownedStopConfirmed = false;
         for (const leg of runnable) legs[entry.legs.indexOf(leg)] = proof("fail", cause, leg.id, leg.requiredForAdmission);
       }
     }
@@ -157,31 +159,39 @@ export async function runCompatReceipt(input: { id: string; version: string; out
     controller.abort();
     await Promise.allSettled([...active]);
     clearTimeout(timer);
-    if (cleanup) try { rmSync(root, { recursive: true, force: true }); } catch { cleanup = false; }
+    if (ownedStopConfirmed && processCleanup === "proven") try { rmSync(root, { recursive: true, force: true }); } catch { ownedStopConfirmed = false; }
   }
-  if (!cleanup) for (const [index, leg] of legs.entries()) if (leg.status === "pass") legs[index] = proof("fail", "cleanup", leg.id, leg.requiredForAdmission);
+  if (!ownedStopConfirmed) for (const [index, leg] of legs.entries()) if (leg.status === "pass") legs[index] = proof("fail", "cleanup", leg.id, leg.requiredForAdmission);
+  if (processCleanup === "unproven") for (const [index, leg] of legs.entries()) {
+    if (leg.status === "pass" && /(?:^|-)cleanup$/.test(leg.id)) legs[index] = proof("not-run", "process-cleanup-unproven", leg.id, leg.requiredForAdmission);
+  }
   const required = legs.filter(leg => leg.requiredForAdmission);
-  const outcome = !cleanup || installation.status === "fail" || required.some(leg => leg.status === "fail") ? "fail"
+  const outcome = !ownedStopConfirmed || survivorDetected || installation.status === "fail" || required.some(leg => leg.status === "fail") ? "fail"
     : installation.status !== "pass" || required.some(leg => leg.status === "not-run") ? "not-run" : "pass";
   const autoAdmit = entry.autoAdmit && input.id !== "codex-review" && input.id !== "agy" && !entry.legs.some(leg => leg.requiredForAdmission && ["account-or-model", "tui-desktop"].includes(leg.category));
   const [reason, nextStep] = DIAGNOSTICS[installation.cause];
   const summary: ReceiptSummary = { schemaVersion: 1, id: input.id, version: input.version, runnerOS: os, architecture,
-    procedureReceipt: entry.receipt, generatedAt: new Date().toISOString(), bounds: { totalMs: limits.totalMs + RECEIPT_CLEANUP_MS, legMs: limits.legMs + RECEIPT_CLEANUP_MS, cleanupMs: RECEIPT_CLEANUP_MS }, cleanupConfirmed: cleanup,
+    procedureReceipt: entry.receipt, generatedAt: new Date().toISOString(), bounds: { totalMs: limits.totalMs + RECEIPT_CLEANUP_MS, legMs: limits.legMs + RECEIPT_CLEANUP_MS, cleanupMs: RECEIPT_CLEANUP_MS }, ownedStopConfirmed, processCleanup, processCleanupReason, containment: "disposable-runner-lifetime",
     installation: { status: installation.status, cause: installation.cause, reason, nextStep },
-    artifact: artifact ? { method: artifact.method, integrity: artifact.integrity } : null, integrity: artifact?.integrity ?? null, autoAdmit, eligible: outcome === "pass" && autoAdmit && cleanup,
+    artifact: artifact ? { method: artifact.method, integrity: artifact.integrity } : null, integrity: artifact?.integrity ?? null, autoAdmit, eligible: outcome === "pass" && autoAdmit && ownedStopConfirmed && processCleanup === "proven",
     outcome, elapsedMs: Math.round(performance.now() - started), legs };
-  writeOutput(out, summary);
-  if (!cleanup) console.error(`Owned cleanup is unconfirmed; next: inspect only the retained private workspace ${root}.`);
+  try { await out.write(summary, renderReceipt(summary)); } finally { out.close(); }
+  if (!ownedStopConfirmed || processCleanup === "unproven") console.error(`Process cleanup is unproven; next: destroy the disposable runner after inspecting only the retained private workspace ${root}.`);
   return summary;
 }
 
 if (import.meta.main) {
-  const [id, version, flag, out, ...extra] = process.argv.slice(2);
-  if (!id || !version || flag !== "--out" || !out || extra.length) { console.error("Invalid receipt arguments; next: bun scripts/compat-receipt.ts <id> <version> --out <dir>"); process.exitCode = 2; }
+  const [id, version, flag, out, disposableFlag, ...extra] = process.argv.slice(2);
+  if (!id || !version || flag !== "--out" || !out || disposableFlag !== "--disposable-runner" || extra.length) {
+    console.error("Disposable runner required; next: bun scripts/compat-receipt.ts <id> <version> --out <dir> --disposable-runner on a GitHub-hosted runner or disposable Linux container."); process.exitCode = 2;
+  }
   else try {
-    const result = await runCompatReceipt({ id, version, out });
+    const result = await runCompatReceipt({ id, version, out, disposableRunner: true });
     await new Promise<void>(done => { process.stdout.write(`${JSON.stringify(result)}\n`, () => done()); });
     process.exit(result.outcome === "pass" ? 0 : result.outcome === "not-run" ? 3 : 1);
   }
-  catch { console.error("Receipt harness refused the input or output; next: use an exact version and a new owned output directory."); process.exitCode = 2; }
+  catch (error) {
+    const cause = error instanceof ReceiptError ? error.causeCode : "input";
+    console.error(`${DIAGNOSTICS[cause][0]} Next: ${DIAGNOSTICS[cause][1]}`); process.exitCode = 2;
+  }
 }

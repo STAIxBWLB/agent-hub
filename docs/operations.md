@@ -3553,8 +3553,10 @@ For CI-opened PRs, the person still chooses between explicit `check.yml` dispatc
 
 ### Isolated receipt harness (#1248 T1)
 
-Run `bun scripts/compat-receipt.ts <id> <exact-version> --out <new-owned-directory>`
-from the checkout. The command writes `summary.json` and `receipt.md` without
+Run `bun scripts/compat-receipt.ts <id> <exact-version> --out <new-owned-directory> --disposable-runner`
+from the checkout on a GitHub-hosted runner or disposable Linux container. The
+explicit flag is required; a local personal Mac is refused even with a temporary
+HOME. The runner VM/container must be destroyed after the job. The command writes `summary.json` and `receipt.md` without
 changing COMPAT, trust on this machine, or any workflow. Its exit codes are 0 for
 a completed pass, 1 for failure, 3 for required work left not-run, and 2 for invalid
 input/output. `eligible` also requires the manifest's admission policy; a pass
@@ -3595,13 +3597,21 @@ not real provider API keys; parent account/model variables never reach a worker.
 
 Default execution deadlines are 15 minutes overall, 3 minutes for installation
 and 2 minutes per proof-worker/group. Owned-process teardown has a separately
-bounded 10-second allowance, included in the JSON wall-time bounds. Cleanup must
-be confirmed before any pass is retained; otherwise the private workspace is
-retained, its location is reported only on stderr, and eligibility is false.
-The receipt excludes raw native stdout/stderr and private prefix paths. No PR is
-created by T1. The publisher/token choice and producer promotions are follow-ups.
-Mac runs remain heavyweight operations subject to workspace resource admission;
-an agent runs a CLI only inside the harness prefix and reports that isolated run.
+bounded 10-second allowance, included in the JSON wall-time bounds. The summary
+separates `ownedStopConfirmed` from `processCleanup: proven|unproven` and gives its
+reason. An empty leader process group cannot prove lifetime cleanup: a helper can
+detach into a new group with ignored pipes and survive its launcher. Detected
+survivors fail the run. Native lifetime cleanup remains unproven in T1; a required
+cleanup leg stays not-run, eligibility is false, and the private workspace is kept
+until runner destruction. Its location is reported only on stderr. A portable
+process supervisor belongs to a separate follow-up. Disposable runner lifetime is
+the containment boundary, not fresh HOME or process-group emptiness.
+
+The output directory is held open before installation. Exclusive, no-follow
+writes are relative to that handle, so replacing an ancestor cannot redirect the
+receipt. The receipt excludes raw native stdout/stderr and private prefix paths.
+No PR is created by T1. The publisher/token choice and producer promotions are
+follow-ups.
 
 
 ## Upgrade and crash recovery

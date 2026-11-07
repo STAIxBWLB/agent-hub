@@ -6,8 +6,11 @@ The T0 manifest and existing runtime admission policy are unchanged.
 
 ## Command and artifacts
 
-`bun scripts/compat-receipt.ts <id> <exact-version> --out <new-owned-directory>`
+`bun scripts/compat-receipt.ts <id> <exact-version> --out <new-owned-directory> --disposable-runner`
 validates the id/version and refuses unsafe or occupied outputs before install.
+It also requires a GitHub-hosted runner or disposable Linux container. A personal
+Mac is refused; a temporary HOME alone does not contain installer code. The
+explicit flag acknowledges that the runner must be destroyed after the job.
 Each run creates fresh HOME, XDG, cache, prefix, project and native tool homes.
 The caller's account/model variables and agent/Orca markers are not inherited.
 The worker is started in that environment before native proof API imports.
@@ -22,8 +25,9 @@ is used to make installation or a proof succeed.
 
 `summary.json` records identity, actual OS/architecture, artifact integrity,
 installation and each manifest leg's closed status/cause/next step, time bounds,
-cleanup and eligibility. `receipt.md` is its human view. Neither contains raw
-native output, caller secrets or temporary prefix paths. A cleanup failure keeps
+scoped owned-stop status, lifetime process cleanup with its reason, disposable
+runner containment and eligibility. `receipt.md` is its human view. Neither contains raw
+native output, caller secrets or temporary prefix paths. Unproven lifetime cleanup or failed owned stop keeps
 the private workspace and reports its location only on stderr. No version,
 line window, real-home trust or PR is changed by the harness.
 
@@ -50,8 +54,9 @@ None can become a pass merely because installation or configuration succeeded.
 - Claude imports the existing Python producers through runpy. Optional
   --expected-version and --runtime-path inputs parameterize the candidate and
   isolated interpreters while preserving historical defaults/assertions. A group
-  must exit 0 with exact cases, version, binary stability and native/host cleanup
-  before its mapped assertions pass. PID groups are never signalled after their
+  must exit 0 with exact cases, version, binary stability and its native/host
+  group assertions before those assertions pass. These assertions do not prove
+  lifetime cleanup of detached helpers; cleanup admission legs remain not-run. PID groups are never signalled after their
   reaped leader may have been reused. Original historical producer fingerprints
   are history, not hashes of these newly parameterized files.
 
@@ -61,7 +66,9 @@ Install/proof execution has monotonic scheduling deadlines; default budgets are
 15 minutes total, 3 minutes install and 2 minutes per proof worker/group. A fixed
 10-second teardown allowance is included in reported wall-time bounds. The
 production owned-process/descendant teardown is reused with a credential-free
-process-table observer. Unconfirmed teardown is failure, never a passing receipt.
+process-table observer. Unconfirmed owned stop or a detected survivor fails the run.
+Lifetime cleanup is separately reported as unproven, never inferred from an empty
+leader PGID; required cleanup admission legs remain not-run and ineligible.
 An inconsistent optimistic pass/timeout result is rejected.
 
 The test suite uses fake package metadata/bytes, fake installers and fake proof
@@ -70,6 +77,17 @@ model refusal despite an optimistic response, leg and total timeouts with owned
 descendants, private environment/no caller mutation, unsupported platform,
 invalid exact inputs, symlink outputs, digest-before-effects, bounded safe archive
 extraction, committed producer mapping and isolated-worker missing-producer refusal.
+The adversarial cleanup fixture launches a detached helper with a new PGID and
+ignored pipes, then exits its launcher with code 0. The helper can remain alive
+when the original group is empty. T1 reports `processCleanup: unproven` with a
+reason, preserves owned-stop checks and fails any survivor it can detect. It does
+not install a Linux subreaper or macOS supervisor. Disposable runner lifetime is
+the containment boundary; workflow integration must destroy the VM/container.
+A process-supervision follow-up is required for lifetime proof.
+
+The output regression renames the output parent and substitutes a symlink during
+a run. A retained verified directory descriptor plus dir-relative exclusive
+no-follow writes prevents final artifacts from reaching the replacement target.
 These are harness/host fixture results, not new native CLI compatibility receipts.
 
 ## Verification
