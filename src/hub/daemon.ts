@@ -118,7 +118,7 @@ import { planFingerprint, registeredProjects, type UpgradePlan } from "../cli/up
 import { conductorRecoveryBinding } from "../cli/conductor-recovery.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
-import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
+import { eventLog, readEvents, type HubEvent, type RoleIdentity } from "./events.ts";
 import { SpecTaskInspector } from "./specs-task.ts";
 import { KimiUsage, kimiSeedRows } from "./kimi-usage.ts";
 import { TokenWindow } from "./token-window.ts";
@@ -1361,7 +1361,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }), opts.controlPort === 0 ? [opts.codexAppPort, opts.codexProxyPort] : []);
   // Written once this run owns the port, before any connection can attach a peer: a daemon that fails to bind (another
   // is running) never marks a run boundary in the live one's events.
-  event({ type: "hub_start", instance: instanceId });
+  event({ type: "hub_start", instance: instanceId, personAttribution: true });
   startupCleanup.push(() => server.stop(true));
   startupTimings.mark("control");
 
@@ -4090,11 +4090,16 @@ export async function startDaemon(opts: DaemonOptions) {
   const claudeContextSeen = new Map<string, string>();
   const contextTailSeen = new Map<PeerId, string>();
   const retainedCliAudits = new Set<string>();
+  /** A CLI audit row is attributed to the peer's task only when it is this fresh at the drain; the sweep runs every few seconds, so an ordinary row is. */
+  const CLI_AUDIT_FRESH_MS = 15_000;
   function drainCliAuditsNow(): void {
     for (const audit of drainCliAudits(opts.stateDir)) {
       const delegated = audit.outcome === "delegated";
       const refused = audit.outcome !== "run" && !delegated;
-      if (!event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) })) {
+      // #1278: the audit row is written when the command runs and read here on a later sweep, so the peer's open tasks now may not be the ones then. A row older than the drain's own
+      // freshness bound is `unattributed` (what is known), never matched to whatever is open at drain time; a fresh one uses the rule `turn_end` uses.
+      const fresh = Date.now() - audit.at <= CLI_AUDIT_FRESH_MS && Date.now() >= audit.at;
+      if (!event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}), ...(fresh ? taskAttribution(audit.peer) : { attribution: "unattributed" as const }) })) {
         throw new Error("CLI audit event was not retained");
       }
       retainedCliAudits.add(audit.id); // Only after the event append succeeded.
@@ -5581,6 +5586,17 @@ export async function startDaemon(opts: DaemonOptions) {
   // Question text lives in hub.db and the envelope to the asking peer only: never a log line, an event, a notice or memory capture.
   const questionStore = new QuestionStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => questionStore.close());
+  const questionAttributions = new Map<string, TaskAttribution>();
+  const withQuestionAttribution = (e: Extract<HubEvent, { type: "question" }>): HubEvent => {
+    let attribution = questionAttributions.get(e.set);
+    if (!attribution) {
+      attribution = taskAttribution(e.peer);
+      if (e.set !== "-") { questionAttributions.set(e.set, attribution); if (questionAttributions.size > 512) questionAttributions.delete(questionAttributions.keys().next().value!); }
+    }
+    // A closed question's entry is released; a pending one keeps it for its answer.
+    if (e.event === "answered" || e.event === "superseded" || e.event === "cancelled" || e.event === "expired") questionAttributions.delete(e.set);
+    return { ...e, ...attribution };
+  };
   const questionDesk = new QuestionDesk({
     store: questionStore, now: () => Date.now(),
     waitMs: peer => config.questions.wait_ms[definitionOf(peer)?.kind ?? peer] ?? definitionOf(peer)?.questionWaitMs ?? 45_000,
@@ -5591,7 +5607,10 @@ export async function startDaemon(opts: DaemonOptions) {
     isPrivate: (peer, task, piiTurn) => piiTurn === true || contextPii(peer) || (task !== undefined && (() => { const row = board.get(task); return !row || tasks.isPii(row); })()),
     held: () => stopping || recoveryActive() || bus.isRecoveryHeld,
     publish: env => { bus.publish(env); },
-    event: e => { event(e); if (e.type === "question" && e.event !== "asked" && e.event !== "pending" && e.event !== "unavailable") queueMicrotask(() => settleCheck(e.peer)); }, // #1054: a closed question may be the last thing a run waited on
+    // #1278: a question is attributed once, when it is asked, by the rule `turn_end` uses (the task of the delivery the peer is working on, else its single open task, else unattributed), and
+    // every later event of the same set carries that same answer: the person answers minutes later, when the peer's open tasks may have changed. The task a question names for itself is the
+    // peer's claim and is not used. An `unavailable` question has no set and is attributed on the spot.
+    event: e => { event(e.type === "question" ? withQuestionAttribution(e) : e); if (e.type === "question" && e.event !== "asked" && e.event !== "pending" && e.event !== "unavailable") queueMicrotask(() => settleCheck(e.peer)); }, // #1054: a closed question may be the last thing a run waited on
     peerKnown: peer => bus.peers.has(peer) || (bus.knownPeers().includes(peer) && membershipAllowed(peer)),
   });
   // #1053: expiry (`questions.ttl_s`), a changed native session, an envelope a refused publish still owes, and old settled rows. Pushed here, after the desk exists, like the other late timers.
@@ -5634,10 +5653,17 @@ export async function startDaemon(opts: DaemonOptions) {
   const checksOwnedBy = (peer: PeerId): number => (checkOwners.get(peer) ?? 0) + tasks.checksOwnedBy(peer);
   // The peer's OWN adapter state, not the displayed one (a pause shows a busy peer as paused, and its work goes on): an owned child or a continuation the adapter still runs keeps it busy.
   const ownedChildrenOf = (peer: PeerId): number => (bus.peers.get(peer)?.state === "busy" ? 1 : 0);
+  /**
+   * #1278: the task a run's completion belongs to, resolved when the run opens (its first turn) by the rule `turn_end` uses and read when it settles, by which time the peer's open tasks have
+   * moved on. In memory only: a run that a restart settles `interrupted` has lost it and reads `unattributed`, which is what is known.
+   */
+  const runAttributions = new Map<string, TaskAttribution>();
   const completionDone = (peer: PeerId, run: Run, outcome: "done" | "failed" | "limit" | "interrupted"): void => {
     const made = completionStore.settle({ peer, runTurn: run.runTurn, lastTurn: run.lastTurn, startedAt: run.startedAt, ...(run.promptEnvelope ? { promptEnvelope: run.promptEnvelope } : {}), ...(run.replyEnvelope ? { replyEnvelope: run.replyEnvelope } : {}), private: run.private }, outcome, Date.now(), `cmp-${randomUUID().replaceAll("-", "").slice(0, 12)}`);
     if (!made) return;
-    event({ type: "completion", id: made.id, peer, outcome, ms: made.settledAt - made.startedAt });
+    const attribution = runAttributions.get(run.runTurn) ?? { attribution: "unattributed" as const };
+    runAttributions.delete(run.runTurn);
+    event({ type: "completion", id: made.id, peer, outcome, ms: made.settledAt - made.startedAt, ...attribution });
   };
   /**
    * The one settle check. It runs at every point the pending-work facts can change: a turn end, a queue change, a permission or question closing, a check ending. A run settles
@@ -6597,7 +6623,11 @@ export async function startDaemon(opts: DaemonOptions) {
             const person = pendingPersonDelivery.get(e.peer);
             pendingPersonDelivery.delete(e.peer);
             const run = runs.turnStarted({ peer: e.peer, turn: id, at: Date.now(), personOriginated: person !== undefined, ...(person ? { promptEnvelope: person.envelope } : {}), private: person?.private === true || pii || holdsPii(e.peer) });
-            if (run) { if (run.runTurn === id) completionStore.openRun(run); else completionStore.touchRun(run); }
+            if (run) {
+              if (run.runTurn === id) { completionStore.openRun(run); runAttributions.set(id, attribution); } else completionStore.touchRun(run);
+              // A run that never settles in this process would keep its entry; the table only ever holds the open runs, one per settling peer.
+              if (runAttributions.size > 256) runAttributions.delete(runAttributions.keys().next().value!);
+            }
           }
         } catch { log(`completion run start for ${e.peer} failed; no completion for this turn`); }
         if (softTokenPeer(e.peer)) try { kimiUsage.turnStarted(e.peer); } catch { /* counting never costs a turn */ }
@@ -6827,6 +6857,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const timeoutMs = opts.permissionTimeoutMs ?? approvalTimeoutS * 1000;
     const createdAt = Date.now();
     const expiresAt = createdAt + timeoutMs;
+    // #1278: the task this request belongs to, resolved once when it opens by the rule `turn_end` and `tokens` use. The settle event reuses it, because the turn can have ended by then and the
+    // peer's open tasks changed. Ids and a closed rule name only; unattributed stays unattributed.
+    const requestAttribution = taskAttribution(req.peer);
     const publicTool = typeof req.tool === "string" && /^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(req.tool) && !/\s/.test(req.tool) ? req.tool : undefined;
     log(`permission ${id} requested by ${req.peer} (${title.length} chars, shown on the console; cancelled after ${timeoutMs / 1000}s)`);
     // The tool name is for the desktop notice only: the console push keeps its shape.
@@ -6855,7 +6888,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (outcome === "expired") { try { notify(`permission ${id} from ${req.peer} was not answered within ${Math.round(timeoutMs / 1000)}s and was cancelled`); } catch { /* registry withdrawal already completed */ } }
         const latencyMs = Math.max(0, Date.now() - createdAt);
         const optionKind = option?.kind === "allow_once" || option?.kind === "allow_always" || option?.kind === "reject_once" || option?.kind === "reject_always" ? option.kind : undefined;
-        try { event({ type: "permission", id, peer: req.peer, event: outcome, latencyMs, ...(surface ? { surface } : {}), ...(optionKind ? { option: optionKind } : {}) }); } catch { try { log(`permission event recording failed at settlement for ${req.peer}`); } catch { /* settlement remains authoritative */ } }
+        try { event({ type: "permission", id, peer: req.peer, event: outcome, latencyMs, ...(surface ? { surface } : {}), ...(optionKind ? { option: optionKind } : {}), ...requestAttribution }); } catch { try { log(`permission event recording failed at settlement for ${req.peer}`); } catch { /* settlement remains authoritative */ } }
         try { notify(`permission ${id} from ${req.peer} ${outcome} option ${optionKind ?? "none"} by ${surface ?? "hub"} (${latencyMs}ms)`); } catch { /* no reporting failure strands the caller */ }
         for (const c of consoles) if (c.data.tail) { try { c.send(JSON.stringify({ t: "permission_closed", id, peer: req.peer, outcome: outcome === "expired" ? "cancelled" : outcome, ...(outcome === "expired" ? { reason: "expired" } : {}), latencyMs })); } catch { /* another surface can still observe the closure */ } }
         resolve({ outcome, ...(option ? { optionId: option.optionId, ...(surface ? { approvalId: id } : {}) } : {}) });
@@ -6867,7 +6900,7 @@ export async function startDaemon(opts: DaemonOptions) {
       timer = setTimeout(() => done(undefined, undefined, "expired"), timeoutMs);
       signal?.addEventListener("abort", aborted, { once: true });
       if (signal?.aborted) { aborted(); return; }
-      try { event({ type: "permission", id, peer: req.peer, event: "requested" }); } catch { /* optional observer */ }
+      try { event({ type: "permission", id, peer: req.peer, event: "requested", ...requestAttribution }); } catch { /* optional observer */ }
       for (const c of consoles) if (c.data.tail) { try { c.send(push); } catch { /* next tail gets the registered request */ } }
       if (config.approvals.notify) { try { desktop("agent-hub", `${req.peer} asks for approval${req.tool ? `: ${req.tool}` : ""} (ahub tail)`); } catch { /* optional desktop */ } }
     });
@@ -10362,7 +10395,7 @@ export async function startDaemon(opts: DaemonOptions) {
             }
             if (!sourcePackageDigest || plan.sourceDigest !== sourcePackageDigest && (plan.kind !== "upgrade" || plan.sourceDigest !== raw.targetDigest)) throw new RecoveryAuthorityError();
             current();
-            if (!event({ type: "agent_cli", peer: c.peer!, command: raw.kind, refused: false })) throw new RecoveryAuthorityError();
+            if (!event({ type: "agent_cli", peer: c.peer!, command: raw.kind, refused: false, ...taskAttribution(c.peer!) })) throw new RecoveryAuthorityError();
             current();
             issueConductorRecoveryAuthority(opts.stateDir, expected, fresh);
           } else {
