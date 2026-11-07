@@ -10,6 +10,7 @@ import { STARTUP_PHASES } from "../../src/hub/startup-timing.ts";
 
 const MAX_PRIVATE_SAMPLES = 3;
 const SAMPLE_TIMEOUT_MS = 60_000;
+const PUBLIC_PROBE_TIMEOUT_MS = 10_000;
 const OUTPUT_BYTES = 64 * 1024;
 const COPY_BYTES = 64 * 1024;
 const LEDGER_BUSY_TIMEOUT_MS = 3000;
@@ -97,7 +98,7 @@ export function timingLine(value: unknown): string {
   return value;
 }
 
-async function ownedCommand(argv: string[], cwd: string, env: NodeJS.ProcessEnv, input?: string, onLine?: (line: string) => void): Promise<string> {
+async function ownedCommand(argv: string[], cwd: string, env: NodeJS.ProcessEnv, input?: string, onLine?: (line: string) => void, timeoutMs = SAMPLE_TIMEOUT_MS): Promise<string> {
   const child = spawn(argv[0]!, argv.slice(1), { cwd, env, detached: true, stdio: ["pipe", "pipe", "ignore"] }); trackGroup(child);
   let output = "", pending = "", overflow = false;
   child.stdout!.on("data", chunk => {
@@ -115,9 +116,9 @@ async function ownedCommand(argv: string[], cwd: string, env: NodeJS.ProcessEnv,
   if (input !== undefined) child.stdin!.end(input); else child.stdin!.end();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const code = await Promise.race([exited, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("bounded benchmark child did not finish; inspect its numeric stage before retrying")), SAMPLE_TIMEOUT_MS); })]);
+    const code = await Promise.race([exited, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("bounded benchmark child did not finish; inspect its numeric stage before retrying")), timeoutMs); })]);
     clearTimeout(timer);
-    await Promise.race([drained, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("benchmark output did not settle; retain the fixture and inspect process ownership")), SAMPLE_TIMEOUT_MS); })]);
+    await Promise.race([drained, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("benchmark output did not settle; retain the fixture and inspect process ownership")), timeoutMs); })]);
     if (code !== 0 || overflow) return refuse();
     return output;
   } finally {
@@ -309,41 +310,52 @@ export async function seedStartupFixture(file: string): Promise<void> {
   }
 }
 
-export async function installStartupReadObserver(stateDir: string): Promise<{ counts: { eventReadBytes: number; abandonedReadBytes: number }; restore(): void }> {
-  const { syncBuiltinESMExports } = await import("node:module");
-  const fs = (await import("node:fs")).default, descriptors = new Map<number, string>();
-  const counts = { eventReadBytes: 0, abandonedReadBytes: 0 };
+/** Benchmark-only Bun builtin interception. No operation is fabricated; unspecified exports retain their real implementations. */
+async function interceptBuiltins(specifiers: string[], overrides: (real: Record<string, any>) => Record<string, unknown>): Promise<() => void> {
+  const { mock } = await import("bun:test");
+  const captured = await Promise.all(specifiers.map(async specifier => ({ specifier, real: { ...await import(specifier) } })));
+  try {
+    for (const { specifier, real } of captured) {
+      const replacements = overrides(real), source = real.default ?? real, descriptors = Object.getOwnPropertyDescriptors(source);
+      for (const [name, value] of Object.entries(replacements)) descriptors[name] = { value, writable: true, configurable: true, enumerable: true };
+      const forwarded = { ...real, ...replacements, default: Object.create(Object.getPrototypeOf(source), descriptors) };
+      mock.module(specifier, () => forwarded);
+    }
+  } catch (error) { for (const { specifier, real } of captured) mock.module(specifier, () => real); throw error; }
+  return () => { for (const { specifier, real } of captured) mock.module(specifier, () => real); };
+}
+
+export async function installStartupReadObserver(stateDir: string): Promise<{ counts: { eventReadBytes: number; abandonedReadBytes: number; restartReadBytes: number }; restore(): void }> {
+  const descriptors = new Map<number, string>();
+  const counts = { eventReadBytes: 0, abandonedReadBytes: 0, restartReadBytes: 0 };
   const sourceName = (value: unknown): string | undefined => typeof value === "number" ? descriptors.get(value) : typeof value === "string" ? resolve(value) : undefined;
   const noteRead = (name: string | undefined, bytes: number) => {
     if (name === join(stateDir, "events.jsonl")) counts.eventReadBytes += bytes;
+    if (name === join(stateDir, "restart.json")) counts.restartReadBytes += bytes;
     if (name && dirname(name) === stateDir && /restart\.abandoned\.[^/]+\.json$/.test(name)) counts.abandonedReadBytes += bytes;
   };
-  const originalOpen = fs.openSync, originalClose = fs.closeSync, originalRead = fs.readSync, originalReadFile = fs.readFileSync;
-  (fs as any).openSync = (...args: any[]) => { const fd = (originalOpen as any)(...args), name = sourceName(args[0]); if (name) descriptors.set(fd, name); return fd; };
-  fs.closeSync = fd => { descriptors.delete(fd); originalClose(fd); };
-  (fs as any).readSync = (...args: any[]) => { const n = (originalRead as any)(...args); noteRead(sourceName(args[0]), n); return n; };
-  (fs as any).readFileSync = (...args: any[]) => {
-    const name = sourceName(args[0]), data = (originalReadFile as any)(...args);
-    noteRead(name, typeof data === "string" ? Buffer.byteLength(data) : data.byteLength); return data;
-  };
-  syncBuiltinESMExports();
-  return { counts, restore: () => { fs.openSync = originalOpen; fs.closeSync = originalClose; fs.readSync = originalRead; fs.readFileSync = originalReadFile; syncBuiltinESMExports(); } };
+  const restore = await interceptBuiltins(["fs", "node:fs"], real => ({
+    openSync: (...args: any[]) => { const fd = real.openSync(...args), name = sourceName(args[0]); if (name) descriptors.set(fd, name); return fd; },
+    closeSync: (fd: number) => { descriptors.delete(fd); real.closeSync(fd); },
+    readSync: (...args: any[]) => { const n = real.readSync(...args); noteRead(sourceName(args[0]), n); return n; },
+    readFileSync: (...args: any[]) => {
+      const name = sourceName(args[0]), data = real.readFileSync(...args);
+      noteRead(name, typeof data === "string" ? Buffer.byteLength(data) : data.byteLength); return data;
+    },
+  }));
+  return { counts, restore };
 }
 
-/** Isolated child only: deny effects before importing the composition root. */
-async function measure(root: string): Promise<void> {
-  const importedAt = performance.now(), cwd = join(root, "project"), stateDir = join(root, "state");
+async function installStartupEffectDenials(): Promise<{ deny(): never; effects(): number; restore(): void }> {
   let effects = 0;
-  const deny = () => { effects++; return refuse(); };
-  if (process.env.AHUB_STARTUP_BENCHMARK_CHILD !== "1" || process.env.HOME !== join(root, "home") || process.env.AGENTHUB_HOME !== join(root, "agenthub_home")) return refuse();
+  const deny = () => { effects++; return refuse(); }, restorers: (() => void)[] = [];
+  const originalFetch = globalThis.fetch, originalWebSocket = globalThis.WebSocket, originalConnect = Bun.connect;
   globalThis.fetch = Object.assign(deny, { preconnect: deny });
   globalThis.WebSocket = class { constructor() { deny(); } } as unknown as typeof WebSocket;
   Bun.connect = deny as typeof Bun.connect;
-  const cp = (await import("node:child_process")).default;
-  const { syncBuiltinESMExports } = await import("node:module");
+  restorers.push(() => { globalThis.fetch = originalFetch; globalThis.WebSocket = originalWebSocket; Bun.connect = originalConnect; });
   const allowed = (command: unknown, args: unknown): boolean => {
     if (typeof command !== "string" || !Array.isArray(args)) return false;
-    // The pinned portable helper deliberately invokes git/realpath by basename. Resolve only these closed names in the isolated fixed PATH.
     const executable = ["git", "ps", "realpath"].includes(command) ? Bun.which(command, { PATH: process.env.PATH }) ?? "" : command;
     if (["/bin/ps", "/usr/bin/ps", "/bin/realpath", "/usr/bin/realpath"].includes(executable)) return true;
     if (!["/usr/bin/git", "/bin/git"].includes(executable)) return false;
@@ -354,23 +366,97 @@ async function measure(root: string): Promise<void> {
       || verb === "config" && words.some(word => ["--get", "--get-all", "--get-regexp", "--list"].includes(word))
       || verb === "worktree" && words[0] === "list";
   };
-  for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"] as const) {
-    const original = cp[name] as (...args: any[]) => any;
-    (cp as any)[name] = (command: unknown, args: unknown, ...rest: unknown[]) => allowed(command, args) ? original(command, args, ...rest) : deny();
-  }
-  for (const name of ["exec", "execSync", "fork"] as const) (cp as any)[name] = deny;
-  syncBuiltinESMExports();
-  for (const specifier of ["node:http", "node:https", "node:net", "node:tls", "node:dgram", "node:dns"]) {
-    const mod = (await import(specifier)).default;
-    for (const key of ["request", "get", "connect", "createConnection", "createSocket", "lookup", "resolve", "resolve4", "resolve6"]) if (typeof mod[key] === "function") mod[key] = deny;
-    if (mod.Socket) mod.Socket.prototype.connect = deny;
-  }
-  syncBuiltinESMExports();
-  const observer = await installStartupReadObserver(stateDir), io = observer.counts;
+  restorers.push(await interceptBuiltins(["child_process", "node:child_process"], real => {
+    const replacements: Record<string, unknown> = { exec: deny, execSync: deny, fork: deny };
+    for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"]) replacements[name] = (command: unknown, args: unknown, ...rest: unknown[]) => allowed(command, args) ? real[name](command, args, ...rest) : deny();
+    return replacements;
+  }));
+  for (const name of ["http", "https", "net", "tls", "dgram", "dns"]) restorers.push(await interceptBuiltins([name, `node:${name}`], real => {
+    const replacements: Record<string, unknown> = {};
+    for (const key of ["request", "get", "connect", "createConnection", "createSocket", "lookup", "resolve", "resolve4", "resolve6"]) if (typeof real[key] === "function") replacements[key] = deny;
+    if (real.Socket) { const original = real.Socket.prototype.connect; real.Socket.prototype.connect = deny; restorers.push(() => { real.Socket.prototype.connect = original; }); }
+    return replacements;
+  }));
   const nativeSpawn = Bun.spawn, nativeSpawnSync = Bun.spawnSync;
   const bunAllowed = (value: any) => { const argv = Array.isArray(value) ? value : value?.cmd; return Array.isArray(argv) && allowed(argv[0], argv.slice(1)); };
   Bun.spawn = ((value: any, options: any) => bunAllowed(value) ? nativeSpawn(value, options) : deny()) as typeof Bun.spawn;
   Bun.spawnSync = ((value: any, options: any) => bunAllowed(value) ? nativeSpawnSync(value, options) : deny()) as typeof Bun.spawnSync;
+  restorers.push(() => { Bun.spawn = nativeSpawn; Bun.spawnSync = nativeSpawnSync; });
+  return { deny, effects: () => effects, restore: () => { for (const restore of restorers.reverse()) restore(); } };
+}
+
+/** Public normal-runtime proof of interception; never consumes the private sample ledger. */
+export async function runStartupPublicProbe(): Promise<Record<string, number>> {
+  const root = mkdtempSync(join(tmpdir(), "ahub-startup-1232-probe-")); chmodSync(root, 0o700);
+  let stopped = false;
+  try {
+    const env = isolatedStartupEnvironment(root);
+    const raw = await ownedCommand([process.execPath, SCRIPT, "--probe-child", root], root, env, undefined, undefined, PUBLIC_PROBE_TIMEOUT_MS); stopped = true;
+    const value: unknown = JSON.parse(raw);
+    const keys = ["normalRuntime", "namedReadBytes", "defaultReadBytes", "eventReaderBytes", "rollupBytes", "restartBytes", "abandonedMetadataBytes", "abandonedBodyBytes", "processDenials", "networkDenials", "restored"];
+    if (!value || typeof value !== "object" || Object.keys(value).sort().join() !== keys.sort().join() || Object.values(value).some(n => !Number.isSafeInteger(n) || Number(n) < 0)) return refuse();
+    const row = value as Record<string, number>;
+    if (row.normalRuntime !== 1 || row.namedReadBytes! < 8 || row.defaultReadBytes! < 8 || row.eventReaderBytes! < 1 || row.rollupBytes! < 1 || row.restartBytes! < 2 || row.abandonedMetadataBytes !== 0 || row.abandonedBodyBytes! < 2 || row.processDenials !== 2 || row.networkDenials !== 4 || row.restored !== 1) return refuse();
+    return row;
+  } finally { if (stopped) rmSync(root, { recursive: true, force: true }); }
+}
+
+async function publicProbeChild(root: string): Promise<void> {
+  if (process.env.AHUB_STARTUP_BENCHMARK_CHILD !== "1" || process.env.HOME !== join(root, "home")) return refuse();
+  const state = join(root, "state"); mkdirSync(state, { mode: 0o700 });
+  const events = join(state, "events.jsonl"), restart = join(state, "restart.json"), abandoned = join(state, "restart.abandoned.public.json");
+  const data = JSON.stringify({ v: 1, at: "2026-01-01T00:00:00.000Z", type: "state", peer: "claude", state: "offline" }) + "\n";
+  writeFileSync(events, data); writeFileSync(restart, "{}"); writeFileSync(abandoned, "{}");
+  const nativeRead = readFileSync, nativeSpawn = (await import("node:child_process")).spawn, nativeFetch = globalThis.fetch;
+  const guards = await installStartupEffectDenials(), observer = await installStartupReadObserver(state);
+  const metrics: Record<string, number> = { normalRuntime: 1 };
+  try {
+    const fs = await import("node:fs");
+    let before = observer.counts.eventReadBytes;
+    if (fs.readFileSync(events, "utf8") !== data) return refuse();
+    metrics.namedReadBytes = observer.counts.eventReadBytes - before;
+    before = observer.counts.eventReadBytes;
+    if (fs.default.readFileSync(events, "utf8") !== data) return refuse();
+    metrics.defaultReadBytes = observer.counts.eventReadBytes - before;
+    const { readEvents } = await import("../../src/hub/events.ts");
+    before = observer.counts.eventReadBytes;
+    if (readEvents(events).length !== 1) return refuse();
+    metrics.eventReaderBytes = observer.counts.eventReadBytes - before;
+    const { UsageRollup } = await import("../../src/hub/usage-rollup.ts");
+    const rollup = new UsageRollup(join(state, "hub.db"), events);
+    before = observer.counts.eventReadBytes;
+    try { rollup.poll(); } finally { rollup.close(); }
+    metrics.rollupBytes = observer.counts.eventReadBytes - before;
+    const { readRestartSnapshot } = await import("../../src/hub/restart.ts");
+    if (readRestartSnapshot(state, { projectRoot: root, projectId: "public-probe" }) !== undefined) return refuse();
+    metrics.restartBytes = observer.counts.restartReadBytes;
+    fs.statSync(abandoned); fs.readdirSync(state);
+    metrics.abandonedMetadataBytes = observer.counts.abandonedReadBytes;
+    fs.default.readFileSync(abandoned);
+    metrics.abandonedBodyBytes = observer.counts.abandonedReadBytes;
+    const denied = (operation: () => unknown) => { const n = guards.effects(); try { operation(); } catch { /* The denial must happen before any effect. */ } if (guards.effects() !== n + 1) return refuse(); };
+    const cp = await import("node:child_process"), http = await import("node:http"), net = await import("node:net");
+    denied(() => cp.spawn("startup-benchmark-refused-native", []));
+    denied(() => cp.default.spawn("startup-benchmark-refused-native", []));
+    metrics.processDenials = guards.effects();
+    denied(() => http.request("http://127.0.0.1:1"));
+    denied(() => net.default.connect(1, "127.0.0.1"));
+    denied(() => globalThis.fetch("http://127.0.0.1:1"));
+    denied(() => globalThis.fetch.preconnect("http://127.0.0.1:1"));
+    metrics.networkDenials = guards.effects() - metrics.processDenials!;
+  } finally { observer.restore(); guards.restore(); }
+  const restoredFs = await import("node:fs"), restoredCp = await import("node:child_process");
+  if (restoredFs.readFileSync !== nativeRead || restoredCp.spawn !== nativeSpawn || globalThis.fetch !== nativeFetch) return refuse();
+  metrics.restored = 1;
+  process.stdout.write(JSON.stringify(metrics) + "\n");
+}
+
+/** Isolated child only: deny effects before importing the composition root. */
+async function measure(root: string): Promise<void> {
+  const importedAt = performance.now(), cwd = join(root, "project"), stateDir = join(root, "state");
+  if (process.env.AHUB_STARTUP_BENCHMARK_CHILD !== "1" || process.env.HOME !== join(root, "home") || process.env.AGENTHUB_HOME !== join(root, "agenthub_home")) return refuse();
+  const guards = await installStartupEffectDenials(), deny = guards.deny;
+  const observer = await installStartupReadObserver(stateDir), io = observer.counts;
   const { startDaemon, DEFAULT_CONFIG } = await import("../../src/hub/daemon.ts");
   const { ADAPTERS } = await import("../../src/adapters/registry.ts");
   const db = new Database(join(stateDir, "hub.db")); db.run(`PRAGMA busy_timeout = ${LEDGER_BUSY_TIMEOUT_MS}`);
@@ -391,21 +477,23 @@ async function measure(root: string): Promise<void> {
     } });
   const importAndStartupMs = performance.now() - importedAt;
   try {
-    if (daemon.bus.peers.size !== 0 || effects !== 0) return refuse();
+    if (daemon.bus.peers.size !== 0 || guards.effects() !== 0) return refuse();
     const lines = readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter(line => line.includes("startup timings ms: "));
     if (lines.length !== 1) return refuse();
     const timing = timingLine(lines[0]!.slice(lines[0]!.indexOf("startup timings ms: ")));
-    await new Promise<void>(done => process.stdout.write(JSON.stringify({ timing, importAndStartupMs, ready: 1, effects, ...io }) + "\n", () => done()));
+    await new Promise<void>(done => process.stdout.write(JSON.stringify({ timing, importAndStartupMs, ready: 1, effects: guards.effects(), ...io }) + "\n", () => done()));
     await daemon.stop();
-    if (effects !== 0) return refuse();
-    process.stdout.write(JSON.stringify({ stopped: 1, effects }) + "\n");
-  } finally { await daemon.stop(); }
+    if (guards.effects() !== 0) return refuse();
+    process.stdout.write(JSON.stringify({ stopped: 1, effects: guards.effects() }) + "\n");
+  } finally { await daemon.stop(); observer.restore(); guards.restore(); }
 }
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
   try {
     if (args[0] === "--seed" && process.env.AHUB_STARTUP_BENCHMARK_CHILD === "1") await seedStartupFixture(args[1]!);
+    else if (args[0] === "--probe-child") await publicProbeChild(args[1]!);
+    else if (args[0] === "--public-probe" && args.length === 1) process.stdout.write(JSON.stringify(await runStartupPublicProbe()) + "\n");
     else if (args[0] === "--child") await measure(args[1]!);
     else {
       if ((!args.includes("--synthetic") && !args.includes("--private-state")) || args.includes("--synthetic") && args.includes("--private-state")) refuse();

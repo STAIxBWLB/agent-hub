@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abandonedSizes, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, reservePrivateAttempt, runStartupBenchmark, seedStartupFixture, syntheticDeliveryPayload, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { abandonedSizes, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { STARTUP_PHASES } from "../src/hub/startup-timing.ts";
 
@@ -54,6 +54,21 @@ test("read observer sees actual named builtin imports and descriptor reads witho
     expect(observer.counts.eventReadBytes).toBe(recorded);
   } finally { observer.restore(); }
 });
+
+test("normal Bun script observes production readers and named/default effect denials before private diagnostics", async () => {
+  const row = await runStartupPublicProbe();
+  expect(row.normalRuntime).toBe(1);
+  expect(row.namedReadBytes).toBeGreaterThanOrEqual(8);
+  expect(row.defaultReadBytes).toBeGreaterThanOrEqual(8);
+  expect(row.eventReaderBytes).toBeGreaterThan(0);
+  expect(row.rollupBytes).toBeGreaterThan(0);
+  expect(row.restartBytes).toBeGreaterThanOrEqual(2);
+  expect(row.abandonedMetadataBytes).toBe(0);
+  expect(row.abandonedBodyBytes).toBeGreaterThanOrEqual(2);
+  expect(row.processDenials).toBe(2);
+  expect(row.networkDenials).toBe(4);
+  expect(row.restored).toBe(1);
+}, 20_000);
 
 test("private attempts are reserved durably before work, including attempts that never start a child", () => {
   const ledger = join(directory(), "attempts.sqlite");
