@@ -142,6 +142,20 @@ test("online read-only WAL source backup is immediately readable by Bun without 
   } finally { writer.close(); }
 }, 20_000);
 
+test("backup refuses preexisting destination artifacts without removing or overwriting them", async () => {
+  const root = directory(), env = isolatedStartupEnvironment(root), source = join(root, "unused-source.sqlite"), destination = join(root, "copy.sqlite"), kept = join(root, "kept");
+  writeFileSync(source, "public source"); writeFileSync(kept, "keep this public fixture");
+  symlinkSync(kept, destination + "-shm");
+  await expect(backupStartupDatabase(source, destination, env, 10_000)).rejects.toThrow();
+  expect(readFileSync(kept, "utf8")).toBe("keep this public fixture");
+  expect(existsSync(destination + "-shm")).toBe(true);
+  expect(existsSync(destination)).toBe(false);
+  rmSync(destination + "-shm");
+  writeFileSync(destination, "preexisting destination");
+  await expect(backupStartupDatabase(source, destination, env, 10_000)).rejects.toThrow();
+  expect(readFileSync(destination, "utf8")).toBe("preexisting destination");
+});
+
 test("failure diagnostics accept only closed numeric stages and no child prose or path", () => {
   const stage = BENCHMARK_STAGES.indexOf("profile");
   expect(benchmarkFailureStage({ failed: 1, stage })).toBe(stage);

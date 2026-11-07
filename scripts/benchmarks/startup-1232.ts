@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { spawn } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -168,8 +168,33 @@ finally:b.close();a.close()
 `;
 export async function backupStartupDatabase(source: string, destination: string, env: NodeJS.ProcessEnv, timeoutMs = SAMPLE_TIMEOUT_MS): Promise<void> {
   publicStage = "backup";
-  const python = Bun.which("python3", { PATH: env.PATH }); if (!python) return refuse();
-  await ownedCommand([python, "-I", "-c", BACKUP, source, destination], dirname(destination), env, undefined, undefined, timeoutMs);
+  const python = Bun.which("python3", { PATH: env.PATH }), uid = process.getuid?.(); if (!python || uid === undefined || !env.HOME) return refuse();
+  const parent = dirname(destination), directory = lstatSync(parent), root = realPath(dirname(env.HOME)), canonicalParent = realPath(parent);
+  if (!directory.isDirectory() || directory.uid !== uid || (directory.mode & 0o077) !== 0 || canonicalParent !== root && !canonicalParent.startsWith(root + "/")) return refuse();
+  // The destination is exclusively ours from creation. Never repair/remove another connection's artifacts.
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) if (lstatSync(destination + suffix, { throwIfNoEntry: false })) return refuse();
+  const created = openSync(destination, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+  let identity: ReturnType<typeof fstatSync>;
+  try { identity = fstatSync(created); } finally { closeSync(created); }
+  await ownedCommand([python, "-I", "-c", BACKUP, source, destination], parent, env, undefined, undefined, timeoutMs);
+  const currentDirectory = lstatSync(parent), current = lstatSync(destination);
+  if (currentDirectory.dev !== directory.dev || currentDirectory.ino !== directory.ino || currentDirectory.uid !== uid || (currentDirectory.mode & 0o077) !== 0
+    || !current.isFile() || current.nlink !== 1 || current.uid !== uid || current.dev !== identity.dev || current.ino !== identity.ino) return refuse();
+  if (lstatSync(destination + "-wal", { throwIfNoEntry: false }) || lstatSync(destination + "-journal", { throwIfNoEntry: false })) return refuse();
+  const headerFile = openSync(destination, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const header = Buffer.alloc(2);
+    if (readSync(headerFile, header, 0, header.length, 18) !== header.length || header[0] !== 1 || header[1] !== 1) return refuse();
+  } finally { closeSync(headerFile); }
+  // Some SQLite builds leave an SHM file after closing a DELETE-mode backup. No reader of this fresh copy has opened yet.
+  const shm = destination + "-shm", sidecar = lstatSync(shm, { throwIfNoEntry: false });
+  if (sidecar) {
+    if (!sidecar.isFile() || sidecar.isSymbolicLink() || sidecar.nlink !== 1 || sidecar.uid !== uid || (sidecar.mode & 0o077) !== 0) return refuse();
+    const sidecarFile = openSync(shm, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try { const opened = fstatSync(sidecarFile); if (opened.dev !== sidecar.dev || opened.ino !== sidecar.ino || opened.nlink !== 1 || opened.uid !== uid) return refuse(); }
+    finally { closeSync(sidecarFile); }
+    unlinkSync(shm);
+  }
   chmodSync(destination, 0o600);
 }
 export function databaseProfile(file: string): Pick<StartupProfile, "dbBytes" | "taskRows" | "taskHistoryEntries" | "taskTextBytes" | "deliveryRows" | "deliveryPayloadBytes"> {
