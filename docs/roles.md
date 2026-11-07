@@ -6,7 +6,7 @@
 
 # Definitions and layers
 
-- Shipped definitions live at `templates/roles/dev|research/<id>.md`. The first catalog has six dev and five research roles. Other shipped groups wait for the #251 measurement.
+- Shipped definitions live at `templates/roles/<group>/<id>.md`: six dev and five research roles, plus four writing and two ops roles that the domain packs use ([profiles](profiles.md)).
 - Project definitions at `.agenthub/roles/<id>.md` replace the same shipped id. Machine-level definitions are deferred. Files are bounded regular files, at most 8 KiB, with no symlink/hardlink targets; project directories cannot be symlinks. Scanning is flat and capped at 64 files.
 - A flat header declares id, name, group, summary, base, classes and source. Id equals the file stem. Base is one or more existing flow roles excluding conductor; classes name today's seven base task classes. At least one declared base must already be held by a peer receiving that session guidance.
 - Exactly six nonempty sections, in order: Scope, Not in scope, Deliverables, Hub use, Review duties, Evidence. Rendered body is at most 2000 characters. No extra heading/personality section, code block, command-shaped line, emoji, control or non-ASCII punctuation. This syntactic lint is not an instruction-safety classifier; project text is labelled untrusted guidance and cannot change daemon authority checks.

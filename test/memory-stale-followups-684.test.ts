@@ -54,7 +54,7 @@ test("#411 real CodeFacts does not treat unindexed qualification as known negati
   const git = (...args: string[]) => { const r = hubGitSync(["-C", repo, ...args], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.test", GIT_COMMITTER_NAME: "fixture", GIT_COMMITTER_EMAIL: "fixture@example.test" } }); expect(r.status).toBe(0); return r.stdout.trim(); };
   git("init", "-q"); writeFileSync(join(repo, "a.ts"), "export function retained() {}\n"); git("add", "."); git("commit", "-qm", "fixture"); const head = git("rev-parse", "HEAD");
   const probe = installFakeRipwire(root, bin, `if(process.argv.includes("--version")){console.log("ripwire 0.6.7");process.exit(0);}const arg=process.argv.find(a=>a.startsWith("--callers="));const name=arg?.slice(10);console.log('<callers schema="ripwire.callers/v1" of="'+name+'" found="0"/>');process.exit(1);`);
-  const facts = new CodeFacts({ env: { ...process.env, PATH: `${probe.bin}:${process.env.PATH}` } });
+  const facts = new CodeFacts({ env: { ...process.env, PATH: `${probe.bin}:${process.env.PATH}` }, trace: probe.trace });
   const disarm = probe.watch(15000, "#723 stale-followups-684");   // names the stall on stderr before the 20 s test timeout would hide it
   probe.markCall();
   try {
