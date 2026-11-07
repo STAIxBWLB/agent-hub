@@ -23,7 +23,11 @@ export interface QualityReport {
   fields: Record<string, FieldCoverage>;
   /** Quota readings per peer family: how many, the gaps over an hour, the 95th percentile of the time between readings, and where the reading's time came from. */
   quota: Record<string, QuotaCoverage>;
-  budget: { pauses: number; resumes: number; byFamily: Record<string, { pauses: number; resumes: number }> };
+  /**
+   * Pauses and resumes per family, and `handoffs`: the owner moves a budget pause drove (a `reassigned` task event whose board reason is `budget`), counted once per move, so a task handed off twice counts twice.
+   * A pause that found no taker moves nothing and counts nothing. Null when the window holds no task event at all, since then the log cannot say whether anything moved (#802).
+   */
+  budget: { pauses: number; resumes: number; handoffs: number | null; byFamily: Record<string, { pauses: number; resumes: number }> };
   /** Task and review outcomes per (peer family, class), by the family of the task's last owner. */
   outcomes: Record<string, Record<string, OutcomeCounts>>;
   /** Every event type seen in the window with its count, and the types this report knows that did not occur. */
@@ -71,12 +75,15 @@ export function buildResearchQuality(records: readonly ResearchRecord[], events:
   const windowEvents = events.filter(e => { const t = Date.parse(e.at); return Number.isFinite(t) && t >= from && t <= to; });
   const present: Record<string, number> = {};
   const quota: Record<string, { times: number[]; measured: number; event: number }> = {};
-  const budget = { pauses: 0, resumes: 0, byFamily: {} as Record<string, { pauses: number; resumes: number }> };
+  const budget: QualityReport["budget"] = { pauses: 0, resumes: 0, handoffs: null, byFamily: {} };
   const attribution: Record<string, number> = { delivery: 0, single_open: 0, unattributed: 0 };
   let tokenTotal = 0;
   for (const e of windowEvents) {
     present[e.type] = (present[e.type] ?? 0) + 1;
-    if (e.type === "quota") {
+    if (e.type === "task") {
+      budget.handoffs ??= 0;
+      if (e.event === "reassigned" && e.reason === "budget") budget.handoffs++;
+    } else if (e.type === "quota") {
       const fam = family(e.peer), q = quota[fam] ??= { times: [], measured: 0, event: 0 };
       const measured = typeof e.measuredAt === "string" ? Date.parse(e.measuredAt) : NaN;
       if (Number.isFinite(measured)) { q.measured++; q.times.push(measured); } else { q.event++; q.times.push(Date.parse(e.at)); }

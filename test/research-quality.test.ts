@@ -3,7 +3,7 @@ import type { StampedEvent } from "../src/hub/events.ts";
 import { taskRecords } from "../src/hub/research.ts";
 import { QUOTA_GAP_MS, buildResearchQuality } from "../src/hub/research-quality.ts";
 import { NO_EVIDENCE, readEvidence } from "../src/hub/research-record.ts";
-import { boardWith, cleanDirs, ev, familyOf, minutes, PROJECT, scenarioBoard, scenarioDeliveries, scenarioEvents, tempDir } from "./helpers/research-fixture.ts";
+import { boardWith, cleanDirs, ev, familyOf, minutes, PROJECT, scenarioBoard, scenarioDeliveries, scenarioEvents, taskEvent, tempDir } from "./helpers/research-fixture.ts";
 
 // #1277 AC4 (#44 AC0): quality.json reports field coverage, quota gaps and staleness, budget pauses, outcomes per family and class, event types seen, and the token attribution share, on a fixture with known gaps.
 
@@ -75,12 +75,30 @@ test("AC4: a family with one reading has readings and no staleness, never a zero
 
 test("AC4: budget pauses and resumes are counted per family, and the token attribution share is by rule with null when nothing was counted", () => {
   const q = buildResearchQuality(records(), events(), {}, familyOf);
-  expect(q.budget).toEqual({ pauses: 2, resumes: 1, byFamily: { claude: { pauses: 1, resumes: 0 }, codex: { pauses: 1, resumes: 1 } } });
+  expect(q.budget).toEqual({ pauses: 2, resumes: 1, handoffs: 0, byFamily: { claude: { pauses: 1, resumes: 0 }, codex: { pauses: 1, resumes: 1 } } });
   expect(q.tokenAttribution.total).toBe(100);
   expect(q.tokenAttribution.share.delivery).toBeCloseTo(0.6, 10);
   expect(q.tokenAttribution.share.single_open).toBeCloseTo(0.3, 10);
   expect(q.tokenAttribution.share.unattributed).toBeCloseTo(0.1, 10);
   expect(buildResearchQuality([], [], {}, familyOf).tokenAttribution).toEqual({ total: 0, share: { delivery: null, single_open: null, unattributed: null } });
+});
+
+test("#802: budget hand-offs count the owner moves a budget pause drove, once per move, and are null, not 0, when the window has no task event", () => {
+  const moved = (min: number, id: number, reason?: string, event = "reassigned") => taskEvent(min, id, event, "in_progress", { owner: "kimi", ...(reason ? { reason } : {}) });
+  const log = [
+    ...events(),
+    moved(6, 1, "budget"), moved(7, 2, "budget"), moved(8, 2, "budget"),
+    // Not a budget hand-off: another reason, no reason, another event carrying the reason, and a pause that found no taker (an unassigned entry has no owner move).
+    moved(9, 3, "offline"), moved(10, 3, "declined"), moved(11, 3), moved(12, 4, "budget", "accepted"),
+  ];
+  expect(buildResearchQuality(records(), log, {}, familyOf).budget.handoffs).toBe(3);
+  // The window decides: only the hand-offs at 6 and 7 minutes sit before 8.
+  expect(buildResearchQuality(records(), log, { until: minutes(7.5) }, familyOf).budget.handoffs).toBe(2);
+  // Task events inside the window but none of them a hand-off: a known zero.
+  expect(buildResearchQuality(records(), events(), {}, familyOf).budget.handoffs).toBe(0);
+  // No task event in the window: unknown, even with pauses present, and an empty log likewise.
+  expect(buildResearchQuality(records(), [ev(5, { type: "budget_pause", peer: "codex", reason: "five_hour", window: "5h", resetsAt: 0, by: "hub" })], {}, familyOf).budget).toEqual({ pauses: 1, resumes: 0, handoffs: null, byFamily: { codex: { pauses: 1, resumes: 0 } } });
+  expect(buildResearchQuality([], [], {}, familyOf).budget.handoffs).toBeNull();
 });
 
 test("AC4: outcomes are per family of the last owner and class, and the event types present and absent are named", () => {
