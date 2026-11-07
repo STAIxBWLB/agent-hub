@@ -413,12 +413,22 @@ test("AC8: Herdr refusing the request, or not showing a new tab, is reported and
   expect(calls).toBe(1);
 });
 
-test("AC8: on Windows nothing is opened or copied, because the folder and quoting rules here are POSIX", async () => {
-  const s = setup({}, { platform: "windows" }); await pick(s);
-  expect(await s.entry.openConsole()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
-  expect(await s.entry.openDashboard()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
-  expect(s.entry.copyCommand()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
-  expect(s.runs).toEqual([]);
+test("AC8: on Windows nothing is read, opened or copied, because the folder and quoting rules here are POSIX", async () => {
+  // a Windows window refuses at the first read: no registration is listed, so nothing can be selected
+  const s = setup({}, { platform: "windows" });
+  expect(await s.entry.refresh()).toMatchObject({ status: "refused", refusal: "unsupported_platform" });
+  expect(s.execs).toEqual([]); expect(s.runs).toEqual([]);
+  // and if the platform answer changes after a selection, every effect still refuses on its own (defense in depth)
+  let platform = "macos";
+  const flip = setup({}); flip.host.platform = () => platform;
+  const entry = core.createHerdrEntry({ host: flip.host });
+  await entry.refresh(); entry.select("p_a"); platform = "windows";
+  const before = flip.execs.length;
+  expect(await entry.openConsole()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
+  expect(await entry.openDashboard()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
+  expect(await entry.refreshCard()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
+  expect(entry.copyCommand()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
+  expect(flip.execs.length).toBe(before); expect(flip.runs).toEqual([]);
   expect(core.containsAtBoundary("C:\\work", "C:\\work\\a")).toBe(false);
 });
 

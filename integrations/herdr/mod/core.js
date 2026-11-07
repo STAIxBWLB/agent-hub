@@ -170,7 +170,8 @@ export function createHerdrEntry({ host }) {
     /** Re-read the focus, the machine and its registered projects. Never selects. Bumps the generation, so anything still running for an older view stops. */
     async refresh() {
       const gen = ++generation;
-      setView({ status: "loading", refusal: null, message: "", selection: null });
+      setView({ status: "loading", refusal: null, message: "", selection: null, card: null });
+      if (platform() === "windows") return setView({ status: "refused", refusal: "unsupported_platform", message: REFUSALS.unsupported_platform, rows: [], candidate: "none", highlighted: null });
       const ctx = context();
       if (!ctx.ok) return setView({ status: "refused", refusal: ctx.refusal, message: ctx.message, rows: [], candidate: "none", highlighted: null });
       const machine = ctx.space.machine ?? null;
@@ -205,6 +206,7 @@ export function createHerdrEntry({ host }) {
     async refreshCard() {
       const sel = view.selection;
       if (!sel) return fail("no_selection");
+      if (platform() === "windows") return fail("unsupported_platform");
       if (cardBusy) return fail("busy");
       let spaces, machines;
       try { spaces = host.spaces(); machines = host.machines(); } catch { return fail("host_unavailable"); }
@@ -308,7 +310,8 @@ export function createHerdrEntry({ host }) {
     if (!sel) return fail("no_selection");
     if (busy) return fail("busy");
     if (kind === "dashboard" && sel.machine !== null) return fail("remote");
-    if (platform() === "windows" && sel.machine === null) return fail("unsupported_platform");
+    // A Windows window is refused whatever machine the space is on: no combination with a Windows window has a receipt, so none is attempted.
+    if (platform() === "windows") return fail("unsupported_platform");
     busy = true;
     const gen = generation;
     try {
