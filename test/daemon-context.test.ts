@@ -105,7 +105,7 @@ test("expired context requests cannot persist a late checkpoint", async () => {
 
 test("dashboard retains a persisted quota pause after restart before its peer attaches, with no journal queue", async () => {
   const f = await fixture(0);
-  const paused = await f.console_.request({ t: "budget", set: { peer: "other", used: 0.95, resetsInMs: 3_600_000 } });
+  const paused = await f.console_.request({ t: "budget", set: { peer: "other", used: 0.99, resetsInMs: 3_600_000 } });
   expect(paused.ok).toBe(true);
   await until(() => f.daemon.bus.stateOf("other") === "paused");
   expect(f.daemon.bus.queueList("other")).toHaveLength(0);
