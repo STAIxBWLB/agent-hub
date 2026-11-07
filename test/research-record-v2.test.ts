@@ -41,7 +41,8 @@ test("AC2: a v2 record's review, delivery, merge, specs, memory, stall, handoff 
   expect(one.specs).toEqual({ covering: 3, unchanged: 2, acked: 1, errors: 0 });
   expect(one.memory).toEqual({ briefs: 1, briefNotes: 3, fails: 1, rendered: null, delivered: null, cited: null, failsExposed: null, failsCited: null, failRetrySignal: null });
   expect(one.handoffs).toEqual({ in: 1, out: 2 });
-  expect(one.person).toEqual({ permissions: null, questions: null, completions: null, cliRefusals: null, latencyMs: null });
+  // The fixture's log has no attributed person event: nothing is known about any task, so the whole block is unknown, never 0.
+  expect(one.person).toEqual({ permissions: null, questions: null, completions: null, cliRefusals: null, consoleConfirmations: null, latencyMs: null });
 });
 
 test("#778 nit: a task with no brief is a known 0 when briefs were being reported, and unknown when the log shows none at all", () => {
