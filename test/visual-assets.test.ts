@@ -58,7 +58,7 @@ for (const [path, bytes, mime] of [["shot.png", png(), "image/png"], ["shot.JPG"
 test("non-beforeAfter payloads pass unchanged and text sides open no files", async () => {
   const f = fixture(); let opens = 0; deliverableHooks.beforeOpen = () => { opens++; };
   const payloads: VisualInput[] = [{ kind: "mermaid", source: "flowchart TD\n A-->B" }, { kind: "comparison", options: [{ title: "One" }, { title: "Two" }] }, { kind: "table", columns: [{ key: "a", label: "A" }], rows: [{ a: "value" }] }, { kind: "beforeAfter", before: { text: "old" }, after: { text: "new" } }];
-  for (const input of payloads) { const result = await resolveVisualAssets(input, "v", f.ports); expect(result.payload).toEqual(input); expect(result.files).toEqual([]); }
+  for (const input of payloads) { const result = await resolveVisualAssets(input, "v", f.ports); expect<unknown>(result.payload).toEqual(input); expect(result.files).toEqual([]); }
   expect(opens).toBe(0);
 });
 
