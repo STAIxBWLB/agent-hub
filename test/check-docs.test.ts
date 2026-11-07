@@ -91,6 +91,21 @@ describe("documentation source verification gate", () => {
     const result = check(root); expect(result.status).toBe(1);
     expect(result.stderr).toContain("verified commit is not an ancestor of HEAD");
   }));
+  test("#1268 every page directly under docs/ and docs/addons/ needs a stamp, in the working tree and at HEAD; the smoke ledger does not", () => fixture((root, _stamp, git) => {
+    mkdirSync(join(root, "docs/addons"));
+    for (const page of ["docs/guide.md", "docs/addons/tool.md", "docs/smoke.md"]) writeFileSync(join(root, page), "Fixture\n");
+    const strayed = check(root);
+    expect(strayed.status).toBe(1);
+    expect(strayed.stderr).toContain("missing manifest entry: docs/guide.md");
+    expect(strayed.stderr).toContain("missing manifest entry: docs/addons/tool.md");
+    expect(strayed.stderr).not.toContain("docs/smoke.md");
+    git("add", "."); git("commit", "-qm", "Unstamped pages");
+    const committed = spawnSync("node", [checker, root, "--json", "--committed"], { encoding: "utf8" });
+    expect(committed.status).toBe(1);
+    const stamp = git("rev-parse", "HEAD");
+    alter(root, m => { for (const page of ["docs/guide.md", "docs/addons/tool.md"]) m.documents[page] = { verifiedAgainst: stamp, paths: ["src/covered.ts"] }; });
+    expect(check(root).status).toBe(0);
+  }));
   test("rejects missing coverage and removed sources", () => fixture((root) => {
     alter(root, (m) => { delete m.documents["docs/agent-notes/example.md"]; });
     expect(check(root).stderr).toContain("missing manifest entry: docs/agent-notes/example.md");

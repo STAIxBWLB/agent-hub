@@ -13,7 +13,7 @@ In a project's `.agenthub/config.json`:
 ```
 
 Off by default; anything but `true` is off. While it is off the hub writes nothing and creates no file. The setting is
-read when the hub starts.
+applied live: a config reload takes it without a restart.
 
 ## Where they go
 

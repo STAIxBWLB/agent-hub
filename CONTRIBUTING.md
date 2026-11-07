@@ -10,7 +10,7 @@
 
 ## npm releases
 
-The package is `@staix/agent-hub` in the `staix` npm organization. Bun >=1.3.0
+The package is `@staix/agent-hub` in the `staix` npm organization. Bun >=<!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor -->
 is required to run it; Node and npm are also needed for the development gate.
 The commands remain `ahub` and `agent-hub`.
 
@@ -28,11 +28,14 @@ renaming the repository or the workflow file, change the trusted publisher: edit
 it when the package has a single one, or add one for the new name and then
 delete the old one when several are allowed.
 
-Release only from GitHub Actions: bump `package.json`, run `bun run build`, update
-`CHANGELOG.md`, pass `scripts/check.sh`, merge the release change, then push
+Release only from GitHub Actions: bump `package.json`, run `bun run build` and
+`bun scripts/readme-facts.ts --write`, update `CHANGELOG.md`, restamp the stale
+documents in `docs/verified.json` after rereading them (`AGENTS.md`, Releasing), pass `scripts/check.sh`, merge the release change, then push
 `v<version>`. The release workflow checks the tag against `package.json`, runs the
 gate, publishes with `npm publish --access public` through trusted publishing,
-then creates the GitHub Release. A mismatched tag or a failing gate prevents
+then creates the GitHub Release; when the `SITE_DISPATCH_TOKEN` secret is set, a last job
+sends `product-release` to `STAIxBWLB/agent-hub-site` so the site re-syncs (a failed
+dispatch never fails the release). A mismatched tag or a failing gate prevents
 publication. Do not publish from a laptop or move an existing release tag.
 
 After publishing, verify `npm view @staix/agent-hub@<version> dist.attestations`,
