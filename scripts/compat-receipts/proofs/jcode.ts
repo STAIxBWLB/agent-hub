@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
-import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync, writeSync, type Stats } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readdirSync, writeFileSync, writeSync, type Stats } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
@@ -14,8 +14,8 @@ const MODEL = "receipt-fixed-model", PROFILE = "receipt-loopback";
 const PROMPT = "receipt original prompt", STEER = "receipt steer prompt", HEAD = "receipt streamed prefix";
 const SERVER_KEYS = ["argv", "debug_socket_path", "idle_timeout_secs", "owner_pid", "pid", "ppid", "schema_version", "scope", "socket_path", "started_at"];
 export interface JcodeProofObservation {
-  step: "steer-pong" | "steer-subscribe" | "steer-idle" | "steer-stream-arrived" | "steer-active" | "steer-ack" | "steer-end-turn" | "steer-request-count" | "steer-first-conversation" | "steer-second-conversation" | "telemetry-walk";
-  cause: "ok" | "pending" | "assertion" | "telemetry-id" | "milestone" | "opt-out-marker" | "other-telemetry-name" | "symlink" | "entry-budget" | "io";
+  step: "steer-pong" | "steer-subscribe" | "steer-idle" | "steer-stream-arrived" | "steer-active" | "steer-ack" | "steer-end-turn" | "steer-request-count" | "steer-first-conversation" | "steer-second-conversation" | "telemetry-walk" | "first-shape" | "second-shape" | "telemetry-kind";
+  cause: "ok" | "pending" | "assertion" | "telemetry-id" | "milestone" | "opt-out-marker" | "other-telemetry-name" | "symlink" | "entry-budget" | "io" | "original" | "steer" | "head" | "session-context" | "system-reminder" | "other" | "directory" | "regular";
   rootClass: "none" | "home" | "jcode-home";
   passed: boolean;
   count: number;
@@ -125,6 +125,20 @@ function hasTelemetry(directories: readonly string[], cap: number, observe: (eve
       try { entry = lstatSync(join(dir, name)); } catch (error) { report("io"); throw error; }
       if (entry.isSymbolicLink()) { report("symlink"); check(false); }
       if (/telemetry|milestone/i.test(name)) {
+        let entries = 0, complete = true;
+        if (entry.isDirectory()) {
+          // Optional diagnosis counts only immediate children with a hard read budget.
+          try {
+            const directory = opendirSync(join(dir, name), { bufferSize: 1 });
+            try {
+              while (directory.readSync()) {
+                if (entries >= Math.max(0, cap - count)) { complete = false; break; }
+                entries++;
+              }
+            } finally { directory.closeSync(); }
+          } catch { complete = false; }
+        }
+        observe({ step: "telemetry-kind", cause: entry.isDirectory() ? "directory" : entry.isFile() ? "regular" : "other", rootClass, passed: complete, count: entries });
         report(name === "telemetry_id" ? "telemetry-id" : name === "no_telemetry" ? "opt-out-marker" : /milestone/i.test(name) ? "milestone" : "other-telemetry-name");
         return true;
       }
@@ -289,6 +303,22 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
     steeringCheck("steer-request-count", requests.length === 2, requests.length);
     const conversation = (messages: any[]) => messages.filter(message => message?.role !== "system" && message?.role !== "developer");
     const first = conversation(requests[0].messages), second = conversation(requests[1].messages);
+    const shapes = (messages: any[], step: "first-shape" | "second-shape") => {
+      for (const [index, message] of messages.slice(0, 64).entries()) {
+        const text = content(message?.content);
+        const original = text.includes(PROMPT), steer = text.includes(STEER), head = text.includes(HEAD);
+        const reminder = !original && !steer && !head && text.startsWith("<system-reminder>") && text.endsWith("</system-reminder>");
+        // Diagnostic identity only: pinned v0.99.1 session.rs/prompt.rs framing and field markers.
+        const sessionContext = reminder && text.startsWith("<system-reminder>\n# Session Context\n")
+          && ["Date: ", "Time: ", "Timezone: ", "OS: ", "Architecture: ", "Jcode version: ", "Working directory: "].every(field => text.includes(`\n${field}`));
+        const cause: JcodeProofObservation["cause"] = original && !steer && !head ? "original"
+          : steer && !original && !head ? "steer" : head && !original && !steer ? "head"
+          : sessionContext ? "session-context" : reminder ? "system-reminder" : "other";
+        const expectedRole = cause === "head" ? "assistant" : cause === "other" ? undefined : "user";
+        observe({ step, cause, rootClass: "none", passed: expectedRole !== undefined && message?.role === expectedRole, count: index });
+      }
+    };
+    shapes(first, "first-shape"); shapes(second, "second-shape");
     steeringCheck("steer-first-conversation", first.length === 1 && first[0]?.role === "user" && content(first[0].content) === PROMPT, first.length);
     steeringCheck("steer-second-conversation", second.length === 3 && second[0]?.role === "user" && content(second[0].content) === PROMPT
       && second[1]?.role === "assistant" && content(second[1].content).includes(HEAD)

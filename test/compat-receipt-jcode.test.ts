@@ -12,7 +12,7 @@ const fake = resolve(import.meta.dir, "fakes/compat-receipt-jcode.ts");
 const producer = resolve(import.meta.dir, "../scripts/compat-receipts/proofs/jcode.ts");
 const runner = resolve(import.meta.dir, "../scripts/compat-receipts/runner.ts");
 const native = ["isolation", "serve-cleanup", "acp-initialize-new-load-mode-ceilings", "mcp-owned-environment", "telemetry", "active-turn-soft-interrupt"];
-async function run(fault = "none", legMs = 5000, inspect?: (root: string) => void, blockDiagnostics = false): Promise<ProofResults> {
+async function run(fault = "none", legMs = 5000, inspect?: (root: string) => void, blockDiagnostics = false, setup?: (root: string) => void): Promise<ProofResults> {
   const root = realPath(mkdtempSync(join(tmpdir(), "jcode-proof-"))); roots.push(root);
   const home = join(root, "home"), prefix = join(root, "prefix"), cwd = join(root, "project");
   const env: NodeJS.ProcessEnv = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, LANG: "C", LC_ALL: "C", TZ: "UTC" };
@@ -28,6 +28,7 @@ async function run(fault = "none", legMs = 5000, inspect?: (root: string) => voi
     limits: { totalMs: 15000, installMs: 5000, legMs, outputBytes: 1024 * 1024, artifactBytes: 1024, expandedBytes: 1024, archiveEntries: 1000 } };
   const file = join(root, "context.json"); writeFileSync(file, JSON.stringify(input));
   if (blockDiagnostics) writeFileSync(join(root, "jcode-proof-observations.jsonl"), "existing private diagnostic\n", { mode: 0o600, flag: "wx" });
+  setup?.(root);
   const answer = await runBoundedReceiptCommand([process.execPath, fake, "--proof-worker", file, producer, runner], {
     cwd, env, signal: AbortSignal.timeout(15000), timeoutMs: 15000, maxBytes: 1024 * 1024,
   });
@@ -97,9 +98,11 @@ test("private diagnostics contain closed checkpoints only and retain exact proof
       expect(Object.keys(row).sort()).toEqual(["cause", "count", "passed", "rootClass", "step"]);
       expect(typeof row.passed).toBe("boolean"); expect(Number.isSafeInteger(row.count)).toBe(true);
       expect(["none", "home", "jcode-home"]).toContain(row.rootClass);
-      expect(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io"]).toContain(row.cause);
-      expect(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "telemetry-walk"]).toContain(row.step);
+      expect(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io", "original", "steer", "head", "session-context", "system-reminder", "other", "directory", "regular"]).toContain(row.cause);
+      expect(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "telemetry-walk", "first-shape", "second-shape", "telemetry-kind"]).toContain(row.step);
     }
+    expect(rows).toContainEqual({ step: "first-shape", cause: "original", rootClass: "none", passed: true, count: 0 });
+    expect(rows).toContainEqual({ step: "second-shape", cause: "head", rootClass: "none", passed: true, count: 1 });
     expect(rows).toContainEqual({ step: "steer-first-conversation", cause: "ok", rootClass: "none", passed: true, count: 1 });
     expect(rows).toContainEqual({ step: "steer-second-conversation", cause: "ok", rootClass: "none", passed: true, count: 3 });
     expect(text).not.toContain(root); expect(text).not.toContain("receipt original prompt");
@@ -117,5 +120,13 @@ test("telemetry diagnostic identifies the private root and closed artifact class
     const rows = readFileSync(join(root, "jcode-proof-observations.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(rows.some(row => row.step === "telemetry-walk" && row.cause === "telemetry-id" && row.rootClass === "home" && row.passed === false)).toBe(true);
   });
+  expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
+}, 20000);
+
+test("a matched telemetry directory reports bounded child count without relaxing the leg", async () => {
+  const result = await run("none", 5000, root => {
+    const rows = readFileSync(join(root, "jcode-proof-observations.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(rows).toContainEqual({ step: "telemetry-kind", cause: "directory", rootClass: "home", passed: true, count: 0 });
+  }, false, root => mkdirSync(join(root, "home", "telemetry_fixture")));
   expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
 }, 20000);
