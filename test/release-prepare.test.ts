@@ -309,4 +309,4 @@ test("#1273 the real release-prepare script, pointed at a scratch release checko
   expect(prepared.stdout).toContain("generated doc facts rendered (1): docs/quickstart.md facts:install-tag");
   const after = spawnSync(process.execPath, [join(r.work, "scripts/readme-facts.ts")], { cwd: r.work, env, encoding: "utf8" });
   expect({ code: after.status, err: after.stderr, out: after.stdout.trim() }).toEqual({ code: 0, err: "", out: "facts: OK" });   // no manual --write in between
-}, 60_000);
+}, 20_000);
