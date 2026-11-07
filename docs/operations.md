@@ -1055,6 +1055,20 @@ ahub up
 `ahub init` writes the project configuration and managed instruction blocks.
 Run it after an upgrade when those blocks need refreshing.
 
+`ahub up` waits for authenticated readiness. After 12 seconds, a verified live
+child that is still pending produces a `still starting, pid N` message on stderr;
+the CLI keeps waiting and confirms the retained runtime when it becomes ready.
+At 120 seconds it reports unconfirmed readiness and exits unsuccessfully, leaving
+the daemon running. Run `ahub status` and inspect `hub.log` before another start.
+An owned child observed to exit before readiness produces an error; a cancelled
+operation cannot confirm startup.
+
+Each completed daemon startup writes one `startup timings ms:` line to `hub.log`,
+with fixed phase names and durations. The three event-seed consumers share one
+lossless streaming pass; abandoned snapshot bodies are not read for startup.
+The [startup receipt](verification/2026-11-07-daemon-startup-1232.md) separates
+seed I/O from bounded usage-rollup I/O and records the isolated measurements.
+
 Settings flags (#1100) set the main project settings without a file edit.
 `--agents <a,b,...|none>` (`start.agents`) and `--autonomy inherit|off` (whether a
 new project inherits the machine autonomy preset) go to the untracked
@@ -3549,7 +3563,50 @@ The data-only [manifest](../scripts/compat-receipts/manifest.json) and [per-leg 
 
 Optional model/TUI behavior explicitly left unverified by a model-free receipt is not a new admission leg. `codex-review` requires its separately authorized model-backed tool-call proof. `agy` has no public install source. `qwen-dual` requires real-model and TUI work and its current receipt does not name the OS. The manifest records acquisition metadata separately from historical native-binary evidence; no CLI installation or COMPAT change is made by this audit.
 
-For CI-opened PRs, the person still chooses between explicit `check.yml` dispatch with GITHUB_TOKEN and a GitHub App installation token. Dispatch avoids an additional App secret but needs Actions write permission in the publisher and exact-head evidence; it does not run the separate PR-only closing-refs/routing-receipt workflows. An App token lets normal PR events start checks, with person-owned scoped credentials confined to the publisher. Neither route is enabled here. Current [GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) also describes approval-required PR runs for GITHUB_TOKEN automation; that is not unattended CI. See the audit for permissions, queue and gate trade-offs.
+For CI-opened PRs, the person selected `GITHUB_TOKEN` with explicit `check.yml` dispatch on `compat/<id>-<version>` (2026-11-07). The publisher needs `actions: write` for dispatch in addition to its branch, PR and issue permissions. No GitHub App credentials are used. Dispatch supplies exact-head check evidence; it does not trigger the separate PR-only closing-refs/routing-receipt workflows. The T0 audit retains the alternative App-token trade-offs as history. Current [GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) also describes approval-required PR runs for GITHUB_TOKEN automation; that is not unattended CI. See the audit for permissions, queue and gate trade-offs.
+
+### Automated receipt workflow (#1248 T2)
+
+After merge, `agent-compat.yml` runs daily and can be dispatched with `dry: true`
+(the manual default). The watcher emits validated ahead/version and verified-ID
+JSON directly; matrix construction never parses report prose. At most eight IDs
+are considered, with two hosted jobs at once. An unspecified manifest OS stays
+not-run rather than receiving an invented native-platform proof.
+
+The candidate matrix has only `contents: read`, no supplied secrets, checkout
+credentials disabled and a 20-minute job bound. It runs the disposable harness and
+uploads JSON/Markdown even for failed or not-run legs. A separate trusted read-only
+job validates the summaries and builds the embedded COMPAT bundle from repository
+source. It never imports candidate JS or Markdown. The publisher downloads that
+job's immutable artifact ID and validates descriptors, byte hashes, identities,
+complete leg sets and trusted manifest policy again.
+
+The candidate CLI and receipt writer share a job and OS user. A malicious release
+could overwrite its own `summary.json` before upload with a well-formed eligible
+forgery; preparation cannot detect that forgery from the data alone. An eligible
+receipt is a compatibility signal, not a security attestation of the release.
+The person's PR and release review is the real admission gate; the automation
+never merges its verification PR.
+
+Only the publisher has contents/PR/issues write and Actions dispatch permission.
+It executes first-party Node code and `gh` REST calls, with no package install,
+build or candidate execution. All required legs must pass and trusted `autoAdmit`
+must allow the ID; artifact `eligible` alone is not evidence. It changes only the
+exact COMPAT row, its receipt and prepared plugin assets on `compat/<id>-<version>`.
+Existing bot branches are checked for manual drift; unknown collisions refuse,
+updates append without force, and verification PRs are never auto-merged. A newer
+same-ID PR supersedes an older one only after the replacement and its check
+dispatch succeed.
+
+Other results update closed-cause receipt blocks in the exact-title drift issue.
+Confirmed verified IDs remove their stale blocks, while still-drifting or unknown
+IDs retain their evidence. Report text never supplies those identities. Dry mode
+still performs isolated proof and read-only build/artifact work, then prints the
+planned GitHub changes without creating/updating branches, PRs, labels or issues.
+It is not native compatibility qualification on the person's Mac.
+
+See the [T2 verification report](verification/2026-11-07-compat-workflow-1248.md)
+for the data/credential boundary, fixtures and final committed-head evidence.
 
 ### Isolated receipt harness (#1248 T1)
 
@@ -3587,7 +3644,7 @@ used as an execution-time proof.
 | Claude implementer | Committed Write/Bash/rewrite and host-wrapper producer groups | Human upstream-impact review; unsupported launcher forms |
 | Pi | Artifact acquisition only in this core | Historical top-level producer needs import-safe/candidate-version extraction |
 | Qwen ACP | Promoted ACP identity/session/mapped-mode and actual published permission-handler producers, preload controls and group cleanup | Human lifecycle/source review; Linux does not replace required macOS arm64 |
-| Jcode | Artifact acquisition only | The 0.99.1 producer was not retained; reconstruction is a separate task |
+| Jcode | Reconstructed isolated serve/ACP/MCP, fixed-stream steering, telemetry and owned-group checks | Human source comparison; native macOS qualification remains unverified. The 0.99.1 Linux control is not qualified: telemetry identity and strict persisted-context binding fail; see the [reconstruction receipt](verification/2026-11-07-jcode-receipt-reconstruction-1248.md) |
 | agy and qwen-dual | Policy and unavailable/manual-leg reporting | No public agy installer; account/model/TUI or unspecified-platform legs |
 
 Every manifest leg appears as pass, fail or not-run with a cause and next step.
@@ -3599,7 +3656,7 @@ not real provider API keys; parent account/model variables never reach a worker.
 Default execution deadlines are 15 minutes overall, 3 minutes for installation
 and 2 minutes per proof-worker/group. Owned-process teardown has a separately
 bounded 10-second allowance, included in the JSON wall-time bounds. Output verification/publication has a
-separate 4-second allowance included in the total; elapsed time is sampled before
+separate 16-second allowance included in the total; elapsed time is sampled before
 publication. The summary
 separates `ownedStopConfirmed` from `processCleanup: proven|unproven` and gives its
 reason. An empty leader process group cannot prove lifetime cleanup: a helper can
@@ -3617,7 +3674,7 @@ the containment boundary, not fresh HOME or process-group emptiness.
 The output directory is held open before installation. Exclusive, no-follow
 writes are relative to that handle, so replacing an ancestor cannot redirect the
 receipt. The receipt excludes raw native stdout/stderr and private prefix paths.
-No PR is created by T1. The [T1b producer report](verification/2026-11-07-compat-receipt-producers-1248.md) maps the promoted Kimi and Qwen modules to their original receipts. Publisher integration and the missing Jcode producer remain follow-ups.
+No PR is created by T1. The [T1b producer report](verification/2026-11-07-compat-receipt-producers-1248.md) maps the promoted Kimi and Qwen modules to their original receipts. Publisher integration is T2. The [Jcode reconstruction](verification/2026-11-07-jcode-receipt-reconstruction-1248.md) retains its failed native control legs and unverified Mac qualification.
 
 
 ## Upgrade and crash recovery

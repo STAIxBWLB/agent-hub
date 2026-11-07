@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Documentation is kept current (#1268): the quickstart's GitHub install tag, the Bun floor and the agent-mem pin are generated from `package.json` and `.bun-version` (`bun scripts/readme-facts.ts`, part of `scripts/check.sh`); `docs/verified.json` now covers every page under `docs/` and `docs/addons/` except the smoke ledger and the retired GSD analysis, and CI warns about stale stamps on every pull request; stale statements about claude-mem, research campaigns, design specs, events, roles and the SDLC readbacks are corrected; a release notifies the family site when `SITE_DISPATCH_TOKEN` is set.
+- `release-prepare` renders the generated doc facts blocks (the quickstart install tag and the version pins) after the version bump, and `--dry-run` lists the blocks it would change, so a release PR passes `scripts/readme-facts.ts` with no manual `--write` (#1273). CONTRIBUTING explains that the stale-documentation warning on an ordinary pull request is expected and cleared by the release PR's restamp (#1274).
 
 ## 0.34.1
 

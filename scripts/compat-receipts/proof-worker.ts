@@ -46,6 +46,9 @@ async function main(): Promise<void> {
   } else if (data.id === "claude-implementer") {
     const { runClaudeProofs } = await import("./proofs/claude.ts");
     result = await runClaudeProofs(context);
+  } else if (data.id === "jcode") {
+    const { runJcodeProofs } = await import("./proofs/jcode.ts");
+    result = await runJcodeProofs(context);
   }
   process.stdout.write(JSON.stringify(result));
 }

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 /** The label is for people; only this exact title identifies the automation's issue. */
 export const AGENT_COMPAT_ISSUE_TITLE = "agent CLI versions ahead of the verified set";
 export const AGENT_COMPAT_ISSUE_LIMIT = 1000;
@@ -24,7 +26,7 @@ export function selectAgentCompatIssue(inventory: unknown): number | undefined {
 if (import.meta.main) {
   try {
     let inventory: unknown;
-    try { inventory = JSON.parse(await Bun.stdin.text()); }
+    try { inventory = JSON.parse(readFileSync(0, "utf8")); }
     catch { throw new Error("agent-compat: malformed JSON open-issue inventory"); }
     const number = selectAgentCompatIssue(inventory);
     if (number !== undefined) console.log(number);

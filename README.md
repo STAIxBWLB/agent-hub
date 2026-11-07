@@ -28,6 +28,11 @@ ahub say "Each of you: reply with your name."
 ahub ui                                      # the web dashboard
 ```
 
+If a verified daemon child is still starting after 12 seconds, `ahub up` reports
+its PID and keeps waiting for readiness. Completed starts write phase timings to
+`hub.log`; [startup diagnostics](docs/operations.md#install-and-start) explains
+the 120-second outer bound and the next step for unconfirmed readiness.
+
 `ahub setup` also registers agent-hub as a plugin of the family console
 ([agent-console](https://github.com/STAIxBWLB/agent-console), `acon ui`): the same dashboard
 appears as a panel for every registered project, and pending approvals, reviews assigned
@@ -65,6 +70,9 @@ defaults. The
   another project running agent-hub on this machine goes onto that project's board
   with `ahub task handoff` (agents: `hub_task_handoff`), and its state changes come
   back as task messages.
+  Fresh Kimi reviews run periodic isolation checks off the hub event loop;
+  verdict and task-tool authority still require the complete synchronous fence
+  ([measurements and limits](docs/verification/2026-11-07-kimi-review-watch-1284.md)).
 - **Research campaigns.** `ahub study` keeps a multi-unit study contract as a draft
   (a planner drafts it with `hub_study_draft`); only the person approves it, which
   creates one task per unit, and `ahub study show` reads coverage per unit and
