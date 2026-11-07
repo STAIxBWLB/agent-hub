@@ -91,6 +91,16 @@ test("every classified leg quotes its actual receipt section", () => {
   }
 });
 
+test("Qwen's passing additional Linux evidence is recorded without replacing required Mac qualification", () => {
+  const qwen = manifest.entries.qwen!;
+  const additional = qwen.legs.find(leg => leg.id === "additional-linux");
+  expect(additional).toBeDefined();
+  expect(additional!.category).toBe("linux-ci");
+  expect(additional!.requiredForAdmission).toBe(false);
+  expect(qwen.unverifiedFollowups.some(leg => leg.id === "additional-linux")).toBe(false);
+  expect(qwen.runnerOS).toEqual(["macos"]);
+});
+
 test("auto-admission cannot bypass model, TUI, unknown-platform or unavailable-install requirements", () => {
   expect(manifest.entries["codex-review"]!.autoAdmit).toBe(false);
   expect(manifest.entries.agy!.autoAdmit).toBe(false);

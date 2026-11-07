@@ -212,10 +212,10 @@ Current receipt: [2026-11-06-qwen-0268-acp.md](2026-11-06-qwen-0268-acp.md). `au
 - **actual-published-permission-handler**: `macos-runner`, required, runner OS `macos`. [## Actual published permission handler](2026-11-06-qwen-0268-acp.md): "without a model-generated tool turn.".
 - **preload-network-cleanup**: `macos-runner`, required, runner OS `macos`. [## Artifact and isolation](2026-11-06-qwen-0268-acp.md): "This is preload evidence, not kernel network isolation.".
 - **native-macos-repetition**: `macos-runner`, required, runner OS `macos`. [## Actual macOS arm64 repetition](2026-11-06-qwen-0268-acp.md): "The Linux-only receipt did not prove admission on this Mac.".
+- **additional-linux**: `linux-ci`, recorded, not required for admission, runner OS `linux`. [# Qwen Code 0.26.8 ACP receipt](2026-11-06-qwen-0268-acp.md): "The earlier Linux x86_64 run is additional evidence.".
 
 ### Explicitly unverified follow-ups
 
-- **additional-linux**: `linux-ci`, not required by the current admission receipt. [# Qwen Code 0.26.8 ACP receipt](2026-11-06-qwen-0268-acp.md): "The earlier Linux x86_64 run is additional evidence.".
 - **real-model-microphone-tui-intel**: `account-or-model`, not required by the current admission receipt. [## Not verified](2026-11-06-qwen-0268-acp.md): "Microphone functionality, Intel macOS, a real login/provider, model-generated permission turns, model behavior, token/quota behavior and TUI qualification.".
 
 ## qwen-dual
@@ -228,7 +228,7 @@ Current receipt: [2026-10-25-qwen-dual-output-t0.md](2026-10-25-qwen-dual-output
 - **pty-harness**: `tui-desktop`, required, runner OS `unspecified`. [# Qwen dual-output TUI verification, 2026-10-25](2026-10-25-qwen-dual-output-t0.md): "the TUI ran on a pseudo-terminal (120x40).".
 - **Q2-submit-stream-queue**: `tui-desktop`, required, runner OS `unspecified`. [# Qwen dual-output TUI verification, 2026-10-25](2026-10-25-qwen-dual-output-t0.md): "queued, not interleaved".
 - **Q3-permissions-native-enter-deny-ceiling**: `tui-desktop`, required, runner OS `unspecified`. [# Qwen dual-output TUI verification, 2026-10-25](2026-10-25-qwen-dual-output-t0.md): "A tool that needs approval emits `control_request` `can_use_tool`".
-- **Q4-known-watchdog-ceiling**: `tui-desktop`, recorded ceiling, runner OS `unspecified`. [# Qwen dual-output TUI amendment, 2026-10-25 (#286 Part 3)](../specs/2026-09-19-agent-hub-design.md): "Q2, Q3, Q5 and Q6 pass; Q4's limit is stated".
+- **Q4-known-watchdog-ceiling**: `tui-desktop`, recorded, not required for admission, runner OS `unspecified`. [# Qwen dual-output TUI amendment, 2026-10-25 (#286 Part 3)](../specs/2026-09-19-agent-hub-design.md): "Q2, Q3, Q5 and Q6 pass; Q4's limit is stated".
   - Recorded accepted watchdog limitation, not a passing cancellation capability; preserve it in future receipts.
 - **Q5-unread-fifo**: `tui-desktop`, required, runner OS `unspecified`. [# Qwen dual-output TUI verification, 2026-10-25](2026-10-25-qwen-dual-output-t0.md): "With `--json-file` a FIFO that nobody opened for reading".
 - **Q6-resume-no-replay**: `tui-desktop`, required, runner OS `unspecified`. [# Qwen dual-output TUI verification, 2026-10-25](2026-10-25-qwen-dual-output-t0.md): "did not replay any earlier `submit`, and appended to the event file.".

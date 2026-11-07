@@ -1802,9 +1802,7 @@
             "section": "## Actual macOS arm64 repetition",
             "quote": "The Linux-only receipt did not prove admission on this Mac."
           }
-        }
-      ],
-      "unverifiedFollowups": [
+        },
         {
           "id": "additional-linux",
           "label": "additional linux",
@@ -1818,8 +1816,10 @@
             "section": "# Qwen Code 0.26.8 ACP receipt",
             "quote": "The earlier Linux x86_64 run is additional evidence."
           },
-          "note": "additional native evidence; not substitute for primary Mac"
-        },
+          "note": "Additional recorded passing Linux evidence; it does not replace the required Mac arm64 repetition."
+        }
+      ],
+      "unverifiedFollowups": [
         {
           "id": "real-model-microphone-tui-intel",
           "label": "real model microphone tui intel",
