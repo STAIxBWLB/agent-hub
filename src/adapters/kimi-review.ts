@@ -1,38 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { assessVersion, COMPAT } from "./compat.ts";
-import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { realPath } from "../hub/project.ts";
-import type { ReviewerBackend, ReviewerPrepareContext } from "./reviewer-print.ts";
+import type { ReviewerBackend, ReviewerLaunch, ReviewerPrepareContext } from "./reviewer-print.ts";
+import { assertCleanCwdAncestors, checkKimiReviewPolicy, kimiReviewFingerprint as hash, projectKimiReviewPolicyBinding, readKimiReviewFile as read } from "./kimi-review-policy.ts";
+import { startKimiReviewPolicyWatch, type KimiReviewPolicyFactory } from "./kimi-review-policy-worker.ts";
 
 const MANAGED = "managed:kimi-code";
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
-const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-/** Native discovery can walk above cwd; check lexical aliases as well as the physical temporary root. */
-function assertCleanCwdAncestors(...candidates: readonly string[]): void {
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    let ancestor = resolve(candidate);
-    for (;;) {
-      if (!seen.has(ancestor)) {
-        seen.add(ancestor);
-        for (const marker of [".git", ".kimi-code", "AGENTS.md"]) {
-          if (lstatSync(join(ancestor, marker), { throwIfNoEntry: false }) !== undefined) {
-            throw new Error("private cwd ancestor contains ambient configuration");
-          }
-        }
-      }
-      const parent = dirname(ancestor); if (parent === ancestor) break; ancestor = parent;
-    }
-  }
-}
-const read = (file: string, limit = 262_144) => {
-  const stat = lstatSync(file); if (!stat.isFile() || stat.size > limit) throw new Error("unsupported reviewer file");
-  return readFileSync(file, "utf8");
-};
 const scalar = (value: unknown, depth = 0): string => {
   if (depth > 4) throw new Error("managed model setting too deeply nested");
   if (typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
@@ -108,9 +86,7 @@ export async function stopKimiReview(child: ChildProcess, locks: readonly string
   await stopOwnedProcess(child, { group: true });
 }
 
-export const kimiReviewerBackend: ReviewerBackend = {
-  id: "kimi", taskMcp: true, nativePolicy: true,
-  async prepare(context) {
+export async function prepareKimiReviewer(context: ReviewerPrepareContext, policyFactory: KimiReviewPolicyFactory = startKimiReviewPolicyWatch): Promise<ReviewerLaunch | { unavailable: string }> {
     let own: string | undefined;
     try {
       if (context.signal.aborted) throw new Error("cancelled");
@@ -138,19 +114,40 @@ export const kimiReviewerBackend: ReviewerBackend = {
       const verdict = assessVersion("kimi-review", COMPAT["kimi-review"].parse(await version(command, cwd, env, context.signal)));
       if (!verdict.ok) throw new Error(verdict.reason);
       const fingerprints = [configFile, mcpFile, agentFile].map(file => hash(read(file, 2_097_152)));
-      let cleaned = false;
-      const cleanup = () => { if (cleaned) return; rmSync(root, { recursive: true, force: true }); cleaned = true; };
+      const binding = projectKimiReviewPolicyBinding({
+        lexicalCwd: join(lexicalRoot, "workspace"), physicalCwd: cwd,
+        sourcePath, source, sourceConfig, sourceConfigHash: hash(original), executable,
+        executableStat: { dev: executableStat.dev, ino: executableStat.ino, size: executableStat.size, mtimeMs: executableStat.mtimeMs, ctimeMs: executableStat.ctimeMs },
+        privateFiles: [configFile, mcpFile, agentFile].map((path, index) => ({ path, hash: fingerprints[index]! })),
+        tool, authTargets: sources,
+      });
+      let policyProbe: ReturnType<KimiReviewPolicyFactory> | undefined;
+      let cleaned = false, cleaning: Promise<void> | undefined;
+      const remove = () => { if (cleaned) return; rmSync(root, { recursive: true, force: true }); cleaned = true; };
+      const cleanup = () => {
+        if (cleaned) return;
+        if (!policyProbe) { remove(); return; }
+        return cleaning ??= policyProbe.stop().then(remove).catch(error => { cleaning = undefined; throw error; });
+      };
       return { command, args: ["-p", "Review the supplied task facts and record the evidence-based verdict with hub_review.", "--output-format", "stream-json", "--agent-file", agentFile, "--skills-dir", skills],
         cwd, env, envMode: "replace", cleanup, watchCurrent: true,
         stop: child => stopKimiReview(child, [join(sources[1]!, "kimi-code.lock"), join(sources[1]!, `${selected.lock}.lock`)]),
-        current: () => {
-          try {
-            assertCleanCwdAncestors(join(lexicalRoot,"workspace"),cwd);
-            const now = lstatSync(executable);
-            return !cleaned && !context.signal.aborted && realPath(sourcePath) === source && now.dev === executableStat.dev && now.ino === executableStat.ino && now.size === executableStat.size && now.mtimeMs === executableStat.mtimeMs && now.ctimeMs === executableStat.ctimeMs && hash(read(sourceConfig)) === hash(original)
-              && [configFile, mcpFile, agentFile].every((file, index) => hash(read(file, 2_097_152)) === fingerprints[index])
-              && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join(source, name)) === sources[index] && realPath(join(tool, name)) === sources[index]);
-          } catch { return false; }
+        current: () => !cleaned && !context.signal.aborted && checkKimiReviewPolicy(binding),
+        startPolicyWatch: () => {
+          if (cleaned || context.signal.aborted) throw new Error("review policy is no longer current; retry the review");
+          if (!policyProbe) {
+            const probe = policyFactory(projectKimiReviewPolicyBinding(binding));
+            policyProbe = {
+              failure: probe.failure,
+              async check() {
+                if (cleaned || context.signal.aborted) return false;
+                const current = await probe.check();
+                return !cleaned && !context.signal.aborted && current;
+              },
+              stop: () => probe.stop(),
+            };
+          }
+          return policyProbe;
         },
         isolation: { backend: "kimi", version: verdict.version, binary: executable, profile: "private-config-exact-two-tools-shared-native-oauth", readOnly: true, strictMcp: true, ephemeral: true,
           enforcement: "native-policy", freshSession: true, hubToolsOnly: true,
@@ -160,5 +157,8 @@ export const kimiReviewerBackend: ReviewerBackend = {
       if (own) rmSync(own, { recursive: true, force: true });
       return { unavailable: `Kimi reviewer unavailable: ${(error as Error).message}` };
     }
-  },
+}
+
+export const kimiReviewerBackend: ReviewerBackend = {
+  id: "kimi", taskMcp: true, nativePolicy: true, prepare: context => prepareKimiReviewer(context),
 };
