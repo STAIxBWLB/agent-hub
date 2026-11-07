@@ -15,6 +15,7 @@ export interface ManifestEntry {
 export interface ReceiptLimits { totalMs: number; installMs: number; legMs: number; outputBytes: number; artifactBytes: number; expandedBytes: number; archiveEntries: number }
 export interface CommandOptions { cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal; timeoutMs: number; maxBytes?: number }
 export interface CommandResult { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; cleanup: boolean }
+export type ReceiptFetch = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
 export type ReceiptCommand = (argv: readonly string[], options: CommandOptions) => Promise<CommandResult>;
 export interface ReceiptContext {
   id: CompatId;
@@ -59,9 +60,9 @@ export interface ReceiptSummary {
   legs: LegResult[];
 }
 export interface ReceiptPorts {
-  fetch?: typeof fetch;
+  fetch?: ReceiptFetch;
   run?: ReceiptCommand;
-  install?: (context: ReceiptContext, entry: ManifestEntry, fetcher: typeof fetch) => Promise<InstalledArtifact>;
+  install?: (context: ReceiptContext, entry: ManifestEntry, fetcher: ReceiptFetch) => Promise<InstalledArtifact>;
   proofs?: ReceiptProofs;
   entry?: ManifestEntry;
   platform?: string;

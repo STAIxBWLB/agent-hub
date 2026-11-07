@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { installCompatArtifact } from "../scripts/compat-receipts/install.ts";
-import { ReceiptError, type ReceiptContext, type ManifestEntry, type ReceiptCommand } from "../scripts/compat-receipts/types.ts";
+import { ReceiptError, type ReceiptContext, type ManifestEntry, type ReceiptCommand, type ReceiptFetch } from "../scripts/compat-receipts/types.ts";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -21,7 +21,7 @@ function npmFetch(data: Buffer, overrides: Record<string, unknown> = {}): typeof
   const integrity = `sha512-${createHash("sha512").update(data).digest("base64")}`;
   return (async (url: any) => String(url).endsWith("/0.167.0")
     ? Response.json({ name: "@openai/codex", version: "0.167.0", dist: { integrity, tarball: "https://registry.npmjs.org/codex.tgz" }, ...overrides })
-    : new Response(data)) as typeof fetch;
+    : new Response(data)) as ReceiptFetch;
 }
 const ok = { exitCode: 0, stdout: "", stderr: "", timedOut: false, cleanup: true };
 test("wrong SRI refuses before any file or npm effect", async () => {
@@ -86,7 +86,7 @@ async function releaseFixture(data: Buffer): Promise<{ context: ReceiptContext; 
   const fetcher = (async (url: any) => {
     if (String(url).includes("/releases/tags/")) return Response.json({ tag_name: `v${context.version}`, assets: [{ name: "cli.tar.gz", digest: `sha256:${hash}`, url: "https://api.github.com/asset" }, { name: "SHA256SUMS", url: "https://api.github.com/sums" }] });
     return new Response(String(url).endsWith("/sums") ? `${hash}  cli.tar.gz\n` : data);
-  }) as typeof fetch;
+  }) as ReceiptFetch;
   return { context, releaseEntry, fetcher };
 }
 for (const [name, type] of [["../escape", "0"], ["/escape", "0"], ["jcode", "2"]]) {
@@ -126,7 +126,7 @@ test("timed out install reports closed timeout cause", async () => {
 });
 test("nonpublic install recipe refuses without fetch or command", async () => {
   let effects = 0; const context = await fixture(async () => { effects++; return ok; });
-  const fetcher = (async () => { effects++; return new Response(); }) as typeof fetch;
+  const fetcher = (async () => { effects++; return new Response(); }) as ReceiptFetch;
   await expect(installCompatArtifact(context, { ...entry, install: { method: "unavailable" } }, fetcher)).rejects.toMatchObject({ causeCode: "install-unavailable" });
   expect(effects).toBe(0);
 });

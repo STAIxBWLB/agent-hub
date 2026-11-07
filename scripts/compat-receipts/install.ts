@@ -4,7 +4,7 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath } from "../../src/hub/project.ts";
 import { COMPAT } from "../../src/adapters/compat.ts";
-import { ReceiptError, type ReceiptContext, type ManifestEntry, type InstalledArtifact } from "./types.ts";
+import { ReceiptError, type ReceiptContext, type ManifestEntry, type InstalledArtifact, type ReceiptFetch } from "./types.ts";
 
 function inside(root: string, target: string): boolean {
   const rel = relative(root, target);
@@ -16,7 +16,7 @@ function publicURL(value: unknown, hosts: readonly string[]): string {
   if (url.protocol !== "https:" || url.username || url.password || url.port || !hosts.includes(url.hostname)) throw new ReceiptError("integrity");
   return url.href;
 }
-async function bytes(fetcher: typeof fetch, url: string, signal: AbortSignal, cap: number): Promise<Buffer> {
+async function bytes(fetcher: ReceiptFetch, url: string, signal: AbortSignal, cap: number): Promise<Buffer> {
   // Public requests never consult account credentials or forward authentication on redirects.
   let response: Response | undefined;
   for (let redirects = 0; redirects <= 4; redirects++) {
@@ -45,7 +45,11 @@ async function bytes(fetcher: typeof fetch, url: string, signal: AbortSignal, ca
   } finally { await reader.cancel().catch(() => {}); }
   return Buffer.concat(chunks);
 }
-async function json(fetcher: typeof fetch, url: string, signal: AbortSignal, cap: number): Promise<any> {
+interface NpmMetadata { name: string; version: string; dist?: { tarball?: string; integrity?: string } }
+interface ReleaseAsset { name: string; url: string; digest?: string }
+interface ReleaseMetadata { tag_name: string; assets: ReleaseAsset[] }
+// These are public JSON documents; critical identity/URL/digest fields are checked before effects.
+async function json<T>(fetcher: ReceiptFetch, url: string, signal: AbortSignal, cap: number): Promise<T> {
   try { return JSON.parse((await bytes(fetcher, url, signal, cap)).toString("utf8")); }
   catch (error) { if (error instanceof ReceiptError) throw error; throw new ReceiptError("integrity"); }
 }
@@ -77,10 +81,10 @@ async function privateCommand(prefix: string, candidate: string): Promise<string
   if (!inside(realPath(prefix), command) || !(await lstat(command)).isFile() || !((await lstat(command)).mode & 0o111)) throw new ReceiptError("integrity");
   return command;
 }
-async function npmArtifact(context: ReceiptContext, entry: ManifestEntry, fetcher: typeof fetch, signal: AbortSignal): Promise<InstalledArtifact> {
+async function npmArtifact(context: ReceiptContext, entry: ManifestEntry, fetcher: ReceiptFetch, signal: AbortSignal): Promise<InstalledArtifact> {
   const name = entry.install.package;
   if (!name || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(name)) throw new ReceiptError("input");
-  const metadata = await json(fetcher, `https://registry.npmjs.org/${name}/${context.version}`, signal, context.limits.outputBytes);
+  const metadata = await json<NpmMetadata>(fetcher, `https://registry.npmjs.org/${name}/${context.version}`, signal, context.limits.outputBytes);
   if (metadata.name !== name || metadata.version !== context.version) throw new ReceiptError("integrity");
   const tarball = publicURL(metadata.dist?.tarball, ["registry.npmjs.org"]);
   const data = await bytes(fetcher, tarball, signal, context.limits.artifactBytes);
@@ -107,16 +111,16 @@ async function npmArtifact(context: ReceiptContext, entry: ManifestEntry, fetche
   if (command !== realPath(resolve(packageRoot, bin))) throw new ReceiptError("integrity");
   return { method: entry.install.method, integrity, packageRoot, command: [command] };
 }
-async function releaseArtifact(context: ReceiptContext, entry: ManifestEntry, fetcher: typeof fetch, signal: AbortSignal): Promise<InstalledArtifact> {
+async function releaseArtifact(context: ReceiptContext, entry: ManifestEntry, fetcher: ReceiptFetch, signal: AbortSignal): Promise<InstalledArtifact> {
   const { repository, tagTemplate, asset, checksumAsset } = entry.install;
   if (!repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || !tagTemplate?.includes("{version}") || !asset || !checksumAsset || basename(asset) !== asset || basename(checksumAsset) !== checksumAsset) throw new ReceiptError("input");
   const tag = tagTemplate.replace("{version}", context.version);
-  const release = await json(fetcher, `https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, signal, context.limits.outputBytes);
+  const release = await json<ReleaseMetadata>(fetcher, `https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, signal, context.limits.outputBytes);
   if (release.tag_name !== tag || !Array.isArray(release.assets)) throw new ReceiptError("integrity");
   const select = (name: string) => {
-    const matches = release.assets.filter((item: any) => item.name === name);
+    const matches = release.assets.filter((item: ReleaseAsset) => item.name === name);
     if (matches.length !== 1) throw new ReceiptError("integrity");
-    return matches[0];
+    return matches[0]!;
   };
   const target = select(asset), checksum = select(checksumAsset);
   const download = async (item: any, cap: number) => {
@@ -154,7 +158,7 @@ async function releaseArtifact(context: ReceiptContext, entry: ManifestEntry, fe
 }
 
 /** Acquire only public, exact artifacts; no native CLI is executed here. */
-export async function installCompatArtifact(context: ReceiptContext, entry: ManifestEntry, fetcher: typeof fetch): Promise<InstalledArtifact> {
+export async function installCompatArtifact(context: ReceiptContext, entry: ManifestEntry, fetcher: ReceiptFetch): Promise<InstalledArtifact> {
   if (!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(context.version)) throw new ReceiptError("input");
   if (entry.install.method === "unavailable") throw new ReceiptError("install-unavailable");
   const timer = AbortSignal.timeout(context.limits.installMs);

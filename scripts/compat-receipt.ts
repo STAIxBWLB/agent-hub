@@ -156,7 +156,7 @@ export async function runCompatReceipt(input: { id: string; version: string; out
   const required = legs.filter(leg => leg.requiredForAdmission);
   const outcome = !cleanup || installation.status === "fail" || required.some(leg => leg.status === "fail") ? "fail"
     : installation.status !== "pass" || required.some(leg => leg.status === "not-run") ? "not-run" : "pass";
-  const autoAdmit = entry.autoAdmit && input.id !== "codex-review" && input.id !== "agy";
+  const autoAdmit = entry.autoAdmit && input.id !== "codex-review" && input.id !== "agy" && !entry.legs.some(leg => leg.requiredForAdmission && ["account-or-model", "tui-desktop"].includes(leg.category));
   const [reason, nextStep] = DIAGNOSTICS[installation.cause];
   const summary: ReceiptSummary = { schemaVersion: 1, id: input.id, version: input.version, runnerOS: os, architecture,
     procedureReceipt: entry.receipt, generatedAt: new Date().toISOString(), bounds: { totalMs: limits.totalMs, legMs: limits.legMs }, cleanupConfirmed: cleanup,

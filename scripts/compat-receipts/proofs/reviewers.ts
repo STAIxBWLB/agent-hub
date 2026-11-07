@@ -103,7 +103,7 @@ async function kimi(context: ProofContext, result: ProofResults, trust: () => vo
   writeFileSync(join(source, "device_id"), "synthetic-fixture-device", { mode: 0o600 });
   const decoy = process.env.KIMI_CODE_TRUST_WORKSPACE;
   process.env.KIMI_CODE_TRUST_WORKSPACE = "fixture-decoy";
-  const tools = ["hub_review", "hub_task_show"].map(name => ({ name, description: "Synthetic host fixture", inputSchema: { type: "object" as const, properties: { id: { type: "integer" } }, required: ["id"] } }));
+  const tools = ["hub_review", "hub_task_show"].map(name => ({ name, description: "Synthetic host fixture", inputSchema: { type: "object" as const, properties: { id: { type: "integer" } }, required: ["id"], additionalProperties: false as const } }));
   let active = true, calls = 0;
   let broker: ReturnType<typeof createReviewerMcpSession> | undefined;
   let launch: ReviewerLaunch | undefined;
