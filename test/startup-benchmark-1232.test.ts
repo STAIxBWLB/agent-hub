@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abandonedSizes, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { abandonedSizes, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, privateStartupSandboxProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { STARTUP_PHASES } from "../src/hub/startup-timing.ts";
 
@@ -22,6 +22,21 @@ test("benchmark environment contains only isolated homes and fixed metadata vari
   expect(env.PATH).toBe("/usr/bin:/bin");
   for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_STATE_DIR", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OMNIROUTE_API_KEY", "NODE_OPTIONS", "ORCA_CLI_COMMAND"]) expect(env[key]).toBeUndefined();
   for (const key of ["HOME", "TMPDIR", "AGENTHUB_HOME", "AMEM_HOME", "CODEX_HOME", "KIMI_CODE_HOME", "CLAUDE_CONFIG_DIR"]) expect(statSync(env[key]!).mode & 0o777).toBe(0o700);
+});
+
+test("private Mac profile denies outbound networking and both original-state spellings with SBPL escaping", () => {
+  const typed = '/source/"quoted"/back\\slash', canonical = "/canonical/state";
+  const profile = privateStartupSandboxProfile(typed, canonical);
+  expect(profile).toStartWith("(version 1)\n(allow default)\n(deny network-outbound)\n");
+  expect(profile).toContain('(deny file-read* file-write* (subpath "/source/\\"quoted\\"/back\\\\slash"))');
+  expect(profile).toContain('(deny file-read* file-write* (subpath "/canonical/state"))');
+  expect(profile).not.toContain("process");
+  expect(profile).not.toContain("signal");
+  const one = privateStartupSandboxProfile(canonical, canonical);
+  expect(one.split("(deny file-read*")).toHaveLength(2);
+  expect(() => privateStartupSandboxProfile("relative", canonical)).toThrow();
+  expect(() => privateStartupSandboxProfile("/", canonical)).toThrow();
+  expect(() => privateStartupSandboxProfile("/source\ninvalid", canonical)).toThrow();
 });
 
 test("public debug is derived only from the synthetic mode and absent from private child environments", () => {

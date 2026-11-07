@@ -1,9 +1,11 @@
 import { Database } from "bun:sqlite";
 import { spawn } from "node:child_process";
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { realPath } from "../../src/hub/project.ts";
+import { sbplString } from "../../src/local/deny.ts";
 import { hubGitSync } from "../../src/hub/git.ts";
 import { stopOwnedProcess, trackGroup } from "../../src/hub/child-process.ts";
 import { STARTUP_PHASES } from "../../src/hub/startup-timing.ts";
@@ -203,9 +205,29 @@ function project(root: string, env: NodeJS.ProcessEnv): void {
     if (run.status !== 0) { publicDebug(env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1", { boundary: "project-git", executable: "git", exitCode: run.status, stderr: run.stderr }); return refuse(); }
   }
 }
-async function child(root: string, env: NodeJS.ProcessEnv): Promise<ChildObservation> {
+/** Additional private-copy containment only; no process/signal exceptions or outbound network permission. */
+export function privateStartupSandboxProfile(typedState: string, canonicalState: string): string {
+  if (![typedState, canonicalState].every(value => isAbsolute(value) && value !== "/" && !/[\p{Cc}\p{Cf}]/u.test(value))) return refuse();
+  return ["(version 1)", "(allow default)", "(deny network-outbound)",
+    ...[...new Set([typedState, canonicalState])].map(value => `(deny file-read* file-write* (subpath ${sbplString(value)}))`), ""].join("\n");
+}
+export async function probePrivateStartupGuard(typedState: string): Promise<{ profile: string; canonicalState: string; macGuard: 1 }> {
+  if (process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec")) return refuse();
+  const canonicalState = realPath(typedState), profile = privateStartupSandboxProfile(typedState, canonicalState);
+  const root = mkdtempSync(join(tmpdir(), "ahub-startup-1232-mac-guard-")); chmodSync(root, 0o700);
+  let stopped = false;
+  try {
+    const env = isolatedStartupEnvironment(root, "private");
+    // Same exact profile as the measured child. Failure precedes ledger reservation and any source-state copy.
+    await ownedCommand(["/usr/bin/sandbox-exec", "-p", profile, "/usr/bin/true"], root, env, undefined, undefined, PUBLIC_PROBE_TIMEOUT_MS); stopped = true;
+    return { profile, canonicalState, macGuard: 1 };
+  } finally { if (stopped) rmSync(root, { recursive: true, force: true }); }
+}
+
+async function child(root: string, env: NodeJS.ProcessEnv, sandboxProfile?: string): Promise<ChildObservation> {
   const started = performance.now(); let ready: { timing: string; importAndStartupMs: number; eventReadBytes: number; abandonedReadBytes: number } | undefined, wallMs = 0;
-  const raw = await ownedCommand([process.execPath, SCRIPT, "--child", root], root, env, undefined, line => {
+  const argv = sandboxProfile ? ["/usr/bin/sandbox-exec", "-p", sandboxProfile, process.execPath, SCRIPT, "--child", root] : [process.execPath, SCRIPT, "--child", root];
+  const raw = await ownedCommand(argv, root, env, undefined, line => {
     try {
       const value = JSON.parse(line);
       if (value.ready === 1 && !ready && value.effects === 0 && Number.isFinite(value.importAndStartupMs) && value.importAndStartupMs >= 0) {
@@ -220,8 +242,10 @@ async function child(root: string, env: NodeJS.ProcessEnv): Promise<ChildObserva
 }
 export async function runStartupBenchmark(options: BenchmarkOptions, ports: BenchmarkPorts = {}): Promise<Record<string, string | number>[]> {
   if (!Number.isInteger(options.samples) || options.samples < 1 || options.samples > MAX_PRIVATE_SAMPLES || options.mode === "private" && process.platform !== "darwin") return refuse();
+  if (options.mode === "private" && Object.keys(ports).length !== 0) return refuse();
   const profile = numericProfile(options.profile ?? REPRESENTATIVE_PROFILE), results: Record<string, string | number>[] = [];
   if (options.mode === "private" && (!options.privateState || !lstatSync(options.privateState).isDirectory())) return refuse();
+  const privateGuard = options.mode === "private" ? await probePrivateStartupGuard(options.privateState!) : undefined;
   const baseline = options.mode === "synthetic" ? mkdtempSync(join(tmpdir(), "ahub-startup-1232-baseline-")) : undefined;
   let baselineStopped = false;
   try {
@@ -244,10 +268,11 @@ export async function runStartupBenchmark(options: BenchmarkOptions, ports: Benc
         const sizes = numericProfile(await (ports.prepare ?? prepareState)(baseline ? join(baseline, "state") : options.privateState, state, profile, env));
         stopped = false;
         publicStage = "child";
-        const observation = await (ports.child ?? child)(root, env); stopped = observation.stopped;
+        if (privateGuard && realPath(options.privateState!) !== privateGuard.canonicalState) return refuse();
+        const observation = await (ports.child ?? ((sampleRoot: string, sampleEnv: NodeJS.ProcessEnv) => child(sampleRoot, sampleEnv, privateGuard?.profile)))(root, env); stopped = observation.stopped;
         if (!stopped || observation.effects !== 0) return refuse();
         if (options.acceptance && (observation.wallMs >= 5000 || observation.abandonedReadBytes > 0 || sizes.eventBytes > 0 && observation.eventReadBytes >= sizes.eventBytes)) return refuse();
-        results.push({ synthetic: Number(options.mode === "synthetic"), sample: attempt, ...sizes, wallMs: Math.round(observation.wallMs),
+        results.push({ synthetic: Number(options.mode === "synthetic"), macGuard: privateGuard?.macGuard ?? 0, sample: attempt, ...sizes, wallMs: Math.round(observation.wallMs),
           ...(observation.importAndStartupMs === undefined ? {} : { importAndStartupMs: Math.round(observation.importAndStartupMs) }), timing: timingLine(observation.timing), effects: observation.effects, eventReadBytes: observation.eventReadBytes, abandonedReadBytes: observation.abandonedReadBytes });
       } finally {
         // An unconfirmed child retains its private fixture; never delete state beneath an owner.
@@ -535,6 +560,10 @@ if (import.meta.main) {
   try {
     if (args[0] === "--seed" && process.env.AHUB_STARTUP_BENCHMARK_CHILD === "1") await seedStartupFixture(args[1]!);
     else if (args[0] === "--probe-child") await publicProbeChild(args[1]!);
+    else if (args[0] === "--mac-guard-probe" && args.length === 2) {
+      const typed = isAbsolute(args[1]!) ? args[1]! : `${process.cwd()}/${args[1]!}`;
+      const result = await probePrivateStartupGuard(typed); process.stdout.write(JSON.stringify({ macGuard: result.macGuard }) + "\n");
+    }
     else if (args[0] === "--public-probe" && args.length === 1) process.stdout.write(JSON.stringify(await runStartupPublicProbe()) + "\n");
     else if (args[0] === "--child") await measure(args[1]!);
     else {
@@ -546,7 +575,7 @@ if (import.meta.main) {
       }
       const value = (key: string) => { const i = args.indexOf(key); return i < 0 ? undefined : args[i + 1]; };
       const privateState = value("--private-state"), profileFile = value("--profile");
-      const results = await runStartupBenchmark({ mode: privateState ? "private" : "synthetic", privateState: privateState ? resolve(privateState) : undefined,
+      const results = await runStartupBenchmark({ mode: privateState ? "private" : "synthetic", privateState: privateState ? isAbsolute(privateState) ? privateState : `${process.cwd()}/${privateState}` : undefined,
         acceptance: args.includes("--acceptance"), samples: Number(value("--samples") ?? 1), profile: profileFile ? numericProfile(JSON.parse(readFileSync(profileFile, "utf8"))) : undefined });
       for (const result of results) process.stdout.write(JSON.stringify(result) + "\n");
     }
