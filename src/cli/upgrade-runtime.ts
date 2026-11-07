@@ -17,7 +17,7 @@ import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { canonicalPath, hubHome, realPath } from "../hub/project.ts";
 import { packageDigest, preserveRuntimePackage, preserveRuntimeSource, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
-import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
+import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, reattachOrphanedTerminal, REATTACH_BOUND_MS, waitForIdle, shellQuote, type OrphanedTerminal, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { ReattachmentRequired, MissingRecordedSession, FinalRefusal, planFingerprint, recoveryScope, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { SHARED_CHANNEL_VERSION_ARGV, nativeRecordedSessionState } from "../adapters/definitions/native-recovery.ts";
 import { refreshManager } from "../hub/manager.ts";
@@ -65,9 +65,9 @@ function legacyTargetLists(root: string, probe: { file: string; exportName: stri
   return !!values && new RegExp(`["']${name}["']`).test(values);
 }
 
-function terminalOptions(run: RunCommand = runCommand): TerminalRecoveryOptions {
+function terminalOptions(run: RunCommand = runCommand, timeoutMs = 610_000): TerminalRecoveryOptions {
   return { orcaExecutable: orcaExecutable(), runner: async (args) => {
-    const result = await run([orcaExecutable(), ...args], { timeoutMs: 610_000 });
+    const result = await run([orcaExecutable(), ...args], { timeoutMs });
     return { status: result.code, stdout: result.stdout, stderr: result.stderr };
   } };
 }
@@ -420,10 +420,40 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         ? `${unresumable(binding)}; manual-required; next action: make that store readable, then make a new plan`
         : `${unresumable(binding)}, and the hub cannot show that no turn ran on it, so its conversation may not come back after the restart; manual-required; next action: end that Codex session and close its Orca terminal ${binding.handle} (ahub codex starts a new one later), then make a new plan`);
     }
-    body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(unrecordedTerminals.length ? { unrecordedTerminals } : {}), ...(freshStart.length ? { freshStart } : {}) });
+    body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(unrecordedTerminals.length ? { unrecordedTerminals } : {}), ...(freshStart.length ? { freshStart } : {}), ...(terminals.orphaned?.length ? { orphanedTerminals: terminals.orphaned } : {}) });
   }
   if (!body.projects.length) body.blockers.push("no running registered projects in scope");
   return { ...body, fingerprint: planFingerprint(body) };
+}
+
+/** #1246: one line of outcome per `reattachOrphanedTerminal` result. */
+const REATTACH_LINES: Record<Awaited<ReturnType<typeof reattachOrphanedTerminal>>, (name: string, handle: string) => string> = {
+  reattached: (name, handle) => `${name}: terminal ${handle} reattached`,
+  "still-orphaned": (name, handle) => `${name}: terminal ${handle} is still orphaned after the switch; it stays a blocker. Next: inspect it in Orca, then press [r] refresh`,
+  unavailable: (name, handle) => `${name}: terminal ${handle} not switched or not confirmed (its identity changed, it is not connected, or Orca did not answer). Next: inspect it in Orca, then press [r] refresh`,
+};
+
+/**
+ * #1246: switch back the orphaned-but-connected panes the plan verified, and nothing else. Each handle is read again by
+ * `reattachOrphanedTerminal` (identity, still orphaned and connected) before `orca terminal switch`, then polled for at
+ * most 5 s, and every Orca call is itself bounded by that time. A recovery hold on this project (or the machine) refuses all of them. One line of outcome per terminal; the caller plans again.
+ */
+export async function reattachPlannedTerminals(planned: PlannedProject, terminals: readonly OrphanedTerminal[], deps: { run?: RunCommand; home?: string; lock?: (projectRoot: string) => string | undefined; boundMs?: number } = {}): Promise<string[]> {
+  const { run = runCommand, home = hubHome(), boundMs = REATTACH_BOUND_MS } = deps;
+  // The project's own hold (project_locks) as well as a legacy machine hold: recoveryLock without a root reads only the latter.
+  const lock = deps.lock ?? ((projectRoot: string) => recoveryLock(home, projectRoot));
+  const verified = terminals.filter((t) => planned.orphanedTerminals?.some((o) => o.handle === t.handle && o.incarnationId === t.incarnationId && o.worktreeId === t.worktreeId && o.root === t.root && o.peer === t.peer));
+  const lines: string[] = [];
+  for (const terminal of terminals) {
+    const name = `${planned.project.id}/${terminal.peer}`;
+    if (!verified.includes(terminal)) { lines.push(`${name}: terminal ${terminal.handle} is not one the plan verified; not switched. Next: press [r] refresh to re-plan`); continue; }
+    let owner: string | undefined;
+    try { owner = lock(planned.project.root); } catch (error) { lines.push(`${name}: terminal ${terminal.handle} not switched (${(error as Error).message}). Next: check the recovery state, then press [r] refresh`); continue; }
+    if (owner) { lines.push(`${name}: terminal ${terminal.handle} not switched (recovery operation ${owner} holds the lock). Next: wait for or resume that operation, then press [r] refresh`); continue; }
+    const result = await reattachOrphanedTerminal(terminal, terminalOptions(run, boundMs), boundMs);
+    lines.push(REATTACH_LINES[result](name, terminal.handle));
+  }
+  return lines;
 }
 
 /** Freeze the coordinator/source package before its mutable global installation is replaced. */

@@ -4874,8 +4874,11 @@ upgrade remedy. Attached native TUIs without a live launcher or independent exac
 Orca session proof are shown as `attached, launcher unrecorded`, with person end
 or native resume guidance, never a fresh headless restart. Plain same-protocol
 Claude keeps its unmanaged reconnect-only path. An orphaned but connected pane
-requires the person to run `orca terminal switch --terminal <handle>` and refresh;
-it does not authorize another restore. Historical rows are retained, including
+requires `orca terminal switch --terminal <handle>` and a refresh (`[r]` on the
+plan screen, `[s]` on an open operation); the interactive `ahub upgrade` plan screen
+offers one confirmed key (`[t]`) that switches exactly the panes the plan verified
+and polls each for at most 5 s (#1246), and nothing else is mutated. It does not
+authorize another restore. Historical rows are retained, including
 invalid rows; current ownership is scoped to project, instance and peer, and a
 publication replaces only that scope's valid row. This current-source guarantee
 does not fence older binaries that directly rewrite the shared ledger.

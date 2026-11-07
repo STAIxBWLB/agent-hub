@@ -90,7 +90,7 @@ import { createInterface as lineReader } from "node:readline";
 import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, writeOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
 import { childEnv, personEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, recordRecoveryDelegation, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
-import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
+import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource, reattachPlannedTerminals } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
 import { globalUpdateAdvice, runtimeVersionWarnings } from "./runtime-version-warning.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
@@ -723,6 +723,7 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
     endInspection: recoveryEndInspection,
     afterCompleted: (op) => globalUpdateLines(op.plan.version),
     endPeer: (planned, peer) => endPlannedPeer(planned, peer),
+    reattachTerminals: (planned, terminals) => reattachPlannedTerminals(planned, terminals),
     runnerStoppable: (id) => signedRunner(id) !== undefined,
     stopRunner: (id) => stopSignedRunner(id),
     entry: join(import.meta.dir, "main.js"),

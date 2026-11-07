@@ -3978,7 +3978,7 @@ owner's row. A running hub without `terminal_owner` support leaves the new launc
 unrecorded and prints an upgrade remedy. The plan names an attached native TUI
 without a live launcher or exact Orca session proof as `attached, launcher
 unrecorded`: end it in its terminal or use its native resume flow in an Orca
-terminal, then refresh the plan. Plain Claude's same-protocol reconnect-only
+terminal, then press `[r]` refresh. Plain Claude's same-protocol reconnect-only
 session still reconnects by itself without a terminal restart.
 
 Background Orca identity reads are limited to 30 seconds and 1 MiB of output.
@@ -3989,10 +3989,22 @@ its foreground TTY behavior. Unknown terminal evidence is shown as unverified
 ownership, with end or native resume guidance.
 
 An Orca pane that is orphaned but still connected needs reattachment, not turn
-cancellation: run `orca terminal switch --terminal <handle>` yourself, then refresh.
-The coordinator never switches panes. Such a pane is not evidence that its native
-process ended and never authorizes a duplicate restore. Disconnected terminals
-keep their existing guidance.
+cancellation (#1246). The blocker names the peer, the project and the handle, and its
+next action is `orca terminal switch --terminal <handle>`, then refresh in
+`ahub upgrade` (`[r]` on the plan, `[s]` on an open operation) or rerun it. The plan records each such pane whose identity it
+verified (peer, handle, incarnation, worktree and root) as `orphanedTerminals`, part
+of the plan fingerprint, and the interactive plan screen then offers `[t] reattach N
+orphaned terminals`. Choosing it reads each recorded pane again, requires the same
+identity, still orphaned and connected, and no recovery hold on this project (or the
+machine), runs `orca terminal switch --terminal <handle>` once for that handle, and polls
+`orca terminal show` for at most 5 s until `orphaned` is false (Orca can report `true`
+for a moment after the switch). Each Orca call is itself bounded by that time, so a hung
+`show` cannot hold the screen past it. Then the plan is made again. Nothing else is mutated:
+no session, launch record, terminal or hub changes. A pane whose identity changed, that
+disconnected, or that is still orphaned at the bound stays a blocker with the same next
+action, and `[t]` is offered again. `--dry-run`, a pipe and `--yes` never switch a pane.
+Such a pane is not evidence that its native process ended and never authorizes a
+duplicate restore. Disconnected terminals keep their existing guidance.
 
 The ledger retains historical and invalid rows; it does not prune them on launch.
 Only this project, current daemon instance and peer can supply ownership evidence,

@@ -100,6 +100,18 @@ export interface TerminalInspection {
   byPeer: Partial<Record<TerminalPeer, TerminalBinding>>;
   blockers: RecoveryBlocker[];
   manualRequired: boolean;
+  /** #1246: terminals whose identity was verified (handle, incarnation, worktree, root, peer) and that read orphaned but still connected: the only ones a person may have switched back. */
+  orphaned?: OrphanedTerminal[];
+}
+
+/** #1246: one verified orphaned-but-connected terminal, as the plan records it. Never a session or a launch. */
+export interface OrphanedTerminal {
+  peer: TerminalPeer;
+  handle: string;
+  incarnationId: string;
+  worktreeId: string;
+  /** The terminal's worktree root as Orca reported it and the plan matched it. */
+  root: string;
 }
 
 export interface IdleResult {
@@ -652,12 +664,54 @@ function blocker(code: RecoveryBlocker["code"], message: string, peer?: Terminal
     code === "ownership-unknown" ? "confirm the terminal owner in Orca, then resume recovery" :
     code === "ambiguous-terminal" ? "close or identify the duplicate terminal, then resume recovery" :
     code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
-    code === "terminal-orphaned" ? `reattach the pane with orca terminal switch --terminal ${shellQuote(handle!)}; then refresh the recovery plan` :
+    code === "terminal-orphaned" ? `reattach the pane with orca terminal switch --terminal ${shellQuote(handle!)}; then refresh in ahub upgrade ([r] on the plan, [s] on an open operation), or rerun it` :
     code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
     code === "launcher-exited" ? "the session was not restored; the coordinator's error names the choices" :
     code === "terminal-gone" ? "the terminal was closed; inspect the project's terminals in Orca before resuming recovery" :
     "inspect the named terminal and resume recovery after the identity is verified";
   return { code, message, ...(peer ? { peer } : {}), ...(handle ? { handle, terminalReference: handle } : {}), nextAction };
+}
+
+/** #1246: how long a switched pane is re-read before it still counts as orphaned. Orca's `terminal show` can lag a switch by a moment. */
+export const REATTACH_BOUND_MS = 5_000;
+const REATTACH_POLL_MS = 250;
+
+/**
+ * #1246: the one mutation the upgrade menu offers for an orphaned-but-connected pane: `orca terminal switch` for exactly
+ * this handle, after reading it again and finding the identity the plan verified (handle, incarnation, worktree, root)
+ * still orphaned and connected. It then re-reads the pane until `orphaned` is false, at most `boundMs`. A pane that is
+ * already not orphaned is `reattached` with no switch. A changed identity, a disconnected pane or any failed Orca call is
+ * `unavailable` (nothing, or nothing more, was done); a pane still orphaned at the bound stays `still-orphaned`.
+ */
+export async function reattachOrphanedTerminal(terminal: OrphanedTerminal, options?: CommandRunner | TerminalRecoveryOptions, boundMs = REATTACH_BOUND_MS): Promise<"reattached" | "still-orphaned" | "unavailable"> {
+  const config = normalizeOptions(options);
+  const read = async (): Promise<Record<string, unknown> | undefined> => {
+    const shown = terminalObject(await run(config.runner, ["terminal", "show", "--terminal", terminal.handle, "--json"]));
+    const same = nestedString(shown, ["handle"]) === terminal.handle && nestedString(shown, ["incarnationId"]) === terminal.incarnationId && nestedString(shown, ["worktreeId"]) === terminal.worktreeId
+      && rootMatches(shown.worktreePath ?? shown.projectRoot, terminal.root);
+    return same ? shown : undefined;
+  };
+  // The runner is also bounded by its caller; this race keeps a runner that ignores its timeout from holding the screen past the bound.
+  const within = async <T>(work: Promise<T>, ms: number): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("reattach bound exceeded")), ms); })]); }
+    finally { if (timer) clearTimeout(timer); }
+  };
+  try {
+    const before = await within(read(), boundMs);
+    if (!before) return "unavailable";
+    if (before.orphaned === false) return "reattached";
+    if (before.orphaned !== true || before.connected !== true) return "unavailable";
+    await within(run(config.runner, ["terminal", "switch", "--terminal", terminal.handle, "--json"]), boundMs);
+    const deadline = Date.now() + boundMs;
+    for (;;) {
+      const shown = await within(read(), deadline - Date.now());
+      if (!shown) return "unavailable";
+      if (shown.orphaned === false) return "reattached";
+      if (Date.now() >= deadline) return "still-orphaned";
+      await Bun.sleep(Math.min(REATTACH_POLL_MS, deadline - Date.now()));
+    }
+  } catch { return "unavailable"; }
 }
 
 function verifyBindingData(actual: Record<string, unknown>, binding: TerminalBinding): RecoveryBlocker | undefined {
@@ -733,6 +787,7 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
   const config = normalizeOptions(options);
   const blockers: RecoveryBlocker[] = [];
   const bindings: TerminalBinding[] = [];
+  const orphaned: OrphanedTerminal[] = [];
   const byPeer: Partial<Record<TerminalPeer, TerminalBinding>> = {};
   const requested = (Object.entries(sessions) as [TerminalPeer, string | SessionRef | undefined][]).map(([peer, value]) => [peer, typeof value === "string" ? { sessionId: value } : value] as const).filter((entry): entry is [TerminalPeer, SessionRef] => !!entry[1]?.sessionId);
   if (!requested.length) return { bindings, byPeer, blockers, manualRequired: false };
@@ -814,7 +869,8 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
       continue;
     }
     if (terminal.orphaned === true && terminal.connected === true) {
-      blockers.push(blocker("terminal-orphaned", `terminal ${handle} is orphaned but still connected`, peer, handle));
+      blockers.push(blocker("terminal-orphaned", `the ${peer} terminal ${handle} in ${projectRoot} is orphaned but still connected`, peer, handle));
+      orphaned.push({ peer, handle, incarnationId, worktreeId, root: expectedTerminalRoot });
       continue;
     }
     if (terminal.orphaned === true || terminal.connected === false) {
@@ -830,7 +886,7 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
     bindings.push(binding);
     byPeer[peer] = binding;
   }
-  return { bindings, byPeer, blockers, manualRequired: blockers.length > 0 };
+  return { bindings, byPeer, blockers, manualRequired: blockers.length > 0, ...(orphaned.length ? { orphaned } : {}) };
 }
 
 /**
