@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupKimiPlugin, ensureKimiPlugin, kimiPluginPlan, kimiPluginPreview } from "../src/cli/kimi-plugin.ts";
-import { kimiTuiSpawnOptions, kimiTuiVersionGate } from "../src/adapters/definitions/native-cli-entry-kimi.ts";
+import { kimiTuiSpawnOptions, kimiTuiVersionGate, kimiTuiVersionProbe } from "../src/adapters/definitions/native-cli-entry-kimi.ts";
+import { buildKimiTuiLaunch } from "../src/cli/launch.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
@@ -75,13 +76,25 @@ test("only the exact native TUI version with a live completion receipt is admitt
   for (const version of ["2.5.1", "2.5.3", "2.5", "kimi 2.5.2", ""]) expect(kimiTuiVersionGate(version).ok).toBe(false);
 });
 
+test("the version probe preserves the configured TUI prefix without launch-only model options", () => {
+  expect(kimiTuiVersionProbe(buildKimiTuiLaunch(["python", "/fixture/kimi.py", "acp"]))).toEqual({ cmd: "python", args: ["/fixture/kimi.py", "--version"] });
+});
+
+test("an active owner in another project is never replaced", () => {
+  const f = fixture();
+  ensureKimiPlugin({ ...f, ownerPid: 4242, ownerSignature: "owner-a", liveness: () => "live" });
+  const before = readFileSync(join(f.home, "plugins", "installed.json"), "utf8");
+  expect(() => ensureKimiPlugin({ ...f, launchId: "launch-b", replaceStale: true, liveness: () => "live" })).toThrow("active or unknown");
+  expect(readFileSync(join(f.home, "plugins", "installed.json"), "utf8")).toBe(before);
+});
+
 test("a newly admitted launch replaces a stale record while the stale cleanup stays refused", () => {
   const f = fixture();
-  const first = { ...f, replaceStale: true };
+  const first = { ...f, replaceStale: true, ownerPid: 4242, ownerSignature: "stale-owner" };
   ensureKimiPlugin(first);
-  const replacement = { ...f, launchId: "launch-b", replaceStale: true };
+  const replacement = { ...f, launchId: "launch-b", replaceStale: true, ownerPid: 4343, ownerSignature: "new-owner", liveness: () => "gone" as const };
   expect(ensureKimiPlugin(replacement).changed).toBe(true);
-  expect(installed(f.home).plugins[0]).toMatchObject({ id: "agent-hub", agentHubLaunch: "launch-b" });
+  expect(installed(f.home).plugins[0]).toMatchObject({ id: "agent-hub", agentHubLaunch: "launch-b", agentHubOwner: { pid: 4343, signature: "new-owner" } });
   expect(() => cleanupKimiPlugin(first)).toThrow("another launch");
   expect(installed(f.home).plugins[0]).toMatchObject({ id: "agent-hub", agentHubLaunch: "launch-b" });
   cleanupKimiPlugin(replacement);

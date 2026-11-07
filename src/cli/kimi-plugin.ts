@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
-export interface KimiPluginOptions { home: string; hookScript: string; launchId: string; replaceStale?: boolean; now?: number }
+export interface KimiPluginOptions { home: string; hookScript: string; launchId: string; replaceStale?: boolean; now?: number; ownerPid?: number; ownerSignature?: string; liveness?: typeof processLiveness }
 type JsonObject = Record<string, any>;
 type Snapshot = { stat: Stats; bytes: Buffer };
 type Target = { path: string; next: Buffer; before?: Snapshot };
@@ -56,6 +57,16 @@ function removeFile(path: string, expected: Buffer): void {
 function manifest(): JsonObject {
   return { name: ID, version: "1.0.0", description: "Managed by the ahub kimi launcher for this launch only.", hooks: EVENTS.map(event => ({ event, command: `bun ./kimi-hook.js ${event}`, timeout: 5 })) };
 }
+function ownerProof(options: KimiPluginOptions): { pid: number; signature: string } {
+  const pid = options.ownerPid ?? process.pid, signature = options.ownerSignature ?? processSignature(pid);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !signature) throw new Error("Kimi plugin ownership cannot be proven");
+  return { pid, signature };
+}
+function staleOwner(record: JsonObject, options: KimiPluginOptions): boolean {
+  const owner = record.agentHubOwner;
+  if (!object(owner) || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 || typeof owner.signature !== "string" || !owner.signature) return false;
+  try { return (options.liveness ?? processLiveness)(owner.pid, owner.signature) === "gone"; } catch { return false; }
+}
 function plan(options: KimiPluginOptions): Plan {
   if (!isAbsolute(options.home) || !isAbsolute(options.hookScript) || !/^[A-Za-z0-9._:-]{1,128}$/.test(options.launchId)) throw new Error("Kimi home, hook bundle and launch identity must be valid");
   directory(options.home);
@@ -67,6 +78,7 @@ function plan(options: KimiPluginOptions): Plan {
   const records = document?.plugins ?? [];
   if (records.some((row: unknown) => !object(row))) throw new Error(`${installed} has an invalid plugin row`);
   const record = records.find((row: JsonObject) => row.id === ID);
+  if (record && record.agentHubLaunch !== options.launchId && options.replaceStale === true && !staleOwner(record, options)) throw new Error("Kimi's agent-hub plugin owner is active or unknown; it was not changed");
   if (record && (record.root !== managed || record.source !== "local-path" || record.origin !== "custom" || record.enabled !== true || typeof record.originalSource !== "string"
     || record.agentHubLaunch !== options.launchId && options.replaceStale !== true)) {
     throw new Error("Kimi's agent-hub plugin belongs to another launch or is disabled; it was not changed");
@@ -74,12 +86,13 @@ function plan(options: KimiPluginOptions): Plan {
   const manifestBefore = file(join(managed, "kimi.plugin.json"), MAX_INSTALLED), hookBefore = file(join(managed, "kimi-hook.js"), MAX_HOOK);
   const nextManifest = Buffer.from(`${JSON.stringify(manifest(), null, 2)}\n`);
   const now = new Date(options.now ?? Date.now()).toISOString();
-  const changed = !record || record.agentHubLaunch !== options.launchId || !manifestBefore?.bytes.equals(nextManifest) || !hookBefore?.bytes.equals(hook.bytes) || record.originalSource !== dirname(options.hookScript);
+  const changed = !record || record.agentHubLaunch !== options.launchId || !record.agentHubOwner || !manifestBefore?.bytes.equals(nextManifest) || !hookBefore?.bytes.equals(hook.bytes) || record.originalSource !== dirname(options.hookScript);
   const nextRecord = {
     id: ID, root: managed, source: "local-path", origin: "custom", enabled: true,
     installedAt: typeof record?.installedAt === "string" ? record.installedAt : now,
     updatedAt: changed ? now : typeof record?.updatedAt === "string" ? record.updatedAt : now,
     originalSource: dirname(options.hookScript), agentHubLaunch: options.launchId,
+    agentHubOwner: record && record.agentHubLaunch === options.launchId && record.agentHubOwner ? record.agentHubOwner : ownerProof(options),
   };
   const nextDocument = { version: 1, plugins: [...records.filter((row: JsonObject) => row.id !== ID), nextRecord] };
   return { root, managed, installed, ...(record ? { record } : {}), changed,

@@ -19,7 +19,8 @@ Date: 2026-11-08. Scope: exact native version Kimi Code 2.5.2 on macOS arm64, is
 - `hub_inbox`: a queued message was pulled and the person prompt that called the tool produced one `done`. The hub message itself opened no additional person run.
 - Earlier forced-close/restart probes produced one `interrupted` for the open run, never a duplicate on later reads.
 - `ahub results --json` exposed only ids, peer, outcome, times and `private: true`. The launch-scoped plugin was removed on normal exit and other plugins stayed installed.
-- Focused regression suites: 66 completion/agy tests, 36 full-gate failure-focused tests and 8 launcher rechecks passed, plus typecheck and bundle freshness. These covered the codec, launcher, completion flow, missing prompt ids, absent Stop/Notification hooks, unknown inventory, compat receipts and unverified-version behavior.
+- Focused regression suites: 76 completion, agy, launcher and review-follow-up tests plus 36 full-gate failure-focused tests passed, with typecheck and bundle freshness. These covered the codec, completion flow, missing prompt ids, absent Stop/Notification hooks, unknown inventory, compat receipts and unverified-version behavior.
+- PR review follow-up: the version probe preserves a wrapper/interpreter prefix without launch-only model options. A shared-home plugin record carries its owner pid and process signature; an active or unknown owner is never replaced, and only a proven-gone owner is stale.
 - Full Linux `scripts/check.sh --changed` at `196ef79c2f17ae4422e0c9c82f3aad72633110c2`: **12634 pass, 101 skip, 0 fail**, ending `check: OK`. The earlier full run's 10 failures were all fixed and re-run in the focused suites.
 - OCR delegation covered all 20 reviewable files at that head. Two preview/ownership findings were fixed with red/green plugin regressions.
 

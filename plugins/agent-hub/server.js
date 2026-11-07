@@ -16191,6 +16191,22 @@ function removeFile(path, expected) {
 function manifest() {
   return { name: ID2, version: "1.0.0", description: "Managed by the ahub kimi launcher for this launch only.", hooks: EVENTS3.map((event) => ({ event, command: `bun ./kimi-hook.js ${event}`, timeout: 5 })) };
 }
+function ownerProof(options) {
+  const pid = options.ownerPid ?? process.pid, signature = options.ownerSignature ?? processSignature(pid);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !signature)
+    throw new Error("Kimi plugin ownership cannot be proven");
+  return { pid, signature };
+}
+function staleOwner(record, options) {
+  const owner = record.agentHubOwner;
+  if (!object8(owner) || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 || typeof owner.signature !== "string" || !owner.signature)
+    return false;
+  try {
+    return (options.liveness ?? processLiveness)(owner.pid, owner.signature) === "gone";
+  } catch {
+    return false;
+  }
+}
 function plan2(options) {
   if (!isAbsolute7(options.home) || !isAbsolute7(options.hookScript) || !/^[A-Za-z0-9._:-]{1,128}$/.test(options.launchId))
     throw new Error("Kimi home, hook bundle and launch identity must be valid");
@@ -16206,6 +16222,8 @@ function plan2(options) {
   if (records.some((row) => !object8(row)))
     throw new Error(`${installed} has an invalid plugin row`);
   const record = records.find((row) => row.id === ID2);
+  if (record && record.agentHubLaunch !== options.launchId && options.replaceStale === true && !staleOwner(record, options))
+    throw new Error("Kimi's agent-hub plugin owner is active or unknown; it was not changed");
   if (record && (record.root !== managed || record.source !== "local-path" || record.origin !== "custom" || record.enabled !== true || typeof record.originalSource !== "string" || record.agentHubLaunch !== options.launchId && options.replaceStale !== true)) {
     throw new Error("Kimi's agent-hub plugin belongs to another launch or is disabled; it was not changed");
   }
@@ -16213,7 +16231,7 @@ function plan2(options) {
   const nextManifest = Buffer.from(`${JSON.stringify(manifest(), null, 2)}
 `);
   const now = new Date(options.now ?? Date.now()).toISOString();
-  const changed = !record || record.agentHubLaunch !== options.launchId || !manifestBefore?.bytes.equals(nextManifest) || !hookBefore?.bytes.equals(hook.bytes) || record.originalSource !== dirname13(options.hookScript);
+  const changed = !record || record.agentHubLaunch !== options.launchId || !record.agentHubOwner || !manifestBefore?.bytes.equals(nextManifest) || !hookBefore?.bytes.equals(hook.bytes) || record.originalSource !== dirname13(options.hookScript);
   const nextRecord = {
     id: ID2,
     root: managed,
@@ -16223,7 +16241,8 @@ function plan2(options) {
     installedAt: typeof record?.installedAt === "string" ? record.installedAt : now,
     updatedAt: changed ? now : typeof record?.updatedAt === "string" ? record.updatedAt : now,
     originalSource: dirname13(options.hookScript),
-    agentHubLaunch: options.launchId
+    agentHubLaunch: options.launchId,
+    agentHubOwner: record && record.agentHubLaunch === options.launchId && record.agentHubOwner ? record.agentHubOwner : ownerProof(options)
   };
   const nextDocument = { version: 1, plugins: [...records.filter((row) => row.id !== ID2), nextRecord] };
   return {
@@ -16290,6 +16309,7 @@ var EVENTS3, ID2 = "agent-hub", MAX_INSTALLED, MAX_HOOK, object8 = (value) => !!
   return stat;
 };
 var init_kimi_plugin = __esm(() => {
+  init_process_signature();
   EVENTS3 = ["TurnStarted", "Stop", "StopFailure", "Interrupt", "SessionEnd", "TaskStarted", "Notification"];
   MAX_INSTALLED = 1024 * 1024;
   MAX_HOOK = 8 * 1024 * 1024;
@@ -16308,6 +16328,9 @@ function kimiTuiVersionGate(stdout) {
 }
 function kimiTuiSpawnOptions(cwd, env) {
   return { cwd, env, stdio: "inherit" };
+}
+function kimiTuiVersionProbe(launch) {
+  return { cmd: launch.cmd, args: [...launch.args, "--version"] };
 }
 function runKimiTui(cmd, args, cwd, env) {
   const child = spawn10(cmd, args, kimiTuiSpawnOptions(cwd, env));
@@ -16396,12 +16419,14 @@ async function runKimiEntry(ctx) {
       let result;
       try {
         const running = Array.isArray(runningCommand) && runningCommand.every((arg) => typeof arg === "string");
+        const command = running ? runningCommand : projectConfig().kimi_cmd;
         try {
-          launch = buildKimiTuiLaunch(running ? runningCommand : projectConfig().kimi_cmd, model);
+          launch = buildKimiTuiLaunch(command, model);
         } catch (error) {
           throw running ? new Error(`${error.message} (the command is the running hub's kimi_cmd: the value in the config file is retained until ahub settings reload)`) : error;
         }
-        const version = spawnSync4(launch.cmd, ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: nativeLaunchEnv("kimi", childEnv()) });
+        const probe = kimiTuiVersionProbe(buildKimiTuiLaunch(command));
+        const version = spawnSync4(probe.cmd, probe.args, { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: nativeLaunchEnv("kimi", childEnv()) });
         const gate = kimiTuiVersionGate(version.status === 0 ? version.stdout : "");
         if (version.status === 0 && version.stdout.trim() && gate.message)
           console.error(gate.message);

@@ -100,7 +100,7 @@ remains owed in #273.
 
 ## Kimi TUI completion facts (#1282)
 
-Run this only on Kimi 2.5.2 in a disposable Git project and an isolated `KIMI_CODE_HOME`; `compat.ts` `kimi-tui` refuses every other version. The launcher must print its launch-scoped plugin notice before the TUI starts, and `plugins/installed.json` must contain only that launch's `agentHubLaunch`. Do not use the person's project or global `config.toml`.
+Run this only on Kimi 2.5.2 in a disposable Git project and an isolated `KIMI_CODE_HOME`; `compat.ts` `kimi-tui` refuses every other version. The launcher must print its launch-scoped plugin notice before the TUI starts, and `plugins/installed.json` must contain only that launch's `agentHubLaunch` plus its owner pid and process signature. Another project's active owner must not be replaced; only a proven-gone owner is stale. Do not use the person's project or global `config.toml`.
 
 1. `ahub up --no-console --no-agents` in the disposable project, then `ahub kimi --mode tui`. `--print-command` must describe the same plugin without writing it.
 2. Send an ordinary prompt. `ahub results --json` shows one private `done` only after `turn.ended`, with the same native turn id in `native_turn_end`.
