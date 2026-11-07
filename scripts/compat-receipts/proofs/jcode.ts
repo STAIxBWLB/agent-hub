@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
-import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync, writeSync, type Stats } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,6 +13,13 @@ const NATIVE_LEGS = ["isolation", "serve-cleanup", "acp-initialize-new-load-mode
 const MODEL = "receipt-fixed-model", PROFILE = "receipt-loopback";
 const PROMPT = "receipt original prompt", STEER = "receipt steer prompt", HEAD = "receipt streamed prefix";
 const SERVER_KEYS = ["argv", "debug_socket_path", "idle_timeout_secs", "owner_pid", "pid", "ppid", "schema_version", "scope", "socket_path", "started_at"];
+export interface JcodeProofObservation {
+  step: "steer-pong" | "steer-subscribe" | "steer-idle" | "steer-stream-arrived" | "steer-active" | "steer-ack" | "steer-end-turn" | "steer-request-count" | "steer-first-conversation" | "steer-second-conversation" | "telemetry-walk";
+  cause: "ok" | "pending" | "assertion" | "telemetry-id" | "milestone" | "opt-out-marker" | "other-telemetry-name" | "symlink" | "entry-budget" | "io";
+  rootClass: "none" | "home" | "jcode-home";
+  passed: boolean;
+  count: number;
+}
 function check(value: unknown): asserts value { if (!value) throw new ReceiptError("proof-failed"); }
 function contained(root: string, value: string): boolean {
   const rel = relative(realPath(root), realPath(value));
@@ -106,18 +113,31 @@ function environment(context: ProofContext, nativeHome: string, launch: string):
   }
   return env;
 }
-function hasTelemetry(directories: readonly string[], cap: number): boolean {
+function hasTelemetry(directories: readonly string[], cap: number, observe: (event: JcodeProofObservation) => void): boolean {
   let count = 0;
-  const walk = (dir: string): boolean => {
-    for (const name of readdirSync(dir)) {
-      if (++count > cap) throw new ReceiptError("proof-failed");
-      const entry = lstatSync(join(dir, name)); check(!entry.isSymbolicLink());
-      if (/telemetry|milestone/i.test(name)) return true;
-      if (entry.isDirectory() && walk(join(dir, name))) return true;
+  const walk = (dir: string, rootClass: "home" | "jcode-home"): boolean => {
+    const report = (cause: JcodeProofObservation["cause"], passed = false) => observe({ step: "telemetry-walk", cause, rootClass, passed, count });
+    let names: string[];
+    try { names = readdirSync(dir); } catch (error) { report("io"); throw error; }
+    for (const name of names) {
+      if (++count > cap) { report("entry-budget"); throw new ReceiptError("proof-failed"); }
+      let entry: Stats;
+      try { entry = lstatSync(join(dir, name)); } catch (error) { report("io"); throw error; }
+      if (entry.isSymbolicLink()) { report("symlink"); check(false); }
+      if (/telemetry|milestone/i.test(name)) {
+        report(name === "telemetry_id" ? "telemetry-id" : name === "no_telemetry" ? "opt-out-marker" : /milestone/i.test(name) ? "milestone" : "other-telemetry-name");
+        return true;
+      }
+      if (entry.isDirectory() && walk(join(dir, name), rootClass)) return true;
     }
     return false;
   };
-  return directories.some(walk);
+  return directories.some((directory, index) => {
+    const rootClass = index === 0 ? "home" : "jcode-home";
+    if (walk(directory, rootClass)) return true;
+    observe({ step: "telemetry-walk", cause: "ok", rootClass, passed: true, count });
+    return false;
+  });
 }
 function content(value: any): string {
   if (typeof value === "string") return value;
@@ -126,6 +146,19 @@ function content(value: any): string {
 
 /** Reconstructed model-free receipt: fixed loopback bytes, no provider/account/model access. */
 export async function runJcodeProofs(context: ProofContext): Promise<ProofResults> {
+  let diagnosticFD: number | undefined, diagnosticBytes = 0, diagnosticRecords = 0;
+  const observe = (event: JcodeProofObservation): void => {
+    if (diagnosticFD === undefined || diagnosticRecords >= 64) return;
+    try {
+      const line = Buffer.from(`${JSON.stringify(event)}\n`);
+      if (diagnosticBytes + line.length > Math.min(context.limits.outputBytes, 16 * 1024)) return;
+      writeSync(diagnosticFD, line); diagnosticBytes += line.length; diagnosticRecords++;
+    } catch { /* Diagnostics never decide a proof result. */ }
+  };
+  const steeringCheck = (step: JcodeProofObservation["step"], value: unknown, count = 0): void => {
+    observe({ step, cause: value ? "ok" : "assertion", rootClass: "none", passed: !!value, count });
+    check(value);
+  };
   const result: ProofResults = Object.fromEntries(NATIVE_LEGS.map(id => [id, { status: "not-run", cause: "proof-failed" }]));
   const owned: ChildProcess[] = [], channels: JsonLines[] = [], sockets: ReturnType<typeof createConnection>[] = [];
   const abort = new AbortController(), deadline = AbortSignal.timeout(context.limits.legMs);
@@ -160,6 +193,8 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
     check(context.id === "jcode" && context.artifact.command.length > 0 && isAbsolute(context.artifact.command[0]!));
     mkdirSync(nativeHome, { mode: 0o700 });
     env = environment(context, nativeHome, launch);
+    try { diagnosticFD = openSync(join(context.root, "jcode-proof-observations.jsonl"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600); }
+    catch { /* Optional private diagnostics must not alter a native leg. */ }
     const decoyHome = join(context.home, ".jcode"); mkdirSync(decoyHome, { mode: 0o700 });
     for (const name of ["auth.json", "auth-refresh-state.json", "config.toml", "mcp.json"]) {
       const file = join(decoyHome, name), text = name.endsWith(".toml") ? "# private decoy, no account data\n" : "{}\n";
@@ -233,28 +268,31 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
     const steer = new JsonLines(socket, socket, signal, context.limits.outputBytes); channels.push(steer);
     steer.send({ type: "ping", id: 1 });
     const pong = await steer.next(value => value.type === "pong" && value.id === 1);
-    check(Array.isArray(pong.capabilities) && pong.capabilities.includes("soft_interrupt_ids"));
+    steeringCheck("steer-pong", Array.isArray(pong.capabilities) && pong.capabilities.includes("soft_interrupt_ids"));
     steer.send({ type: "subscribe", id: 2, working_dir: context.cwd, target_session_id: session, continue_on_disconnect: true });
-    check((await steer.next(value => value.type === "session")).session_id === session);
+    steeringCheck("steer-subscribe", (await steer.next(value => value.type === "session")).session_id === session);
     steer.send({ type: "state", id: 3 });
     const idle = await steer.next(value => value.type === "state" && value.id === 3);
-    check(idle.session_id === session && idle.is_processing === false); // Never send an interrupt while idle.
+    steeringCheck("steer-idle", idle.session_id === session && idle.is_processing === false); // Never send an interrupt while idle.
     const prompt = rpc("session/prompt", { sessionId: session, prompt: [{ type: "text", text: PROMPT }] }); prompt.catch(() => {});
     await until(() => requests.length === 1 && !!releaseFirst, signal);
+    observe({ step: "steer-stream-arrived", cause: "ok", rootClass: "none", passed: true, count: requests.length });
     steer.send({ type: "state", id: 4 });
     const active = await steer.next(value => value.type === "state" && value.id === 4);
-    check(active.session_id === session && active.is_processing === true);
+    steeringCheck("steer-active", active.session_id === session && active.is_processing === true);
     steer.send({ type: "soft_interrupt", id: 5, content: STEER, urgent: false, client_id: "receipt-steer" });
+    observe({ step: "steer-ack", cause: "pending", rootClass: "none", passed: false, count: 0 });
     await steer.next(value => value.type === "ack" && value.id === 5);
+    observe({ step: "steer-ack", cause: "ok", rootClass: "none", passed: true, count: 0 });
     releaseFirst!(); releaseFirst = undefined;
-    check((await prompt).result?.stopReason === "end_turn");
-    check(requests.length === 2);
+    steeringCheck("steer-end-turn", (await prompt).result?.stopReason === "end_turn");
+    steeringCheck("steer-request-count", requests.length === 2, requests.length);
     const conversation = (messages: any[]) => messages.filter(message => message?.role !== "system" && message?.role !== "developer");
     const first = conversation(requests[0].messages), second = conversation(requests[1].messages);
-    check(first.length === 1 && first[0]?.role === "user" && content(first[0].content) === PROMPT);
-    check(second.length === 3 && second[0]?.role === "user" && content(second[0].content) === PROMPT
+    steeringCheck("steer-first-conversation", first.length === 1 && first[0]?.role === "user" && content(first[0].content) === PROMPT, first.length);
+    steeringCheck("steer-second-conversation", second.length === 3 && second[0]?.role === "user" && content(second[0].content) === PROMPT
       && second[1]?.role === "assistant" && content(second[1].content).includes(HEAD)
-      && second[2]?.role === "user" && content(second[2].content) === STEER);
+      && second[2]?.role === "user" && content(second[2].content) === STEER, second.length);
     result[stage] = { status: "pass", cause: "ok" };
   } catch (error) {
     const localCause = abort.signal.reason instanceof ReceiptError ? abort.signal.reason.causeCode : undefined;
@@ -262,33 +300,37 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
       : deadline.aborted ? "timeout" : localCause ?? (error instanceof ReceiptError ? error.causeCode : "proof-failed");
     result[stage] = { status: "fail", cause };
   } finally {
-    finishing = true;
-    for (const channel of channels) channel.close();
-    for (const socket of sockets) socket.destroy();
-    releaseFirst?.(); gateway?.stop(true);
-    for (const child of owned.reverse()) {
-      try {
-        await stopOwnedProcess(child, { group: true, termMs: 250, killMs: 1000 });
-        const rows = await readProcessTable(); check(rows && !rows.some(row => row.pgid === child.pid));
-      } catch { cleanup = false; }
-    }
-    if (!cleanup) result["serve-cleanup"] = { status: "fail", cause: "cleanup" };
-    else if (serveValidated) result["serve-cleanup"] = { status: "pass", cause: "ok" };
-    // Only private decoy files are fenced. This never reads or hashes the person's real native config.
-    if (result.isolation?.status === "pass") {
-      try {
-        for (const [file, hash] of decoys) {
-          const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-          try { const stat = fstatSync(fd); check(stat.isFile() && stat.nlink === 1 && stat.size <= context.limits.outputBytes); check(createHash("sha256").update(readFileSync(fd)).digest("hex") === hash); }
-          finally { closeSync(fd); }
-        }
-      } catch { result.isolation = { status: "fail", cause: "proof-failed" }; }
-    }
-    if (owned.length) {
-      try {
-        const clean = !hasTelemetry([context.home, nativeHome], context.limits.archiveEntries);
-        result.telemetry = { status: clean ? "pass" : "fail", cause: clean ? "ok" : "proof-failed" };
-      } catch { result.telemetry = { status: "fail", cause: "proof-failed" }; }
+    try {
+      finishing = true;
+      for (const channel of channels) channel.close();
+      for (const socket of sockets) socket.destroy();
+      releaseFirst?.(); gateway?.stop(true);
+      for (const child of owned.reverse()) {
+        try {
+          await stopOwnedProcess(child, { group: true, termMs: 250, killMs: 1000 });
+          const rows = await readProcessTable(); check(rows && !rows.some(row => row.pgid === child.pid));
+        } catch { cleanup = false; }
+      }
+      if (!cleanup) result["serve-cleanup"] = { status: "fail", cause: "cleanup" };
+      else if (serveValidated) result["serve-cleanup"] = { status: "pass", cause: "ok" };
+      // Only private decoy files are fenced. This never reads or hashes the person's real native config.
+      if (result.isolation?.status === "pass") {
+        try {
+          for (const [file, hash] of decoys) {
+            const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+            try { const stat = fstatSync(fd); check(stat.isFile() && stat.nlink === 1 && stat.size <= context.limits.outputBytes); check(createHash("sha256").update(readFileSync(fd)).digest("hex") === hash); }
+            finally { closeSync(fd); }
+          }
+        } catch { result.isolation = { status: "fail", cause: "proof-failed" }; }
+      }
+      if (owned.length) {
+        try {
+          const clean = !hasTelemetry([context.home, nativeHome], context.limits.archiveEntries, observe);
+          result.telemetry = { status: clean ? "pass" : "fail", cause: clean ? "ok" : "proof-failed" };
+        } catch { result.telemetry = { status: "fail", cause: "proof-failed" }; }
+      }
+    } finally {
+      if (diagnosticFD !== undefined) { try { closeSync(diagnosticFD); } catch { /* Optional diagnostics never alter the outcome. */ } }
     }
   }
   return result;

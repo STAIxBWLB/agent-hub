@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, lstatSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { realPath } from "../src/hub/project.ts";
@@ -12,7 +12,7 @@ const fake = resolve(import.meta.dir, "fakes/compat-receipt-jcode.ts");
 const producer = resolve(import.meta.dir, "../scripts/compat-receipts/proofs/jcode.ts");
 const runner = resolve(import.meta.dir, "../scripts/compat-receipts/runner.ts");
 const native = ["isolation", "serve-cleanup", "acp-initialize-new-load-mode-ceilings", "mcp-owned-environment", "telemetry", "active-turn-soft-interrupt"];
-async function run(fault = "none", legMs = 5000): Promise<ProofResults> {
+async function run(fault = "none", legMs = 5000, inspect?: (root: string) => void, blockDiagnostics = false): Promise<ProofResults> {
   const root = realPath(mkdtempSync(join(tmpdir(), "jcode-proof-"))); roots.push(root);
   const home = join(root, "home"), prefix = join(root, "prefix"), cwd = join(root, "project");
   const env: NodeJS.ProcessEnv = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, LANG: "C", LC_ALL: "C", TZ: "UTC" };
@@ -27,10 +27,12 @@ async function run(fault = "none", legMs = 5000): Promise<ProofResults> {
     entry: { receipt: "fixture", runnerOS: ["linux"], nativePlatform: "fixture", autoAdmit: false, install: { method: "fixture" }, legs: [] },
     limits: { totalMs: 15000, installMs: 5000, legMs, outputBytes: 1024 * 1024, artifactBytes: 1024, expandedBytes: 1024, archiveEntries: 1000 } };
   const file = join(root, "context.json"); writeFileSync(file, JSON.stringify(input));
+  if (blockDiagnostics) writeFileSync(join(root, "jcode-proof-observations.jsonl"), "existing private diagnostic\n", { mode: 0o600, flag: "wx" });
   const answer = await runBoundedReceiptCommand([process.execPath, fake, "--proof-worker", file, producer, runner], {
     cwd, env, signal: AbortSignal.timeout(15000), timeoutMs: 15000, maxBytes: 1024 * 1024,
   });
   expect(answer.exitCode).toBe(0); expect(answer.ownedStopConfirmed).toBe(true);
+  inspect?.(root);
   return JSON.parse(answer.stdout);
 }
 test("reconstructed Jcode proof asserts every native leg against the protocol fake", async () => {
@@ -82,4 +84,38 @@ test("telemetry in the private HOME fails even when JCODE_HOME and decoy configs
   const result = await run("home-telemetry");
   expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
   expect(result.isolation).toEqual({ status: "pass", cause: "ok" });
+}, 20000);
+
+test("private diagnostics contain closed checkpoints only and retain exact proof outcomes", async () => {
+  const result = await run("none", 5000, root => {
+    const file = join(root, "jcode-proof-observations.jsonl"), text = readFileSync(file, "utf8");
+    expect(lstatSync(file).mode & 0o777).toBe(0o600);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(16 * 1024);
+    const rows = text.trim().split("\n").map(line => JSON.parse(line));
+    expect(rows.length).toBeGreaterThan(0); expect(rows.length).toBeLessThanOrEqual(64);
+    for (const row of rows) {
+      expect(Object.keys(row).sort()).toEqual(["cause", "count", "passed", "rootClass", "step"]);
+      expect(typeof row.passed).toBe("boolean"); expect(Number.isSafeInteger(row.count)).toBe(true);
+      expect(["none", "home", "jcode-home"]).toContain(row.rootClass);
+      expect(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io"]).toContain(row.cause);
+      expect(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "telemetry-walk"]).toContain(row.step);
+    }
+    expect(rows).toContainEqual({ step: "steer-first-conversation", cause: "ok", rootClass: "none", passed: true, count: 1 });
+    expect(rows).toContainEqual({ step: "steer-second-conversation", cause: "ok", rootClass: "none", passed: true, count: 3 });
+    expect(text).not.toContain(root); expect(text).not.toContain("receipt original prompt");
+  });
+  for (const id of native) expect(result[id]).toEqual({ status: "pass", cause: "ok" });
+}, 20000);
+test("diagnostic exclusive-open failure never changes native assertions or overwrites a file", async () => {
+  const result = await run("none", 5000, root => {
+    expect(readFileSync(join(root, "jcode-proof-observations.jsonl"), "utf8")).toBe("existing private diagnostic\n");
+  }, true);
+  for (const id of native) expect(result[id]).toEqual({ status: "pass", cause: "ok" });
+}, 20000);
+test("telemetry diagnostic identifies the private root and closed artifact class", async () => {
+  const result = await run("home-telemetry", 5000, root => {
+    const rows = readFileSync(join(root, "jcode-proof-observations.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(rows.some(row => row.step === "telemetry-walk" && row.cause === "telemetry-id" && row.rootClass === "home" && row.passed === false)).toBe(true);
+  });
+  expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
 }, 20000);
