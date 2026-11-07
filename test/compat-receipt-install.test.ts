@@ -111,6 +111,21 @@ test("verified safe archive returns its unique executable", async () => {
   const installed = await installCompatArtifact(context, releaseEntry, fetcher);
   expect(installed.command).toEqual([join(context.prefix, "dist", "jcode")]);
 });
+test("release metadata negotiates JSON while archive and checksum requests negotiate binary bytes", async () => {
+  const { context, releaseEntry, fetcher } = await releaseFixture(archive("dist/jcode"));
+  const seen: string[] = [];
+  const strict = (async (...args: Parameters<ReceiptFetch>) => {
+    const [url, init] = args;
+    const metadata = String(url).includes("/releases/tags/");
+    const accept = new Headers(init?.headers).get("accept");
+    seen.push(`${metadata ? "metadata" : "asset"}:${accept}`);
+    if (accept !== (metadata ? "application/json" : "application/octet-stream")) return new Response(null, { status: 415 });
+    return fetcher(...args);
+  }) as ReceiptFetch;
+  const installed = await installCompatArtifact(context, releaseEntry, strict);
+  expect(installed.command).toEqual([join(context.prefix, "dist", "jcode")]);
+  expect(seen).toEqual(["metadata:application/json", "asset:application/octet-stream", "asset:application/octet-stream"]);
+});
 test("archive expanded-byte ceiling refuses before writes", async () => {
   const { context, releaseEntry, fetcher } = await releaseFixture(archive("jcode")); context.limits.expandedBytes = 0;
   await expect(installCompatArtifact(context, releaseEntry, fetcher)).rejects.toMatchObject({ causeCode: "integrity" });
