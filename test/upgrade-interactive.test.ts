@@ -59,6 +59,9 @@ test("without --to the target is the registry's latest release, and only a newer
   expect(calls).toEqual([["npm", "view", "@staix/agent-hub", "version", "--json"]]);
   await expect(latestRelease(async () => ({ code: 1, stdout: "", stderr: "offline" }))).rejects.toThrow("name the release with --to");
   await expect(latestRelease(async () => ({ code: 0, stdout: '["0.12.21","0.12.22"]', stderr: "" }))).rejects.toThrow("unexpected latest release");
+  // #1253: npm 12 wraps one package's value in a one-element array.
+  expect(await latestRelease(async () => ({ code: 0, stdout: '[\n  "0.12.22"\n]\n', stderr: "" }))).toBe("0.12.22");
+  for (const stdout of ["[]", '[["0.12.22"]]', "[0]", "not json"]) await expect(latestRelease(async () => ({ code: 0, stdout, stderr: "" }))).rejects.toThrow("unexpected latest release");
   await expect(latestRelease(async () => ({ code: 0, stdout: '"latest"', stderr: "" }))).rejects.toThrow("exact package version");
   expect([newerVersion("0.12.22", "0.12.21"), newerVersion("0.13.0", "0.12.99"), newerVersion("1.0.0", "0.99.99")]).toEqual([true, true, true]);
   expect([newerVersion("0.12.21", "0.12.21"), newerVersion("0.12.20", "0.12.21"), newerVersion("0.12.21-rc.1", "0.12.21"), newerVersion("0.9.9", "0.12.0")]).toEqual([false, false, false, false]);
