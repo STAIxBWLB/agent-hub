@@ -35,6 +35,13 @@ test("the launch-scoped plugin installs only the completion hooks, preserves oth
   expect(existsSync(join(f.home, "plugins", "managed", "agent-hub"))).toBe(false);
 });
 
+test("preview allows a native home that does not exist yet without creating it", () => {
+  const f = fixture();
+  const home = join(f.home, "new-home");
+  expect(kimiPluginPreview(home, f.hookScript).changed).toBe(true);
+  expect(existsSync(home)).toBe(false);
+});
+
 test("another launch's record and linked inputs are refused without writes", () => {
   const f = fixture();
   ensureKimiPlugin(f);
@@ -70,11 +77,13 @@ test("only the exact native TUI version with a live completion receipt is admitt
 
 test("a newly admitted launch replaces a stale record while the stale cleanup stays refused", () => {
   const f = fixture();
-  ensureKimiPlugin(f);
+  const first = { ...f, replaceStale: true };
+  ensureKimiPlugin(first);
   const replacement = { ...f, launchId: "launch-b", replaceStale: true };
   expect(ensureKimiPlugin(replacement).changed).toBe(true);
   expect(installed(f.home).plugins[0]).toMatchObject({ id: "agent-hub", agentHubLaunch: "launch-b" });
-  expect(() => cleanupKimiPlugin(f)).toThrow("another launch");
+  expect(() => cleanupKimiPlugin(first)).toThrow("another launch");
+  expect(installed(f.home).plugins[0]).toMatchObject({ id: "agent-hub", agentHubLaunch: "launch-b" });
   cleanupKimiPlugin(replacement);
   expect(installed(f.home).plugins).toEqual([]);
 });

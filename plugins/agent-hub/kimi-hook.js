@@ -16244,7 +16244,7 @@ function plan2(options) {
 function kimiPluginPreview(home, hookScript) {
   if (!isAbsolute7(home) || !isAbsolute7(hookScript))
     throw new Error("Kimi home and hook bundle must be absolute paths");
-  directory(home);
+  directory(home, false);
   if (!file(hookScript, MAX_HOOK))
     throw new Error("Kimi hook bundle is missing");
   return { file: join21(home, "plugins", "managed", ID2), changed: true, action: "install the launch-scoped native completion plugin and remove it on exit" };
@@ -16262,7 +16262,7 @@ function ensureKimiPlugin(options) {
   return { changed: true };
 }
 function cleanupKimiPlugin(options) {
-  const current = plan2(options);
+  const current = plan2({ ...options, replaceStale: false });
   const installedBefore = file(current.installed, MAX_INSTALLED), document = parse2(installedBefore, current.installed);
   const records = document?.plugins;
   if (!document || !Array.isArray(records) || records.some((row) => !object8(row)))
