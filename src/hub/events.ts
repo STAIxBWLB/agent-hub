@@ -50,7 +50,7 @@ export type HubEvent =
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "native_thread"; peer: string; thread: string; fresh: boolean }
   | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null } & Partial<TaskAttribution>)
-  | { type: "native_turn_end"; peer: string; id?: string }
+  | { type: "native_turn_end"; peer: string; id?: string; reason?: "user_canceled" | "error" | "max_invocations" | "max_forced_invocations" | "max_token_budget_exceeded" | "terminal_step_type" | "terminal_custom_hook" }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
   | { type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true }
   | { type: "permission"; id: string; peer: string; event: "requested" | "answered" | "expired" | "cancelled"; latencyMs?: number; surface?: "console" | "dashboard" | "terminal"; option?: "allow_once" | "allow_always" | "reject_once" | "reject_always" }
