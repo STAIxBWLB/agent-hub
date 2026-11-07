@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Documentation is kept current (#1268): the quickstart's GitHub install tag, the Bun floor and the agent-mem pin are generated from `package.json` and `.bun-version` (`bun scripts/readme-facts.ts`, part of `scripts/check.sh`); `docs/verified.json` now covers every page under `docs/` and `docs/addons/` except the smoke ledger and the retired GSD analysis, and CI warns about stale stamps on every pull request; stale statements about claude-mem, research campaigns, design specs, events, roles and the SDLC readbacks are corrected; a release notifies the family site when `SITE_DISPATCH_TOKEN` is set.
+
 ## 0.34.1
 
 - `ahub upgrade` works with npm 12 again (#1253, PR #1254, task 766). npm 12 wraps `npm view --json` output for one package in a one-element array. The default target ("unexpected latest release") and `--to` ("unexpected release identity") both refused it. Both now share one parser that accepts the npm 11 value and a one-element array of it, and still refuses any other shape, with a message naming the `npm view` command to check. Until this release, an npm 12 machine can upgrade by putting npm 11 first on PATH for the run.

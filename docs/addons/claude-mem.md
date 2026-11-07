@@ -4,9 +4,9 @@ Status 2026-10-12: keep optional. No measured effect yet.
 
 ## What it does to collaboration
 
-- Recall: `context/inject` at session start (native hooks for Claude and Codex, the hub's `recallFor` for the other peers) and the task brief on handoff (`search` plus `timeline`).
-- Capture: native hooks record tool use; the hub captures the local worker's (`src/memory/capture.ts`).
-- Shared notes: `hub_remember` and the hub's own notes on done, review, escalation and checkpoint.
+- Through the hub: nothing at runtime. Session-start recall, task briefs, the local worker's capture and `hub_remember` all use the in-process amem store (`@staix/agent-mem`); the hub makes no claude-mem worker request and ignores `memory.worker_url` (`ahub doctor`: "in-process, no claude-mem worker").
+- Native plugin: claude-mem installed as a Claude Code or Codex plugin runs its own hooks inside those sessions; the hub neither reads nor writes them. The add-on fingerprint records it when it is enabled there, so `ahub research addons` and `ahub bench run --addon claude-mem=on|off` can compare on against off.
+- Import: `ahub memory import claude-mem` is a person's one-way, read-only copy of past hub observations into hub memory (`docs/memory.md`). The bench memory arms `claude-mem` and `both` are historical labels for `memory.enabled`, not a live claude-mem path.
 
 ## Evidence
 
@@ -18,7 +18,7 @@ Status 2026-10-12: keep optional. No measured effect yet.
 | Part | Decision | Basis |
 | --- | --- | --- |
 | Recall at session start | keep optional | no measurement; the hub already reaches every peer through `recallFor` |
-| Capture of tool use | keep optional | no measurement; capture runs through a cloud observer, so PII rules keep it out of PII work regardless |
+| Capture of tool use | keep optional | no measurement; this is claude-mem's own native capture, not the hub's (the hub's capture is local and deterministic), and PII rules keep the hub's PII work out of every observer |
 | Long-term store, tiers, graph of notes | adopted natively in #258 | the user's request for cross-project and cross-machine memory, not a measured effect; #258 AC11 measures it (memory off, claude-mem only, native graph) |
 
 Revisit when an arm comparison has at least 5 attempts per arm and measure, or field data has 5 tasks on each side.
