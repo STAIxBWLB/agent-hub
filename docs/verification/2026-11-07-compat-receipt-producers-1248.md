@@ -80,3 +80,17 @@ are synthetic controls, not model behavior or provider readiness.
 Exact committed-head dgx02 checks, hosted CI and review-thread state are recorded
 in the PR/task. A successful fake protocol suite proves wiring and refusal
 behavior, not a new native compatibility receipt or verified version.
+
+## Review corrections
+
+Both Qwen preload arguments quote their guard path. A fixture relocates the four
+canonical helpers beneath a directory containing spaces and Korean characters,
+then exercises both actual preload denial controls, ACP and permission handling.
+The guard bytes and all existing refusal assertions stay unchanged.
+
+In [CI run 42355168440](https://github.com/STAIxBWLB/agent-hub/actions/runs/42355168440),
+the first macOS archive extraction completed in 3835.40 ms and the next in
+454.92 ms. The archive fixture now uses its existing 5000 ms total budget for
+installation, so its former 3000 ms margin does not mask an integrity refusal.
+Production deadlines, the npm fixture and the explicit timeout assertions are
+unchanged. Exact-head checks for these corrections are recorded in the PR/task.
