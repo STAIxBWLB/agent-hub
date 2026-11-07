@@ -156,6 +156,9 @@ async function open(kind) {
       say(result.guidance + (result.command ? "  Run this in a terminal there: " + result.command : ""), true);
     } else if (result.status === "terminal_created") {
       say("A terminal was created in the workspace and is running the command. Select its tab to see it.");
+    } else if (result.status === "link" && !(orca.host && orca.host.has && orca.host.has("shell.openExternal") && orca.shell && orca.shell.openExternal)) {
+      // A browser client has no desktop external navigation: no link is held or shown there. ahub printed a loopback link, which would not be this person's browser anyway.
+      say("This Orca client cannot open a link. Run `ahub ui` in a terminal on the machine that runs the project.", true);
     } else if (result.status === "link") {
       // ahub could not open its own browser: the link is held in memory until the next click (a gesture is required to open it) and is never written anywhere.
       pendingLink = result.url; link.hidden = false;

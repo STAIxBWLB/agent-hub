@@ -6618,6 +6618,15 @@ partial, stale and unknown stay distinct states; there is no poller, no transcri
 There is **no terminal focus**: O0 found no proof that a plugin terminal id names an `orca terminal switch`
 handle, so the companion never calls it and never replaces a terminal.
 
+**Platforms (O3).** [`support-matrix.json`](../integrations/orca/support-matrix.json) records one verdict per
+combination and a test enforces that `supported` needs a receipt that no longer says NOT RUN. Today none is
+supported: macOS local is fixture-only, and remote, Windows, browser or mobile and Linux are unsupported, each
+with a person-run receipt template under `integrations/orca/receipts/`. A remote workspace is refused before
+anything runs and shows the existing remote console command to run on that host; a remote loopback link is never
+opened locally. On Windows every workspace is refused (`unsupported_platform`). Where a client has no external
+navigation no link is held. Mobile availability is not inferred from SSH reachability or from Orca's mobile
+pairing option.
+
 **The native open and disable receipt is a person-run leg that has not been run**
 ([`native-receipt.md`](../integrations/orca/native-receipt.md)): the action counts in the companion's README
 are procedure counts, remote, Windows and mobile stay unqualified (O3), and there is no focus-existing-console
