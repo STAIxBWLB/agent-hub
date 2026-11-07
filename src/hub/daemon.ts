@@ -4844,7 +4844,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const raw: unknown = JSON.parse(texts[name]!);
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw visualUnavailable();
         const input = raw as Record<string, unknown>;
-        validateRawConfig({ ...(Object.hasOwn(input, "pii") ? { pii: input.pii } : {}), ...(Object.hasOwn(input, "local") ? { local: input.local } : {}) }, declarations, adapterCatalog);
+        const policies: Record<string, unknown> = {};
+        if (Object.hasOwn(input, "pii")) policies.pii = input.pii;
+        if (Object.hasOwn(input, "local")) policies.local = input.local;
+        validateRawConfig(policies, declarations, adapterCatalog);
         layers.push({ name, raw: input });
       }
       const candidate = loadConfig(opts.cwd, layers, [], externalDefinitions);
