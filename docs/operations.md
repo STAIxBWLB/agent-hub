@@ -3598,7 +3598,7 @@ not real provider API keys; parent account/model variables never reach a worker.
 Default execution deadlines are 15 minutes overall, 3 minutes for installation
 and 2 minutes per proof-worker/group. Owned-process teardown has a separately
 bounded 10-second allowance, included in the JSON wall-time bounds. Output verification/publication has a
-separate 4-second allowance included in the total; elapsed time is sampled before
+separate 16-second allowance included in the total; elapsed time is sampled before
 publication. The summary
 separates `ownedStopConfirmed` from `processCleanup: proven|unproven` and gives its
 reason. An empty leader process group cannot prove lifetime cleanup: a helper can

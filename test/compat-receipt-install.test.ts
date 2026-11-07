@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, symlink, rm, readdir } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { RECEIPT_OUTPUT_MS } from "../scripts/compat-receipts/output.ts";
 import { installCompatArtifact } from "../scripts/compat-receipts/install.ts";
 import { ReceiptError, type ReceiptContext, type ManifestEntry, type ReceiptCommand, type ReceiptFetch } from "../scripts/compat-receipts/types.ts";
 
@@ -87,6 +88,11 @@ async function releaseFixture(data: Buffer): Promise<{ context: ReceiptContext; 
     return { ...ok, stdout, stderr, exitCode };
   });
   context.id = "jcode";
+  // GHA 42361191648 cold maximum: 2032.190 ms; prior complete CI: 3835.40 ms.
+  // Reuse one measured helper allowance only for archive fixtures. Generic npm
+  // and explicit timeout-control budgets retain their original values.
+  context.limits.totalMs = RECEIPT_OUTPUT_MS / 2;
+  context.limits.installMs = context.limits.totalMs;
   const hash = createHash("sha256").update(data).digest("hex");
   const releaseEntry = { ...entry, install: { method: "github-release-asset-checksum", repository: "owner/project", tagTemplate: "v{version}", asset: "cli.tar.gz", checksumAsset: "SHA256SUMS" } };
   const fetcher = (async (url: any) => {
