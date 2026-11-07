@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abandonedSizes, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { abandonedSizes, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { STARTUP_PHASES } from "../src/hub/startup-timing.ts";
 
@@ -27,6 +27,20 @@ test("benchmark environment contains only isolated homes and fixed metadata vari
 test("public debug is derived only from the synthetic mode and absent from private child environments", () => {
   expect(isolatedStartupEnvironment(directory(), "synthetic").AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG).toBe("1");
   expect(isolatedStartupEnvironment(directory(), "private").AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG).toBeUndefined();
+});
+
+test("process guard admits only the observed origin/worktree getters and rejects writes or extra arguments", () => {
+  for (const args of [
+    ["-C", "/fixture", "remote", "get-url", "origin"],
+    ["--git-dir", "/fixture/.git", "config", "--path", "core.worktree"],
+  ]) expect(startupReadOnlyProcessAllowed("/usr/bin/git", args)).toBe(true);
+  for (const args of [
+    ["remote", "set-url", "origin", "fixture"], ["remote", "add", "origin", "fixture"],
+    ["remote", "get-url", "upstream"], ["remote", "get-url", "origin", "extra"],
+    ["config", "core.worktree", "fixture"], ["config", "--add", "core.worktree", "fixture"],
+    ["config", "--path", "core.worktree", "fixture"], ["config", "--path", "other.key"],
+    ["config", "--path", "core.worktree", "--get"],
+  ]) expect(startupReadOnlyProcessAllowed("/usr/bin/git", args)).toBe(false);
 });
 
 test("event snapshot keeps the complete append-only prefix and rejects source symlinks", () => {

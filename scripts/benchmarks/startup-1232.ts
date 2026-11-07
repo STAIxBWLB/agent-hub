@@ -370,6 +370,21 @@ export async function installStartupReadObserver(stateDir: string): Promise<{ co
   return { counts, restore };
 }
 
+export function startupReadOnlyProcessAllowed(command: unknown, args: unknown): boolean {
+  if (typeof command !== "string" || !Array.isArray(args) || args.some(word => typeof word !== "string")) return false;
+  const executable = ["git", "ps", "realpath"].includes(command) ? Bun.which(command, { PATH: process.env.PATH }) ?? "" : command;
+  if (["/bin/ps", "/usr/bin/ps", "/bin/realpath", "/usr/bin/realpath"].includes(executable)) return true;
+  if (!["/usr/bin/git", "/bin/git"].includes(executable)) return false;
+  const words = [...args] as string[];
+  while (words.length && words[0]!.startsWith("-")) { const option = words.shift(); if (option === "-c" || option === "-C" || option === "--git-dir" || option === "--work-tree") words.shift(); }
+  const verb = words.shift();
+  if (verb === "remote") return words.length === 2 && words[0] === "get-url" && words[1] === "origin";
+  if (verb === "config" && words.includes("--path")) return words.length === 2 && words[0] === "--path" && words[1] === "core.worktree";
+  return ["rev-parse", "ls-files", "status", "show-ref", "symbolic-ref", "diff", "log", "reflog", "cat-file", "for-each-ref"].includes(verb ?? "")
+    || verb === "config" && words.some(word => ["--get", "--get-all", "--get-regexp", "--list"].includes(word))
+    || verb === "worktree" && words[0] === "list";
+}
+
 async function installStartupEffectDenials(): Promise<{ deny(): never; effects(): number; restore(): void }> {
   let effects = 0;
   const deny = () => { effects++; publicDebug(process.env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1", { boundary: "effect-denied", ...publicError(new Error("public fixture effect was refused")) }); return refuse(); }, restorers: (() => void)[] = [];
@@ -378,22 +393,11 @@ async function installStartupEffectDenials(): Promise<{ deny(): never; effects()
   globalThis.WebSocket = class { constructor() { deny(); } } as unknown as typeof WebSocket;
   Bun.connect = deny as typeof Bun.connect;
   restorers.push(() => { globalThis.fetch = originalFetch; globalThis.WebSocket = originalWebSocket; Bun.connect = originalConnect; });
-  const allowed = (command: unknown, args: unknown): boolean => {
-    if (typeof command !== "string" || !Array.isArray(args)) return false;
-    const executable = ["git", "ps", "realpath"].includes(command) ? Bun.which(command, { PATH: process.env.PATH }) ?? "" : command;
-    if (["/bin/ps", "/usr/bin/ps", "/bin/realpath", "/usr/bin/realpath"].includes(executable)) return true;
-    if (!["/usr/bin/git", "/bin/git"].includes(executable)) return false;
-    const words = [...args] as string[];
-    while (words.length && words[0]!.startsWith("-")) { const option = words.shift(); if (option === "-c" || option === "-C" || option === "--git-dir" || option === "--work-tree") words.shift(); }
-    const verb = words.shift();
-    return ["rev-parse", "ls-files", "status", "show-ref", "symbolic-ref", "diff", "log", "reflog", "cat-file", "for-each-ref"].includes(verb ?? "")
-      || verb === "config" && words.some(word => ["--get", "--get-all", "--get-regexp", "--list"].includes(word))
-      || verb === "worktree" && words[0] === "list";
-  };
+
   restorers.push(await interceptBuiltins(["child_process", "node:child_process"], real => {
     const replacements: Record<string, unknown> = { exec: deny, execSync: deny, fork: deny };
     for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"]) replacements[name] = (command: unknown, args: unknown, ...rest: unknown[]) => {
-      if (allowed(command, args)) return real[name](command, args, ...rest);
+      if (startupReadOnlyProcessAllowed(command, args)) return real[name](command, args, ...rest);
       publicDebug(process.env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1", { boundary: "process-refused", executable: typeof command === "string" ? basename(command) : "unknown" }); return deny();
     };
     return replacements;
@@ -405,7 +409,7 @@ async function installStartupEffectDenials(): Promise<{ deny(): never; effects()
     return replacements;
   }));
   const nativeSpawn = Bun.spawn, nativeSpawnSync = Bun.spawnSync;
-  const bunAllowed = (value: any) => { const argv = Array.isArray(value) ? value : value?.cmd; return Array.isArray(argv) && allowed(argv[0], argv.slice(1)); };
+  const bunAllowed = (value: any) => { const argv = Array.isArray(value) ? value : value?.cmd; return Array.isArray(argv) && startupReadOnlyProcessAllowed(argv[0], argv.slice(1)); };
   const refuseBun = (value: any) => {
     const argv = Array.isArray(value) ? value : value?.cmd;
     publicDebug(process.env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1", { boundary: "bun-process-refused", executable: typeof argv?.[0] === "string" ? basename(argv[0]) : "unknown" }); return deny();
