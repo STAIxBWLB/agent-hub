@@ -61,6 +61,15 @@ The task board is the shared record of work and its authority, not a transcript 
 
 ## Authority and state
 
+Visual attachments (#1058) annotate public work without changing a task's state,
+outcome or evidence authority. Publication checks current role, turn, task and
+privacy admission before record/bus effects and after awaited file reads. A PII
+task or private turn refuses publication; a task becoming private also withholds
+its retained visual from public reads and assets. A visual id is not a verdict or
+deliverable receipt. Ordinary shared tools and the local worker can publish where
+their role permits; isolated fresh-reviewer MCP keeps its exact two-tool contract.
+
+
 `Tasks` mediates task proposals, planning, owner/reviewer changes, acceptance, completion and review. `Board` persists the rows, history and typed evidence in SQLite; transport, CLI and UI layers do not independently apply task transitions. The issue remains the change spec and GitHub remains authority for PR/check/tag facts. Separating these authorities prevents a chat claim or adapter callback from bypassing task policy ([#481](https://github.com/STAIxBWLB/agent-hub/issues/481)).
 
 A command is authorized against the current actor, role, task state and revision. An asynchronous operation can lose authority while preparing evidence, so write boundaries recheck current scope. Console actions bind the selected task ID and its observed flow revision, rather than an unstable list position. The reason is to keep an approved action attached to the row and state the person actually saw ([#424](https://github.com/STAIxBWLB/agent-hub/issues/424), [#525](https://github.com/STAIxBWLB/agent-hub/issues/525)).

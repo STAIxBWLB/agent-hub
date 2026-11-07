@@ -90,7 +90,20 @@ returns an ids-only receipt and excludes its arguments/results from capture.
 Its T1 authorization, revision and recovery boundaries are defined in
 [the task-board contract](task-board.md#claim-evidence-records-931-t1).
 
+## Bounded visual attachments (#1058)
+
+Bounded visual attachments (#1058) are local project records in `hub.db`, separate
+from task transitions and delivery receipts. The hub validates and privacy-screens
+the exact acon `VisualPayload` shape; peers receive only a sanitized stub with
+`refs.visual`, and explicitly request the source through a guarded read. acon owns
+rendering and its sandbox; the standalone dashboard uses text/source fallback.
+The hub imports contract types only, with no renderer or new runtime dependency.
+Image bytes use the existing guarded deliverable reader and current hash/policy
+checks; console asset identifiers bind their originating project and instance.
+Raw visual tool arguments/results never enter observer capture, even on refusal.
+
 ## Models and memory
+
 
 Peer selection, hub-owned model routing, and provider access are distinct layers. Task routing chooses a peer; the in-process route selects a model for hub-owned inference; OmniRoute owns provider keys, provider fallback, and usage. Native CLIs retain their own account and provider configuration; subscription OAuth credentials are not pooled through the gateway. The former Switchyard sidecar is retired; routing now runs in process. This keeps provider credentials and fallback policy in one gateway while avoiding a second routing service ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 

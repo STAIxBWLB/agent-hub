@@ -6586,3 +6586,82 @@ that same machine, and a remote cwd is never resolved on this Mac. Herdr has no 
 a folder the person adds and removes, and what removal does to a shown copy is for the H1 native receipt. Existing
 terminal focus is unbuilt until a Herdr terminal can be mapped to an ahub console. The three baseline journeys are
 procedure counts that have not been run in a native window.
+
+## Bounded visual attachments (#1058)
+
+`hub_visual` lets an ordinary local peer or the local worker annotate public work
+with a Mermaid diagram, comparison, table or before/after view. It is a separate
+tool, not extra fields in `hub_send`. Its input is `{payload, task?, to?}` and its
+receipt is `visual <id>`. `hub_visual_show {id}` explicitly reads a retained public
+record in this project. Read-only roles may read; publication still requires the
+ordinary shared-note capability and no-writes admission. Isolated fresh-reviewer
+MCP remains limited to `hub_review` and `hub_task_show`.
+
+The stored payload is the exact acon `VisualPayload` shape. acon owns `ui.visual`,
+its sandboxed Mermaid renderer, table kit and asset route; the hub imports types
+only. The standalone dashboard shows a readable title and text/source. Stream
+stubs and task details load a visual on demand. A missing/older acon visual kit
+keeps the fallback rather than loading another renderer into the hub.
+
+```json
+{"payload":{"kind":"mermaid","title":"Review flow","source":"flowchart TD\nPlan --> Implement --> Review"}}
+```
+
+The four kinds are `mermaid` (`source`, optional `title`), `comparison` (2-6
+`options`, optional `title`), `table` (`columns`, `rows`, optional `caption`) and
+`beforeAfter` (`before`, `after`, optional `caption`). Each comparison option has a
+title, optional summary, up to 10 pros and 10 cons, and optional `recommended`.
+Tables allow at most 500 rows and 12 columns. Column fields are `key`, `label`,
+optional `align: start|end` and `format: text|number|percent`; percent values use
+percent units as acon does. Cells are strings or finite numbers.
+
+Mermaid is self-contained source without a Markdown fence, at most 20 KiB UTF-8.
+The first non-comment line starts with a supported diagram keyword. This is only
+a header check, not parsing proof: acon shows source with a notice when its parser
+fails or the renderer times out. The hub adds no parser or Mermaid dependency.
+
+Hub admission also bounds the entire serialized payload to 1 MiB and each text
+field: title 300 bytes, caption 2000, alt 1000, text side 20 KiB, option summary
+4000, each pro/con 2000, table cell 4000, column key 128 and file path 4096. These
+are hub storage/admission ceilings, distinct from acon's payload type. Every text
+field and record key is screened before sanitization and again afterwards; an
+unsafe key is refused rather than renamed. Oversized or malformed data is refused
+with the field and repair step, never silently truncated or partially stored.
+
+A before/after side is either `{text}` or a project path with alt text:
+
+```json
+{"payload":{"kind":"beforeAfter","caption":"Layout change","before":{"path":"artifacts/before.png","alt":"Previous layout"},"after":{"path":"artifacts/after.png","alt":"Updated layout"}}}
+```
+
+Paths are relative to the canonical hub project, not an inferred peer worktree.
+Only a guarded public PNG, JPEG or WebP of at most 8 MiB is accepted; extension
+and byte signature must agree. SVG, secret/PII paths, hub state, outside paths,
+links swapped during inspection and two names for the same physical file refuse.
+The hub replaces paths in the payload with opaque asset ids and records its own
+hash. A later asset read repeats the current guard and hash checks; a changed or
+newly private image is refused as changed since posted. Post it again using a
+current public file. A copied visual id in another project's database does not
+select that project's asset: the acon provider binds the project and instance,
+then rechecks metadata/privacy after the guarded read before returning bytes.
+
+The default audience is the console, with an FYI chat stub. Explicit `to` uses
+local addressed delivery; an empty list broadcasts to local peers. An explicit
+remote recipient refuses the whole call, rather than silently dropping that
+target. The stub carries only `[visual <id>] <kind>: <title or caption>` and
+`refs.visual`. Peers receive no source, table/comparison body or inline image.
+This feature adds no visual transport over the cross-network broker.
+
+Publication is refused in a private turn or on a PII task, including when policy
+or task privacy changes during an awaited image read. Current privacy also gates
+show, snapshots and assets after posting. The raw visual tool input/result is
+excluded from observer capture even when the call is refused; amem/delivery
+capture retains only the sanitized stub. `events.jsonl` records only id, kind,
+payload byte count, image count and optional task id, never title/source/path or
+image bytes. A visual is explanatory material, not approval or completion proof.
+
+Task-bound visuals live with their task. Unbound records expire after 30 days;
+`visuals.retention_days` is an integer setting from 1 to 3650 days, applied live,
+with the normal authority guard on raising retention. Expired/removed records
+are unavailable even before a maintenance prune runs. No documentation stamp or
+real-home policy change is performed by posting a visual.
