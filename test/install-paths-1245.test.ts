@@ -89,6 +89,8 @@ test("update advice resolves PATH ahub, proving the Bun-global boundary independ
   expect(globalCliUpdateStep("0.33.1", { env: { PATH: fallbackPath }, home })).toBe("run `bun add -g @staix/agent-hub@0.33.1`");
   const siblingAdvice = globalCliUpdateStep("0.33.1", { ...options, env: { ...options.env, PATH: pathFor(outside, "sibling-bin") } });
   expect(siblingAdvice).toContain("the way it was installed"); expect(siblingAdvice).toContain(outside); expect(siblingAdvice).not.toContain("bun add");
+  const barePrefix = globalCliUpdateStep("0.33.1", { ...options, env: { ...options.env, PATH: pathFor(global, "bare-prefix-bin") } });
+  expect(barePrefix).toContain("the way it was installed"); expect(barePrefix).toContain(global); expect(barePrefix).not.toContain("bun add");
   const otherPrefix = globalCliUpdateStep("0.33.1", { ...options, env: { ...options.env, PATH: fallbackPath } });
   expect(otherPrefix).toContain(fallback); expect(otherPrefix).not.toContain("bun add");
   const missingPrefix = globalCliUpdateStep("0.33.1", { ...options, env: { ...options.env, BUN_INSTALL: join(f.root, "not-installed") } });
