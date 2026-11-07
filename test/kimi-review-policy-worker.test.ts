@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { realPath } from "../src/hub/project.ts";
 import { checkKimiReviewPolicy, kimiReviewFingerprint, projectKimiReviewPolicyBinding, type KimiReviewPolicyBinding } from "../src/adapters/kimi-review-policy.ts";
-import { startKimiReviewPolicyWatch } from "../src/adapters/kimi-review-policy-worker.ts";
+import { startKimiReviewPolicyWatch, type KimiReviewPolicyFactory } from "../src/adapters/kimi-review-policy-worker.ts";
 import { prepareKimiReviewer } from "../src/adapters/kimi-review.ts";
 import type { ReviewerPolicyProbe } from "../src/adapters/reviewer-policy-watch.ts";
 import type { ReviewerPrepareContext } from "../src/adapters/reviewer-print.ts";
@@ -39,6 +39,21 @@ async function entered(gate: Int32Array): Promise<void> {
     if (wait.async) await wait.value;
   }
   expect(Atomics.load(gate, 0)).toBe(1);
+}
+
+async function preparedFixture(factory?: KimiReviewPolicyFactory) {
+  const f = fixture(), old = process.env.KIMI_CODE_HOME; process.env.KIMI_CODE_HOME = f.source;
+  drops.push(() => { if (old === undefined) delete process.env.KIMI_CODE_HOME; else process.env.KIMI_CODE_HOME = old; });
+  writeFileSync(join(f.source, "config.toml"), 'default_model="fixture"\n[providers."managed:kimi-code"]\ntype="kimi"\nbase_url="https://api.kimi.ai/coding/v1"\n[providers."managed:kimi-code".oauth]\nstorage="file"\n[models.fixture]\nprovider="managed:kimi-code"\nmodel="fixture"\n');
+  const fake = join(f.root, "version.ts"); writeFileSync(fake, 'console.log("2.3.0");');
+  const cancellation = new AbortController();
+  const context: ReviewerPrepareContext = { peer: "kimi-review", cwd: f.cwd, sessionId: "fixture-session", task: 7,
+    mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { transport: "http", url: "http://127.0.0.1:12345/mcp", headers: { Authorization: "Bearer SYNTHETIC-MCP-TOKEN" } } } }),
+    systemPrompt: "SYNTHETIC-SYSTEM-TEXT", input: "SYNTHETIC-TASK-TEXT", privatePaths: [], command: [process.execPath, fake], signal: cancellation.signal };
+  const launch = await prepareKimiReviewer(context, factory);
+  if ("unavailable" in launch) throw new Error("synthetic reviewer preparation failed");
+  drops.push(() => launch.cleanup?.());
+  return { ...f, launch, context, cancellation };
 }
 
 test("actual Kimi policy worker uses an empty env and only a closed immutable binding", async () => {
@@ -131,26 +146,52 @@ test("a released fixture gate still runs the actual full policy checker", async 
 });
 
 test("trusted policy factory receives no task text and cannot mutate synchronous authority expectations", async () => {
-  const f = fixture(), old = process.env.KIMI_CODE_HOME; process.env.KIMI_CODE_HOME = f.source;
-  drops.push(() => { if (old === undefined) delete process.env.KIMI_CODE_HOME; else process.env.KIMI_CODE_HOME = old; });
-  writeFileSync(join(f.source, "config.toml"), 'default_model="fixture"\n[providers."managed:kimi-code"]\ntype="kimi"\nbase_url="https://api.kimi.ai/coding/v1"\n[providers."managed:kimi-code".oauth]\nstorage="file"\n[models.fixture]\nprovider="managed:kimi-code"\nmodel="fixture"\n');
-  const fake = join(f.root, "version.ts"); writeFileSync(fake, 'console.log("2.3.0");');
-  const context: ReviewerPrepareContext = { peer: "kimi-review", cwd: f.cwd, sessionId: "fixture-session", task: 7,
-    mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { transport: "http", url: "http://127.0.0.1:12345/mcp", headers: { Authorization: "Bearer SYNTHETIC-MCP-TOKEN" } } } }),
-    systemPrompt: "SYNTHETIC-SYSTEM-TEXT", input: "SYNTHETIC-TASK-TEXT", privatePaths: [], command: [process.execPath, fake], signal: new AbortController().signal };
   let observed = false;
   const probe: ReviewerPolicyProbe = { check: async () => true, stop: async () => {} };
-  const launch = await prepareKimiReviewer(context, binding => {
+  const { launch } = await preparedFixture(binding => {
     observed = true;
-    expect(JSON.stringify(binding)).not.toContain(context.input!); expect(JSON.stringify(binding)).not.toContain(context.systemPrompt);
+    expect(JSON.stringify(binding)).not.toContain("SYNTHETIC-TASK-TEXT"); expect(JSON.stringify(binding)).not.toContain("SYNTHETIC-SYSTEM-TEXT");
     expect(JSON.stringify(binding)).not.toContain("SYNTHETIC-MCP-TOKEN");
     expect(Reflect.set(binding, "sourceConfigHash", "mutated")).toBe(false);
     expect(Reflect.set(binding.privateFiles[0]!, "hash", "mutated")).toBe(false);
     return probe;
   });
-  expect("unavailable" in launch).toBe(false); if ("unavailable" in launch) return;
-  drops.push(() => launch.cleanup?.());
-  expect(launch.current?.()).toBe(true); expect(launch.startPolicyWatch?.()).toBe(probe); expect(launch.startPolicyWatch?.()).toBe(probe); expect(observed).toBe(true);
+  expect(launch.current?.()).toBe(true);
+  const wrapped = launch.startPolicyWatch?.(); expect(wrapped).toBeDefined(); expect(launch.startPolicyWatch?.()).toBe(wrapped);
+  expect(await wrapped?.check()).toBe(true); expect(observed).toBe(true);
   expect(launch.current?.()).toBe(true);
   await launch.cleanup?.(); expect(launch.current?.()).toBe(false); expect(() => launch.startPolicyWatch?.()).toThrow();
+});
+
+
+test("parent abort fences an already pending real worker result without weakening its filesystem check", async () => {
+  const shared = new SharedArrayBuffer(8), gate = new Int32Array(shared);
+  const { launch, cancellation } = await preparedFixture(binding => startKimiReviewPolicyWatch(binding, { gate: shared }));
+  const probe = launch.startPolicyWatch!(), pending = probe.check(); await entered(gate);
+  cancellation.abort();
+  Atomics.store(gate, 1, 1); Atomics.notify(gate, 1);
+  expect(await pending).toBe(false); expect(await probe.check()).toBe(false); expect(launch.current?.()).toBe(false);
+});
+
+test("cleanup joins a blocked real policy worker before removing its private profile", async () => {
+  const shared = new SharedArrayBuffer(8), gate = new Int32Array(shared);
+  const { launch } = await preparedFixture(binding => startKimiReviewPolicyWatch(binding, { gate: shared }));
+  const probe = launch.startPolicyWatch!(), pending = probe.check(); await entered(gate);
+  const cleanup = launch.cleanup!();
+  expect(existsSync(launch.cwd!)).toBe(true); expect(await pending).toBe(false);
+  await cleanup; expect(existsSync(launch.cwd!)).toBe(false); expect(await probe.check()).toBe(false);
+});
+
+test("a failed policy worker join preserves the profile and supports explicit cleanup retry", async () => {
+  let stops = 0;
+  const { launch } = await preparedFixture(() => ({ check: async () => true, stop: async () => { if (++stops === 1) throw new Error("synthetic unconfirmed join"); } }));
+  launch.startPolicyWatch!();
+  await expect(Promise.resolve(launch.cleanup!())).rejects.toThrow("synthetic unconfirmed join");
+  expect(existsSync(launch.cwd!)).toBe(true); expect(launch.current?.()).toBe(true); expect(stops).toBe(1);
+  await launch.cleanup!(); expect(stops).toBe(2); expect(existsSync(launch.cwd!)).toBe(false); expect(launch.current?.()).toBe(false);
+});
+
+test("cleanup without a started policy probe remains synchronous", async () => {
+  const { launch } = await preparedFixture(() => { throw new Error("unused factory must not start"); });
+  expect(launch.cleanup!()).toBeUndefined(); expect(existsSync(launch.cwd!)).toBe(false);
 });

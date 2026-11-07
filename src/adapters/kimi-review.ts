@@ -122,15 +122,31 @@ export async function prepareKimiReviewer(context: ReviewerPrepareContext, polic
         tool, authTargets: sources,
       });
       let policyProbe: ReturnType<KimiReviewPolicyFactory> | undefined;
-      let cleaned = false;
-      const cleanup = () => { if (cleaned) return; rmSync(root, { recursive: true, force: true }); cleaned = true; };
+      let cleaned = false, cleaning: Promise<void> | undefined;
+      const remove = () => { if (cleaned) return; rmSync(root, { recursive: true, force: true }); cleaned = true; };
+      const cleanup = () => {
+        if (cleaned) return;
+        if (!policyProbe) { remove(); return; }
+        return cleaning ??= policyProbe.stop().then(remove).catch(error => { cleaning = undefined; throw error; });
+      };
       return { command, args: ["-p", "Review the supplied task facts and record the evidence-based verdict with hub_review.", "--output-format", "stream-json", "--agent-file", agentFile, "--skills-dir", skills],
         cwd, env, envMode: "replace", cleanup, watchCurrent: true,
         stop: child => stopKimiReview(child, [join(sources[1]!, "kimi-code.lock"), join(sources[1]!, `${selected.lock}.lock`)]),
         current: () => !cleaned && !context.signal.aborted && checkKimiReviewPolicy(binding),
         startPolicyWatch: () => {
           if (cleaned || context.signal.aborted) throw new Error("review policy is no longer current; retry the review");
-          return policyProbe ??= policyFactory(projectKimiReviewPolicyBinding(binding));
+          if (!policyProbe) {
+            const probe = policyFactory(projectKimiReviewPolicyBinding(binding));
+            policyProbe = {
+              async check() {
+                if (cleaned || context.signal.aborted) return false;
+                const current = await probe.check();
+                return !cleaned && !context.signal.aborted && current;
+              },
+              stop: () => probe.stop(),
+            };
+          }
+          return policyProbe;
         },
         isolation: { backend: "kimi", version: verdict.version, binary: executable, profile: "private-config-exact-two-tools-shared-native-oauth", readOnly: true, strictMcp: true, ephemeral: true,
           enforcement: "native-policy", freshSession: true, hubToolsOnly: true,
