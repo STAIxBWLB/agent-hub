@@ -20,7 +20,7 @@ export interface PreparedBundleDescriptor {
 }
 export interface PreparedCompatArtifact {
   schemaVersion: 1; sourceBaseSha: string; dryRun: boolean;
-  watch: { code: 0 | 3; report: string; candidates: PublishCandidate[] };
+  watch: { code: 0 | 3; report: string; candidates: PublishCandidate[]; verified: string[] };
   artifacts: unknown[]; rejectedBatch: boolean;
   plan: CompatPublishPlan;
   projections: CompatPublishPlan["actions"];
@@ -58,7 +58,7 @@ function restore(file: string, value: { bytes: Buffer; mode: number }): void {
 function json(file: string): unknown { try { return JSON.parse(read(file, JSON_CAP).bytes.toString("utf8")); } catch { throw new CompatPrepareError("input"); } }
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 function watch(value: unknown, manifest: Record<string, PublishManifestEntry>): PreparedCompatArtifact["watch"] {
-  if (!object(value) || value.schemaVersion !== 1 || value.code !== 0 && value.code !== 3 || typeof value.report !== "string" || value.report.length > JSON_CAP || !Array.isArray(value.ahead)) throw new CompatPrepareError("input");
+  if (!object(value) || value.schemaVersion !== 1 || value.code !== 0 && value.code !== 3 || typeof value.report !== "string" || value.report.length > JSON_CAP || !Array.isArray(value.ahead) || !Array.isArray(value.verified)) throw new CompatPrepareError("input");
   const report = value.report.replace(/\p{Cc}/gu, character => character === "\n" ? character : "");
   const header = value.code === 0 ? "Every watched agent CLI's latest published version is verified." : "Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).";
   if (report.split("\n")[0] !== header || report.includes("```")) throw new CompatPrepareError("input");
@@ -73,7 +73,14 @@ function watch(value: unknown, manifest: Record<string, PublishManifestEntry>): 
   // Planner validates canonical identities, duplicate IDs and the eight-ID ceiling.
   planCompatPublish({ manifest, candidates, artifacts: [], existingPullRequests: [], dryRun: false });
   if (value.code === 0 && candidates.length) throw new CompatPrepareError("input");
-  return { code: value.code, report, candidates: candidates.map(row => ({ id: row.id, version: row.version })) };
+  const verified: string[] = [];
+  if (value.verified.length > 8) throw new CompatPrepareError("input");
+  for (const id of value.verified) {
+    if (typeof id !== "string" || !/^[a-z][a-z0-9-]*$/.test(id) || !Object.hasOwn(manifest, id)
+      || verified.includes(id) || candidates.some(candidate => candidate.id === id)) throw new CompatPrepareError("input");
+    verified.push(id);
+  }
+  return { code: value.code, report, candidates: candidates.map(row => ({ id: row.id, version: row.version })), verified };
 }
 function summaries(directory: string): unknown[] {
   ownedDirectory(directory); const found: unknown[] = []; let count = 0;

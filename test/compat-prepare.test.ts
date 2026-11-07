@@ -24,7 +24,7 @@ function fixture(ids = ["pi"]) {
   put("scripts/compat-receipts/manifest.json", JSON.stringify({ schemaVersion: 1, entries }));
   const candidates = ids.map(id => ({ id, version: "1.1.0" }));
   const report = ['Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).', "", ...ids.map(id => `- **${id}** (npm @fixture/${id}): latest 1.1.0, refused; verified 1.0.0; repeat the receipt in docs/verification/2026-11-03-${id}-fixture.md before adding the version.`), "", `Checked ${date} by .github/workflows/agent-compat.yml.`].join("\n");
-  writeFileSync(watchFile, JSON.stringify({ schemaVersion: 1, code: 3, report, ahead: candidates, matrix: { include: [] } }));
+  writeFileSync(watchFile, JSON.stringify({ schemaVersion: 1, code: 3, report, ahead: candidates, verified: [], matrix: { include: [] } }));
   for (const candidate of candidates) {
     const dir = join(summariesDir, `compat-receipt-${candidate.id}-${candidate.version}`); mkdirSync(dir);
     const summary = { schemaVersion: 1, ...candidate, runnerOS: "macos", architecture: "arm64", procedureReceipt: entries[candidate.id]!.receipt,
@@ -99,9 +99,9 @@ test("dry run still prepares read-only-job artifacts while retaining a dry publi
 
 test("unknown drift without a version retains watcher code3/report and never builds or implies all verified", async () => {
   const f = fixture([]), report = ['Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).', "", '- **pi** (npm @fixture/pi): latest unknown, unknown; verified 1.0.0; repeat the receipt in docs/verification/2026-11-03-pi-fixture.md before adding the version.', "", `Checked ${date} by .github/workflows/agent-compat.yml.`].join("\n");
-  writeFileSync(f.watchFile, JSON.stringify({ schemaVersion: 1, code: 3, report, ahead: [], matrix: { include: [] } }));
+  writeFileSync(f.watchFile, JSON.stringify({ schemaVersion: 1, code: 3, report, ahead: [], verified: [], matrix: { include: [] } }));
   const result = await prepareCompatArtifacts(f.input, { head: () => head, build: f.build });
-  expect(result.watch).toEqual({ code: 3, report, candidates: [] }); expect(result.bundles).toEqual([]); expect(f.calls).toEqual([]); f.restored();
+  expect(result.watch).toEqual({ code: 3, report, candidates: [], verified: [] }); expect(result.bundles).toEqual([]); expect(f.calls).toEqual([]); f.restored();
 });
 
 test("oversized generated bundle refuses before copying and restores the original sparse leaf", async () => {
@@ -149,3 +149,31 @@ test("failed observations retain canonical scalar measurements and closed leg st
   expect(canonical.legs[0]).toEqual({ id: "native-identity", category: "macos-runner", requiredForAdmission: true, status: "fail", cause: "proof-failed", reason: "", nextStep: "" });
   expect(result.plan.actions[0]).toMatchObject({ kind: "update-drift", cause: "proof-failed" }); expect(JSON.stringify(result)).not.toContain("NATIVE_UNTRUSTED_TEXT"); f.restored();
 });
+
+
+test("structured verified identities survive preparation independently of report text and unresolved candidates", async () => {
+  const f = fixture(), watch = JSON.parse(readFileSync(f.watchFile, "utf8"));
+  watch.verified = ["qwen"]; writeFileSync(f.watchFile, JSON.stringify(watch));
+  const result = await prepareCompatArtifacts(f.input, { head: () => head, build: f.build });
+  expect(result.watch).toEqual({ code: 3, report: f.report, candidates: [{ id: "pi", version: "1.1.0" }], verified: ["qwen"] });
+  expect(JSON.parse(readFileSync(join(f.out, "index.json"), "utf8")).watch.verified).toEqual(["qwen"]);
+  expect(result.bundles).toHaveLength(1); f.restored();
+});
+
+test("an all-verified watch carries its exact identities without creating bundles", async () => {
+  const f = fixture([]), report = "Every watched agent CLI's latest published version is verified.";
+  writeFileSync(f.watchFile, JSON.stringify({ schemaVersion: 1, code: 0, report, ahead: [], verified: ["pi", "qwen"], matrix: { include: [] } }));
+  const result = await prepareCompatArtifacts(f.input, { head: () => head, build: f.build });
+  expect(result.watch).toEqual({ code: 0, report, candidates: [], verified: ["pi", "qwen"] });
+  expect(result.bundles).toEqual([]); expect(f.calls).toEqual([]); f.restored();
+});
+
+for (const verified of [undefined, null, "qwen", ["qwen", "qwen"], ["pi"], ["unknown"], ["../qwen"], [7], Array(9).fill("qwen")]) {
+  test(`invalid structured verified identities refuse before preparation effects: ${JSON.stringify(verified)}`, async () => {
+    const f = fixture(), watch = JSON.parse(readFileSync(f.watchFile, "utf8"));
+    if (verified === undefined) delete watch.verified; else watch.verified = verified;
+    writeFileSync(f.watchFile, JSON.stringify(watch));
+    await expect(prepareCompatArtifacts(f.input, { head: () => head, build: f.build })).rejects.toMatchObject({ cause: "input" });
+    expect(f.calls).toEqual([]); expect(existsSync(f.out)).toBe(false); f.restored();
+  });
+}
