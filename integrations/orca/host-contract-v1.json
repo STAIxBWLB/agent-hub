@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "issue": 1198,
+  "stage": "O0",
+  "installedCliVersion": "1.4.252",
+  "upstreamRef": "9b98b38506069c1ace94bda8998043b627295b6d",
+  "sources": [
+    { "path": "docs/reference/plugin-host-api.md", "gitBlob": "f5e2c6e36bbbf2d2dec34fcae18e21c02ea549d9" },
+    { "path": "docs/reference/plugin-authoring.md", "gitBlob": "586a68c824a50877c39b9e74c1e5bac075005744" },
+    { "path": "docs/reference/plugin-manifest.md", "gitBlob": "dd085638f00ef8dfd5a7366f1e0bd8edf241ca34" }
+  ],
+  "installedTypes": [
+    { "module": "orca", "sha256": "286370934eeef4fe3460640b538dc0fa1f90692791161d4d3f86f44cf40690c1" },
+    { "module": "orca/worker", "sha256": "c70f5ec6012570fd37a4e0be631e67cde9a7b447d65994010614a95a3d0c24bf" },
+    { "module": "orca/host", "sha256": "c6b21b4dc243e3e2ff76d8f1b1a0427416392f96991e0cc22bc64f35621ea7a2" }
+  ],
+  "capabilities": [
+    { "id": "trusted-worker-node-exec", "surface": "worker", "permission": "trusted-worker-approval", "declaration": "documented", "native": "not-run", "hostExecMethod": false },
+    { "id": "workspace.readContext", "surface": "worker,panel,editor", "permission": "workspace:read", "declaration": "installed", "native": "not-run", "selectionAuthority": false },
+    { "id": "workspace.list", "surface": "worker", "permission": "workspace:read", "declaration": "installed", "native": "not-run", "requires": ["exact-id", "execution-host", "same-host-real-root", "complete-inventory", "per-effect-recheck"] },
+    { "id": "workspace.open", "surface": "worker", "permission": "workspace:write", "declaration": "installed", "native": "not-run" },
+    { "id": "shell.openExternal", "surface": "panel,editor", "permission": "desktop-user-gesture", "declaration": "installed", "native": "not-run" },
+    { "id": "terminal.create", "surface": "worker", "permission": "terminal:send", "declaration": "installed", "native": "not-run", "explicitActionOnly": true },
+    { "id": "existing-terminal-focus", "surface": "none", "permission": "none", "declaration": "no-documented-mapping", "native": "unsupported", "fallback": "workspace-navigation-or-manual-command" }
+  ],
+  "combinations": [
+    { "host": "macOS-local", "state": "declaration-only", "native": "not-run" },
+    { "host": "remote", "state": "unqualified", "native": "not-run" },
+    { "host": "Windows", "state": "unqualified", "native": "not-run" },
+    { "host": "browser-mobile", "state": "external-navigation-unavailable", "native": "not-run" }
+  ],
+  "journeys": [
+    { "id": "local-console", "procedureActionsAfterSelection": 2, "observedActions": null, "native": "not-run" },
+    { "id": "local-dashboard", "procedureActionsAfterSelection": 2, "additionalConsentActions": "unknown", "observedActions": null, "native": "not-run" },
+    { "id": "remote-console", "procedureActionsAfterSelection": 2, "observedActions": null, "native": "not-run" }
+  ],
+  "terminalIdToCliHandle": "unproven",
+  "automaticFocusedSelection": "unsupported",
+  "installedCompanion": false,
+  "runtimeChanged": false
+}

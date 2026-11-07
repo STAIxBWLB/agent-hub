@@ -6576,6 +6576,24 @@ Upgrade the broker, then every room member to a codec-capable release, then reco
 connection; direct `ahub room status` failures expose only closed cause/action
 metadata. A healthy online link needs no broker repair advice.
 
+## Optional Orca companion contract (#1198 O0)
+
+The [versioned O0 contract](../integrations/orca/host-contract-v1.md) and its
+[capability matrix](../integrations/orca/host-contract-v1.json) describe the
+installed Orca 1.4.252 declarations, pinned primary references and reusable
+fake-host/CLI fixtures. O0 installs no plugin and changes no ahub runtime.
+Worker and frame APIs differ: workspace inventory/navigation are worker-only;
+focused context lacks the exact workspace id, execution host and real root
+needed to select a project. Names and branches are never selection authority.
+
+Terminal focus remains unsupported until a plugin terminal id can be bound to a
+current same-host CLI handle. Workspace navigation and manual `ahub console` /
+`ahub ui` commands remain available independently of a companion. No remote
+loopback URL is opened locally. Native local, remote, Windows and mobile results
+are recorded separately; declarations and fake results do not qualify them.
+The three baseline journeys count procedure actions only, with observed native
+counts still unknown. O1 must record actual open/disable/standalone UI proof.
+
 ## Herdr companion host contract (#1199 H0)
 
 [`integrations/herdr/host-contract-v1.md`](../integrations/herdr/host-contract-v1.md) freezes what an optional Herdr mod may
