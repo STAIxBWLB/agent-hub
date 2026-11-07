@@ -99,10 +99,12 @@ test("private diagnostics contain closed checkpoints only and retain exact proof
       expect(typeof row.passed).toBe("boolean"); expect(Number.isSafeInteger(row.count)).toBe(true);
       expect(["none", "home", "jcode-home"]).toContain(row.rootClass);
       expect(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io", "original", "steer", "head", "session-context", "system-reminder", "other", "directory", "regular", "identity-lock", "install-marker", "version-marker", "usage-outbox", "concurrency-dir", "active-sessions", "category-optout", "share-transcript-consent"]).toContain(row.cause);
-      expect(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "telemetry-walk", "first-shape", "second-shape", "telemetry-kind"]).toContain(row.step);
+      expect(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "telemetry-walk", "first-shape", "second-shape", "telemetry-kind", "steer-context-binding"]).toContain(row.step);
     }
-    expect(rows).toContainEqual({ step: "first-shape", cause: "original", rootClass: "none", passed: true, count: 0 });
-    expect(rows).toContainEqual({ step: "second-shape", cause: "head", rootClass: "none", passed: true, count: 1 });
+    expect(rows).toContainEqual({ step: "first-shape", cause: "session-context", rootClass: "none", passed: true, count: 0 });
+    expect(rows.some(row => row.step === "telemetry-walk" && row.cause === "identity-lock" && row.passed === true)).toBe(true);
+    expect(rows).toContainEqual({ step: "first-shape", cause: "original", rootClass: "none", passed: true, count: 1 });
+    expect(rows).toContainEqual({ step: "second-shape", cause: "head", rootClass: "none", passed: true, count: 2 });
     expect(rows).toContainEqual({ step: "steer-first-conversation", cause: "ok", rootClass: "none", passed: true, count: 1 });
     expect(rows).toContainEqual({ step: "steer-second-conversation", cause: "ok", rootClass: "none", passed: true, count: 3 });
     expect(text).not.toContain(root); expect(text).not.toContain("receipt original prompt");
@@ -129,5 +131,26 @@ test("a matched telemetry directory reports bounded child count without relaxing
     expect(rows).toContainEqual({ step: "telemetry-kind", cause: "directory", rootClass: "home", passed: true, count: 0 });
     expect(rows.some(row => row.step === "telemetry-walk" && row.cause === "usage-outbox" && row.rootClass === "home" && row.passed === false)).toBe(true);
   }, false, root => mkdirSync(join(root, "home", "telemetry_usage_outbox")));
+  expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
+}, 20000);
+
+for (const fault of ["forged-context", "duplicate-context", "duplicate-stored-context", "context-fields", "context-changed", "context-position", "context-app-sentinel", "snapshot-symlink", "snapshot-hardlink"]) {
+  test(`source-bound context rejects ${fault} without dropping an application message`, async () => {
+    const result = await run(fault);
+    expect(result["active-turn-soft-interrupt"]).toEqual({ status: "fail", cause: "proof-failed" });
+    expect(result["serve-cleanup"]).toEqual({ status: "pass", cause: "ok" });
+  }, 20000);
+}
+for (const fault of ["lock-nonempty", "lock-symlink", "lock-hardlink"]) {
+  test(`coordination exception rejects ${fault}`, async () => {
+    const result = await run(fault);
+    expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
+  }, 20000);
+}
+
+test("an empty lock at another private location is not the source-bound coordination file", async () => {
+  const result = await run("none", 5000, undefined, false, root => {
+    writeFileSync(join(root, "home", "telemetry_id.lock"), "", { mode: 0o600 });
+  });
   expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
 }, 20000);

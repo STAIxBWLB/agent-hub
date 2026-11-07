@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
-import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readdirSync, writeFileSync, writeSync, type Stats } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, writeFileSync, writeSync, type Stats } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
@@ -14,7 +14,7 @@ const MODEL = "receipt-fixed-model", PROFILE = "receipt-loopback";
 const PROMPT = "receipt original prompt", STEER = "receipt steer prompt", HEAD = "receipt streamed prefix";
 const SERVER_KEYS = ["argv", "debug_socket_path", "idle_timeout_secs", "owner_pid", "pid", "ppid", "schema_version", "scope", "socket_path", "started_at"];
 export interface JcodeProofObservation {
-  step: "steer-pong" | "steer-subscribe" | "steer-idle" | "steer-stream-arrived" | "steer-active" | "steer-ack" | "steer-end-turn" | "steer-request-count" | "steer-first-conversation" | "steer-second-conversation" | "telemetry-walk" | "first-shape" | "second-shape" | "telemetry-kind";
+  step: "steer-pong" | "steer-subscribe" | "steer-idle" | "steer-stream-arrived" | "steer-active" | "steer-ack" | "steer-end-turn" | "steer-request-count" | "steer-first-conversation" | "steer-second-conversation" | "telemetry-walk" | "first-shape" | "second-shape" | "telemetry-kind" | "steer-context-binding";
   cause: "ok" | "pending" | "assertion" | "telemetry-id" | "milestone" | "opt-out-marker" | "other-telemetry-name" | "symlink" | "entry-budget" | "io" | "original" | "steer" | "head" | "session-context" | "system-reminder" | "other" | "directory" | "regular" | "identity-lock" | "install-marker" | "version-marker" | "usage-outbox" | "concurrency-dir" | "active-sessions" | "category-optout" | "share-transcript-consent";
   rootClass: "none" | "home" | "jcode-home";
   passed: boolean;
@@ -113,12 +113,75 @@ function environment(context: ProofContext, nativeHome: string, launch: string):
   }
   return env;
 }
-function hasTelemetry(directories: readonly string[], cap: number, observe: (event: JcodeProofObservation) => void): boolean {
+function sameFile(a: Stats, b: Stats): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs
+    && a.nlink === b.nlink && a.uid === b.uid;
+}
+function emptyCoordinationLock(file: string, named: Stats): boolean {
+  if (!process.getuid || !named.isFile() || named.nlink !== 1 || named.uid !== process.getuid() || named.size !== 0) return false;
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile() || !sameFile(named, before) || readSync(fd, Buffer.alloc(1), 0, 1, 0) !== 0) return false;
+    const after = fstatSync(fd), current = lstatSync(file);
+    return current.isFile() && !current.isSymbolicLink() && sameFile(before, after) && sameFile(after, current);
+  } finally { closeSync(fd); }
+}
+function isSessionContext(text: string): boolean {
+  if (!text.startsWith("<system-reminder>\n# Session Context\n") || !text.endsWith("\n</system-reminder>")
+    || [PROMPT, STEER, HEAD].some(sentinel => text.includes(sentinel))) return false;
+  const lines = text.split("\n"), fields = ["Date: ", "Time: ", "Timezone: ", "OS: ", "Architecture: ", "Jcode version: ", "Working directory: "];
+  let previous = 0;
+  for (const field of fields) {
+    const indexes = lines.flatMap((line, index) => line.startsWith(field) ? [index] : []);
+    if (indexes.length !== 1 || indexes[0]! <= previous) return false;
+    previous = indexes[0]!;
+  }
+  return true;
+}
+/** Read only the new private session snapshot. Wire role:user alone is never a System-role binding. */
+function storedSessionContext(context: ProofContext, nativeHome: string, id: string): string {
+  const uid = process.getuid?.();
+  check(/^[A-Za-z0-9_-]{1,128}$/.exec(id)?.[0] === id && uid !== undefined);
+  const home = lstatSync(nativeHome);
+  check(home.isDirectory() && !home.isSymbolicLink() && home.uid === uid && contained(context.root, nativeHome));
+  const directory = join(nativeHome, "sessions"), parent = lstatSync(directory);
+  check(parent.isDirectory() && !parent.isSymbolicLink() && parent.uid === uid && contained(nativeHome, directory));
+  const file = join(directory, `${id}.json`), named = lstatSync(file);
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let snapshot: any;
+  try {
+    const before = fstatSync(fd);
+    check(named.isFile() && !named.isSymbolicLink() && sameFile(named, before) && before.uid === uid
+      && before.nlink === 1 && before.size <= context.limits.outputBytes);
+    const bytes = Buffer.alloc(context.limits.outputBytes + 1), count = readSync(fd, bytes, 0, bytes.length, 0);
+    const after = fstatSync(fd), current = lstatSync(file), currentParent = lstatSync(directory);
+    check(count === before.size && count <= context.limits.outputBytes && current.isFile() && !current.isSymbolicLink()
+      && sameFile(before, after) && sameFile(after, current) && parent.dev === currentParent.dev && parent.ino === currentParent.ino
+      && currentParent.isDirectory() && !currentParent.isSymbolicLink());
+    snapshot = JSON.parse(bytes.subarray(0, count).toString("utf8"));
+  } finally { closeSync(fd); }
+  check(snapshot?.id === id && snapshot.working_dir === context.cwd && Array.isArray(snapshot.messages));
+  const candidates = snapshot.messages.filter((message: any) => content(message?.content).startsWith("<system-reminder>\n# Session Context"));
+  const carrier = snapshot.messages[0];
+  check(candidates.length === 1 && candidates[0] === carrier && carrier.role === "user" && carrier.display_role === "system"
+    && Array.isArray(carrier.content) && carrier.content.length === 1 && carrier.content[0]?.type === "text");
+  const text = carrier.content[0].text;
+  check(typeof text === "string" && isSessionContext(text));
+  return text;
+}
+
+function hasTelemetry(directories: readonly string[], cap: number, observe: (event: JcodeProofObservation) => void, allowedLock: string | undefined): boolean {
   let count = 0;
   const walk = (dir: string, rootClass: "home" | "jcode-home"): boolean => {
     const report = (cause: JcodeProofObservation["cause"], passed = false) => observe({ step: "telemetry-walk", cause, rootClass, passed, count });
     let names: string[];
-    try { names = readdirSync(dir); } catch (error) { report("io"); throw error; }
+    try {
+      const directory = lstatSync(dir);
+      if (directory.isSymbolicLink()) { report("symlink"); check(false); }
+      check(directory.isDirectory());
+      names = readdirSync(dir);
+    } catch (error) { report("io"); throw error; }
     for (const name of names) {
       if (++count > cap) { report("entry-budget"); throw new ReceiptError("proof-failed"); }
       let entry: Stats;
@@ -145,6 +208,10 @@ function hasTelemetry(directories: readonly string[], cap: number, observe: (eve
           : name === "telemetry_concurrency_v2" ? "concurrency-dir" : name === "telemetry_active_sessions" ? "active-sessions"
           : name === "no_telemetry" ? "opt-out-marker" : /^no_telemetry_(?:content|usage|crashes|features|cost|accounts)$/.test(name) ? "category-optout"
           : name === "telemetry_share_transcripts_v1" ? "share-transcript-consent" : /milestone/i.test(name) ? "milestone" : "other-telemetry-name";
+        if (name === "telemetry_id.lock" && join(dir, name) === allowedLock && emptyCoordinationLock(join(dir, name), entry)) {
+          report("identity-lock", true); // Coordination only, not identity/event telemetry data.
+          continue;
+        }
         report(classification);
         return true;
       }
@@ -308,7 +375,8 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
     steeringCheck("steer-end-turn", (await prompt).result?.stopReason === "end_turn");
     steeringCheck("steer-request-count", requests.length === 2, requests.length);
     const conversation = (messages: any[]) => messages.filter(message => message?.role !== "system" && message?.role !== "developer");
-    const first = conversation(requests[0].messages), second = conversation(requests[1].messages);
+    const rawFirst = requests[0].messages, rawSecond = requests[1].messages;
+    let first = conversation(rawFirst), second = conversation(rawSecond);
     const shapes = (messages: any[], step: "first-shape" | "second-shape") => {
       for (const [index, message] of messages.slice(0, 64).entries()) {
         const text = content(message?.content);
@@ -325,6 +393,19 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
       }
     };
     shapes(first, "first-shape"); shapes(second, "second-shape");
+    let persistedContext: string;
+    try { persistedContext = storedSessionContext(context, nativeHome, session); }
+    catch {
+      observe({ step: "steer-context-binding", cause: "assertion", rootClass: "jcode-home", passed: false, count: 0 });
+      throw new ReceiptError("proof-failed");
+    }
+    const carriers = (messages: any[]) => messages.flatMap((message, index) => message?.role === "user" && content(message.content) === persistedContext ? [index] : []);
+    const firstCarriers = carriers(rawFirst), secondCarriers = carriers(rawSecond);
+    steeringCheck("steer-context-binding", firstCarriers.length === 1 && secondCarriers.length === 1
+      && firstCarriers[0] === secondCarriers[0] && first[0]?.role === "user" && content(first[0].content) === persistedContext
+      && second[0]?.role === "user" && content(second[0].content) === persistedContext);
+    first = first.slice(1); second = second.slice(1); // Exactly one persisted System carrier, same position and bytes.
+
     steeringCheck("steer-first-conversation", first.length === 1 && first[0]?.role === "user" && content(first[0].content) === PROMPT, first.length);
     steeringCheck("steer-second-conversation", second.length === 3 && second[0]?.role === "user" && content(second[0].content) === PROMPT
       && second[1]?.role === "assistant" && content(second[1].content).includes(HEAD)
@@ -361,7 +442,7 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
       }
       if (owned.length) {
         try {
-          const clean = !hasTelemetry([context.home, nativeHome], context.limits.archiveEntries, observe);
+          const clean = !hasTelemetry([context.home, nativeHome], context.limits.archiveEntries, observe, env.JCODE_NO_TELEMETRY === "1" ? join(nativeHome, "telemetry_id.lock") : undefined);
           result.telemetry = { status: clean ? "pass" : "fail", cause: clean ? "ok" : "proof-failed" };
         } catch { result.telemetry = { status: "fail", cause: "proof-failed" }; }
       }

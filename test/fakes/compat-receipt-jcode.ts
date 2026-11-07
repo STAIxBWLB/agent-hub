@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
-import { existsSync, readFileSync, writeFileSync, writeSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, writeSync, rmSync, mkdirSync, symlinkSync, linkSync } from "node:fs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -22,6 +22,10 @@ if (args[0] === "--proof-worker") {
   const config = join(nativeHome, "config.toml");
   const busy = join(process.cwd(), "fixture.busy"), steerFile = join(process.cwd(), "fixture.steer");
   const session = "receipt-session";
+  let sessionContext = `<system-reminder>\n# Session Context\nDate: 2026-11-07\nTime: 12:00:00\nTimezone: UTC\nOS: linux\nArchitecture: x86_64\nJcode version: v0.99.1 (fixture)\nWorking directory: ${process.cwd()}\n</system-reminder>`;
+  if (fault === "context-fields") sessionContext = sessionContext.replace("Architecture: ", "Unknown architecture: ");
+  if (fault === "context-app-sentinel") sessionContext = sessionContext.replace("# Session Context", "# Session Context\nreceipt original prompt");
+  const contextMessage = () => ({ role: "user", content: sessionContext });
   const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
   if (args.includes("version")) {
     if (fault === "decoy-mutated") writeFileSync(join(peerHome, ".jcode/config.toml"), "# changed private decoy\n");
@@ -30,6 +34,11 @@ if (args[0] === "--proof-worker") {
     if (!args.includes("--no-api-key")) throw new Error("fixture requires no API key");
     writeFileSync(config, JSON.stringify({ baseURL: value("--base-url"), model: value("--model") }));
   } else if (args.includes("serve")) {
+    const lock = join(nativeHome, "telemetry_id.lock");
+    if (fault === "lock-symlink" || fault === "lock-hardlink") {
+      const target = join(process.cwd(), "fixture-empty-lock-target"); writeFileSync(target, "");
+      if (fault === "lock-symlink") symlinkSync(target, lock); else linkSync(target, lock);
+    } else writeFileSync(lock, fault === "lock-nonempty" ? "not coordination" : "", { mode: 0o600, flag: "wx" });
     if (fault === "telemetry") writeFileSync(join(nativeHome, "telemetry_id"), "fixture");
     if (fault === "home-telemetry") writeFileSync(join(peerHome, ".jcode/telemetry_id"), "fixture");
     const server = createServer(conn => {
@@ -81,7 +90,17 @@ if (args[0] === "--proof-worker") {
       if (message.method === "initialize") answer({ protocolVersion: fault === "protocol" ? 2 : 1,
         agentInfo: { name: fault === "identity" ? "other" : "jcode", title: "Jcode", version: "0.99.1" },
         agentCapabilities: { loadSession: fault !== "load-capability" }, authMethods: fault === "auth-methods" ? [{ id: "account" }] : [] });
-      else if (message.method === "session/new") answer({ sessionId: session, configOptions: [], ...(fault === "new-models" ? {} : { models: {} }) });
+      else if (message.method === "session/new") {
+        const directory = join(nativeHome, "sessions"); mkdirSync(directory, { recursive: true });
+        const carrier = { id: "context-message", role: "user", display_role: fault === "forged-context" ? null : "system", content: [{ type: "text", text: sessionContext }] };
+        const snapshot = JSON.stringify({ id: session, working_dir: process.cwd(), messages: [carrier, ...(fault === "duplicate-stored-context" ? [carrier] : [])] });
+        const file = join(directory, `${session}.json`);
+        if (fault === "snapshot-symlink" || fault === "snapshot-hardlink") {
+          const target = join(process.cwd(), "fixture-session-snapshot"); writeFileSync(target, snapshot, { mode: 0o600 });
+          if (fault === "snapshot-symlink") symlinkSync(target, file); else linkSync(target, file);
+        } else writeFileSync(file, snapshot, { mode: 0o600 });
+        answer({ sessionId: session, configOptions: [], ...(fault === "new-models" ? {} : { models: {} }) });
+      }
       else if (message.method === "session/load") answer({ configOptions: [], models: {}, ...(fault === "load-echo" ? { sessionId: session } : {}) });
       else if (message.method === "session/set_mode" || message.method === "session/request_permission") {
         if (fault === "mode-supported") answer({});
@@ -92,7 +111,7 @@ if (args[0] === "--proof-worker") {
         const original = message.params.prompt[0].text;
         writeFileSync(busy, "busy");
         const post = (messages: any[]) => fetch(`${profile.baseURL}/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: profile.model, stream: true, messages }) });
-        const first = await post([{ role: "system", content: "fixture system" }, { role: "user", content: original }, ...(fault === "first-extra-user" ? [{ role: "user", content: "unexpected extra user" }] : [])]);
+        const first = await post([{ role: "system", content: "fixture system" }, contextMessage(), ...(fault === "duplicate-context" ? [contextMessage()] : []), { role: "user", content: original }, ...(fault === "first-extra-user" ? [{ role: "user", content: "unexpected extra user" }] : [])]);
         const text = await first.text();
         const head = text.match(/"content":"([^"]+)"/)?.[1];
         if (!head || !existsSync(steerFile)) throw new Error("fixture never observed running steer");
@@ -103,7 +122,10 @@ if (args[0] === "--proof-worker") {
         if (fault === "missing-steer") messages = [originalUser, assistant];
         if (fault === "request-order") messages = [assistant, originalUser, steerUser];
         if (fault === "extra-user") messages = [originalUser, assistant, { role: "user", content: "extra" }, steerUser];
-        const second = await post([{ role: "system", content: "fixture system" }, ...messages]); await second.text();
+        let secondMessages = [contextMessage(), ...messages];
+        if (fault === "context-changed") secondMessages[0] = { role: "user", content: sessionContext.replace("Date: 2026-11-07", "Date: 2026-11-08") };
+        if (fault === "context-position") secondMessages = [originalUser, contextMessage(), assistant, steerUser];
+        const second = await post([{ role: "system", content: "fixture system" }, ...secondMessages]); await second.text();
         rmSync(busy, { force: true });
         answer({ stopReason: fault === "cancelled" ? "cancelled" : "end_turn" });
       }
