@@ -95,9 +95,13 @@ export class CodeFacts {
       catch{throw Error("code facts cleanup unconfirmed");}
     }
   }
-  constructor(private readonly options:{env?:NodeJS.ProcessEnv;timeoutMs?:number;now?:()=>number}={}) {}
+  /** #1261: `trace` is a read-only timing tap for tests (the step's name, its wall time in ms and its outcome). Absent in production, where it costs one undefined check per step; it never changes an answer, a bound or a cap. */
+  constructor(private readonly options:{env?:NodeJS.ProcessEnv;timeoutMs?:number;now?:()=>number;trace?:(step:string,ms:number,outcome:string)=>void}={}) {}
   private git(repo:string,args:string[]) {
-    return hubGitSync(["-C",repo,...args],{encoding:"utf8",env:hubGitEnv(childEnv(),{repositoryIsolation:true}),timeout:5000,maxBuffer:1024*1024});
+    const trace=this.options.trace,t0=trace?performance.now():0;
+    const r=hubGitSync(["-C",repo,...args],{encoding:"utf8",env:hubGitEnv(childEnv(),{repositoryIsolation:true}),timeout:5000,maxBuffer:1024*1024});
+    trace?.(`git ${args.slice(0,2).join(" ")}`,performance.now()-t0,r.error?.message??`status ${r.status}`);
+    return r;
   }
   private value(repo:string,args:string[]):string {const r=this.git(repo,args);if(r.status!==0)throw Error();return r.stdout.trim();}
   private nativeEnv(cwd:string):NodeJS.ProcessEnv {
@@ -115,7 +119,7 @@ export class CodeFacts {
   private async run(bin:string,args:string[],cwd:string):Promise<{code:number;out:string}> {
     if(this.closing || this.active?.cancelled)return {code:1,out:""};
     return new Promise(resolve=>{
-      let child:ReturnType<typeof spawn>;
+      let child:ReturnType<typeof spawn>;const trace=this.options.trace,t0=trace?performance.now():0;
       try{child=spawn(process.execPath,["-e",LAUNCHER,"--",bin,...args],{cwd,env:this.nativeEnv(cwd),detached:true,stdio:["ignore","pipe","ignore","pipe"]});}catch{resolve({code:1,out:""});return;}
       let size=0,done=false,failed=false,control="";const parts:Buffer[]=[];
       let ended=false;const outputEnd=new Promise<void>(resolveEnd=>child.stdout!.once("end",()=>{ended=true;resolveEnd();}));
@@ -125,6 +129,7 @@ export class CodeFacts {
         if(!ended)code=null;
         try{await stopOwnedProcess(child,{group:true,termMs:50,killMs:500});}catch{this.failedChild=child;code=null;}
         if(this.cancelActive===cancel)this.cancelActive=undefined;
+        trace?.(`ripwire ${args.find(a=>a.startsWith("--"))?.split("=")[0]??"launch"}`,performance.now()-t0,failed?"failed, capped or cancelled":`code ${code}`);
         resolve({code:failed?1:code??1,out:!failed && code!==null?Buffer.concat(parts).toString("utf8"):""});
       };
       const cancel=()=>{void finish(null);};this.cancelActive=cancel;
@@ -157,7 +162,9 @@ export class CodeFacts {
       if(this.git(repo,["worktree","add","--detach","--no-checkout",cwd,head]).status!==0)throw Error();registered=true;
       if(this.git(cwd,["read-tree",head]).status!==0)throw Error();
       // --batch needs explicit object ids; no working-tree filters or checkout hooks are invoked.
+      const catAt=this.options.trace?performance.now():0;
       const result=hubGitSync(["-C",repo,"cat-file","--batch"],{input:entries.map(e=>e.oid).join("\n")+"\n",encoding:"latin1",env:hubGitEnv(childEnv(),{repositoryIsolation:true}),timeout:5000,maxBuffer:MAX_TREE_BYTES+1024*1024});
+      this.options.trace?.("git cat-file --batch",performance.now()-catAt,result.error?.message??`status ${result.status}`);
       if(result.status!==0)throw Error();
       const bytes=Buffer.from(result.stdout,"latin1");let offset=0,total=0;
       for(const entry of entries){

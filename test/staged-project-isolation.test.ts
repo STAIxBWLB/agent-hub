@@ -11,11 +11,13 @@ import { recoveryLock } from "../src/hub/recovery-store.ts";
 import { stageCurrentRuntime, runCommand, verifyPackage } from "../src/cli/recovery-package.ts";
 import { createOperation, disposeRecovery, planFingerprint, runRecovery, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { VERSION } from "../src/version.ts";
+import { cleanEnvironment, restoreEnvironment, restoreOnTestEnd, useEnvironmentScope } from "./helpers/env-scope.ts";
+useEnvironmentScope();   // #1262: registers the afterEach in THIS file's scope; an import by an earlier file would bind it to that file
 
 const PACKAGE_ROOT = resolve(import.meta.dir, "..");
 
 function isolate(root: string) {
-  const saved = { ...process.env }, env = { ...process.env }, bin = join(root, "bin");
+  const saved = cleanEnvironment(), env = cleanEnvironment(), bin = join(root, "bin");   // #1262: the file's clean snapshot, never an environment another test's abandoned body still holds
   for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("OMNIROUTE_") || key.startsWith("CF_ACCESS_")
     || /(?:_API_KEY|_ACCESS_TOKEN|_SECRET|_TOKEN)$/.test(key)) delete env[key];
   for (const key of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) delete env[key];
@@ -30,9 +32,8 @@ function isolate(root: string) {
     mkdirSync(env[key]!, { recursive: true });
   for (const key of Object.keys(process.env)) if (!Object.hasOwn(env, key)) delete process.env[key];
   Object.assign(process.env, env);
-  return { env, home: env.AGENTHUB_HOME!, restore() {
-    for (const key of Object.keys(process.env)) if (!Object.hasOwn(saved, key)) delete process.env[key]; Object.assign(process.env, saved);
-  } };
+  const restore = restoreOnTestEnd(() => restoreEnvironment(saved));   // #1262: also at Bun's timeout, before the next test or file starts
+  return { env, home: env.AGENTHUB_HOME!, restore };
 }
 
 test("#607 a real scoped A upgrade preserves B's daemon, channel session and ordinary lifecycle throughout", async () => {

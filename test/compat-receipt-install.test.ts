@@ -87,6 +87,10 @@ async function releaseFixture(data: Buffer): Promise<{ context: ReceiptContext; 
     return { ...ok, stdout, stderr, exitCode };
   });
   context.id = "jcode";
+  // CI run 42355168440, macOS shard 1/4: cold Python extraction completed in
+  // 3835.40 ms; the next archive took 454.92 ms. Use this fixture's existing
+  // 5000 ms total budget so the 3000 ms install margin does not mask refusal.
+  context.limits.installMs = context.limits.totalMs;
   const hash = createHash("sha256").update(data).digest("hex");
   const releaseEntry = { ...entry, install: { method: "github-release-asset-checksum", repository: "owner/project", tagTemplate: "v{version}", asset: "cli.tar.gz", checksumAsset: "SHA256SUMS" } };
   const fetcher = (async (url: any) => {

@@ -42,6 +42,236 @@
         "templates/"
       ]
     },
+    "docs/adding-an-ai-tool.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/adapters/registry-types.ts",
+        "src/adapters/registry.ts",
+        "src/adapters/public.ts",
+        "src/adapters/adapter-api.ts",
+        "src/adapters/external-modules.ts",
+        "src/adapters/external-module-scan.ts",
+        "src/adapters/configured-acp.ts",
+        "src/adapters/conformance/",
+        "test/conformance/",
+        "src/hub/permission-mode.ts",
+        "src/hub/peer-catalog.ts",
+        "src/hub/start-mode.ts",
+        "src/hub/peers.ts",
+        "package.json"
+      ]
+    },
+    "docs/addons/claude-mem.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/tooling.ts",
+        "src/adapters/definitions/native-policy-aux.ts",
+        "src/adapters/definitions/native-cli-doctor.ts",
+        "src/memory/",
+        "src/hub/bench.ts",
+        "src/cli/bench.ts",
+        "src/hub/research.ts",
+        "package.json"
+      ]
+    },
+    "docs/addons/codex-plugin.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/tooling.ts",
+        "src/adapters/definitions/native-policy-aux.ts"
+      ]
+    },
+    "docs/addons/dot-admit.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/tooling.ts"
+      ]
+    },
+    "docs/addons/open-code-review.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/tooling.ts",
+        "src/adapters/definitions/native-policy-aux.ts"
+      ]
+    },
+    "docs/addons/ponytail.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/tooling.ts",
+        "src/adapters/definitions/native-policy-aux.ts"
+      ]
+    },
+    "docs/addons/ripwire.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/tooling.ts"
+      ]
+    },
+    "docs/bench.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/bench.ts",
+        "src/cli/bench.ts",
+        "src/hub/tooling.ts"
+      ]
+    },
+    "docs/cooperbench.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "scripts/benchmarks/runner.py",
+        "scripts/benchmarks/native.ts",
+        "scripts/benchmarks/native-pi-qwen.ts",
+        "scripts/benchmarks/restore.ts",
+        "scripts/benchmarks/teardown.ts",
+        "scripts/benchmarks/ledger.py",
+        "scripts/benchmarks/evaluate.py",
+        "scripts/benchmarks/peer-bus-mcp.py",
+        "scripts/benchmarks/study_supervisor.py",
+        "scripts/benchmarks/study_audit.py",
+        "scripts/benchmarks/probe-qwen-usage.ts",
+        "scripts/benchmarks/orca-workspace.ts",
+        "scripts/benchmarks/manifest-v1.json",
+        "scripts/benchmarks/manifest-v2.json",
+        "scripts/benchmarks/manifest-v2-ablation-106.json",
+        "scripts/benchmarks/manifest-v3-pi-qwen.json",
+        "scripts/benchmarks/manifest-v3-pi-qwen-tools-v2.json",
+        "src/cli/statusline-tee.ts",
+        "src/hub/child-process.ts",
+        "src/models/relay.ts"
+      ]
+    },
+    "docs/data-policy.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/path-policy.ts",
+        "src/local/tools.ts",
+        "src/local/sandbox.ts",
+        "src/local/doc-read.ts",
+        "src/local/web-fetch.ts",
+        "src/local/web-fetch-config.ts",
+        "src/hub/config-trust.ts",
+        "src/hub/config-apply.ts"
+      ]
+    },
+    "docs/dogfood.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/dogfood.ts",
+        "src/hub/dogfood-read.ts",
+        "src/hub/dogfood-profile.ts",
+        "src/cli/main.ts",
+        "src/cli/help.ts"
+      ]
+    },
+    "docs/events.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/events.ts",
+        "src/hub/attribution.ts",
+        "src/hub/usage-rollup.ts",
+        "src/hub/report.ts",
+        "src/hub/budget.ts",
+        "src/hub/settings.ts",
+        "src/adapters/kimi-wire-usage.ts",
+        "src/adapters/compat.ts"
+      ]
+    },
+    "docs/memory.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "package.json",
+        "src/memory/",
+        "src/cli/memory.ts",
+        "src/cli/identity.ts",
+        "src/hub/memory-*.ts",
+        "src/hub/read-tools.ts",
+        "src/hub/corpus*.ts",
+        "src/hub/code-facts.ts",
+        "src/hub/symbol-normalizer.ts",
+        "src/hub/bench.ts",
+        "src/hub/events.ts",
+        "test/hub-home.ts"
+      ]
+    },
+    "docs/profiles.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "templates/profiles/",
+        "templates/packs/",
+        "templates/checks/",
+        "src/hub/profiles.ts",
+        "src/hub/packs.ts",
+        "src/hub/shipped-packs.ts",
+        "src/hub/research-evidence.ts",
+        "src/hub/research-campaign.ts",
+        "src/hub/research-experiments.ts",
+        "src/hub/dogfood-profile.ts",
+        "src/hub/learning.ts",
+        "src/cli/study.ts",
+        "src/cli/init.ts",
+        "scripts/check-citations.ts"
+      ]
+    },
+    "docs/research.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/research.ts",
+        "src/hub/tooling.ts",
+        "src/hub/config-apply.ts"
+      ]
+    },
+    "docs/roles.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/roles.ts",
+        "src/hub/shipped-roles.ts",
+        "templates/roles/",
+        "src/hub/settings.ts",
+        "scripts/check-roles.ts",
+        "scripts/build.mjs"
+      ]
+    },
+    "docs/sdlc.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/sdlc.ts",
+        "src/hub/sdlc-merge.ts",
+        "src/hub/sdlc-mirror.ts",
+        "src/hub/sdlc-queue.ts",
+        "src/hub/sdlc-release.ts",
+        "src/hub/sdlc-release-authorization.ts",
+        "src/hub/sdlc-metrics.ts",
+        "src/hub/security-baseline.ts",
+        "src/hub/eval-gate.ts",
+        "src/hub/workflow.ts",
+        "src/hub/review-findings.ts",
+        "src/hub/plan-conformance.ts",
+        "src/hub/test-integrity.ts",
+        "src/hub/deliverables.ts",
+        "src/hub/deliverable-files.ts",
+        "src/hub/release-admission.ts",
+        "src/cli/sdlc-output.ts",
+        "src/cli/sdlc-release-guard.ts",
+        "scripts/check-docs.mjs",
+        "scripts/release-prepare.ts",
+        "scripts/release-tag.ts",
+        "scripts/lib/release-plan.ts",
+        "scripts/ci-reuse.mjs",
+        ".github/workflows/check.yml",
+        ".github/workflows/release.yml"
+      ]
+    },
+    "docs/text-projection.md": {
+      "verifiedAgainst": "8e066f20c2809b7700539cd7dd42ef4232f44eae",
+      "paths": [
+        "src/hub/text-projection.ts",
+        "src/hub/projection-exec.ts",
+        "src/hub/projected-diff.ts",
+        "src/hub/review-material.ts",
+        "src/hub/config-trust.ts",
+        "src/hub/config-apply.ts"
+      ]
+    },
     "docs/agent-notes/adapters.md": {
       "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [

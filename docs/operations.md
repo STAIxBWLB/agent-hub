@@ -1040,8 +1040,8 @@ plugin stale when the module changed after setup, so run `ahub setup` again afte
 
 ## Install and start
 
-Use Bun 1.4.2 or newer. Source checks and CI use the version pinned in
-`.bun-version` (currently 1.4.2). Install the released package and install its Claude
+Use Bun <!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor --> or newer. Source checks and CI use the version pinned in
+`.bun-version` (currently <!-- facts:bun-pinned -->1.4.2<!-- /facts:bun-pinned -->). Install the released package and install its Claude
 channel plugin:
 
 ```bash
@@ -3583,10 +3583,11 @@ used as an execution-time proof.
 | Proof family | T1 can run | Explicit not-run work |
 | --- | --- | --- |
 | Codex reviewer | Committed production prepare, actual metadata/native-canary checks and launch configuration assertions | Model-backed hub call, separate control artifact and human source review |
-| Kimi reviewer | Committed prepare, generated private config/inventory, environment decoy and host broker refusals | Native loop, Write positive/negative controls, network guard and native-child cleanup producer |
+| Kimi reviewer | Committed prepare/inventory/broker plus promoted native two-tool loop, Write positive/negative controls, preload guard and producer group cleanup | Human source review; unsupported native platform |
 | Claude implementer | Committed Write/Bash/rewrite and host-wrapper producer groups | Human upstream-impact review; unsupported launcher forms |
 | Pi | Artifact acquisition only in this core | Historical top-level producer needs import-safe/candidate-version extraction |
-| Qwen ACP and Jcode | Artifact acquisition only in this core | Producer not committed; see follow-up task |
+| Qwen ACP | Promoted ACP identity/session/mapped-mode and actual published permission-handler producers, preload controls and group cleanup | Human lifecycle/source review; Linux does not replace required macOS arm64 |
+| Jcode | Artifact acquisition only | The 0.99.1 producer was not retained; reconstruction is a separate task |
 | agy and qwen-dual | Policy and unavailable/manual-leg reporting | No public agy installer; account/model/TUI or unspecified-platform legs |
 
 Every manifest leg appears as pass, fail or not-run with a cause and next step.
@@ -3616,8 +3617,7 @@ the containment boundary, not fresh HOME or process-group emptiness.
 The output directory is held open before installation. Exclusive, no-follow
 writes are relative to that handle, so replacing an ancestor cannot redirect the
 receipt. The receipt excludes raw native stdout/stderr and private prefix paths.
-No PR is created by T1. Publisher integration and producer promotions are
-follow-ups.
+No PR is created by T1. The [T1b producer report](verification/2026-11-07-compat-receipt-producers-1248.md) maps the promoted Kimi and Qwen modules to their original receipts. Publisher integration and the missing Jcode producer remain follow-ups.
 
 
 ## Upgrade and crash recovery
@@ -4643,18 +4643,18 @@ durable-delivery retries remain the journal's responsibility.
 
 ## Documentation source verification
 
-`docs/verified.json` maps README, the current security, operations and quickstart
-pages, and every agent note to a full source commit and explicit covered paths.
+`docs/verified.json` maps README, every page directly under `docs/` and
+`docs/addons/`, and every agent note to a full source commit and explicit covered paths.
 A stamp records a human check of the cited paths, symbols, numeric limits and
 operational commands. It does not certify live deployment or prove prose
 correctness automatically. Specs, changelogs and the smoke ledger retain their
-own dated evidence and are outside this manifest.
+own dated evidence and are outside this manifest; so does the retired GSD analysis.
 
 `node scripts/check-docs.mjs` also runs in `scripts/check.sh`. Missing manifest
 coverage, unresolved or nonancestor commits, removed source paths and a README
 status version different from `package.json` fail the gate. Source commits since
 a stamp and uncommitted covered changes produce sorted stale notices without
-failing it. Counts are commits touching any covered path, rather than file or
+failing it; CI's `decision` job repeats them as warnings on every pull request. Counts are commits touching any covered path, rather than file or
 line counts; an unrelated commit leaves the document fresh. Git history must
 include the stamped ancestors (CI checks out full history).
 
@@ -5840,7 +5840,7 @@ Native launcher connections retry transport timeouts/unclean closes with bounded
 
 ## amem runtime (agent-mem#13 P4)
 
-The hub exact-pins @staix/agent-mem 0.22.1 for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
+The hub exact-pins @staix/agent-mem <!-- facts:agent-mem-pin -->0.22.1<!-- /facts:agent-mem-pin --> for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
 
 ## Person-run backlog legs (#1176)
 
