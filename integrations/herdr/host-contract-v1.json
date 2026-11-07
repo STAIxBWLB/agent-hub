@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "issue": 1199,
+  "task": "H0",
+  "recordedAt": "2026-11-07",
+  "kind": "contract and fixture baseline, not an installed mod and not a native usability qualification",
+  "evidence": {
+    "herdrApp": "0.1.13",
+    "herdrCore": "0.1.18",
+    "gpuiShell": "0.7.1",
+    "sources": {
+      "herdr.d.ts": "5dd5388abe811467d94edf9e3427730614d581348087758f28afc26565affbe3",
+      "AGENTS.md": "429d3c9d5bfe4670ac3c7ec3b1fb8a2dd4b26b82666709ce164a17733fdd66d4",
+      "gpui-kit.d.ts": "240970545ddc115e88ed1e5ae853461371e29e8dd7f7410979334a6d71acfb7a"
+    },
+    "sourcesNote": "SHA-256 of the three files the installed app wrote into its own home (read only). The app rewrites them on every start, so a different hash means this contract must be re-read, not assumed.",
+    "primaryReferences": [
+      "https://github.com/herdrdev/herdr-app/blob/master/defaults/AGENTS.md",
+      "https://github.com/herdrdev/herdr-app/blob/master/defaults/herdr.d.ts",
+      "https://github.com/herdrdev/herdr-core/blob/master/schema/README.md"
+    ],
+    "observedLocally": [
+      "herdr-app check on a throwaway mod in a scratch HERDR_APP_HOME passed, and rejected an import the host does not export (the check really loads and validates a mod)",
+      "hc exec --json runs argv with no shell: a literal `$HOME;x y` came back unchanged; stdout and stderr are base64 in the JSON",
+      "hc exec failure shapes: a missing program or folder is {error:{kind:spawn_failed}}, an unknown machine is {error:{kind:machine_unknown}}, a timeout is {code:null,timed_out:true,signal:15}, a nonzero exit is {code:N}",
+      "hc exec with 9 MB of output returned truncated:true and a stdout longer than 8 MiB base64-encoded: the cap is a flag the caller must read, not an error",
+      "ahub status --json through hc exec in a worktree with no hub exits 1 with the plain text 'no hub running for <root>/.agenthub/state'; from a subdirectory of a running project it resolves to the project root"
+    ],
+    "notObserved": [
+      "any call from a mod running inside the app: no mod was installed or loaded into the person's profile and the person's window was not driven",
+      "exec through a remote machine: `hc machine ls` is empty on this Mac",
+      "how a timeout or an oversized output reaches a mod's exec promise",
+      "what `on: \"\"` means for exec",
+      "a mod-visible API for terminal ids that ahub can bind to"
+    ]
+  },
+  "modApi": {
+    "module": "herdr",
+    "functions": {
+      "exec": {
+        "signature": "exec(command, args?, {cwd?, on?}) -> Promise<{code, stdout, stderr}>",
+        "limits": { "timeoutMs": 30000, "maxOutputBytes": 8388608, "source": "doc comment in herdr.d.ts" },
+        "rejects": "when it cannot start (not installed, no such folder, machine unreachable)",
+        "runsWith": "the user's real environment (HOME, PATH, auth)",
+        "usedFor": "the bounded read `exec(\"ahub\", [\"--project\", root, \"status\", \"--json\"], {cwd: root, on: machine})` and `ahub projects --json`. Never an interactive console.",
+        "unknown": ["how a timeout surfaces", "how an oversized output surfaces", "meaning of on:\"\""]
+      },
+      "run": { "signature": "run(command, args?) -> null", "note": "returns null and reports nothing: success is learned only by re-reading focused(), spaces() or terminals()" },
+      "spaces": { "returns": "SpaceInfo[] with id, name, folder, machine (null is this computer), tabs" },
+      "machines": { "returns": "{name, layout: loading|ready|unavailable}[]", "note": "structural commands fail while a machine's layout is unavailable" },
+      "panes": { "returns": "PaneInfo[]: pane, terminal (null for a mod pane), tab, cwd, branch, focused" },
+      "focused": { "returns": "{space, tab, pane|null, terminal|null, shown, agent, cwd}|null", "note": "pane is null while a layout terminal block is focused; then terminal and cwd describe the block" },
+      "terminals": { "returns": "every core terminal as hc ls --json describes it" },
+      "commands": { "returns": "every app command with its arguments" },
+      "openOverlay/closeOverlay/notify/props": { "note": "UI only" }
+    },
+    "commands": {
+      "source": "herdr-app commands (JSON), installed 0.1.13",
+      "usedByCompanion": {
+        "space.select": ["index", "id"],
+        "tab.new": ["name", "space", "folder", "argv", "task", "mod", "props"],
+        "tab.select": ["index", "id"],
+        "terminal.open": ["argv", "folder", "place", "name"],
+        "terminal.peek": ["terminal*"],
+        "pane.focus": ["pane", "terminal"],
+        "pane.split": ["direction*", "pane", "argv", "mod", "props"],
+        "agent.focus": ["terminal*"],
+        "mod.open": ["name*"],
+        "overlay.close": ["id"]
+      },
+      "neverUsedByCompanion": ["terminal.kill", "terminal.park", "terminal.keep", "tab.close", "space.close", "pane.close", "app.*", "layout.*", "mod.clone", "window.*"],
+      "rules": [
+        "unknown argument names are errors; they never fall back to the current target",
+        "target ids must be strings",
+        "tab.new and terminal.open take no machine: a tab starts on the focused or selected space's machine, so opening a console on a machine means that machine's space is the target",
+        "implicit pane actions and place right/down fail while a layout terminal block holds focus"
+      ]
+    },
+    "noDocumentedModInstallOrDisableCommand": true
+  },
+  "rootResolution": {
+    "authority": "none. The pane's machine and cwd are a navigation hint. The authority is an ahub project registration read on the same machine.",
+    "inputs": ["focused().space -> spaces()[].machine", "focused().cwd (null for a mod pane)", "machines()[].layout for that machine"],
+    "steps": [
+      "No focused context, or no space for it: no candidate.",
+      "The space's machine layout is not ready: machine_unavailable. Nothing runs and nothing is guessed.",
+      "No cwd (a mod pane): no candidate, explicit selection from that machine's registered projects.",
+      "Read `ahub projects --json` on that machine through exec(on: machine). A remote cwd is never resolved or tested on the Mac.",
+      "Candidates are registered roots that equal the cwd or contain it at a path-segment boundary. A prefix that is not a segment boundary never matches.",
+      "Exactly one candidate: shown as the default, still confirmed by the person. Several: ambiguous, the person picks. None: the person picks from the list or sees the setup instruction.",
+      "Two registrations with the same root are duplicate: refused until the person resolves it with ahub."
+    ],
+    "ambiguities": {
+      "worktree": "A git worktree is its own project root (ahub stops at the nearest git working-tree boundary), so a pane in a worktree resolves to the worktree, which may have no hub even if the main checkout has one. The message is the existing `no hub running for <root>`; the companion does not start one.",
+      "nestedRegistrations": "A cwd under two registered roots (for example a parent folder and a project inside it) is ambiguous; the deepest is highlighted, never chosen.",
+      "symlinkedCwd": "A pane cwd through a symlink (/tmp versus /private/tmp) may not match a canonical registered root. The unmatched cwd is not canonicalized on the Mac; the person picks.",
+      "unregistered": "A cwd inside no registration has no candidate. ahub's own rule would use the git root or the folder, but the companion does not register or initialize anything.",
+      "staleCwd": "The pane may have changed directory since the list was read. Re-read focused() immediately before every effect and compare machine and root; a change refuses with a refresh instruction.",
+      "machineRename": "A machine name is the host's own label. A name not in machines() is refused; the companion never maps it to this Mac."
+    },
+    "referenceImplementation": "test/helpers/herdr-root-candidates.ts, a specification by example for H1, not shipped code"
+  },
+  "installOwnership": {
+    "mechanism": "A mod is a folder `mods/<name>/` with main.js and mod.json under the app home (~/.config/herdr-app, or $HERDR_APP_HOME). The app reads it live. No install, disable or uninstall command exists in `herdr-app --help`, `herdr-app commands` or AGENTS.md.",
+    "shippedFiles": ["mods/<name>/main.js", "mods/<name>/mod.json", "optionally keys.json entries the person merges"],
+    "additiveRule": "AGENTS.md: copy the mod folder, never overwrite a name that is taken, merge keys instead of replacing them, run `herdr-app check` on the folder, tell the person before adding a mod that runs programs.",
+    "firstSeen": "The first time Herdr sees a folder it docks one copy per mod.json into the shown layout; `\"place\": \"none\"` docks nothing. H1 uses none so the person's layout is not changed by the copy.",
+    "bookkeeping": "installed.json, seen.json and shared.json are written by Herdr, not by the companion.",
+    "disable": "Removing the folder (or changing place) is the only mechanism and is the person's action. Its effect on a copy already shown, and on layout files that named the mod, was not observed. H1's native receipt must record it.",
+    "ownedPaths": ["mods/<name>/ only"],
+    "neverTouched": ["layouts/", "keys.json beyond an additive merge the person approves", "settings.json", "programs.json", "other mods", "installed.json", "seen.json", "shared.json"],
+    "check": "`herdr-app check <mod folder>` before any claim that a mod works",
+    "isolation": "Native tests use a scratch HERDR_APP_HOME. This task wrote nothing into the person's profile."
+  },
+  "baselineJourneys": {
+    "note": "Procedure counts only. Nothing here was observed in a native Herdr window: the person's window was not driven. One chord or one submitted command is one action; waiting is not an action. Start boundary: the exact space is selected; end: the existing screen is visibly open.",
+    "journeys": [
+      { "id": "local-console", "selection": "1, explicit, after machine and root inspection", "steps": ["new tab in the space (default folder is the focused terminal's)", "submit `ahub console` (add `--project <root>` when the folder is not the root)"], "procedureCount": 2, "observed": "not run" },
+      { "id": "local-dashboard", "selection": "1, explicit local space", "steps": ["new tab in the space", "submit `ahub ui`"], "procedureCount": 2, "plus": "any browser consent prompt, counted separately", "observed": "not run" },
+      { "id": "remote-console", "selection": "1, explicit remote space", "steps": ["new tab in that machine's space", "submit `ahub console` there"], "procedureCount": 2, "observed": "not run; no remote machine is configured on this Mac" }
+    ],
+    "targetForH1": "at most two explicit actions after selection (AC2), recorded in a native receipt, not inferred from these counts"
+  },
+  "unsupportedOrUnproven": [
+    "terminal focus for an existing ahub console: no ahub record names a Herdr terminal address, and no mod-visible mapping from a Herdr terminal to an ahub peer or console was found. Focus stays unbuilt until a mapping is proven (AC5).",
+    "remote console from a mod: needs a configured machine and a native receipt",
+    "remote or mobile browser dashboard: no existing supported route is proven; never a converted loopback URL",
+    "Windows host: not exercised",
+    "mod disable effects: not observed"
+  ],
+  "fixtureStrictness": [
+    "exec rejects an empty `on` name",
+    "exec rejects a timeout and an oversized output instead of resolving, because the host's behaviour is undocumented",
+    "exec with an unknown machine rejects as unreachable",
+    "run rejects an unknown command or argument and a missing required one, as the host documents",
+    "pane.focus with an unknown terminal is a silent no-op: the worst case, so a companion that does not re-read focused() fails a test"
+  ],
+  "fixtures": {
+    "host": "test/helpers/herdr-mod-host.ts",
+    "cli": "test/fakes/herdr-companion-cli.ts",
+    "selector": "test/helpers/herdr-root-candidates.ts",
+    "test": "test/herdr-companion-contract.test.ts",
+    "ceiling": "A fake cannot establish installed capabilities, terminal address equivalence, native UI improvement, remote reachability or security confinement."
+  }
+}

@@ -81,6 +81,8 @@ export const SETTINGS: readonly SettingDef[] = [
   { key: "routing.stay_switch", group: "Routing", label: "Stay or switch (hub/auto and stage routes)", type: "enum", values: ["off", "shadow", "enforce"], store: "routing", applies: "live", risk: "raises", path: ["stay_switch"] },
   ...CLASSES.flatMap(perClass),
   { key: "research.enabled", group: "Switches", label: "Research records", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["research", "enabled"] },
+  // #1292: the quota share at which a peer checkpoints and pauses (resume is below gate - 0.1); default 0.99 in DEFAULT_BUDGET. Raising it is guarded.
+  { key: "budget.gate", group: "Routing", label: "Budget gate: pause a peer when a fresh quota window reaches this share (0..1)", type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["budget", "gate"] },
   { key: "specs.enabled", group: "Switches", label: "Design specs and freshness", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["specs", "enabled"] },
   { key: "specs.review", group: "Switches", label: "Covering spec review", type: "enum", values: ["off", "report", "require"], store: "config", applies: "live", risk: "safe", path: ["specs", "review"] },
   { key: "approvals.notify", group: "Switches", label: "Desktop notice for a waiting approval", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["approvals", "notify"] },

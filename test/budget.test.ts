@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetHooks, type Moved, type PauseRecord } from "../src/hub/budget.ts";
@@ -7,8 +7,10 @@ import { AcpPeer } from "../src/adapters/acp.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
+// #1292: these tests exercise the gate mechanism at an explicit 0.9; the product default (0.99) has its own test.
+const GATE_090 = { ...DEFAULT_BUDGET, gate: 0.9 };
 
-function setup(over: Partial<BudgetHooks> = {}, db = join(mkdtempSync(join(tmpdir(), "agenthub-budget-")), "hub.db"), cfg = DEFAULT_BUDGET) {
+function setup(over: Partial<BudgetHooks> = {}, db = join(mkdtempSync(join(tmpdir(), "agenthub-budget-")), "hub.db"), cfg = GATE_090) {
   const clock = { now: 1_800_000_000_000 };
   const log: string[] = [];
   const resumed: PauseRecord[] = [];
@@ -37,7 +39,7 @@ test("ACP quota resets retry an untouched envelope once per window without consu
   let now = 1_800_000_000_000;
   let reports = 0;
   const checkpoint = () => { throw new Error("an exhausted agent must not receive a checkpoint"); };
-  const budget = new Budget(join(dir, "hub.db"), DEFAULT_BUDGET, {
+  const budget = new Budget(join(dir, "hub.db"), GATE_090, {
     pause: peer => bus.pause(peer), resume: peer => bus.resume(peer),
     requestCheckpoint: checkpoint, platformContext: async () => undefined,
     canHandOff: () => false, attached: peer => bus.peers.has(peer), handoff: async () => [],
@@ -156,7 +158,7 @@ test("after two quota resets the same original completes once when the provider 
   const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "quota", instanceId: "success" });
   const bus = new Bus({ batchMs: 0, journal }); let now = 1_800_000_000_000, reports = 0;
   const answers: ReturnType<typeof newEnvelope>[] = [];
-  const budget = new Budget(join(dir, "hub.db"), DEFAULT_BUDGET, {
+  const budget = new Budget(join(dir, "hub.db"), GATE_090, {
     pause: id => bus.pause(id), resume: id => bus.resume(id), requestCheckpoint: async () => undefined,
     platformContext: async () => undefined, canHandOff: () => false, attached: () => true,
     handoff: async () => [], resumed: () => {}, notify: () => {},
@@ -372,7 +374,7 @@ test("the reading hook carries the reading's own time", async () => {
 test("wait or hand off: a reset within wait_max_min keeps the work, urgent tasks aside; a later reset hands it over", async () => {
   const run = async (resetInMin: number) => {
     const urgentOnly: boolean[] = [];
-    const s = setup({ handoff: async (_p, _ctx, only) => (urgentOnly.push(only), []) }, undefined, { ...DEFAULT_BUDGET, wait_max_min: 30 });
+    const s = setup({ handoff: async (_p, _ctx, only) => (urgentOnly.push(only), []) }, undefined, { ...GATE_090, wait_max_min: 30 });
     s.budget.report("codex", [{ id: "5h", used: 0.95, resetsAt: s.clock.now + resetInMin * MIN, source: "test" }]);
     await s.settle();
     return { urgentOnly, log: s.log, reason: s.budget.status().codex!.paused!.reason };
@@ -388,7 +390,7 @@ test("wait or hand off: a reset within wait_max_min keeps the work, urgent tasks
 
 test("a wait is undone when the reset moves past wait_max_min: the next tick hands the work over in full", async () => {
   const urgentOnly: boolean[] = [];
-  const s = setup({ handoff: async (_p, _ctx, only) => (urgentOnly.push(only), only ? [{ id: 1, title: "#1 hotfix", to: "kimi", role: "owner" }] : [{ id: 2, title: "#2 normal", to: "kimi", role: "owner" }]) }, undefined, { ...DEFAULT_BUDGET, wait_max_min: 30 });
+  const s = setup({ handoff: async (_p, _ctx, only) => (urgentOnly.push(only), only ? [{ id: 1, title: "#1 hotfix", to: "kimi", role: "owner" }] : [{ id: 2, title: "#2 normal", to: "kimi", role: "owner" }]) }, undefined, { ...GATE_090, wait_max_min: 30 });
   s.budget.report("codex", [{ id: "5h", used: 0.95, resetsAt: s.clock.now + 10 * MIN, source: "test" }, { id: "week", used: 0.5, resetsAt: s.clock.now + 4200 * MIN, source: "test" }]);
   await s.settle();
   expect(urgentOnly).toEqual([true]);
@@ -407,7 +409,7 @@ test("a wait is undone when the reset moves past wait_max_min: the next tick han
 test("a reading that moves the reset out while the urgent work is moving undoes the wait as well", async () => {
   const urgentOnly: boolean[] = [];
   let release!: () => void;
-  const s = setup({ handoff: (_p, _ctx, only) => (urgentOnly.push(only), only ? new Promise((r) => (release = () => r([]))) : Promise.resolve([])) }, undefined, { ...DEFAULT_BUDGET, wait_max_min: 30 });
+  const s = setup({ handoff: (_p, _ctx, only) => (urgentOnly.push(only), only ? new Promise((r) => (release = () => r([]))) : Promise.resolve([])) }, undefined, { ...GATE_090, wait_max_min: 30 });
   s.budget.report("codex", [{ id: "5h", used: 0.95, resetsAt: s.clock.now + 10 * MIN, source: "test" }, { id: "week", used: 0.5, resetsAt: s.clock.now + 4200 * MIN, source: "test" }]);
   await s.settle();
   s.budget.report("codex", [{ id: "week", used: 0.92, resetsAt: s.clock.now + 4200 * MIN, source: "test" }]); // during the urgent handoff
@@ -551,4 +553,19 @@ test("a provider reset learned while paused replaces the fallback retained acros
     s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "unknown again" }], true);
     expect(s.budget.record("kimi")!.resetsAt).toBe(providerReset);
   } finally { s.budget.close(); }
+});
+
+test("#1292 the product default gate is 0.99: 0.95 does not pause, 0.99 does, and the init template no longer pins a gate", async () => {
+  expect(DEFAULT_BUDGET.gate).toBe(0.99);
+  const { budget, clock, log, settle } = setup({}, undefined, DEFAULT_BUDGET);
+  budget.report("codex", [{ id: "week", used: 0.95, resetsAt: clock.now + 600 * MIN, source: "t" }]);
+  await settle();
+  expect(log.filter((l) => l.startsWith("pause"))).toEqual([]);
+  budget.report("codex", [{ id: "week", used: 0.99, resetsAt: clock.now + 600 * MIN, source: "t" }]);
+  await settle();
+  expect(log.filter((l) => l.startsWith("pause"))).toEqual(["pause codex"]);
+  // `ahub init` copies this file into a project's tracked config.json: a pinned gate there would override the default for good.
+  const template = JSON.parse(readFileSync(join(import.meta.dir, "../templates/config.json"), "utf8")) as { budget: Record<string, unknown> };
+  expect(Object.hasOwn(template.budget, "gate")).toBe(false);
+  expect(template.budget).toMatchObject({ stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0, wait_max_min: 30 });
 });

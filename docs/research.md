@@ -1,8 +1,9 @@
 # Research records
 
-Opt-in records of how each task went, kept across projects for management and research (#247). They are built only
-from a project's `events.jsonl`, so they hold ids, states, counts, tokens and times, never a title, detail, plan, note,
-path, message body or check output.
+Opt-in records of how each task went, kept across projects for management and research (#247). They are built from a
+project's `events.jsonl` and, since schema v2 (#1277), from read-only views of its board history and delivery journal
+that are reduced to closed values on the way in, so they hold ids, states, counts, tokens, times and closed vocabularies,
+never a title, detail, plan, note, path, message body or check output.
 
 ## Turning them on
 
@@ -23,11 +24,13 @@ directory, so `ahub research --all` can compare them. `ahub reset --all` does no
 
 ## When a record is written
 
-When a task is approved (a review approves it, or its owner reports a task without a reviewer done), the hub waits
+When a task reaches a terminal board state (a review approves it, its owner reports a task without a reviewer done, or it is cancelled), the hub waits
 until no open turn is attributed to the task (the turn that approved it ends after the approval, and its usage arrives
 later still), checking every 10 s for at most 30 minutes, then appends one task record built from that project's
-events. A hub that stops first writes it once its peers have stopped. Approval is final on the board, so each task has
-one record, and the first record written for a task is final. A failing write is one `hub.log` line per hub run and
+events and the board. A hub that stops first writes it once its peers have stopped. A terminal state is final on the
+board, so each task has one record, and the first record written for a task is final with one exception: the guarded merge
+writes its receipt after the approval, so a later pass appends the same task once more when it brings merge figures the
+held record lacked (readers keep the latest row of a task). A v2 row also replaces a held v1 row of the same task. A failing write is one `hub.log` line per hub run and
 never changes the task flow.
 
 `ahub research backfill` builds the same records from a project's existing `events.jsonl` (marked
@@ -37,16 +40,20 @@ waits for its turns freezes that record without them.
 A task is identified by project, id and proposal time (`createdAt`), because `ahub reset --all` starts the ids again
 while the store keeps the older records.
 
-## Task record (`agent-hub.research/v1`, `kind: "task"`)
+## Task record (`agent-hub.research/v2`, `kind: "task"`)
+
+Schema v2 is additive: a v1 file still loads (a v1 row reads as `outcome: "approved"`, and the file is never rewritten), and
+`ahub research` and `ahub research addons` read both. Every statistic about approved tasks filters on `outcome`.
 
 | Field | Meaning |
 | --- | --- |
 | `project` | the project key above |
 | `task` | the board's task id |
 | `class`, `pii` | the task's class; whether it was a PII task (its record holds counts only, like any other) |
-| `outcome` | `approved` |
-| `createdAt`, `startedAt`, `approvedAt` | proposal, first `in_progress`, approval (ISO) |
-| `wallMs` | from `startedAt` to `approvedAt`, null when the start is not in the events |
+| `outcome` | `approved` or `cancelled` (v2): every task in a terminal board state has a record; a v1 row is always `approved` |
+| `createdAt`, `startedAt`, `approvedAt` | proposal, first `in_progress`, approval (ISO); `approvedAt` is null on a cancelled record |
+| `closedAt` | v2: when the task reached its terminal state (the approval or the cancellation) |
+| `wallMs` | from `startedAt` to the terminal state, null when the start is not in the events |
 | `activeMs`, `turns`, `filesChanged` | sums over the turns attributed to the task (`turn_end`), the ones ending after the approval included |
 | `sessionRoles` | optional attributed-turn preamble preparations: peer, turn id, role ids/layers/hashes; `roles: []` means prepared without catalog guidance, `roles: null` means unknown; older events leave the field absent. No role bodies or proof of model consumption |
 | `owners`, `reviewer` | the owners in the order they held the task (an owner who gets it back appears again; reports by owner count the task once per owner); the last reviewer |
@@ -64,6 +71,57 @@ while the store keeps the older records.
 | `tooling` | #248: for each peer that worked on the task (owner, reviewer, a peer with attributed turns or tokens), the add-ons from the `tooling` event of the attachment it last worked in (an attachment runs from a `state` event that brings the peer online to the next `offline`; detection may settle after the work started): `{ name, version }` from the closed list `claude-mem`, `ponytail`, `ripwire`, `open-code-review`, `codex-plugin`, `dot-admit`; version null when unknown. A peer missing here is unknown; records built from events written before #248 have no field |
 | `briefs` | #258: task briefs handed over for the task (`delivered`) and how many carried a hub-memory fail note (`withFail`), from `memory_brief` events; absent when none was recorded |
 | `peers` | with `tooling`: every peer with an event attributed to the task (a turn, tokens, a route), fingerprinted or not, so a peer without a fingerprint makes the task unknown for an add-on rather than off |
+
+### v2 blocks (#1277)
+
+Every value is a count, a duration or a member of a closed vocabulary. A value that cannot be derived is `null`, never 0,
+and `quality.json` counts it as unknown. Journal-derived fields are null unless the journal is known to hold every delivery from the
+task's proposal on: the journal prunes its oldest-updated terminal rows beyond a cap and keeps unresolved rows, review-package receipts and retry parents, so the
+oldest surviving row proves nothing. The record uses the oldest-updated unprotected terminal row that survived as its bound (every pruned row is no newer than it, and a
+delivery is created no later than it is updated), and treats the journal as unknown when its own review-input coverage is incomplete; board-derived fields are null when `hub.db` could not be read.
+
+| Field | Meaning |
+| --- | --- |
+| `cancelCause` | only on a cancelled record: `cancelled`, `declined`, `escalated`, `stale` or `unknown`, taken only from an explicit closed `cause` the board retains on the cancellation. The board keeps only a free-text note today, so it reads `unknown`; a cause is never inferred from the note, from an earlier decline or escalation, or from who cancelled |
+| `declines`, `escalations` | intermediate declines and escalations (history events, not terminal), counted next to `reassignments` |
+| `review` | `rounds` (verdicts that are not evidence-only), `firstPass`, `findings` by pass (`bugs`, `security`, `compliance`) each with `important`, `nit`, `open`, `fixed`, `falsePositive`, `accepted` (distinct findings at their last disposition; null when no verdict carried a structured report or the task is `[pii]`), `reviewerFamily`, `ownerFamily`, `scope` (`code`, `full`, `delta`, `none`, `unknown`), `evidenceOnly`, `context` (`fresh`, `continuing`, `unknown`), `staleHeadReReviews` |
+| `delivery` | `count` (envelopes that named the task), `firstDeliveryMs` (`p50`, `p95` of the journal's completed deliveries), `needsReview`, `failed`, `discarded` (journal states), `dropped` (`fyi`, `hop`) |
+| `merge` | `ciRuns`, `ciReruns`, `githubReviews` and `approvedToMergedMs` from the receipt the guarded merge wrote, `doneToApprovedMs` from the events' own times |
+| `specs` | `covering`, `unchanged`, `acked`, `errors` from the latest done's spec report; an incomplete report is unknown |
+| `memory` | `briefs`, `briefNotes`, `fails` from `memory_brief` events (a known 0 when briefs were being reported in the log and the task got none, null when the log shows none at all); `rendered`, `delivered`, `cited`, `failsExposed`, `failsCited`, `failRetrySignal` (#1279) are counts of distinct entries from agent-mem's own machine-local counters for the task, never an id: `rendered` entries put into a delivery attributed to the task, `delivered` of those whose delivery the journal acknowledged, `cited` of those that a hub-screened done summary, review note, `spec_ack` reason, message or `hub_remember` text named by `mem:<id>` (exact match, no judgment), `failsExposed` and `failsCited` the same over fail notes, `failRetrySignal` the exposed fail notes the plan's paths or symbols touch that were not cited by approval: a signal for a reviewer to read, never an outcome, since it does not say the approach was retried. All six are null with no counter row for the task (sidecar off, a private task, rows aged out of the sidecar's 90 days), `delivered` is null while no delivery is known to have completed, and the fail figures are null when a rendered entry can no longer be read |
+| `person` | `permissions`, `questions`, `completions`, `cliRefusals`, `latencyMs`: all null until #1278 attributes person interventions to a task |
+| `stalls` | persisted idle-ladder entries on the task's history (the stall table itself is cleared when a task closes); null without the board |
+| `handoffs` | `in`, `out` from the handoff tables |
+| `cohort` | `silent`, `advisory` or `none` |
+
+The record reads the board through a read-only handle (`readEvidence`): titles, details, plans, refs and notes are never
+decoded, and the journal's envelope bodies are never read.
+
+## Dataset export (`ahub research export --dataset <dir> [--since] [--all]`)
+
+Writes `<dir>/<project key>/tasks.jsonl`, `manifest.json` and `quality.json` for this project, or for every registered
+project that has research records with `--all` (read-only, on this machine, with the same project-key hashing as the
+record file names). It is built to leave the machine, so it is an allowlist:
+
+- a peer is only a family name (`claude`, `codex`, `kimi`, ...), resolved through the project's own config for an instance
+  id, and `unknown` when none is known (never guessed from the id's spelling); `profile`, `role`, `roleIdentity` and
+  `sessionRoles`, which carry project-chosen names, are dropped;
+- the target must be inside your home directory, not the home itself, and outside every registered project and its state
+  directory (compared as real paths, so a symlink out of the home or into a project does not pass); a project directory
+  that is a symbolic link is refused;
+- files are written whole (a temporary file, then a rename), owner-only, and the manifest last, so a directory with a
+  manifest is complete.
+
+`manifest.json`: `schema`, `hubVersion`, `projectKeyHash`, `window` (`since`, `until`), `peers` (families), `counts`
+(`tasks`, `approved`, `cancelled`, `labels`), `recordedAt`. `--format` and `--dataset` exclude each other.
+
+`quality.json` (#44 AC0, `agent-hub.research-quality/v1`): `fields` (per v2 field: `n` records and how many are
+`unknown`, null or the vocabulary's own `unknown`), `quota` per family (`readings`, `gaps` over one hour, their total
+`gapMs`, `stalenessP95Ms` between readings, and `clock`: how many readings used the event's time or their own
+`measuredAt`), `budget` (pauses and resumes, per family), `outcomes` per family of the last owner and class, `events`
+(the types present with counts, and the ones the report expects that did not occur), and `tokenAttribution` (`total` and the
+share by `delivery`, `single_open`, `unattributed`; null shares when nothing was counted). The 2026-10-21 field analysis found
+40.2% of token increments unattributed: a dataset now says so itself.
 
 ## Label record (`kind: "label"`)
 
@@ -92,7 +150,7 @@ names the agent (empty for the person).
   and no brief recorded (shown once any record has a brief).
 
 They are computed each time from the records; nothing derived is stored. `ahub research export [--format jsonl|csv]
-[--since] [--all]` writes the records for outside analysis; the CSV columns are, in order: project, task, class, pii,
+[--since] [--all]` writes the records for outside analysis (`--dataset <dir>` writes the per-project dataset below); the CSV columns are, in order: project, task, class, pii,
 outcome, createdAt, startedAt, approvedAt, wallMs, activeMs, owners, reviewer, reviewRounds, changesRequested, checkPassed,
 checkFailed, dones, reassignments, firstPass, stuck, overlaps, conflicts, testsPass, testsFail, tokens, turns,
 filesChanged, models, label, labelBy, writerVersion, writerSource. The CSV is a flat subset; JSONL carries every field.
@@ -122,4 +180,4 @@ either side a difference is inconclusive. This is field data: the sides differ i
 association, not cause. Controlled arms are `ahub bench run --addon <name>=on|off` (docs/bench.md), and the decisions
 taken from both are in `docs/addons/`.
 
-Agents may read the measures and export (ids and counts only); `backfill` is the person's or the configured conductor's (#933), and an agent labels only its own task.
+Agents may read the measures and export (ids and counts only), `--dataset` included; `backfill` is the person's or the configured conductor's (#933), and an agent labels only its own task.

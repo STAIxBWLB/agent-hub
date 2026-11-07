@@ -55,7 +55,7 @@ for (const [os, label] of [["ubuntu", "Ubuntu"], ["macos", "macOS"]] as const) {
       expect(run.exitCode === 0, `${os} reuse: ${proof}`).toBe(proof !== "");
     }
     expect(aggregate.if).toBe("always() && needs.decision.result == 'success' && (needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse')");
-    expect(shard.if).toBe("needs.decision.outputs.run_gate == 'true'");
+    expect(shard.if).toBe(os === "macos" ? MACOS_SHARD_IF : "needs.decision.outputs.run_gate == 'true'");
   });
 
   test(`#548 every ${label} shard retains 1500 s total and 300 s quiet bounds`, () => {
@@ -79,6 +79,25 @@ for (const [os, label] of [["ubuntu", "Ubuntu"], ["macos", "macOS"]] as const) {
     expect(shard.steps.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.if).toContain("failure()");
   });
 }
+
+// #1307: GitHub runs at most 5 macOS jobs at once; a stacked PR's macOS shards wait until it targets the default branch, and the required aggregator fails for it, never passes or skips.
+const MACOS_SHARD_IF = "needs.decision.outputs.run_gate == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.base.ref == github.event.repository.default_branch)";
+
+test("#1307 a stacked PR defers its macOS shards and the required macOS aggregator fails for it, naming the base, the default branch and the fix", () => {
+  const steps = jobs.macos!.steps;
+  const deferred = steps.find(step => step.name === "macOS shards deferred for a stacked PR");
+  expect(deferred?.if).toBe("needs.decision.outputs.run_gate == 'true' && github.event_name == 'pull_request' && github.event.pull_request.base.ref != github.event.repository.default_branch");
+  expect(deferred?.env).toEqual({ BASE: "${{ github.event.pull_request.base.ref }}", DEFAULT: "${{ github.event.repository.default_branch }}" });
+  // It runs before the shard check, so a deferred run fails with its own cause, and the reuse step (run_gate false) is untouched.
+  expect(steps.indexOf(deferred!)).toBeLessThan(steps.findIndex(step => step.name === "Every macOS shard passed"));
+  const run = Bun.spawnSync(["bash", "-c", deferred!.run!], { env: { ...process.env, BASE: "feat/x", DEFAULT: "main" } });
+  expect(run.exitCode).toBe(1);
+  const out = run.stdout.toString();
+  for (const part of ["feat/x", "not main", "push a commit, or close and reopen the PR"]) expect(out).toContain(part);
+  // Ubuntu and seeded legs never wait on the base.
+  expect(jobs["ubuntu-shard"]!.if).toBe("needs.decision.outputs.run_gate == 'true'");
+  expect(jobs["seeded-shard"]!.if).toBe("needs.decision.outputs.run_gate == 'true'");
+});
 
 test("#548 the committed per-file timings have bun's shape, name only test files, and positive whole milliseconds", () => {
   const timings = JSON.parse(readFileSync(new URL("../scripts/test-timings.json", import.meta.url), "utf8")) as { version: number; files: Record<string, number> };
