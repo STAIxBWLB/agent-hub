@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { prepareCompatArtifacts, type CompatBuildContext, type PreparedBundleDescriptor } from "../scripts/compat-prepare.ts";
 import { readCompatVerified } from "../scripts/compat-publish-files.ts";
+import { planCompatPublish } from "../scripts/compat-publish.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -58,6 +59,16 @@ test("preparation binds each trusted per-ID bundle to its source and restores al
   const f = fixture(["pi", "qwen"]), result = await prepareCompatArtifacts(f.input, { head: () => head, build: f.build });
   expect(f.calls).toHaveLength(2); expect(result.bundles).toHaveLength(2); f.restored();
   expect(result.watch.code).toBe(3); expect(result.watch.report).toBe(f.report);
+  expect(result.rejectedBatch).toBe(false); expect(result.artifacts).toHaveLength(2);
+  const canonical = result.artifacts[0] as { generatedAt: string; bounds: object; elapsedMs: number; eligible: boolean; processCleanupReason: string; legs: { reason: string; nextStep: string }[] };
+  expect(canonical.generatedAt).toBe(`${date}T00:00:00.000Z`); expect(canonical.elapsedMs).toBe(1);
+  expect(canonical.bounds).toEqual({ totalMs: 100, legMs: 50, cleanupMs: 10, outputMs: 10 });
+  expect(canonical.eligible).toBe(false); expect(canonical.processCleanupReason).toBe("");
+  expect(canonical.legs.every(leg => leg.reason === "" && leg.nextStep === "")).toBe(true);
+  const manifest = JSON.parse(readFileSync(join(f.root, "scripts/compat-receipts/manifest.json"), "utf8")).entries;
+  const replanned = planCompatPublish({ manifest, candidates: result.watch.candidates, artifacts: result.artifacts,
+    existingPullRequests: [{ id: "pi", version: "1.1.0", branch: "compat/pi-1.1.0", number: 7, state: "open" }], dryRun: result.dryRun });
+  expect(replanned.actions[0]).toMatchObject({ kind: "update-pr", id: "pi", number: 7 });
   expect(JSON.parse(readFileSync(join(f.out, "index.json"), "utf8"))).toEqual(result);
   expect(JSON.stringify(result)).not.toContain("NATIVE_UNTRUSTED_TEXT");
   for (const bundle of result.bundles) {
@@ -112,5 +123,29 @@ test("head mismatch and symlinked native summaries are refused before build or o
 test("malformed native summary generates drift-only preparation without using native code or building", async () => {
   const f = fixture(); writeFileSync(join(f.summariesDir, "compat-receipt-pi-1.1.0", "summary.json"), '{"id":"pi","version":"1.1.0","eligible":true}');
   const result = await prepareCompatArtifacts(f.input, { head: () => head, build: f.build });
-  expect(result.plan.actions[0]).toMatchObject({ kind: "update-drift", cause: "malformed-artifact" }); expect(result.bundles).toEqual([]); expect(f.calls).toEqual([]); f.restored();
+  expect(result.plan.actions[0]).toMatchObject({ kind: "update-drift", cause: "malformed-artifact" }); expect(result.rejectedBatch).toBe(true); expect(result.artifacts).toEqual([]);
+  expect(result.bundles).toEqual([]); expect(f.calls).toEqual([]); f.restored();
+});
+
+test("non-ISO or invalid-calendar measurements reject the whole batch without inventing canonical measurements", async () => {
+  for (const generatedAt of ["NATIVE_PRIVATE_CANARY", "2026-02-30T00:00:00.000Z", "2026-11-07T00:00:00Z"]) {
+    const f = fixture(), file = join(f.summariesDir, "compat-receipt-pi-1.1.0", "summary.json"), summary = JSON.parse(readFileSync(file, "utf8"));
+    summary.generatedAt = generatedAt; writeFileSync(file, JSON.stringify(summary));
+    const result = await prepareCompatArtifacts(f.input, { head: () => head, build: f.build });
+    expect(result.rejectedBatch).toBe(true); expect(result.artifacts).toEqual([]); expect(f.calls).toEqual([]);
+    expect(result.plan.actions[0]).toMatchObject({ kind: "update-drift", cause: "malformed-artifact" });
+    expect(JSON.stringify(result)).not.toContain("NATIVE_PRIVATE_CANARY"); f.restored();
+  }
+});
+
+test("failed observations retain canonical scalar measurements and closed leg states for live re-planning", async () => {
+  const f = fixture(), file = join(f.summariesDir, "compat-receipt-pi-1.1.0", "summary.json"), summary = JSON.parse(readFileSync(file, "utf8"));
+  summary.legs[0].status = "fail"; summary.legs[0].cause = "proof-failed"; summary.outcome = "fail"; summary.survivorDetected = true;
+  writeFileSync(file, JSON.stringify(summary));
+  const result = await prepareCompatArtifacts(f.input, { head: () => head, build: f.build });
+  expect(result.rejectedBatch).toBe(false); expect(result.artifacts).toHaveLength(1); expect(f.calls).toEqual([]);
+  const canonical = result.artifacts[0] as { elapsedMs: number; survivorDetected: boolean; eligible: boolean; legs: { status: string; cause: string; reason: string }[] };
+  expect(canonical.elapsedMs).toBe(1); expect(canonical.survivorDetected).toBe(true); expect(canonical.eligible).toBe(false);
+  expect(canonical.legs[0]).toEqual({ id: "native-identity", category: "macos-runner", requiredForAdmission: true, status: "fail", cause: "proof-failed", reason: "", nextStep: "" });
+  expect(result.plan.actions[0]).toMatchObject({ kind: "update-drift", cause: "proof-failed" }); expect(JSON.stringify(result)).not.toContain("NATIVE_UNTRUSTED_TEXT"); f.restored();
 });

@@ -21,6 +21,7 @@ export interface PreparedBundleDescriptor {
 export interface PreparedCompatArtifact {
   schemaVersion: 1; sourceBaseSha: string; dryRun: boolean;
   watch: { code: 0 | 3; report: string; candidates: PublishCandidate[] };
+  artifacts: unknown[]; rejectedBatch: boolean;
   plan: CompatPublishPlan;
   projections: CompatPublishPlan["actions"];
   bundles: { id: string; version: string; directory: string; descriptorSha256: string; descriptorSize: number }[];
@@ -88,6 +89,42 @@ function summaries(directory: string): unknown[] {
   };
   visit(directory, 0); return found;
 }
+/** Preserve actual scalar measurements, but never carry producer prose into the trusted artifact. */
+function canonicalEnvelopes(raw: unknown[], plan: CompatPublishPlan, candidates: PublishCandidate[], manifest: Record<string, PublishManifestEntry>): { artifacts: unknown[]; rejectedBatch: boolean } {
+  const rejected = () => ({ artifacts: [], rejectedBatch: true });
+  if (raw.length > candidates.length || plan.actions.some(action => action.kind === "update-drift" && action.cause === "malformed-artifact")) return rejected();
+  const artifacts: unknown[] = [];
+  for (const value of raw) {
+    if (!object(value)) return rejected();
+    const candidate = candidates.find(row => row.id === value.id && row.version === value.version);
+    if (!candidate || typeof value.generatedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value.generatedAt)
+      || !Number.isFinite(Date.parse(value.generatedAt)) || new Date(value.generatedAt).toISOString() !== value.generatedAt
+      || !object(value.bounds) || !Number.isSafeInteger(value.elapsedMs) || Number(value.elapsedMs) < 0) return rejected();
+    const bounds: Record<string, number> = {};
+    for (const key of ["totalMs", "legMs", "cleanupMs", "outputMs"]) {
+      const measurement = value.bounds[key];
+      if (typeof measurement !== "number" || !Number.isSafeInteger(measurement) || measurement <= 0) return rejected();
+      bounds[key] = measurement;
+    }
+    const action = plan.actions.find(row => row.id === candidate.id && row.version === candidate.version);
+    if (!action || action.kind === "supersede-pr" || !object(value.installation)) return rejected();
+    const spec = manifest[candidate.id]!, projected = action.kind === "update-drift" ? undefined : action.receipt;
+    const legs = projected?.legs ?? (action.kind === "update-drift" ? action.legs : []);
+    if (!legs.length) return rejected();
+    const policy = projected?.autoAdmit ?? (spec.autoAdmit && candidate.id !== "codex-review" && candidate.id !== "agy"
+      && !spec.legs.some(leg => leg.requiredForAdmission && ["account-or-model", "tui-desktop"].includes(leg.category)));
+    artifacts.push({ schemaVersion: 1, id: candidate.id, version: candidate.version, generatedAt: value.generatedAt, bounds, elapsedMs: value.elapsedMs,
+      procedureReceipt: spec.receipt, runnerOS: projected?.runnerOS ?? value.runnerOS, architecture: projected?.architecture ?? value.architecture,
+      ownedStopConfirmed: projected?.ownedStopConfirmed ?? (action.kind === "update-drift" ? action.ownedStopConfirmed : undefined),
+      processCleanup: projected?.processCleanup ?? (action.kind === "update-drift" ? action.processCleanup : undefined), processCleanupReason: "",
+      containment: "disposable-runner-lifetime", autoAdmit: policy, eligible: false, outcome: projected?.outcome ?? value.outcome,
+      artifact: value.artifact === null ? null : object(value.artifact) ? { method: spec.install.method, integrity: value.artifact.integrity } : undefined,
+      integrity: value.integrity, installation: { status: value.installation.status, cause: value.installation.cause, reason: "", nextStep: "" },
+      legs: legs.map(leg => ({ id: leg.id, category: leg.category, requiredForAdmission: leg.requiredForAdmission, status: leg.status, cause: leg.cause, reason: "", nextStep: "" })),
+      ...(typeof value.survivorDetected === "boolean" ? { survivorDetected: value.survivorDetected } : {}) });
+  }
+  return { artifacts, rejectedBatch: false };
+}
 function sourceHead(root: string): string {
   const env = { PATH: process.env.PATH, HOME: root, LANG: "C", LC_ALL: "C", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0" };
   const args = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-C", root];
@@ -128,10 +165,13 @@ async function prepare(input: PrepareCompatInput, ports: PrepareCompatPorts): Pr
   const manifestData = json(join(root, "scripts/compat-receipts/manifest.json"));
   if (!object(manifestData) || !object(manifestData.entries)) throw new CompatPrepareError("input");
   const manifest = manifestData.entries as Record<string, PublishManifestEntry>, observed = watch(json(resolve(input.watchFile)), manifest);
-  const plan = planCompatPublish({ manifest, candidates: observed.candidates, artifacts: summaries(resolve(input.summariesDir)), existingPullRequests: [], dryRun: !!input.dryRun });
+  const raw = summaries(resolve(input.summariesDir)), planInput = { manifest, candidates: observed.candidates, existingPullRequests: [], dryRun: !!input.dryRun };
+  const originalPlan = planCompatPublish({ ...planInput, artifacts: raw }), canonical = canonicalEnvelopes(raw, originalPlan, observed.candidates, manifest);
+  const plan = planCompatPublish({ ...planInput, artifacts: canonical.rejectedBatch ? [{}] : canonical.artifacts });
+  if (!canonical.rejectedBatch && JSON.stringify(plan) !== JSON.stringify(originalPlan)) throw new CompatPrepareError("input");
   const originals = new Map([SOURCE, ...ASSETS].map(file => [file, read(join(root, file), ASSET_CAP)]));
   const source = originals.get(SOURCE)!.bytes.toString("utf8"), result: PreparedCompatArtifact = { schemaVersion: 1, sourceBaseSha: input.sourceBaseSha,
-    dryRun: !!input.dryRun, watch: observed, plan, projections: plan.actions, bundles: [] };
+    dryRun: !!input.dryRun, watch: observed, ...canonical, plan, projections: plan.actions, bundles: [] };
   const parent = dirname(out); ownedDirectory(parent); mkdirSync(out, { mode: 0o700 });
   const home = mkdtempSync(join(tmpdir(), "ahub-compat-prepare-")), controller = new AbortController(), deadline = performance.now() + TOTAL_MS;
   const timer = setTimeout(() => controller.abort(), TOTAL_MS);
