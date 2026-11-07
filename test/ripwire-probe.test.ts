@@ -140,4 +140,4 @@ test("#1261 a real CodeFacts run feeds the probe every git step of tree() and ev
   for (const step of ["git ls-tree", "git worktree add", "git read-tree", "git cat-file --batch", "ripwire --version", "ripwire --callers", "ripwire --callees", "git worktree remove"]) expect(text).toContain(step);
   expect(text).toContain("slowest product-side step:");
   expect(text).not.toContain("none recorded");
-}, 30_000);
+}, 20_000);   // a CodeFacts child run reads the process table: its own timeout, never above the gate's 20 s (docs/agent-notes/tests.md); measured 1.6 to 1.9 s alone and 5.1 s at most under 30-way load
