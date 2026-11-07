@@ -159,7 +159,9 @@ test("same-version refresh preserves human prose and merges fresh main with both
     const p = f.prepare("99.0.0", newMain, undefined, "2026-11-08"), result = await runCompatPublisher(p.input, f.api), head = result.pullRequests[0]!.head;
     expect(result.pullRequests[0]!.number).toBe(first.pullRequests[0]!.number); expect(f.api.commits.get(head)!.parents).toEqual([oldHead, newMain]);
     const files = f.api.files(head); expect(files["new-main.txt"]).toBe("keep new main"); expect(files[SOURCE]).toContain("main-only change");
-    expect(files).not.toHaveProperty("docs/verification/2026-11-07-compat-pi-99.0.0.md"); expect(files).toHaveProperty("docs/verification/2026-11-08-compat-pi-99.0.0.md");
+    const oldReceipt = "docs/verification/2026-11-07-compat-pi-99.0.0.md", newReceipt = "docs/verification/2026-11-08-compat-pi-99.0.0.md";
+    expect(Object.hasOwn(files, oldReceipt)).toBe(false); expect(Object.hasOwn(files, newReceipt)).toBe(true);
+    expect(files[newReceipt]).toBe(readFileSync(join(p.directory, "pi-99.0.0", "receipt.md"), "utf8"));
     expect(f.api.pulls[0]!.body.startsWith("Human introduction.\n")).toBe(true); expect(f.api.pulls[0]!.body.endsWith("\nHuman follow-up.")).toBe(true);
   } finally { f.cleanup(); }
 });
