@@ -106,12 +106,20 @@ export function aggregateFlakes(jobs: readonly JobRecord[], failures: ReadonlyMa
     .sort((a, b) => b.heads.length - a.heads.length || rank[a.os] - rank[b.os] || a.file.localeCompare(b.file) || a.test.localeCompare(b.test));
 }
 
-/** The runs worth reading jobs for: a rerun (attempt above 1) or a failed run whose head also has a successful run. Newest first, at most `limit`. */
+/**
+ * The runs worth reading jobs for, as whole head groups: a head qualifies when one of its runs is a rerun (attempt above 1) or when it has both a failed and a successful run (a
+ * failure and its pass in separate runs of one SHA, such as a reopened PR or a dispatch). Every failed or successful run of a qualifying head is kept, so `flakyJobs` sees both sides.
+ * Newest group first; the runs of all groups together count toward `limit`.
+ */
 export function candidateRuns(runs: readonly RunRecord[], limit = MAX_RUNS_EXAMINED): RunRecord[] {
-  const passed = new Set(runs.filter((run) => run.conclusion === "success").map((run) => run.headSha));
-  return runs
-    .filter((run) => run.runAttempt > 1 || (run.conclusion === "failure" && passed.has(run.headSha)))
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id - a.id)
+  const byHead = new Map<string, RunRecord[]>();
+  for (const run of runs) if (run.conclusion === "failure" || run.conclusion === "success") byHead.set(run.headSha, [...(byHead.get(run.headSha) ?? []), run]);
+  const newest = (a: RunRecord, b: RunRecord) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id - a.id;
+  return [...byHead.values()]
+    .filter((group) => group.some((run) => run.runAttempt > 1) || (group.some((run) => run.conclusion === "failure") && group.some((run) => run.conclusion === "success")))
+    .map((group) => group.sort(newest))
+    .sort((a, b) => newest(a[0]!, b[0]!))
+    .flat()
     .slice(0, limit);
 }
 

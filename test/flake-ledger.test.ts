@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { GitHubApi } from "../scripts/lib/github-api.ts";
 import { BUDGET_SLACK, SHARD_BUDGET_MS, shardTimes, shardsOverBudget, timingsStale, type ShardJob } from "../scripts/lib/ci-shards.ts";
 import {
-  LEDGER_MARKER, LEDGER_TITLE, aggregateFlakes, candidateRuns, flakyJobs, parseFailures, pickTrackingIssue, renderLedger, rollupByFile, upsertIssue,
+  LEDGER_MARKER, LEDGER_TITLE, aggregateFlakes, candidateRuns, collect, flakyJobs, parseFailures, pickTrackingIssue, renderLedger, rollupByFile, upsertIssue,
   type FailedTest, type JobRecord, type RunRecord,
 } from "../scripts/flake-ledger.ts";
 
@@ -77,11 +77,12 @@ test("#1257 rollupByFile ranks a file by distinct heads then failing tests, so o
   expect(rows.map((r) => [r.file, r.heads, r.tests, r.os])).toEqual([["a.ts", 2, 2, "macos-only"], ["b.ts", 2, 2, "both"], ["c.ts", 1, 1, "macos-only"]]); // a tie on heads and tests falls to the file name
 });
 
-test("#1257 candidateRuns keeps reruns and failed runs whose head also passed, newest first, bounded", () => {
+test("#1257 candidateRuns keeps whole head groups: reruns, and a failed run together with the successful run of its head, newest group first, bounded", () => {
   const run = (id: number, headSha: string, conclusion: string, runAttempt = 1, day = 1): RunRecord => ({ id, runAttempt, headSha, event: "pull_request", conclusion, createdAt: `2026-11-0${day}T00:00:00Z` });
   const runs = [run(1, "a", "failure", 1, 1), run(2, "a", "success", 1, 2), run(3, "b", "failure", 1, 3), run(4, "c", "success", 2, 4), run(5, "d", "success", 1, 5)];
-  expect(candidateRuns(runs).map((r) => r.id)).toEqual([4, 1]);
+  expect(candidateRuns(runs).map((r) => r.id)).toEqual([4, 2, 1]); // head a keeps its passing run 2 as well as its failed run 1: the pass is the other half of the flake
   expect(candidateRuns(runs, 1).map((r) => r.id)).toEqual([4]);
+  expect(candidateRuns(runs, 2).map((r) => r.id)).toEqual([4, 2]); // the bound counts every kept run
 });
 
 test("#1257 renderLedger carries the marker, the top files, the OS split and a cut at the body limit", () => {
@@ -217,4 +218,34 @@ test("#1257 item 4: timingsStale reads the monthly cadence and an unknown date a
   expect(timingsStale("2026-09-20T00:00:00Z", now)).toBe(true);
   expect(timingsStale(undefined, now)).toBeUndefined();
   expect(timingsStale("not a date", now)).toBeUndefined();
+});
+
+test("#1257 collect reports a flake whose failure and pass are separate runs of one SHA, each attempt 1 (a reopened PR or a dispatch)", async () => {
+  const runs = [
+    { id: 11, run_attempt: 1, head_sha: "sha1", event: "pull_request", conclusion: "failure", created_at: "2026-11-05T00:00:00Z" },
+    { id: 12, run_attempt: 1, head_sha: "sha1", event: "workflow_dispatch", conclusion: "success", created_at: "2026-11-05T01:00:00Z" },
+    { id: 13, run_attempt: 1, head_sha: "sha2", event: "pull_request", conclusion: "failure", created_at: "2026-11-05T02:00:00Z" },
+  ];
+  const jobsOf: Record<number, object[]> = {
+    11: [{ id: 111, run_id: 11, run_attempt: 1, name: MAC1, head_sha: "sha1", conclusion: "failure", completed_at: "2026-11-05T00:10:00Z" }],
+    12: [{ id: 121, run_id: 12, run_attempt: 1, name: MAC1, head_sha: "sha1", conclusion: "success", completed_at: "2026-11-05T01:10:00Z" }],
+    13: [{ id: 131, run_id: 13, run_attempt: 1, name: MAC1, head_sha: "sha2", conclusion: "failure", completed_at: "2026-11-05T02:10:00Z" }],
+  };
+  const asked: string[] = [];
+  const fetchFn = (async (url: string | URL | Request) => {
+    const path = String(url).replace("https://api.github.com", "");
+    asked.push(path.split("?")[0]!);
+    if (path.startsWith("/repos/o/r/actions/workflows/check.yml/runs")) return new Response(JSON.stringify({ workflow_runs: runs }), { status: 200 });
+    const jobs = /^\/repos\/o\/r\/actions\/runs\/(\d+)\/jobs/.exec(path);
+    if (jobs) return new Response(JSON.stringify({ jobs: jobsOf[Number(jobs[1])] ?? [] }), { status: 200 });
+    if (path === "/repos/o/r/actions/jobs/111/logs") return new Response("2026-11-05T00:05:00.0Z ##[group]test/x.test.ts:\n2026-11-05T00:05:01.0Z (fail) flaky one [3.00ms]\n", { status: 200 });
+    return new Response("{}", { status: 404 });
+  }) as typeof fetch;
+  const found = await collect(new GitHubApi("o/r", "t", fetchFn), new Date("2026-11-07T00:00:00Z"));
+  expect(found.flaky.map((job) => job.id)).toEqual([111]); // sha2 failed and never passed: not a flake
+  expect(found.failures.get(111)).toEqual([{ file: "test/x.test.ts", test: "flaky one" }]);
+  expect(asked).toContain("/repos/o/r/actions/runs/12/jobs"); // the passing run is read, which the first version never did
+  expect(asked).not.toContain("/repos/o/r/actions/runs/13/jobs");
+  expect(found.runsExamined).toBe(2);
+  expect(found.truncated).toBe(false);
 });
