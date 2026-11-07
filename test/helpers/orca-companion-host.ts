@@ -31,7 +31,7 @@ export interface FakeOrcaCompanionHostOptions {
   desktop?: boolean;
   syntheticState?: OrcaCompanionFixtureState;
 }
-export type OrcaCompanionFixtureErrorCode = "unknown_method" | "not_permitted" | "capability_denied" | "invalid_params" | "plugin_disabled"
+export type OrcaCompanionFixtureErrorCode = "unknown_method" | "not_permitted" | "capability_denied" | "invalid_params" | "consent_required"
   | "fixture_identity_missing" | "fixture_identity_ambiguous";
 export class OrcaCompanionFixtureError extends Error {
   constructor(readonly code: OrcaCompanionFixtureErrorCode) { super(code); this.name = "OrcaCompanionFixtureError"; }
@@ -86,7 +86,8 @@ export class FakeOrcaCompanionHost {
   snapshot(): OrcaCompanionFixtureState { return structuredClone(this.state); }
   has(method: string): boolean {
     return this.enabled && Object.hasOwn(METHODS, method) && this.offered.has(method as OrcaCompanionFixtureMethod)
-      && METHODS[method as OrcaCompanionFixtureMethod].surfaces.includes(this.options.surface);
+      && METHODS[method as OrcaCompanionFixtureMethod].surfaces.includes(this.options.surface)
+      && (method !== "shell.openExternal" || this.options.desktop !== false);
   }
   private workspaces(): OrcaCompanionFixtureWorkspace[] {
     const ids = new Set<string>();
@@ -100,7 +101,7 @@ export class FakeOrcaCompanionHost {
   async call<M extends OrcaCompanionFixtureMethod>(method: M, input?: unknown, invocation?: { userGesture?: boolean }): Promise<HostMethods[M]>;
   async call(method: string, input?: unknown, invocation?: { userGesture?: boolean }): Promise<unknown>;
   async call(method: string, input?: unknown, invocation: { userGesture?: boolean } = {}): Promise<unknown> {
-    if (!this.enabled) return fail("plugin_disabled");
+    if (!this.enabled) return fail("consent_required");
     if (!Object.hasOwn(METHODS, method) || !this.offered.has(method as OrcaCompanionFixtureMethod)) return fail("unknown_method");
     const definition = METHODS[method as OrcaCompanionFixtureMethod];
     if (!definition.surfaces.includes(this.options.surface)) return fail("not_permitted");
@@ -118,6 +119,8 @@ export class FakeOrcaCompanionHost {
     }
     if (!text(value.url)) return fail("invalid_params");
     if (this.options.desktop === false || invocation.userGesture !== true) return fail("not_permitted");
+    try { if (!["http:", "https:", "mailto:"].includes(new URL(value.url).protocol)) return fail("invalid_params"); }
+    catch { return fail("invalid_params"); }
     if (this.externalResult.opened) this.externalNavigation.push(value.url);
     return structuredClone(this.externalResult);
   }

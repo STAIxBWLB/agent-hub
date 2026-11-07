@@ -88,7 +88,12 @@ test("external navigation is frame-only, desktop-only and gesture-bound", async 
   frame.setExternalResult({ opened: false, reason: "cancelled" });
   expect(await frame.call("shell.openExternal", { url }, { userGesture: true })).toEqual({ opened: false, reason: "cancelled" });
   expect(frame.externalNavigation).toEqual([url]);
-  await expect(host({ surface: "editor", desktop: false }).call("shell.openExternal", { url }, { userGesture: true })).rejects.toMatchObject({ code: "not_permitted" });
+  const browser = host({ surface: "editor", desktop: false });
+  expect(browser.has("shell.openExternal")).toBe(false);
+  await expect(browser.call("shell.openExternal", { url }, { userGesture: true })).rejects.toMatchObject({ code: "not_permitted" });
+  for (const invalid of ["javascript:alert(1)", "file:///fixture", "not a URL"]) {
+    await expect(frame.call("shell.openExternal", { url: invalid }, { userGesture: true })).rejects.toMatchObject({ code: "invalid_params" });
+  }
 });
 test("folder workspace navigation has its own desktop limitation", async () => {
   const fake = host({ desktop: false });
@@ -106,8 +111,8 @@ test("fixture exposes no invented terminal focus, creation or functional mutatio
 test("disabled fixture refuses calls while synthetic agent/worktree/terminal state stays intact", async () => {
   const state = { agents: ["running-agent"], worktrees: ["existing-worktree"], terminals: ["existing-terminal"] };
   const fake = host({ syntheticState: state }); const before = JSON.stringify(fake.snapshot()); fake.setEnabled(false);
-  await expect(fake.call("workspace.list")).rejects.toMatchObject({ code: "plugin_disabled" });
-  await expect(fake.call("workspace.open", { workspaceId: "workspace-a" })).rejects.toMatchObject({ code: "plugin_disabled" });
+  await expect(fake.call("workspace.list")).rejects.toMatchObject({ code: "consent_required" });
+  await expect(fake.call("workspace.open", { workspaceId: "workspace-a" })).rejects.toMatchObject({ code: "consent_required" });
   expect(JSON.stringify(fake.snapshot())).toBe(before); expect(state).toEqual(fake.snapshot());
   expect(fake.calls).toEqual([]); expect(fake.openedWorkspaceIds).toEqual([]);
   fake.setEnabled(true); expect((await fake.call("workspace.list")).workspaces).toEqual(workspaces);
