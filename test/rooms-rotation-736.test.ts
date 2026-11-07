@@ -290,7 +290,10 @@ test("an empty live rotation fences every room peer before a Bus-only message ca
   expect(inspected).toBe(true);
   expect(f.a.store.get("work")!.current.digest).not.toBe(previous);
   expect(f.a.bus.queueIds("codex@beta")).toEqual([fresh.id]);
-  await command(f.b, "join", { name: "work", roster: encodeBase64url(f.a.store.get("work")!.wire) });
+  const target = f.a.store.get("work")!.current.digest;
+  adoption.release();
+  await f.wait(() => f.b.store.get("work")!.current.digest === target, "beta live link adopted the target roster digest");
+  expect(adoption.manualCommitHeld()).toBe(false);
   f.a.bus.resume("codex@beta");
   await f.wait(() => f.b.peer.got.some(row => row.id === fresh.id), "Bus-only work delivered under the new epoch");
   expect(f.b.peer.got.filter(row => row.id === fresh.id)).toHaveLength(1);
