@@ -150,7 +150,7 @@ test("#1281 a retry after a partial event write does not duplicate tokens or usa
   const attributed = { attribution: { task: 1281, attribution: "delivery" as const }, turn: "turn-a" };
   expect(() => writer.write("kimi", row, 10, attributed)).toThrow("Kimi usage event commit failed");
   expect(written.map(event => event.type)).toEqual(["tokens", "usage"]);
-  writer.write("kimi", row, 10, attributed);
+  writer.write("kimi", row, 10, { attribution: { attribution: "unattributed" } });
   expect(written.map(event => event.type)).toEqual(["tokens", "usage"]);
   expect(written[0]).toMatchObject({ type: "tokens", source: "kimi_wire", id: row.id, n: 10, task: 1281 });
   expect(written[1]).toMatchObject({ type: "usage", source: "kimi_wire", id: row.id, totalTokens: 110, task: 1281 });
