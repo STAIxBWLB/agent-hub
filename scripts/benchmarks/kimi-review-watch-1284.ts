@@ -125,7 +125,7 @@ async function preparedBaseline(root: string): Promise<KimiWatch1284Baseline> {
       mcpConfig: '{"mcpServers":{}}', systemPrompt: "Synthetic benchmark only.", watchdogMs: DEADLINE_MS,
       backend, verdictSince: () => false, inputReleased: () => released.resolve(),
       taskMcp: (task, current) => createReviewerMcpSession({ task, current,
-        tools: ["hub_review", "hub_task_show"].map(name => ({ name, description: "fixture", inputSchema: { type: "object" as const, properties: {} } })), call: async () => "0" }) });
+        tools: ["hub_review", "hub_task_show"].map(name => ({ name, description: "fixture", inputSchema: { type: "object" as const, properties: {}, additionalProperties: false as const } })), call: async () => "0" }) });
     const run = async () => {
       failureStage = 2; await peer!.start();
       const env = newEnvelope(HUB, "", { kind: "review", to: ["kimi-review"], refs: { task: "7", commit: "a".repeat(40) } });
