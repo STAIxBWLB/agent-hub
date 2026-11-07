@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { waitForStartupReadiness, type StartupOwner, type StartupReadinessPorts } from "../src/hub/startup-readiness.ts";
+import { processLiveness, processSignature } from "../src/pi/process-signature.ts";
+import { stopOwnedProcess, trackGroup } from "../src/hub/child-process.ts";
 
 type Status = { projectId: string; instanceId: string; version: string };
 const STATUS: Status = { projectId: "fixture-project", instanceId: "fixture-instance", version: "fixture-version" };
@@ -48,6 +52,59 @@ test("a missing full owner identity never produces a PID-only still-starting cla
   expect(f.notices).toEqual([]);
   expect(f.confirmations).toEqual([STATUS]);
 });
+
+test("actual startup owner proof binds the registry signature to the signed owned child before pending progress", async () => {
+  const root = mkdtempSync(join(tmpdir(), "startup-owner-fixture-"));
+  const child = spawn(process.execPath, ["-e", 'process.stdout.write("owned-ready"); process.stdin.resume();'], {
+    cwd: root, env: { HOME: root, TMPDIR: root, PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" }, detached: true, stdio: ["pipe", "pipe", "ignore"],
+  });
+  trackGroup(child);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await new Promise<void>((done, reject) => {
+      timer = setTimeout(() => reject(new Error("owned fake child did not reach its public handshake; inspect the fixture before retrying")), 5000);
+      child.once("error", reject);
+      child.stdout!.once("data", chunk => { if (String(chunk).includes("owned-ready")) done(); else reject(new Error("owned fake child handshake changed; inspect its fixture")); });
+    });
+    clearTimeout(timer);
+    const signature = processSignature(child.pid!);
+    expect(typeof signature).toBe("string");
+    expect(processLiveness(child.pid!, signature)).toBe("live");
+    const project = { id: "owned-fixture", root, stateDir: join(root, "state") };
+    let claim: typeof project & { instanceId: string | null; pid: number | null; pidSignature: string | null | undefined } = {
+      ...project, instanceId: "owned-instance", pid: child.pid!, pidSignature: signature,
+    };
+    const source = readFileSync(join(import.meta.dir, "../src/hub/lifecycle.ts"), "utf8");
+    const begin = source.indexOf("    const startupOwner ="), end = source.indexOf("\n    return await waitForStartupReadiness", begin);
+    expect(begin).toBeGreaterThan(0); expect(end).toBeGreaterThan(begin);
+    const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(`function make(ports) { const { startupChild,registry,project,processSignature,processLiveness } = ports; let startupSignature; const launchFailed=false; ${source.slice(begin, end)} return startupOwner; }`);
+    const make = new Function(`${compiled}; return make;`)() as (ports: Record<string, unknown>) => () => StartupOwner;
+    const owner = make({ startupChild: child, project, processSignature, processLiveness,
+      registry: { get: (id: string) => { expect(id).toBe(project.id); return { ...claim }; } } });
+    expect(owner()).toEqual({ state: "live", pid: child.pid });
+    for (const pidSignature of [undefined, null, `${signature}:mismatch`]) {
+      claim = { ...claim, pidSignature };
+      expect(owner()).toEqual({ state: "unknown" });
+    }
+    const f = fixture(Number.POSITIVE_INFINITY);
+    f.ports.owner = owner;
+    f.ports.sleep = async () => { f.advance(f.now() === 0 ? 12_000 : 1000); };
+    f.ports.current = () => { if (f.now() >= 13_000) throw new Error("fixture pending window ended"); };
+    await expect(waitForStartupReadiness(f.ports)).rejects.toThrow("fixture pending window ended");
+    expect(f.notices).toHaveLength(0);
+    expect(f.confirmations).toHaveLength(0);
+    claim = { ...claim, pidSignature: signature };
+    expect(owner()).toEqual({ state: "live", pid: child.pid });
+    claim = { ...claim, instanceId: null, pid: null, pidSignature: null };
+    expect(owner()).toEqual({ state: "live", pid: child.pid });
+    claim = { ...claim, instanceId: "competing-instance", pid: process.pid, pidSignature: processSignature(process.pid) };
+    expect(owner()).toBeUndefined();
+  } finally {
+    clearTimeout(timer);
+    await stopOwnedProcess(child, { group: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 20_000);
 
 test("joining a competing starter preserves its readiness status without claiming that child", async () => {
   const f = fixture(13_000); f.owner(undefined);

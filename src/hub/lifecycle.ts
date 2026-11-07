@@ -237,11 +237,12 @@ export async function startProject(project: Project, options: { unattended?: boo
       if (!startupChild) return undefined; // A competing starter owns this claim; join without claiming its child.
       const claim = registry.get(project.id);
       if (!claim || claim.root !== project.root || claim.stateDir !== project.stateDir) throw new Error("project registration changed; refresh before starting");
-      if (claim.instanceId && claim.pid !== startupChild.pid) return undefined;
+      const claimed = claim.instanceId !== null;
+      if (claimed && claim.pid !== startupChild.pid) return undefined;
       if (launchFailed || startupChild.exitCode !== null || startupChild.signalCode !== null || startupChild.pid === undefined) return { state: "gone" };
       // A still-unreaped owned child cannot have its PID reused. Capture the full identity once it is observable.
       startupSignature ??= processSignature(startupChild.pid);
-      if (!startupSignature) return { state: "unknown" };
+      if (!startupSignature || claimed && claim.pidSignature !== startupSignature) return { state: "unknown" };
       const state = processLiveness(startupChild.pid, startupSignature);
       const fresh = registry.get(project.id);
       if (!fresh || fresh.root !== project.root || fresh.stateDir !== project.stateDir || fresh.instanceId !== claim.instanceId || fresh.pid !== claim.pid || fresh.pidSignature !== claim.pidSignature) return undefined;
