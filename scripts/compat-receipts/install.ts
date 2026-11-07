@@ -72,7 +72,9 @@ function privateEnv(context: ReceiptContext): NodeJS.ProcessEnv {
 }
 async function run(context: ReceiptContext, signal: AbortSignal, argv: string[], env = privateEnv(context), failure: "integrity" | "install-unavailable" = "install-unavailable"): Promise<void> {
   const result = await context.run(argv, { cwd: context.cwd, env, signal, timeoutMs: context.limits.installMs, maxBytes: context.limits.outputBytes });
-  if (!result.cleanup) throw new ReceiptError("cleanup");
+  if (!result.ownedStopConfirmed || result.survivorDetected === true) throw new ReceiptError("cleanup");
+  // Runner lifetime containment is tracked by the controller, independently of artifact bytes.
+  // A command can confirm its owned group stopped without proving all possible descendants.
   if (result.timedOut || signal.aborted) throw new ReceiptError("timeout");
   if (result.exitCode !== 0) throw new ReceiptError(failure);
 }

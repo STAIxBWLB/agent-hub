@@ -23,7 +23,7 @@ function npmFetch(data: Buffer, overrides: Record<string, unknown> = {}): Receip
     ? Response.json({ name: "@openai/codex", version: "0.167.0", dist: { integrity, tarball: "https://registry.npmjs.org/codex.tgz" }, ...overrides })
     : new Response(data)) as ReceiptFetch;
 }
-const ok = { exitCode: 0, stdout: "", stderr: "", timedOut: false, cleanup: true };
+const ok = { exitCode: 0, stdout: "", stderr: "", timedOut: false, ownedStopConfirmed: true, processCleanup: "proven" as const, processCleanupReason: "trusted fake runner lifetime ended" };
 test("wrong SRI refuses before any file or npm effect", async () => {
   let effects = 0;
   const context = await fixture(async () => { effects++; return ok; });
@@ -31,27 +31,30 @@ test("wrong SRI refuses before any file or npm effect", async () => {
   expect(effects).toBe(0);
   expect((await readdir(context.root)).sort()).toEqual(["cwd", "home", "prefix"]);
 });
-test("exact verified local tarball uses private npm config and returns private executable", async () => {
-  let context: ReceiptContext;
-  context = await fixture(async (argv, options) => {
-    expect(argv[0]).toBe("npm"); expect(argv).not.toContain("--ignore-scripts");
-    expect(argv).toContain(context.prefix);
-    expect(argv.at(-1)).toBe(join(context.root, "verified-package.tgz"));
-    expect(options.env.HOME).toBe(context.home); expect(options.env.NPM_TOKEN).toBeUndefined();
-    expect(options.env.npm_config_userconfig).toBe(join(context.root, "empty-user.npmrc"));
-    expect(options.env.npm_config_globalconfig).toBe(join(context.root, "empty-global.npmrc"));
-    expect(options.env.npm_config_cache).toBe(join(context.root, "npm-cache"));
-    const packageRoot = join(context.prefix, "node_modules", "@openai", "codex");
-    await mkdir(packageRoot, { recursive: true }); await mkdir(join(context.prefix, "node_modules", ".bin"));
-    await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: "@openai/codex", version: context.version, bin: { codex: "cli.js" } }));
-    await writeFile(join(packageRoot, "cli.js"), "fixture", { mode: 0o700 });
-    await symlink("../@openai/codex/cli.js", join(context.prefix, "node_modules", ".bin", "codex"));
-    return ok;
-  });
-  const result = await installCompatArtifact(context, entry, npmFetch(Buffer.from("package")));
-  expect(result.command).toEqual([join(context.prefix, "node_modules", "@openai", "codex", "cli.js")]);
-  expect(result.integrity.startsWith("sha512-")).toBe(true);
-});
+for (const processCleanup of ["proven", "unproven"] as const) {
+  test(`exact private npm install verifies bytes with ${processCleanup} runner lifetime`, async () => {
+   let context: ReceiptContext;
+   context = await fixture(async (argv, options) => {
+     expect(argv[0]).toBe("npm"); expect(argv).not.toContain("--ignore-scripts");
+     expect(argv).toContain(context.prefix);
+     expect(argv.at(-1)).toBe(join(context.root, "verified-package.tgz"));
+     expect(options.env.HOME).toBe(context.home); expect(options.env.NPM_TOKEN).toBeUndefined();
+     expect(options.env.npm_config_userconfig).toBe(join(context.root, "empty-user.npmrc"));
+     expect(options.env.npm_config_globalconfig).toBe(join(context.root, "empty-global.npmrc"));
+     expect(options.env.npm_config_cache).toBe(join(context.root, "npm-cache"));
+     const packageRoot = join(context.prefix, "node_modules", "@openai", "codex");
+     await mkdir(packageRoot, { recursive: true }); await mkdir(join(context.prefix, "node_modules", ".bin"));
+     await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: "@openai/codex", version: context.version, bin: { codex: "cli.js" } }));
+     await writeFile(join(packageRoot, "cli.js"), "fixture", { mode: 0o700 });
+     await symlink("../@openai/codex/cli.js", join(context.prefix, "node_modules", ".bin", "codex"));
+     return { ...ok, processCleanup, processCleanupReason: processCleanup === "proven" ? "trusted fake runner lifetime ended" : "owned group stopped; lifetime not attested" };
+   });
+   const result = await installCompatArtifact(context, entry, npmFetch(Buffer.from("package")));
+   expect(result.command).toEqual([join(context.prefix, "node_modules", "@openai", "codex", "cli.js")]);
+   expect(result.integrity.startsWith("sha512-")).toBe(true);
+ });
+}
+
 test("metadata exact-version mismatch never invokes npm", async () => {
   let effects = 0; const context = await fixture(async () => { effects++; return ok; });
   await expect(installCompatArtifact(context, entry, npmFetch(Buffer.from("package"), { version: "0.167.1" }))).rejects.toBeInstanceOf(ReceiptError);
@@ -120,7 +123,7 @@ test("download byte ceiling refuses before npm", async () => {
   expect(effects).toBe(0);
 });
 test("owned command cleanup failure cannot produce an installed artifact", async () => {
-  const context = await fixture(async () => ({ ...ok, cleanup: false }));
+  const context = await fixture(async () => ({ ...ok, ownedStopConfirmed: false }));
   await expect(installCompatArtifact(context, entry, npmFetch(Buffer.from("package")))).rejects.toMatchObject({ causeCode: "cleanup" });
 });
 test("timed out install reports closed timeout cause", async () => {
@@ -158,4 +161,9 @@ test("archive root regular file remains refused", async () => {
   const { context, releaseEntry, fetcher } = await releaseFixture(archive("."));
   await expect(installCompatArtifact(context, releaseEntry, fetcher)).rejects.toMatchObject({ causeCode: "integrity" });
   expect(await readdir(context.prefix)).toEqual([]);
+});
+
+test("detected survivor cannot produce an installed artifact", async () => {
+  const context = await fixture(async () => ({ ...ok, survivorDetected: true }));
+  await expect(installCompatArtifact(context, entry, npmFetch(Buffer.from("package")))).rejects.toMatchObject({ causeCode: "cleanup" });
 });
