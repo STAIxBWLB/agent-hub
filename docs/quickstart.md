@@ -46,6 +46,12 @@ terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
 
+## Upgrading to 0.34.1
+
+`ahub upgrade` reads npm 12's `npm view --json` output again; with npm 12, 0.34.0 and earlier refused both the default target and `--to`. Update the global CLI to 0.34.1 first, either `bun add -g @staix/agent-hub@0.34.1` or, if you installed with dotfiles, `dot ai family install ahub --version 0.34.1`; then run `ahub upgrade` in each project. If you must run an older CLI's upgrade on npm 12, put npm 11 first on PATH for that run (`npm i --prefix ~/.cache/npm11 npm@11`, then `PATH="$HOME/.cache/npm11/node_modules/.bin:$PATH" ahub upgrade`). Nothing else changes.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.34.1` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
 ## Upgrading to 0.34.0
 
 After an Orca restart, `ahub upgrade` no longer stops at panes that are orphaned but still connected: the plan screen offers `[t]` to reattach exactly the panes it verified (each Orca call bounded by 5 s), and the blocker names the refresh key. `ahub setup` now writes the stable install path of a symlinked CLI (for example a dotfiles-managed `~/.local/bin/ahub`) into the marketplace and the Claude profile hook instead of a versioned one, replaces a stale managed hook in place, and a refused marketplace replacement names every blocking row and the next step; `ahub doctor` checks the profile hook of each Claude home it can see. If you installed with dotfiles, follow [Installed with dotfiles](#installed-with-dotfiles) instead of `bun add -g`. Nothing else changes until you use it; N-1 is published 0.33.0 and control remains 16 through 17.

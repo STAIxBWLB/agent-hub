@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.34.1
+
 - `ahub upgrade` works with npm 12 again (#1253, PR #1254, task 766). npm 12 wraps `npm view --json` output for one package in a one-element array. The default target ("unexpected latest release") and `--to` ("unexpected release identity") both refused it. Both now share one parser that accepts the npm 11 value and a one-element array of it, and still refuses any other shape, with a message naming the `npm view` command to check. Until this release, an npm 12 machine can upgrade by putting npm 11 first on PATH for the run.
 
 ## 0.34.0
