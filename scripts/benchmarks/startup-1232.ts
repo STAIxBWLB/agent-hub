@@ -336,7 +336,7 @@ async function measure(root: string): Promise<void> {
   let effects = 0;
   const deny = () => { effects++; return refuse(); };
   if (process.env.AHUB_STARTUP_BENCHMARK_CHILD !== "1" || process.env.HOME !== join(root, "home") || process.env.AGENTHUB_HOME !== join(root, "agenthub_home")) return refuse();
-  globalThis.fetch = deny;
+  globalThis.fetch = Object.assign(deny, { preconnect: deny });
   globalThis.WebSocket = class { constructor() { deny(); } } as unknown as typeof WebSocket;
   Bun.connect = deny as typeof Bun.connect;
   const cp = (await import("node:child_process")).default;
@@ -344,9 +344,9 @@ async function measure(root: string): Promise<void> {
   const allowed = (command: unknown, args: unknown): boolean => {
     if (typeof command !== "string" || !Array.isArray(args)) return false;
     // The pinned portable helper deliberately invokes git/realpath by basename. Resolve only these closed names in the isolated fixed PATH.
-    if (["git", "ps", "realpath"].includes(command)) command = Bun.which(command, { PATH: process.env.PATH }) ?? "";
-    if (["/bin/ps", "/usr/bin/ps", "/bin/realpath", "/usr/bin/realpath"].includes(command)) return true;
-    if (!["/usr/bin/git", "/bin/git"].includes(command)) return false;
+    const executable = ["git", "ps", "realpath"].includes(command) ? Bun.which(command, { PATH: process.env.PATH }) ?? "" : command;
+    if (["/bin/ps", "/usr/bin/ps", "/bin/realpath", "/usr/bin/realpath"].includes(executable)) return true;
+    if (!["/usr/bin/git", "/bin/git"].includes(executable)) return false;
     const words = [...args] as string[];
     while (words.length && words[0]!.startsWith("-")) { const option = words.shift(); if (option === "-c" || option === "-C" || option === "--git-dir" || option === "--work-tree") words.shift(); }
     const verb = words.shift();
