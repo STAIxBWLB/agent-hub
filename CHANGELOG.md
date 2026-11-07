@@ -4,6 +4,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.34.1
+
+- `ahub upgrade` works with npm 12 again (#1253, PR #1254, task 766). npm 12 wraps `npm view --json` output for one package in a one-element array. The default target ("unexpected latest release") and `--to` ("unexpected release identity") both refused it. Both now share one parser that accepts the npm 11 value and a one-element array of it, and still refuses any other shape, with a message naming the `npm view` command to check. Until this release, an npm 12 machine can upgrade by putting npm 11 first on PATH for the run.
+
 ## 0.34.0
 
 - `ahub upgrade` no longer dead-ends on Orca panes that are orphaned but still connected after an Orca restart (#1246, PR #1249, task 760). The `terminal-orphaned` blocker names the peer, project and handle and the refresh key (`[r]` on the plan, `[s]` on an open operation). The interactive plan screen offers `[t] reattach N orphaned terminals`: after the person picks it, it runs `orca terminal switch` only for the panes the plan verified (same identity, still orphaned and connected, no project or machine recovery hold), bounds every Orca call and the confirmation poll by 5 s, and plans again. Nothing else is mutated; `--dry-run`, a pipe and `--yes` never switch a pane. A live Orca restart remains unverified.
