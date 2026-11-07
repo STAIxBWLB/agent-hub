@@ -64,7 +64,7 @@ async function codex(context: ProofContext, result: ProofResults, trust: () => v
       mark(result, ["version-negative"], "pass");
     } catch (error) { mark(result, ["version-negative"], "fail", failure(error, context)); }
     finally { await release(negative); }
-  } else result["version-negative"] = { status: "not-run", cause: "input" };
+  }
   trust();
   let binary: string | undefined;
   try {
