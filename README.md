@@ -28,6 +28,11 @@ ahub say "Each of you: reply with your name."
 ahub ui                                      # the web dashboard
 ```
 
+If a verified daemon child is still starting after 12 seconds, `ahub up` reports
+its PID and keeps waiting for readiness. Completed starts write phase timings to
+`hub.log`; [startup diagnostics](docs/operations.md#install-and-start) explains
+the 120-second outer bound and the next step for unconfirmed readiness.
+
 `ahub setup` also registers agent-hub as a plugin of the family console
 ([agent-console](https://github.com/STAIxBWLB/agent-console), `acon ui`): the same dashboard
 appears as a panel for every registered project, and pending approvals, reviews assigned
