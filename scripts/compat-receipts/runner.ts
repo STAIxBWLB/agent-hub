@@ -41,7 +41,8 @@ export const runBoundedReceiptCommand: ReceiptCommand = async (argv, options) =>
             const known = child.pid && before ? descendantsOf(before, child.pid) : [];
             await stopOwnedProcess(child, { group: true, termMs: TERM_MS, killMs: KILL_MS, table: cleanProcessTable });
             const after = await cleanProcessTable();
-            const runRoot = options.env.AGENTHUB_HOME ? dirname(options.env.AGENTHUB_HOME) : undefined;
+            const privateHome = options.env.AGENTHUB_HOME ?? options.env.HOME;
+            const runRoot = privateHome ? dirname(privateHome) : undefined;
             // Observed identities or a private-run path are sufficient to report a
             // survivor, never authority to signal an otherwise unowned process.
             survivorDetected = !!after?.some(row => known.some(owned => owned.pid === row.pid && owned.started === row.started) ||

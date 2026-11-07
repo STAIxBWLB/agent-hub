@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { isCompatId } from "../src/adapters/compat.ts";
 import { realPath } from "../src/hub/project.ts";
-import { openReceiptOutput } from "./compat-receipts/output.ts";
+import { openReceiptOutput, RECEIPT_OUTPUT_MS } from "./compat-receipts/output.ts";
 import { installCompatArtifact } from "./compat-receipts/install.ts";
 import { runManifestProofs } from "./compat-receipts/proofs.ts";
 import { RECEIPT_CLEANUP_MS, runBoundedReceiptCommand } from "./compat-receipts/runner.ts";
@@ -83,14 +83,14 @@ function renderReceipt(summary: ReceiptSummary): string {
     ...summary.legs.map(leg => `| ${leg.id} | ${leg.requiredForAdmission} | ${leg.status} | ${leg.reason} | ${leg.nextStep} |`), "",
     `Owned stop confirmed: ${summary.ownedStopConfirmed}. Process cleanup: ${summary.processCleanup}. ${summary.processCleanupReason}`,
     "Containment: disposable runner lifetime; the runner VM/container must be destroyed after the job.",
-    `Elapsed: ${summary.elapsedMs} ms.`, ""].join("\n");
+    `Execution elapsed before publication: ${summary.elapsedMs} ms.`, ""].join("\n");
   return markdown;
 }
 
 /** Host/test ports are programmatic only; the CLI never selects code or credentials from configuration. */
 export async function runCompatReceipt(input: { id: string; version: string; out: string; disposableRunner?: boolean }, ports: ReceiptPorts = {}): Promise<ReceiptSummary> {
   if (!isCompatId(input.id) || input.version.length > 64 || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(input.version)) throw new ReceiptError("input");
-  const disposableHost = ports.disposable ?? ( process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted" ||
+  const disposableHost = ports.disposable ?? (process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted" ||
     process.platform === "linux" && existsSync("/.dockerenv"));
   if (!input.disposableRunner || !disposableHost) throw new ReceiptError("disposable-required");
   const manifest = JSON.parse(readFileSync(fileURLToPath(new URL("./compat-receipts/manifest.json", import.meta.url)), "utf8")) as { entries: Record<string, ManifestEntry> };
@@ -99,7 +99,10 @@ export async function runCompatReceipt(input: { id: string; version: string; out
   if (!entry?.legs.length || !entry.legs.some(leg => leg.requiredForAdmission) || new Set(entry.legs.map(leg => leg.id)).size !== entry.legs.length ||
     entry.legs.some(leg => !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(leg.id) || !categories.has(leg.category) || typeof leg.requiredForAdmission !== "boolean")) throw new ReceiptError("input");
   const limits = limitsFor(ports.limits), out = openReceiptOutput(input.out), started = performance.now();
-  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-compat-receipt-"))), home = join(root, "home"), prefix = join(root, "prefix"), cwd = join(root, "project");
+  let root: string;
+  try { root = realPath(mkdtempSync(join(tmpdir(), "ahub-compat-receipt-"))); }
+  catch { out.close(); throw new ReceiptError("input"); }
+  const home = join(root, "home"), prefix = join(root, "prefix"), cwd = join(root, "project");
   let env: NodeJS.ProcessEnv;
   try {
     for (const folder of [home, prefix, cwd]) mkdirSync(folder, { mode: 0o700 });
@@ -108,8 +111,8 @@ export async function runCompatReceipt(input: { id: string; version: string; out
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), limits.totalMs);
   const active = new Set<Promise<unknown>>();
-  let ownedStopConfirmed = true, processCleanup: "proven" | "unproven" = "proven", survivorDetected = false;
-  let processCleanupReason = "No external command was started.";
+  let ownedStopConfirmed = true, survivorDetected = false;
+  const lifetime: { status: "proven" | "unproven"; reason: string } = { status: "proven", reason: "No external command was started." };
   const context: ReceiptContext = { id: input.id, version: input.version, root, home, prefix, cwd, env, signal: controller.signal, limits,
     run: async (argv, options) => {
       if (options.signal.aborted || controller.signal.aborted || performance.now() - started >= limits.totalMs) throw new ReceiptError("timeout");
@@ -119,10 +122,11 @@ export async function runCompatReceipt(input: { id: string; version: string; out
       try {
         const result = await task;
         if (!result.ownedStopConfirmed) ownedStopConfirmed = false;
-        if (result.processCleanup !== "proven") { processCleanup = "unproven"; processCleanupReason = DIAGNOSTICS["process-cleanup-unproven"][0]; }
+        if (result.processCleanup !== "proven") { lifetime.status = "unproven"; lifetime.reason = DIAGNOSTICS["process-cleanup-unproven"][0]; }
+        else if (lifetime.status === "proven") lifetime.reason = "Every started command has explicit lifetime-cleanup evidence from the trusted runner.";
         if (result.survivorDetected) { survivorDetected = true; ownedStopConfirmed = false; }
         return result;
-      } catch (error) { ownedStopConfirmed = false; processCleanup = "unproven"; processCleanupReason = DIAGNOSTICS["process-cleanup-unproven"][0]; throw error; }
+      } catch (error) { ownedStopConfirmed = false; lifetime.status = "unproven"; lifetime.reason = DIAGNOSTICS["process-cleanup-unproven"][0]; throw error; }
       finally { active.delete(task); }
     } };
   const platform = ports.platform ?? process.platform, os = platform === "darwin" ? "macos" : platform, architecture = ports.architecture ?? process.arch;
@@ -159,24 +163,25 @@ export async function runCompatReceipt(input: { id: string; version: string; out
     controller.abort();
     await Promise.allSettled([...active]);
     clearTimeout(timer);
-    if (ownedStopConfirmed && processCleanup === "proven") try { rmSync(root, { recursive: true, force: true }); } catch { ownedStopConfirmed = false; }
+    if (ownedStopConfirmed && lifetime.status === "proven") try { rmSync(root, { recursive: true, force: true }); } catch { ownedStopConfirmed = false; }
   }
   if (!ownedStopConfirmed) for (const [index, leg] of legs.entries()) if (leg.status === "pass") legs[index] = proof("fail", "cleanup", leg.id, leg.requiredForAdmission);
-  if (processCleanup === "unproven") for (const [index, leg] of legs.entries()) {
+  if (lifetime.status === "unproven") for (const [index, leg] of legs.entries()) {
     if (leg.status === "pass" && /(?:^|-)cleanup$/.test(leg.id)) legs[index] = proof("not-run", "process-cleanup-unproven", leg.id, leg.requiredForAdmission);
   }
   const required = legs.filter(leg => leg.requiredForAdmission);
-  const outcome = !ownedStopConfirmed || survivorDetected || installation.status === "fail" || required.some(leg => leg.status === "fail") ? "fail"
-    : installation.status !== "pass" || required.some(leg => leg.status === "not-run") ? "not-run" : "pass";
+  let outcome: ReceiptSummary["outcome"] = "pass";
+  if (!ownedStopConfirmed || survivorDetected || installation.status === "fail" || required.some(leg => leg.status === "fail")) outcome = "fail";
+  else if (installation.status !== "pass" || required.some(leg => leg.status === "not-run")) outcome = "not-run";
   const autoAdmit = entry.autoAdmit && input.id !== "codex-review" && input.id !== "agy" && !entry.legs.some(leg => leg.requiredForAdmission && ["account-or-model", "tui-desktop"].includes(leg.category));
   const [reason, nextStep] = DIAGNOSTICS[installation.cause];
   const summary: ReceiptSummary = { schemaVersion: 1, id: input.id, version: input.version, runnerOS: os, architecture,
-    procedureReceipt: entry.receipt, generatedAt: new Date().toISOString(), bounds: { totalMs: limits.totalMs + RECEIPT_CLEANUP_MS, legMs: limits.legMs + RECEIPT_CLEANUP_MS, cleanupMs: RECEIPT_CLEANUP_MS }, ownedStopConfirmed, processCleanup, processCleanupReason, containment: "disposable-runner-lifetime",
+    procedureReceipt: entry.receipt, generatedAt: new Date().toISOString(), bounds: { totalMs: limits.totalMs + RECEIPT_CLEANUP_MS + RECEIPT_OUTPUT_MS, legMs: limits.legMs + RECEIPT_CLEANUP_MS, cleanupMs: RECEIPT_CLEANUP_MS, outputMs: RECEIPT_OUTPUT_MS }, ownedStopConfirmed, processCleanup: lifetime.status, processCleanupReason: lifetime.reason, containment: "disposable-runner-lifetime",
     installation: { status: installation.status, cause: installation.cause, reason, nextStep },
-    artifact: artifact ? { method: artifact.method, integrity: artifact.integrity } : null, integrity: artifact?.integrity ?? null, autoAdmit, eligible: outcome === "pass" && autoAdmit && ownedStopConfirmed && processCleanup === "proven",
+    artifact: artifact ? { method: artifact.method, integrity: artifact.integrity } : null, integrity: artifact?.integrity ?? null, autoAdmit, eligible: outcome === "pass" && autoAdmit && ownedStopConfirmed && lifetime.status === "proven",
     outcome, elapsedMs: Math.round(performance.now() - started), legs };
   try { await out.write(summary, renderReceipt(summary)); } finally { out.close(); }
-  if (!ownedStopConfirmed || processCleanup === "unproven") console.error(`Process cleanup is unproven; next: destroy the disposable runner after inspecting only the retained private workspace ${root}.`);
+  if (!ownedStopConfirmed || lifetime.status === "unproven") console.error(`Process cleanup is unproven; next: destroy the disposable runner after inspecting only the retained private workspace ${root}.`);
   return summary;
 }
 
@@ -188,7 +193,7 @@ if (import.meta.main) {
   else try {
     const result = await runCompatReceipt({ id, version, out, disposableRunner: true });
     await new Promise<void>(done => { process.stdout.write(`${JSON.stringify(result)}\n`, () => done()); });
-    process.exit(result.outcome === "pass" ? 0 : result.outcome === "not-run" ? 3 : 1);
+    process.exit({ pass: 0, "not-run": 3, fail: 1 }[result.outcome]);
   }
   catch (error) {
     const cause = error instanceof ReceiptError ? error.causeCode : "input";

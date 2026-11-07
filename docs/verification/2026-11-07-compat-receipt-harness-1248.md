@@ -64,7 +64,9 @@ None can become a pass merely because installation or configuration succeeded.
 
 Install/proof execution has monotonic scheduling deadlines; default budgets are
 15 minutes total, 3 minutes install and 2 minutes per proof worker/group. A fixed
-10-second teardown allowance is included in reported wall-time bounds. The
+10-second teardown allowance and a 4-second output check/publication allowance
+are included in reported total wall-time bounds; elapsed time is sampled before
+publication. The
 production owned-process/descendant teardown is reused with a credential-free
 process-table observer. Unconfirmed owned stop or a detected survivor fails the run.
 Lifetime cleanup is separately reported as unproven, never inferred from an empty

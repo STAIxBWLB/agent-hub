@@ -48,7 +48,7 @@ export interface ReceiptSummary {
   architecture: string;
   procedureReceipt: string;
   generatedAt: string;
-  bounds: { totalMs: number; legMs: number; cleanupMs: number };
+  bounds: { totalMs: number; legMs: number; cleanupMs: number; outputMs: number };
   ownedStopConfirmed: boolean;
   processCleanup: "proven" | "unproven";
   processCleanupReason: string;
@@ -59,6 +59,7 @@ export interface ReceiptSummary {
   autoAdmit: boolean;
   eligible: boolean;
   outcome: LegStatus;
+  /** Execution/owned-stop elapsed before receipt publication; output has its own bounded allowance. */
   elapsedMs: number;
   legs: LegResult[];
 }
