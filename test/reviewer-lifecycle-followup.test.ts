@@ -110,6 +110,7 @@ test("running native policy drift revokes authority immediately and stays latche
     if (++preparations === 1) return prepared;
     reviewRoot = root;
     return { ...prepared, watchCurrent: true, current: () => current,
+      startPolicyWatch: () => ({ check: async () => current, stop: async () => {} }),
       command: [process.execPath, "-e", `await new Response(Bun.stdin.stream()).text();await Bun.write(${JSON.stringify(marker)},"ready");setInterval(()=>{},1000);`] };
   } };
   const peer = new ReviewerPrintPeer("fixture-review", { cwd: base, mcpConfig: "{}", systemPrompt: "fixture", watchdogMs: 5000, backend, verdictSince: () => false, taskMcp: () => ({ config: "{}", close: () => { closed++; } }) });

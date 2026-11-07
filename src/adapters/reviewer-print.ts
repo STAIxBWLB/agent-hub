@@ -6,6 +6,7 @@ import { BasePeer } from "../hub/peers.ts";
 import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import type { Envelope } from "../hub/envelope.ts";
 import type { ReviewerMcpSession, ReviewerToolName } from "./reviewer-mcp.ts";
+import { createReviewerPolicyWatch, type ReviewerPolicyProbe, type ReviewerPolicyWatch } from "./reviewer-policy-watch.ts";
 
 /** #722: the closed list of legs a reviewer's per-review start can fail on. A class names a leg, never a path, content or token. */
 export const REVIEWER_CAUSE_CLASSES = ["version", "binary", "mcp_inventory", "plugins_hooks_apps", "sandbox_proof", "credential_root", "timeout", "unknown"] as const;
@@ -33,6 +34,9 @@ class ReviewerAdmissionError extends Error {
   constructor(readonly reason: "stale_binding" | "policy_changed") { super("review admission changed"); }
 }
 class ReviewerInputAdmissionError extends Error {}
+class ReviewerPolicyCleanupError extends PrintChildCleanupError {
+  constructor() { super("review policy worker cleanup unconfirmed; run ahub status and stop the peer before retrying"); }
+}
 
 export interface ReviewerPrintUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
 export interface ReviewerIsolationReceipt {
@@ -74,6 +78,8 @@ export interface ReviewerLaunch {
   stop?: (child: ChildProcess) => Promise<void>;
   /** Latch a change in native policy for the running review, not just at spawn. */
   watchCurrent?: true;
+  /** Fixed host factory: periodic work is separate from the synchronous current() authority fence. */
+  startPolicyWatch?: () => ReviewerPolicyProbe;
 }
 export interface ReviewerBackend {
   id: string;
@@ -149,6 +155,7 @@ export interface ReviewerPrintOptions {
 
 type ReviewTarget = Omit<ReviewerFailure, "cause">;
 interface ReviewBatch { targets: (ReviewTarget | undefined)[]; next: number; failures: ReviewerFailure[] }
+interface ReviewPolicyOwner { readonly child: OwnedPrintChild; readonly watch: ReviewerPolicyWatch; readonly cleanup: () => Promise<void>; readonly closed: () => void }
 const reviewTarget = (env: Envelope): ReviewTarget | undefined => {
   const task = reviewTask(env);
   if (task === undefined || env.private) return undefined;
@@ -170,6 +177,7 @@ export class ReviewerPrintPeer extends BasePeer {
   private child: OwnedPrintChild | undefined;
   private childCleanup: (() => Promise<void>) | undefined;
   private childCurrent: (() => boolean) | undefined;
+  private policyWatch: ReviewPolicyOwner | undefined;
   private reviewMcpClose: (() => void) | undefined;
   private activeDeliveryId: string | undefined;
   private batch: ReviewBatch | undefined;
@@ -221,6 +229,7 @@ export class ReviewerPrintPeer extends BasePeer {
   async start(): Promise<void> {
     // A retained child means a review's process group was never confirmed gone: no new review beside it.
     if (this.child) throw new Error(`${this.id}: an earlier review's process group is still running; stop it first`);
+    if (this.policyWatch) throw new ReviewerPolicyCleanupError();
     if (this.preparation) throw new Error(`${this.id}: reviewer preparation is still running`);
     this.receipt = undefined;
     const generation = ++this.generation;
@@ -242,8 +251,8 @@ export class ReviewerPrintPeer extends BasePeer {
     this.preparation?.abort.abort();
     await this.preparation?.done.catch(() => {});
     this.settle("needs_review", reason ?? "review stopped before settlement");
-    if (this.child) this.setState("busy"); // unavailable, not offline, until the group is confirmed gone
-    await this.kill(); // throws when the child could not be stopped; its handle is kept and the peer stays busy
+    if (this.child || this.policyWatch) this.setState("busy"); // unavailable until both owned resources are confirmed gone
+    await this.kill(true); // An explicit stop may retry an earlier failed worker join.
     this.setState("offline");
   }
 
@@ -319,7 +328,7 @@ export class ReviewerPrintPeer extends BasePeer {
         if (error instanceof PrintChildCleanupError) {
           // Unavailable until a stop confirms the group gone: no new review runs beside the survivors.
           this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
-          this.settle("needs_review", `review process group still running: ${error.message}`);
+          this.settle("needs_review", error instanceof ReviewerPolicyCleanupError ? error.message : `review process group still running: ${error.message}`);
           return;
         }
         // Once an earlier review in this batch ran, the batch had effects: hold it for a person, never requeue it.
@@ -389,7 +398,8 @@ export class ReviewerPrintPeer extends BasePeer {
       const policy = this.opts.backend.nativePolicy
         ? proof?.enforcement === "native-policy" && proof.freshSession === true && proof.hubToolsOnly === true
         : proof?.strictMcp === true && proof.ephemeral === true;
-      if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || !policy || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length) {
+      if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || !policy || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length
+        || launch.watchCurrent && (!launch.current || !launch.startPolicyWatch)) {
         await launch.cleanup?.();
         throw new ReviewerUnavailableError("reviewer isolation is unavailable or preparation was cancelled", "unknown");
       }
@@ -433,7 +443,15 @@ export class ReviewerPrintPeer extends BasePeer {
     this.reviewMcpClose=closeMcp;
     let ownedChild: OwnedPrintChild | undefined, releasing: Promise<void> | undefined;
     let inputReleased = false, childClosed = false, launchCleanupConfirmed = false;
-    let policyTimer: ReturnType<typeof setInterval> | undefined;
+    let inputFinished = false;
+    const finishInput = () => {
+      const closedWithoutChild = !ownedChild || ownedChild.process.pid === undefined;
+      if (!inputFinished && mcpCloseConfirmed && launchCleanupConfirmed && (closedWithoutChild || inputReleased && childClosed)) {
+        inputFinished = true;
+        try { this.opts.inputFinished?.(inputContext, [env]); } catch { /* A cleanup receipt never changes the verdict. */ }
+      }
+    };
+    let policyOwner: ReviewPolicyOwner | undefined;
     const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
     try {
     launch = await this.prepare(sessionId, input, task, mcp?.config);
@@ -450,7 +468,21 @@ export class ReviewerPrintPeer extends BasePeer {
       onSpawn: () => {
         this.runningBinding={task,binding};
         this.reviewing = task; this.reviewSeq++;
-        if (this.childCurrent) policyTimer = setInterval(() => { this.reviewToken(task); }, 100);
+        if (launch!.watchCurrent) {
+          try {
+            const sequence = this.reviewSeq, probe = launch!.startPolicyWatch!();
+            const watch = createReviewerPolicyWatch(probe, () => {
+              // Batch generation alone is insufficient: later reviews can reuse its task and generation.
+              if (this.policyWatch === policyOwner && this.child === child && generation === this.generation
+                && this.reviewing === task && this.reviewSeq === sequence) this.abortReview("review policy changed");
+            });
+            policyOwner = { child, watch, cleanup: release, closed: () => {
+              childClosed = true; launchCleanupConfirmed = true; finishInput();
+            } };
+            this.policyWatch = policyOwner;
+            watch.start();
+          } catch { this.abortReview("review policy changed"); }
+        }
       },
       onFrame: event => {
         try {
@@ -465,6 +497,7 @@ export class ReviewerPrintPeer extends BasePeer {
       onLimit: () => this.abortReview("review output limit exceeded"),
       onLeaderExit: () => {
         if (this.child === child) { this.reviewing = undefined; this.runningBinding=undefined; }
+        void this.stopPolicyWatch(policyOwner).catch(() => {});
       },
     });
     // Owned before any await, so a stop that lands before "spawn" still finds and kills it.
@@ -478,16 +511,16 @@ export class ReviewerPrintPeer extends BasePeer {
     } finally {
       if (this.activeTrace?.value === trace) this.activeTrace = undefined;
       closeMcp();
-      if (policyTimer) clearInterval(policyTimer);
+      // Joining the watcher precedes deletion of files it can still read, even when native cleanup failed.
+      await this.stopPolicyWatch(policyOwner);
       try {
         if (!ownedChild || this.child !== ownedChild) {
           await release(); if (this.childCleanup === release) this.childCleanup = undefined;
           launchCleanupConfirmed = true;
+          if (this.policyWatch === policyOwner) this.policyWatch = undefined;
         }
       } catch { this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`); }
-      const closedWithoutChild = !ownedChild || ownedChild.process.pid === undefined;
-      if (mcpCloseConfirmed && launchCleanupConfirmed && (closedWithoutChild || inputReleased && childClosed))
-        try { this.opts.inputFinished?.(inputContext, [env]); } catch { /* receipt cleanup never changes the review verdict */ }
+      finishInput();
     }
   }
 
@@ -498,13 +531,33 @@ export class ReviewerPrintPeer extends BasePeer {
   }
 
   /** Revokes the verdict authority at once, then stops the child; on failure the handle is kept and the error thrown. */
-  private async kill(): Promise<void> {
+  private async stopPolicyWatch(owner: ReviewPolicyOwner | undefined, retry = false): Promise<void> {
+    if (!owner) return;
+    try { await owner.watch.stop(retry); }
+    catch { throw new ReviewerPolicyCleanupError(); }
+    // Retain the owner until native teardown and private cleanup also succeed, so a failed stop can be retried.
+  }
+
+  private async kill(retryWorker = false): Promise<void> {
     this.reviewing = undefined;
     this.runningBinding=undefined;
-    const child = this.child;
-    if (!child) return;
-    await child.stop();
-    if (this.child === child) { await this.childCleanup?.(); this.child = undefined; this.childCleanup = undefined; this.childCurrent = undefined; }
+    const owner = this.policyWatch, child = this.child ?? owner?.child;
+    const cleanup = this.childCleanup ?? owner?.cleanup;
+    const workerStopped = this.stopPolicyWatch(owner, retryWorker);
+    void workerStopped.catch(() => {}); // Native OAuth grace may outlast a failed join; observe it immediately.
+    let childError: unknown, workerError: unknown;
+    try { await child?.stop(); } catch (error) { childError = error; }
+    try { await workerStopped; } catch (error) { workerError = error; }
+    if (workerError) throw workerError;
+    if (childError) throw childError;
+    if (child) {
+      await cleanup?.();
+      owner?.closed();
+      if (this.child === child) this.child = undefined;
+      if (this.childCleanup === cleanup) this.childCleanup = undefined;
+      if (this.policyWatch === owner) this.policyWatch = undefined;
+      if (!this.child && !this.policyWatch) this.childCurrent = undefined;
+    }
   }
 }
 
