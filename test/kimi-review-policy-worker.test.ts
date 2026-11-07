@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { Worker } from "node:worker_threads";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { realPath } from "../src/hub/project.ts";
@@ -42,6 +43,22 @@ async function entered(gate: Int32Array): Promise<void> {
   }
   expect(Atomics.load(gate, 0)).toBe(1);
 }
+
+test("the plugin-only worker sidecar runs without the source tree beside it", async () => {
+  const f = fixture(), directory = join(f.root, "standalone plugin"); mkdirSync(directory);
+  const entry = join(directory, "kimi-review-policy-worker.js");
+  copyFileSync(new URL("../plugins/agent-hub/kimi-review-policy-worker.js", import.meta.url), entry);
+  const worker = new Worker(entry, { workerData: { binding: f.binding }, env: {}, execArgv: [], stdout: true, stderr: true });
+  const exited = new Promise<void>(resolve => worker.once("exit", () => resolve()));
+  drops.push(async () => { await worker.terminate(); await exited; });
+  const reply = new Promise<unknown>((resolve, reject) => {
+    const refused = () => reject(new Error("standalone policy worker did not return a clean result"));
+    worker.once("message", resolve); worker.once("error", refused); worker.once("exit", refused);
+    worker.stdout?.on("data", refused); worker.stderr?.on("data", refused);
+  });
+  worker.postMessage({ id: 1 });
+  expect(await reply).toEqual({ id: 1, current: true });
+}, 20_000);
 
 async function preparedFixture(factory?: KimiReviewPolicyFactory) {
   const f = fixture(), old = process.env.KIMI_CODE_HOME; process.env.KIMI_CODE_HOME = f.source;

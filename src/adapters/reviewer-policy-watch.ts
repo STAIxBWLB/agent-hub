@@ -1,5 +1,7 @@
 /** A fixed host producer's full policy check, never a verdict-authority cache. */
 export interface ReviewerPolicyProbe {
+  /** Boot/protocol failures revoke even when a child exits before its first periodic poll. */
+  readonly failure?: Promise<void>;
   check(): Promise<boolean>;
   stop(): Promise<void>;
 }
@@ -76,6 +78,7 @@ export function createReviewerPolicyWatch(probe: ReviewerPolicyProbe, changed: (
     start: () => {
       if (started || stopped) return;
       started = true;
+      if (probe.failure) void probe.failure.then(fail, fail);
       try { due = sample() + POLICY_POLL_MS; arm(); } catch { fail(); }
     },
     stop,
