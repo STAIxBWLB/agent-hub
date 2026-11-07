@@ -18,7 +18,7 @@ import { SYNTHETIC_CLAUDE_PARENT_COMMAND, syntheticClaudeParentEvidenceSetup } f
 // verified SDK1.30.0. Neither installed nor copied old source is patched.
 const PUBLISHED_FIXTURES = [
   { directory: "protocol-v16", version: "0.25.0", memoryVersion: "0.18.0", protocol: 16, role: "protocol floor" },
-  { directory: "release-n-1", version: "0.32.0", memoryVersion: "0.21.0", protocol: 17, role: "release N-1" },
+  { directory: "release-n-1", version: "0.33.0", memoryVersion: "0.22.1", protocol: 17, role: "release N-1" },
 ] as const;
 type PublishedFixture = typeof PUBLISHED_FIXTURES[number];
 const CURRENT_ROOT = join(import.meta.dir, "..");

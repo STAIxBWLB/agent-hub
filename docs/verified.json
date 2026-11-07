@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "ab8ae6f400d741ee9060d3087489e59996a72086",
+      "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "ab8ae6f400d741ee9060d3087489e59996a72086",
+      "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "ab8ae6f400d741ee9060d3087489e59996a72086",
+      "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "ab8ae6f400d741ee9060d3087489e59996a72086",
+      "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "10efdc8b0ea114ae858fff4ede65de09f6c55604",
+      "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -132,7 +132,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "ab8ae6f400d741ee9060d3087489e59996a72086",
+      "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -243,7 +243,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "10efdc8b0ea114ae858fff4ede65de09f6c55604",
+      "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
@@ -291,7 +291,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "ab8ae6f400d741ee9060d3087489e59996a72086",
+      "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [
         "test/",
         "scripts/check.sh",
@@ -329,7 +329,7 @@
       ]
     },
     "src/cli/help.ts": {
-      "verifiedAgainst": "af37f8fd8b44a2c566aa47629ec5b02ee9f91d69",
+      "verifiedAgainst": "d31d7503fce542f37ed9cdacb3c40fc86786cb09",
       "paths": [
         "src/cli/main.ts",
         "src/cli/launch.ts",

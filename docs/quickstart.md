@@ -46,6 +46,12 @@ terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
 
+## Upgrading to 0.34.0
+
+After an Orca restart, `ahub upgrade` no longer stops at panes that are orphaned but still connected: the plan screen offers `[t]` to reattach exactly the panes it verified (each Orca call bounded by 5 s), and the blocker names the refresh key. `ahub setup` now writes the stable install path of a symlinked CLI (for example a dotfiles-managed `~/.local/bin/ahub`) into the marketplace and the Claude profile hook instead of a versioned one, replaces a stale managed hook in place, and a refused marketplace replacement names every blocking row and the next step; `ahub doctor` checks the profile hook of each Claude home it can see. If you installed with dotfiles, follow [Installed with dotfiles](#installed-with-dotfiles) instead of `bun add -g`. Nothing else changes until you use it; N-1 is published 0.33.0 and control remains 16 through 17.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.34.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
 ## Upgrading to 0.33.0
 
 Rooms now show refused-frame counts, outbox depth/ages and a closed link cause with a recovery step. Store-open failures retry, receive-only work wakes after journal recovery, and selective traffic no longer produces false sequence-gap notices. For a rolling room upgrade, update the broker first, then every member, then reconnect: 0.33.0 person-inbox (`user@label`) and invocation sends to a released 0.32.0 member, or through a released 0.32.0 broker are refused before effects with the upgrade step; plain chat keeps working. Use the matching CLI for the new diagnostics: 0.32.0 `ahub room status` drops the new fields, including in its JSON output, while `ahub status --json` passes raw daemon fields through.

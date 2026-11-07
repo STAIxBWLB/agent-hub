@@ -497,7 +497,8 @@ test("an upgraded link keeps ephemeral liveness on the actual published N-1 brok
     finally { if (timer) clearTimeout(timer); }
     expect(owner.livenessTracked).toBe(true); expect(guest.livenessTracked).toBe(true);
     expect(ephemeralFrames).toBeGreaterThan(0);
-    expect(owner.codecSupported(guestStore.identity.public.fingerprint, "read_invocation_v1")).toBe(false);
+    // Since N-1 0.33.0 the published broker relays codec presence, so codec support is negotiated through it (0.32.0 was the last codec-less N-1).
+    expect(owner.codecSupported(guestStore.identity.public.fingerprint, "read_invocation_v1")).toBe(true);
     expect(ownerStore.refused("work")).toHaveLength(0); expect(guestStore.refused("work")).toHaveLength(0);
   } finally { await Promise.all([owner?.stop(), guest?.stop()]); ownerStore.close(); guestStore.close(); }
 }, 20000);
