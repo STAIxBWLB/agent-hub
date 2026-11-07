@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCompatReceipt } from "../../compat-receipt.ts";
@@ -13,8 +13,11 @@ async function controlProofs(context: ProofContext): Promise<ProofResults> {
     fd = openSync(join(context.root, "jcode-proof-observations.jsonl"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const before = fstatSync(fd);
     if (!before.isFile() || before.nlink !== 1 || before.uid !== process.getuid?.() || before.size > Math.min(context.limits.outputBytes, 16 * 1024)) throw new Error("diagnostic refused");
-    const text = readFileSync(fd, "utf8"), after = fstatSync(fd);
-    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error("diagnostic changed");
+    const bytes = Buffer.alloc(before.size + 1); let size = 0;
+    while (size < bytes.length) { const count = readSync(fd, bytes, size, bytes.length - size, size); if (!count) break; size += count; }
+    const after = fstatSync(fd);
+    if (size !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error("diagnostic changed");
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size));
     const lines = text.trim().split("\n");
     if (lines.length > 64) throw new Error("diagnostic bound");
     const steps = new Set(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "telemetry-walk"]);
