@@ -12,7 +12,8 @@ import { Registry, type Project } from "../src/hub/registry.ts";
 import { packageDigest, preserveRuntimePackage, verifyPackage } from "../src/cli/recovery-package.ts";
 import { VERSION } from "../src/version.ts";
 import type { DaemonOptions } from "../src/hub/daemon.ts";
-import { cleanEnvironment, restoreEnvironment, restoreOnTestEnd } from "./helpers/env-scope.ts";
+import { cleanEnvironment, restoreEnvironment, restoreOnTestEnd, useEnvironmentScope } from "./helpers/env-scope.ts";
+useEnvironmentScope();   // #1262: registers the afterEach in THIS file's scope; an import by an earlier file would bind it to that file
 
 const PACKAGE_ROOT = resolve(import.meta.dir, "..");
 

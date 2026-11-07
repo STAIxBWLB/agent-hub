@@ -11,7 +11,8 @@ import { recoveryLock } from "../src/hub/recovery-store.ts";
 import { stageCurrentRuntime, runCommand, verifyPackage } from "../src/cli/recovery-package.ts";
 import { createOperation, disposeRecovery, planFingerprint, runRecovery, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { VERSION } from "../src/version.ts";
-import { cleanEnvironment, restoreEnvironment, restoreOnTestEnd } from "./helpers/env-scope.ts";
+import { cleanEnvironment, restoreEnvironment, restoreOnTestEnd, useEnvironmentScope } from "./helpers/env-scope.ts";
+useEnvironmentScope();   // #1262: registers the afterEach in THIS file's scope; an import by an earlier file would bind it to that file
 
 const PACKAGE_ROOT = resolve(import.meta.dir, "..");
 
