@@ -124,6 +124,20 @@ test("dry run accepts a feature source while validate-only enforces live main, a
   } finally { f.cleanup(); }
 });
 
+test("report headings are opaque to publication while unsafe report characters remain refused", async () => {
+  const f = fixture(); try {
+    const p = f.prepare(), baseline = await runCompatPublisher({ ...p.input, dryRun: true }, f.api);
+    p.index.watch.report = "A different plain heading.\nStructured watch state still controls publication.\n";
+    writeFileSync(join(p.directory, "index.json"), JSON.stringify(p.index));
+    const changed = await runCompatPublisher({ ...p.input, dryRun: true }, f.api);
+    expect(changed.actions).toEqual(baseline.actions); expect(f.api.writes).toHaveLength(0);
+    for (const unsafe of ["<untrusted>", "```untrusted", "tab\tcharacter"]) {
+      p.index.watch.report = unsafe; writeFileSync(join(p.directory, "index.json"), JSON.stringify(p.index)); f.api.calls = [];
+      await expect(runCompatPublisher({ ...p.input, dryRun: true }, f.api)).rejects.toThrow("watch-report"); expect(f.api.writes).toHaveLength(0);
+    }
+  } finally { f.cleanup(); }
+});
+
 test("tampered bytes, symlinks, source patches and version mismatch are refused before GitHub writes", async () => {
   for (const change of ["bytes", "symlink", "patch", "version"] as const) {
     const f = fixture(); try {

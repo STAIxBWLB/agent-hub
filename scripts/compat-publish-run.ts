@@ -78,8 +78,7 @@ function load(input: CompatPublisherInput): { index: PreparedCompatArtifact; bun
   const watch = object(index.watch); exact(watch, ["code", "report", "candidates", "verified"]);
   if (watch.code !== 0 && watch.code !== 3 || !Array.isArray(watch.candidates) || !Array.isArray(watch.verified)) fail("watch");
   const report = string(watch.report);
-  const header = watch.code === 0 ? "Every watched agent CLI's latest published version is verified." : "Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).";
-  if (report.split("\n")[0] !== header || /[<>]|```|[\p{Cc}\p{Cf}]/u.test(report.replaceAll("\n", ""))) fail("watch-report");
+  if (/[<>]|```|[\p{Cc}\p{Cf}]/u.test(report.replaceAll("\n", ""))) fail("watch-report");
   const bundles = new Map<string, Bundle>(); let total = 0;
   for (const raw of array(index.bundles, 8, "index")) {
     const row = object(raw); exact(row, ["id", "version", "directory", "descriptorSha256", "descriptorSize"]); identity(row.id, row.version);
