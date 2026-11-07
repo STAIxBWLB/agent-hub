@@ -89,6 +89,16 @@ Permission modes control whether native actions prompt; they do not widen a sand
 
 When the hub starts a child, the host constructs its environment, binds its launch and generation, and owns its process-group lifecycle. Stop and recovery require current evidence for the process actually started; a PID, adapter label, successful start call, or stale session record is not enough. This keeps teardown from signaling a person's unrelated process and prevents a late native callback from acquiring a replaced session's authority ([#115](https://github.com/STAIxBWLB/agent-hub/issues/115), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625)).
 
+Fresh Kimi reviews keep the complete synchronous isolation fence before spawn and
+at verdict/task-MCP authority boundaries. Periodic full checks use one review-owned
+worker with expected paths and fingerprints, no serialized task text or inherited
+environment, and boolean replies. A serialized 100 ms absolute cadence coalesces
+missed ticks without overlapping checks or adding a fixed delay after a slow check.
+Worker results cannot grant or restore authority. Revocation fences the exact
+child/review sequence; worker termination and join precede private-profile removal
+and confirmed input cleanup, including failed native teardown. An unconfirmed join
+retains ownership and the profile for an explicit stop retry ([#1284](https://github.com/STAIxBWLB/agent-hub/issues/1284)).
+
 Permission decisions are bound to the authenticated caller and current session. A hub CLI call inside an agent session acts as that peer, not as the person; role and task checks still apply at each tool boundary. Permission modes are person-controlled, and a conductor role does not grant them. This avoids turning a received message into user consent ([#193](https://github.com/STAIxBWLB/agent-hub/issues/193), [#242](https://github.com/STAIxBWLB/agent-hub/issues/242)).
 
 ## Model, account, and memory boundaries

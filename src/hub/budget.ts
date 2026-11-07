@@ -54,7 +54,7 @@ export interface BudgetConfig {
   wait_max_min: number;
 }
 // wait_max_min is off here, as approvals.notify is: a project config turns it on (30 unless it says otherwise).
-export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.9, stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0, wait_max_min: 0 };
+export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.99, stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0, wait_max_min: 0 };
 
 export type BudgetLedgerEntry =
   | { type: "budget_pause"; peer: PeerId; reason: string; window: string; resetsAt: number; by: "hub" | "person" }

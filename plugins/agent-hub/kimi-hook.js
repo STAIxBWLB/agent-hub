@@ -1120,8 +1120,9 @@ var init_child_process = __esm(() => {
 });
 
 // src/adapters/agy/entry.ts
+import { existsSync as existsSync2 } from "fs";
 import { spawn, spawnSync } from "child_process";
-import { resolve as resolve4 } from "path";
+import { dirname as dirname4, resolve as resolve4 } from "path";
 function agyTuiSpawnOptions(cwd, env) {
   return { cwd, env, stdio: "inherit" };
 }
@@ -1178,7 +1179,7 @@ async function runAgyEntry(ctx) {
     console.log(JSON.stringify({ command: "agy", args: argv.map(publicArg), mode: "tui", permission: "unmanaged", mcp: ".agents/plugins/agent-hub/", writes: false }));
     return;
   }
-  const version = spawnSync("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: peerChildEnv("agy") });
+  const version = spawnSync("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: { ...peerChildEnv("agy"), AGY_CLI_DISABLE_AUTO_UPDATE: "1" } });
   const gate = agyVersionGate(version.status === 0 ? version.stdout : "");
   if (!gate.ok)
     fail(gate.message);
@@ -1196,21 +1197,16 @@ async function runAgyEntry(ctx) {
     const admitted = await hub.request({ t: "native_hook_launch", op: "begin", peer: "agy" });
     if (!admitted.ok || typeof admitted.launchId !== "string" || typeof admitted.instanceId !== "string")
       fail(admitted.error ?? "native hook launch was not admitted");
-    options = {
-      projectRoot: cwd,
-      stateDir,
-      serverJs: bundleInStatus(status) ?? resolve4(cliDir, "../../plugins/agent-hub/server.js"),
-      hookScript: resolve4(cliDir, "facts-hook.ts"),
-      peer: "agy",
-      launchId: admitted.launchId,
-      instanceId: admitted.instanceId
-    };
+    const serverJs = bundleInStatus(status) ?? resolve4(cliDir, "../../plugins/agent-hub/server.js");
+    const bundledHook = resolve4(dirname4(serverJs), "../../src/cli/facts-hook.ts");
+    const hookScript = existsSync2(bundledHook) ? bundledHook : resolve4(cliDir, "facts-hook.ts");
+    options = { projectRoot: cwd, stateDir, serverJs, hookScript, peer: "agy", launchId: admitted.launchId, instanceId: admitted.instanceId };
     const written = ensureAgyMcp(options);
     pluginWritten = written.changed;
     if (written.tracked)
       console.error("The managed agy plugin is tracked; review its local machine paths before committing");
     console.error(AGY_LAUNCH_NOTICE);
-    const env = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+    const env = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd, AGY_CLI_DISABLE_AUTO_UPDATE: "1" };
     delete env.AGENTHUB_CHANNEL;
     const code = await runAgyTui(argv, cwd, env);
     if (code !== 0)
@@ -1445,6 +1441,114 @@ class BasePeer {
 }
 var DEFAULT_WATCHDOG_MS = 300000;
 
+// src/adapters/reviewer-policy-watch.ts
+function createReviewerPolicyWatch(probe, changed, clock = {}) {
+  const now = clock.now ?? (() => performance.now());
+  const schedule = clock.schedule ?? ((delayMs, run) => {
+    const timer = setTimeout(run, delayMs);
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  });
+  let started = false, stopped = false, due = 0;
+  let cancelTimer, flight;
+  let stopping, stopFailed = false;
+  const sample = () => {
+    const value = now();
+    if (!Number.isFinite(value))
+      throw new Error("review policy clock unavailable");
+    return value;
+  };
+  const stop = (retry = false) => {
+    stopped = true;
+    cancelTimer?.();
+    cancelTimer = undefined;
+    if (retry && stopFailed) {
+      stopping = undefined;
+      stopFailed = false;
+    }
+    if (!stopping) {
+      const pending = flight;
+      stopping = Promise.resolve().then(() => probe.stop()).then(async () => {
+        await pending;
+      });
+      stopping.catch(() => {
+        stopFailed = true;
+      });
+    }
+    return stopping;
+  };
+  const fail = () => {
+    if (stopped)
+      return;
+    stop().catch(() => {});
+    try {
+      changed();
+    } catch {}
+  };
+  const arm = () => {
+    if (stopped)
+      return;
+    try {
+      cancelTimer = schedule(Math.max(0, due - sample()), tick);
+    } catch {
+      fail();
+    }
+  };
+  const tick = () => {
+    cancelTimer = undefined;
+    if (stopped)
+      return;
+    if (flight) {
+      fail();
+      return;
+    }
+    try {
+      const at = sample();
+      if (at > due)
+        due += Math.floor((at - due) / POLICY_POLL_MS) * POLICY_POLL_MS;
+    } catch {
+      fail();
+      return;
+    }
+    const pending = (async () => {
+      let current = false;
+      try {
+        current = await probe.check() === true;
+      } catch {}
+      if (stopped)
+        return;
+      if (!current) {
+        fail();
+        return;
+      }
+      due += POLICY_POLL_MS;
+      arm();
+    })();
+    flight = pending;
+    pending.finally(() => {
+      if (flight === pending)
+        flight = undefined;
+    }).catch(() => {});
+  };
+  return {
+    start: () => {
+      if (started || stopped)
+        return;
+      started = true;
+      if (probe.failure)
+        probe.failure.then(fail, fail);
+      try {
+        due = sample() + POLICY_POLL_MS;
+        arm();
+      } catch {
+        fail();
+      }
+    },
+    stop
+  };
+}
+var POLICY_POLL_MS = 100;
+
 // src/adapters/reviewer-print.ts
 import { randomUUID as randomUUID2 } from "crypto";
 function reviewerNoVerdictLine(peer, diagnostic, safeRefusal, withheld = false) {
@@ -1455,7 +1559,7 @@ function reviewerNoVerdictLine(peer, diagnostic, safeRefusal, withheld = false) 
   const line = safeRefusal === undefined ? undefined : Array.from(sanitize(safeRefusal).replace(/\s+/g, " ")).filter((char) => !/\p{C}/u.test(char)).slice(0, 240).join("");
   return prefix + detail + (diagnostic.refusal === undefined && diagnostic.hostRefusal === undefined ? "" : `; refusal: ${line ?? "withheld"}`);
 }
-var ReviewerUnavailableError, ReviewerAdmissionError, ReviewerInputAdmissionError, REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ", reviewTarget = (env) => {
+var ReviewerUnavailableError, ReviewerAdmissionError, ReviewerInputAdmissionError, ReviewerPolicyCleanupError, REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ", reviewTarget = (env) => {
   const task = reviewTask(env);
   if (task === undefined || env.private)
     return;
@@ -1488,6 +1592,11 @@ var init_reviewer_print = __esm(() => {
   };
   ReviewerInputAdmissionError = class ReviewerInputAdmissionError extends Error {
   };
+  ReviewerPolicyCleanupError = class ReviewerPolicyCleanupError extends PrintChildCleanupError {
+    constructor() {
+      super("review policy worker cleanup unconfirmed; run ahub status and stop the peer before retrying");
+    }
+  };
   ReviewerPrintPeer = class ReviewerPrintPeer extends BasePeer {
     opts;
     hubNative = true;
@@ -1496,6 +1605,7 @@ var init_reviewer_print = __esm(() => {
     child;
     childCleanup;
     childCurrent;
+    policyWatch;
     reviewMcpClose;
     activeDeliveryId;
     batch;
@@ -1564,6 +1674,8 @@ var init_reviewer_print = __esm(() => {
     async start() {
       if (this.child)
         throw new Error(`${this.id}: an earlier review's process group is still running; stop it first`);
+      if (this.policyWatch)
+        throw new ReviewerPolicyCleanupError;
       if (this.preparation)
         throw new Error(`${this.id}: reviewer preparation is still running`);
       this.receipt = undefined;
@@ -1593,9 +1705,9 @@ var init_reviewer_print = __esm(() => {
       this.preparation?.abort.abort();
       await this.preparation?.done.catch(() => {});
       this.settle("needs_review", reason ?? "review stopped before settlement");
-      if (this.child)
+      if (this.child || this.policyWatch)
         this.setState("busy");
-      await this.kill();
+      await this.kill(true);
       this.setState("offline");
     }
     onWatchdog() {
@@ -1691,7 +1803,7 @@ var init_reviewer_print = __esm(() => {
           }
           if (error instanceof PrintChildCleanupError) {
             this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
-            this.settle("needs_review", `review process group still running: ${error.message}`);
+            this.settle("needs_review", error instanceof ReviewerPolicyCleanupError ? error.message : `review process group still running: ${error.message}`);
             return;
           }
           failure = { state: started ? "needs_review" : "failed_safe", reason: `reviewer could not start: ${error.message}` };
@@ -1789,7 +1901,7 @@ var init_reviewer_print = __esm(() => {
           throw new ReviewerUnavailableError(launch.unavailable, launch.causeClass ?? "unknown", launch.detail);
         const proof = launch.isolation;
         const policy = this.opts.backend.nativePolicy ? proof?.enforcement === "native-policy" && proof.freshSession === true && proof.hubToolsOnly === true : proof?.strictMcp === true && proof.ephemeral === true;
-        if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || !policy || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length) {
+        if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || !policy || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length || launch.watchCurrent && (!launch.current || !launch.startPolicyWatch)) {
           await launch.cleanup?.();
           throw new ReviewerUnavailableError("reviewer isolation is unavailable or preparation was cancelled", "unknown");
         }
@@ -1852,7 +1964,17 @@ ${facts}` : ""}`;
       this.reviewMcpClose = closeMcp;
       let ownedChild, releasing;
       let inputReleased = false, childClosed = false, launchCleanupConfirmed = false;
-      let policyTimer;
+      let inputFinished = false;
+      const finishInput = () => {
+        const closedWithoutChild = !ownedChild || ownedChild.process.pid === undefined;
+        if (!inputFinished && mcpCloseConfirmed && launchCleanupConfirmed && (closedWithoutChild || inputReleased && childClosed)) {
+          inputFinished = true;
+          try {
+            this.opts.inputFinished?.(inputContext, [env]);
+          } catch {}
+        }
+      };
+      let policyOwner;
       const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
       try {
         launch = await this.prepare(sessionId, input, task, mcp?.config);
@@ -1885,10 +2007,24 @@ ${facts}` : ""}`;
             this.runningBinding = { task, binding };
             this.reviewing = task;
             this.reviewSeq++;
-            if (this.childCurrent)
-              policyTimer = setInterval(() => {
-                this.reviewToken(task);
-              }, 100);
+            if (launch.watchCurrent) {
+              try {
+                const sequence = this.reviewSeq, probe = launch.startPolicyWatch();
+                const watch = createReviewerPolicyWatch(probe, () => {
+                  if (this.policyWatch === policyOwner && this.child === child && generation === this.generation && this.reviewing === task && this.reviewSeq === sequence)
+                    this.abortReview("review policy changed");
+                });
+                policyOwner = { child, watch, cleanup: release, closed: () => {
+                  childClosed = true;
+                  launchCleanupConfirmed = true;
+                  finishInput();
+                } };
+                this.policyWatch = policyOwner;
+                watch.start();
+              } catch {
+                this.abortReview("review policy changed");
+              }
+            }
           },
           onFrame: (event) => {
             try {
@@ -1909,6 +2045,7 @@ ${facts}` : ""}`;
               this.reviewing = undefined;
               this.runningBinding = undefined;
             }
+            this.stopPolicyWatch(policyOwner).catch(() => {});
           }
         });
         this.child = ownedChild = child;
@@ -1923,23 +2060,20 @@ ${facts}` : ""}`;
         if (this.activeTrace?.value === trace)
           this.activeTrace = undefined;
         closeMcp();
-        if (policyTimer)
-          clearInterval(policyTimer);
+        await this.stopPolicyWatch(policyOwner);
         try {
           if (!ownedChild || this.child !== ownedChild) {
             await release();
             if (this.childCleanup === release)
               this.childCleanup = undefined;
             launchCleanupConfirmed = true;
+            if (this.policyWatch === policyOwner)
+              this.policyWatch = undefined;
           }
         } catch {
           this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`);
         }
-        const closedWithoutChild = !ownedChild || ownedChild.process.pid === undefined;
-        if (mcpCloseConfirmed && launchCleanupConfirmed && (closedWithoutChild || inputReleased && childClosed))
-          try {
-            this.opts.inputFinished?.(inputContext, [env]);
-          } catch {}
+        finishInput();
       }
     }
     settle(state, reason, failureCause) {
@@ -1948,18 +2082,48 @@ ${facts}` : ""}`;
       if (id)
         this.delivery({ id, state, ...reason ? { reason } : {}, ...failureCause ? { failureCause } : {} });
     }
-    async kill() {
+    async stopPolicyWatch(owner, retry = false) {
+      if (!owner)
+        return;
+      try {
+        await owner.watch.stop(retry);
+      } catch {
+        throw new ReviewerPolicyCleanupError;
+      }
+    }
+    async kill(retryWorker = false) {
       this.reviewing = undefined;
       this.runningBinding = undefined;
-      const child = this.child;
-      if (!child)
-        return;
-      await child.stop();
-      if (this.child === child) {
-        await this.childCleanup?.();
-        this.child = undefined;
-        this.childCleanup = undefined;
-        this.childCurrent = undefined;
+      const owner = this.policyWatch, child = this.child ?? owner?.child;
+      const cleanup = this.childCleanup ?? owner?.cleanup;
+      const workerStopped = this.stopPolicyWatch(owner, retryWorker);
+      workerStopped.catch(() => {});
+      let childError, workerError;
+      try {
+        await child?.stop();
+      } catch (error) {
+        childError = error;
+      }
+      try {
+        await workerStopped;
+      } catch (error) {
+        workerError = error;
+      }
+      if (workerError)
+        throw workerError;
+      if (childError)
+        throw childError;
+      if (child) {
+        await cleanup?.();
+        owner?.closed();
+        if (this.child === child)
+          this.child = undefined;
+        if (this.childCleanup === cleanup)
+          this.childCleanup = undefined;
+        if (this.policyWatch === owner)
+          this.policyWatch = undefined;
+        if (!this.child && !this.policyWatch)
+          this.childCurrent = undefined;
       }
     }
   };
@@ -2041,10 +2205,10 @@ var init_claude_print = __esm(() => {
 // src/adapters/codex-review-isolation.ts
 import { createHash as createHash2 } from "crypto";
 import { spawn as spawn3 } from "child_process";
-import { existsSync as existsSync2, lstatSync as lstatSync4, mkdirSync as mkdirSync3, mkdtempSync, readFileSync as readFileSync3, rmSync, statSync, symlinkSync, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync3, lstatSync as lstatSync4, mkdirSync as mkdirSync3, mkdtempSync, readFileSync as readFileSync3, rmSync, statSync, symlinkSync, writeFileSync as writeFileSync3 } from "fs";
 import { createRequire as createRequire2 } from "module";
 import { homedir as homedir2, tmpdir } from "os";
-import { basename as basename2, delimiter, dirname as dirname4, isAbsolute as isAbsolute3, join as join5, relative, resolve as resolve5 } from "path";
+import { basename as basename2, delimiter, dirname as dirname5, isAbsolute as isAbsolute3, join as join5, relative, resolve as resolve5 } from "path";
 function codexCoreDenyGlobs(names = DENY_NAMES, segments = DENY_SEGMENTS) {
   if (names.length > 64 || segments.length > 64)
     throw new Error("core deny policy bound exceeded");
@@ -2105,9 +2269,9 @@ function metadata(file) {
 function configFiles(cwd, env) {
   const home = resolve5(env.CODEX_HOME ?? join5(homedir2(), ".codex"));
   const files = [join5(home, "config.toml"), join5(home, "cloud-config-bundle-cache.json"), "/etc/codex/config.toml", "/etc/codex/requirements.toml", "/etc/codex/managed_config.toml"];
-  for (let dir = cwd;; dir = dirname4(dir)) {
+  for (let dir = cwd;; dir = dirname5(dir)) {
     files.push(join5(dir, ".codex", "config.toml"));
-    if (dirname4(dir) === dir)
+    if (dirname5(dir) === dir)
       break;
   }
   return files;
@@ -2143,9 +2307,9 @@ function credentialCanonicalPath(lexical) {
       lstatSync4(ancestor);
       break;
     } catch (error) {
-      if (error.code !== "ENOENT" || dirname4(ancestor) === ancestor)
+      if (error.code !== "ENOENT" || dirname5(ancestor) === ancestor)
         throw error;
-      ancestor = dirname4(ancestor);
+      ancestor = dirname5(ancestor);
     }
   }
   return join5(realPath(ancestor), relative(ancestor, lexical));
@@ -2175,13 +2339,13 @@ function resolveCommand(ctx, cwd) {
       throw new Error("unverified native platform");
     const suffix = `${process.platform}-${process.arch === "x64" ? "x64" : "arm64"}`;
     const manifest = createRequire2(binary).resolve(`@openai/codex-${suffix}/package.json`);
-    binary = realPath(join5(dirname4(manifest), "vendor", target, "bin", "codex"));
+    binary = realPath(join5(dirname5(manifest), "vendor", target, "bin", "codex"));
   }
   const files = [binary];
   if (inside(binary, cwd))
     throw new Error("project executable refused");
   for (const [index, arg] of prefix.entries()) {
-    if (isAbsolute3(arg) && (index === 0 || /\.(?:js|ts|mjs|cjs|sh)$/.test(arg)) && existsSync2(arg) && statSync(arg).isFile()) {
+    if (isAbsolute3(arg) && (index === 0 || /\.(?:js|ts|mjs|cjs|sh)$/.test(arg)) && existsSync3(arg) && statSync(arg).isFile()) {
       const file = realPath(arg);
       if (inside(file, cwd))
         throw new Error("project command prefix refused");
@@ -2351,7 +2515,7 @@ async function prepare(ctx) {
     const coreName = join5(root, ".env"), coreStateDir = join5(root, ".agenthub", "state"), coreState = join5(coreStateDir, "private.txt");
     const fixtureHome = join5(root, "host-home"), hostConfig = join5(fixtureHome, ".config", "gh", "hosts.yml"), hostKube = join5(fixtureHome, ".kube", "config"), hostDocker = join5(fixtureHome, ".docker", "config.json"), hostAlias = join5(root, "host-alias.yml");
     for (const file of [hostConfig, hostKube, hostDocker]) {
-      mkdirSync3(dirname4(file), { recursive: true });
+      mkdirSync3(dirname5(file), { recursive: true });
       writeFileSync3(file, "synthetic host credential fixture");
     }
     symlinkSync(hostConfig, hostAlias);
@@ -2379,7 +2543,7 @@ async function prepare(ctx) {
       const homePath = entry === "~" || entry.startsWith("~/");
       const absolute = homePath ? resolve5(homedir2(), entry.slice(2)) : isAbsolute3(entry) ? entry : resolve5(cwd, entry);
       const patterns = new Set([absolute]);
-      if (!/[?*\[\]]/.test(absolute) && existsSync2(absolute))
+      if (!/[?*\[\]]/.test(absolute) && existsSync3(absolute))
         patterns.add(realPath(absolute));
       if (!isAbsolute3(entry) && !homePath && entry !== "." && entry !== "..") {
         patterns.add(join5(cwd, "**", entry));
@@ -2405,7 +2569,7 @@ AHUB_CODEX_CORE_STATE_DENIED
 AHUB_CODEX_HOST_CONFIG_DENIED
 AHUB_CODEX_HOST_KUBE_DENIED
 AHUB_CODEX_HOST_DOCKER_DENIED
-AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync2(writeFile))
+AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync3(writeFile))
       throw new Error("native sandbox isolation unverified");
     leg = "binary";
     if (!current())
@@ -2498,12 +2662,16 @@ var init_codex_review_isolation = __esm(() => {
   };
 });
 
-// src/adapters/kimi-review.ts
-import { spawn as spawn4 } from "child_process";
+// src/adapters/kimi-review-policy.ts
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync5, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync4, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync4 } from "fs";
-import { homedir as homedir3, tmpdir as tmpdir2 } from "os";
-import { basename as basename3, dirname as dirname5, join as join6, resolve as resolve6 } from "path";
+import { lstatSync as lstatSync5, readFileSync as readFileSync4 } from "fs";
+import { dirname as dirname6, join as join6, resolve as resolve6 } from "path";
+function readKimiReviewFile(file, limit = 262144) {
+  const stat = lstatSync5(file);
+  if (!stat.isFile() || stat.size > limit)
+    throw new Error("unsupported reviewer file");
+  return readFileSync4(file, "utf8");
+}
 function assertCleanCwdAncestors(...candidates) {
   const seen = new Set;
   for (const candidate of candidates) {
@@ -2517,13 +2685,180 @@ function assertCleanCwdAncestors(...candidates) {
           }
         }
       }
-      const parent = dirname5(ancestor);
+      const parent = dirname6(ancestor);
       if (parent === ancestor)
         break;
       ancestor = parent;
     }
   }
 }
+function projectKimiReviewPolicyBinding(binding) {
+  return Object.freeze({
+    lexicalCwd: binding.lexicalCwd,
+    physicalCwd: binding.physicalCwd,
+    sourcePath: binding.sourcePath,
+    source: binding.source,
+    sourceConfig: binding.sourceConfig,
+    sourceConfigHash: binding.sourceConfigHash,
+    executable: binding.executable,
+    executableStat: Object.freeze({
+      dev: binding.executableStat.dev,
+      ino: binding.executableStat.ino,
+      size: binding.executableStat.size,
+      mtimeMs: binding.executableStat.mtimeMs,
+      ctimeMs: binding.executableStat.ctimeMs
+    }),
+    privateFiles: Object.freeze(binding.privateFiles.map((file) => Object.freeze({ path: file.path, hash: file.hash }))),
+    tool: binding.tool,
+    authTargets: Object.freeze(binding.authTargets.map((target) => target))
+  });
+}
+function checkKimiReviewPolicy(binding) {
+  try {
+    assertCleanCwdAncestors(binding.lexicalCwd, binding.physicalCwd);
+    const now = lstatSync5(binding.executable), expected = binding.executableStat;
+    return realPath(binding.sourcePath) === binding.source && now.dev === expected.dev && now.ino === expected.ino && now.size === expected.size && now.mtimeMs === expected.mtimeMs && now.ctimeMs === expected.ctimeMs && kimiReviewFingerprint(readKimiReviewFile(binding.sourceConfig)) === binding.sourceConfigHash && binding.privateFiles.length === 3 && binding.privateFiles.every((file) => kimiReviewFingerprint(readKimiReviewFile(file.path, 2097152)) === file.hash) && binding.authTargets.length === 3 && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join6(binding.source, name)) === binding.authTargets[index] && realPath(join6(binding.tool, name)) === binding.authTargets[index]);
+  } catch {
+    return false;
+  }
+}
+var kimiReviewFingerprint = (text) => createHash3("sha256").update(text).digest("hex");
+var init_kimi_review_policy = __esm(() => {
+  init_project();
+});
+
+// src/adapters/kimi-review-policy-worker.ts
+import { isMainThread, parentPort, workerData, Worker } from "worker_threads";
+function startKimiReviewPolicyWatch(binding, options = {}) {
+  const projected = projectKimiReviewPolicyBinding(binding);
+  if (options.gate && options.gate.byteLength !== 8)
+    throw new Error("review policy fixture gate is invalid");
+  let worker;
+  try {
+    worker = new Worker(new URL("./kimi-review-policy-worker.js", import.meta.url), {
+      env: {},
+      execArgv: [],
+      stdout: true,
+      stderr: true,
+      workerData: { binding: projected, ...options.gate ? { gate: options.gate } : {} }
+    });
+  } catch {
+    throw new Error("review policy worker could not start; retry the review");
+  }
+  let failed = false, stopping = false, exited = false, sequence = 0;
+  let pending;
+  let stopWork;
+  let resolveExit, resolveFailure;
+  const exit = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
+  const failure = new Promise((resolve) => {
+    resolveFailure = resolve;
+  });
+  const settle = (current) => {
+    const request = pending;
+    pending = undefined;
+    request?.resolve(current);
+  };
+  const fail = () => {
+    failed = true;
+    resolveFailure();
+    settle(false);
+  };
+  worker.on("error", fail);
+  worker.on("exit", () => {
+    exited = true;
+    fail();
+    resolveExit();
+  });
+  try {
+    worker.stdout?.on("data", fail);
+    worker.stderr?.on("data", fail);
+    worker.on("message", (message) => {
+      if (stopping || failed)
+        return;
+      if (!message || typeof message !== "object" || Array.isArray(message))
+        return fail();
+      const reply = message;
+      if (Object.keys(reply).sort().join() !== "current,id" || !pending || reply.id !== pending.id || typeof reply.current !== "boolean")
+        return fail();
+      if (!reply.current)
+        return fail();
+      settle(true);
+    });
+  } catch {
+    fail();
+  }
+  return {
+    failure,
+    check() {
+      if (failed || stopping || exited)
+        return Promise.resolve(false);
+      if (pending || sequence >= Number.MAX_SAFE_INTEGER) {
+        fail();
+        return Promise.resolve(false);
+      }
+      return new Promise((resolve) => {
+        pending = { id: ++sequence, resolve };
+        try {
+          worker.postMessage({ id: sequence });
+        } catch {
+          fail();
+        }
+      });
+    },
+    stop() {
+      if (stopWork)
+        return stopWork;
+      stopping = true;
+      fail();
+      stopWork = (async () => {
+        if (!exited)
+          await worker.terminate();
+        await exit;
+      })().catch(() => {
+        stopWork = undefined;
+        throw new Error("review policy worker stop is unconfirmed; retry stopping the review");
+      });
+      return stopWork;
+    }
+  };
+}
+var init_kimi_review_policy_worker = __esm(() => {
+  init_kimi_review_policy();
+  if (!isMainThread) {
+    const port = parentPort;
+    if (!port || Object.keys(process.env).length !== 0 || process.execArgv.length !== 0)
+      throw new Error("review policy worker environment is invalid");
+    const data = workerData;
+    const binding = projectKimiReviewPolicyBinding(data.binding);
+    const gate = data.gate ? new Int32Array(data.gate) : undefined;
+    if (gate && gate.length !== 2)
+      throw new Error("review policy fixture gate is invalid");
+    let last = 0;
+    port.on("message", (message) => {
+      if (!message || typeof message !== "object" || Array.isArray(message))
+        throw new Error("review policy request is invalid");
+      const request = message;
+      if (Object.keys(request).join() !== "id" || request.id !== last + 1)
+        throw new Error("review policy request is invalid");
+      last++;
+      if (gate) {
+        Atomics.add(gate, 0, 1);
+        Atomics.notify(gate, 0);
+        while (Atomics.load(gate, 1) === 0)
+          Atomics.wait(gate, 1, 0);
+      }
+      port.postMessage({ id: last, current: checkKimiReviewPolicy(binding) });
+    });
+  }
+});
+
+// src/adapters/kimi-review.ts
+import { spawn as spawn4 } from "child_process";
+import { existsSync as existsSync4, lstatSync as lstatSync6, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync4 } from "fs";
+import { homedir as homedir3, tmpdir as tmpdir2 } from "os";
+import { basename as basename3, join as join7, resolve as resolve7 } from "path";
 function managedConfig(raw) {
   const config = Bun.TOML.parse(raw);
   if (!object3(config.providers) || !object3(config.models) || typeof config.default_model !== "string")
@@ -2631,7 +2966,7 @@ async function version(command, cwd, env, signal) {
   });
 }
 async function stopKimiReview(child, locks, graceMs = 1e4) {
-  const locked = () => locks.some((file) => existsSync3(file));
+  const locked = () => locks.some((file) => existsSync4(file));
   if (child.exitCode === null && child.signalCode === null && locked()) {
     child.kill("SIGTERM");
     const end = Date.now() + graceMs;
@@ -2642,54 +2977,30 @@ async function stopKimiReview(child, locks, graceMs = 1e4) {
   }
   await stopOwnedProcess(child, { group: true });
 }
-var MANAGED = "managed:kimi-code", object3 = (v) => !!v && typeof v === "object" && !Array.isArray(v), hash = (text) => createHash3("sha256").update(text).digest("hex"), read = (file, limit = 262144) => {
-  const stat = lstatSync5(file);
-  if (!stat.isFile() || stat.size > limit)
-    throw new Error("unsupported reviewer file");
-  return readFileSync4(file, "utf8");
-}, scalar = (value, depth = 0) => {
-  if (depth > 4)
-    throw new Error("managed model setting too deeply nested");
-  if (typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))
-    return JSON.stringify(value);
-  if (Array.isArray(value) && value.every((v) => typeof v === "string"))
-    return JSON.stringify(value);
-  if (object3(value) && Object.keys(value).length <= 32)
-    return `{ ${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)} = ${scalar(item, depth + 1)}`).join(", ")} }`;
-  throw new Error("unsupported managed model setting");
-}, kimiReviewerBackend;
-var init_kimi_review = __esm(() => {
-  init_compat();
-  init_child_process();
-  init_project();
-  kimiReviewerBackend = {
-    id: "kimi",
-    taskMcp: true,
-    nativePolicy: true,
-    async prepare(context) {
-      let own;
-      try {
-        if (context.signal.aborted)
-          throw new Error("cancelled");
-        const sourcePath = process.env.KIMI_CODE_HOME ?? join6(process.env.HOME ?? homedir3(), ".kimi-code"), source = realPath(sourcePath);
-        const sourceConfig = join6(source, "config.toml"), original = read(sourceConfig), selected = managedConfig(original);
-        const sources = ["credentials", "oauth", "device_id"].map((name) => realPath(join6(source, name)));
-        if (!sources.every((file, index) => index < 2 ? lstatSync5(file).isDirectory() : lstatSync5(file).isFile()))
-          throw new Error("native OAuth directories and device identity required");
-        const mcp = mcpConfig(context);
-        if (Buffer.byteLength(context.input ?? "") > 1048576)
-          throw new Error("review facts exceed limit");
-        const lexicalRoot = mkdtempSync2(join6(process.env.TMPDIR ?? tmpdir2(), "ahub-kimi-review-"));
-        own = realPath(lexicalRoot);
-        assertCleanCwdAncestors(join6(lexicalRoot, "workspace"), join6(own, "workspace"));
-        const root = own, home = join6(root, "home"), tool = join6(root, "tool"), cwd = join6(root, "workspace"), skills = join6(root, "empty-skills"), temporary = join6(root, "tmp");
-        for (const dir of [home, tool, cwd, skills, temporary])
-          mkdirSync4(dir, { mode: 448 });
-        ["credentials", "oauth", "device_id"].forEach((name, index) => symlinkSync2(sources[index], join6(tool, name), index < 2 ? "dir" : "file"));
-        const agentFile = join6(cwd, "reviewer.md"), configFile = join6(tool, "config.toml"), mcpFile = join6(tool, "mcp.json");
-        writeFileSync4(configFile, selected.config, { mode: 384 });
-        writeFileSync4(mcpFile, mcp, { mode: 384 });
-        writeFileSync4(agentFile, `---
+async function prepareKimiReviewer(context, policyFactory = startKimiReviewPolicyWatch) {
+  let own;
+  try {
+    if (context.signal.aborted)
+      throw new Error("cancelled");
+    const sourcePath = process.env.KIMI_CODE_HOME ?? join7(process.env.HOME ?? homedir3(), ".kimi-code"), source = realPath(sourcePath);
+    const sourceConfig = join7(source, "config.toml"), original = readKimiReviewFile(sourceConfig), selected = managedConfig(original);
+    const sources = ["credentials", "oauth", "device_id"].map((name) => realPath(join7(source, name)));
+    if (!sources.every((file, index) => index < 2 ? lstatSync6(file).isDirectory() : lstatSync6(file).isFile()))
+      throw new Error("native OAuth directories and device identity required");
+    const mcp = mcpConfig(context);
+    if (Buffer.byteLength(context.input ?? "") > 1048576)
+      throw new Error("review facts exceed limit");
+    const lexicalRoot = mkdtempSync2(join7(process.env.TMPDIR ?? tmpdir2(), "ahub-kimi-review-"));
+    own = realPath(lexicalRoot);
+    assertCleanCwdAncestors(join7(lexicalRoot, "workspace"), join7(own, "workspace"));
+    const root = own, home = join7(root, "home"), tool = join7(root, "tool"), cwd = join7(root, "workspace"), skills = join7(root, "empty-skills"), temporary = join7(root, "tmp");
+    for (const dir of [home, tool, cwd, skills, temporary])
+      mkdirSync4(dir, { mode: 448 });
+    ["credentials", "oauth", "device_id"].forEach((name, index) => symlinkSync2(sources[index], join7(tool, name), index < 2 ? "dir" : "file"));
+    const agentFile = join7(cwd, "reviewer.md"), configFile = join7(tool, "config.toml"), mcpFile = join7(tool, "mcp.json");
+    writeFileSync4(configFile, selected.config, { mode: 384 });
+    writeFileSync4(mcpFile, mcp, { mode: 384 });
+    writeFileSync4(agentFile, `---
 name: hub-reviewer
 description: Fresh agent-hub reviewer
 tools:
@@ -2704,60 +3015,118 @@ Use only the supplied public facts and hub_task_show. Never claim to have read e
 
 ${context.input ?? "No review is active; startup self-check only."}
 `, { mode: 384 });
-        const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temporary}/`, XDG_CONFIG_HOME: join6(home, ".config"), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...process.env.USER ? { USER: process.env.USER } : {} };
-        const native = context.command ?? [Bun.which("kimi", { PATH: process.env.PATH }) ?? "kimi"];
-        const executable = realPath(Bun.which(native[0], { PATH: process.env.PATH }) ?? resolve6(native[0]));
-        const command = [executable, ...native.slice(1)];
-        const executableStat = lstatSync5(executable);
-        const verdict = assessVersion("kimi-review", COMPAT["kimi-review"].parse(await version(command, cwd, env, context.signal)));
-        if (!verdict.ok)
-          throw new Error(verdict.reason);
-        const fingerprints = [configFile, mcpFile, agentFile].map((file) => hash(read(file, 2097152)));
-        let cleaned = false;
-        const cleanup = () => {
-          if (cleaned)
-            return;
-          rmSync2(root, { recursive: true, force: true });
-          cleaned = true;
-        };
-        return {
-          command,
-          args: ["-p", "Review the supplied task facts and record the evidence-based verdict with hub_review.", "--output-format", "stream-json", "--agent-file", agentFile, "--skills-dir", skills],
-          cwd,
-          env,
-          envMode: "replace",
-          cleanup,
-          watchCurrent: true,
-          stop: (child) => stopKimiReview(child, [join6(sources[1], "kimi-code.lock"), join6(sources[1], `${selected.lock}.lock`)]),
-          current: () => {
-            try {
-              assertCleanCwdAncestors(join6(lexicalRoot, "workspace"), cwd);
-              const now = lstatSync5(executable);
-              return !cleaned && !context.signal.aborted && realPath(sourcePath) === source && now.dev === executableStat.dev && now.ino === executableStat.ino && now.size === executableStat.size && now.mtimeMs === executableStat.mtimeMs && now.ctimeMs === executableStat.ctimeMs && hash(read(sourceConfig)) === hash(original) && [configFile, mcpFile, agentFile].every((file, index) => hash(read(file, 2097152)) === fingerprints[index]) && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join6(source, name)) === sources[index] && realPath(join6(tool, name)) === sources[index]);
-            } catch {
-              return false;
-            }
-          },
-          isolation: {
-            backend: "kimi",
-            version: verdict.version,
-            binary: executable,
-            profile: "private-config-exact-two-tools-shared-native-oauth",
-            readOnly: true,
-            strictMcp: true,
-            ephemeral: true,
-            enforcement: "native-policy",
-            freshSession: true,
-            hubToolsOnly: true,
-            evidence: ["#533 person ruling2026-10-19: native execution-time exact tool allowlist, no kernel sandbox", "private config/cwd/empty skills; shared OAuth directory symlinks and native lock/atomic rename", "task-bound in-process hub MCP; no full control token", "residual: interruption mid-refresh may require native re-login"]
-          }
-        };
-      } catch (error) {
-        if (own)
-          rmSync2(own, { recursive: true, force: true });
-        return { unavailable: `Kimi reviewer unavailable: ${error.message}` };
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temporary}/`, XDG_CONFIG_HOME: join7(home, ".config"), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...process.env.USER ? { USER: process.env.USER } : {} };
+    const native = context.command ?? [Bun.which("kimi", { PATH: process.env.PATH }) ?? "kimi"];
+    const executable = realPath(Bun.which(native[0], { PATH: process.env.PATH }) ?? resolve7(native[0]));
+    const command = [executable, ...native.slice(1)];
+    const executableStat = lstatSync6(executable);
+    const verdict = assessVersion("kimi-review", COMPAT["kimi-review"].parse(await version(command, cwd, env, context.signal)));
+    if (!verdict.ok)
+      throw new Error(verdict.reason);
+    const fingerprints = [configFile, mcpFile, agentFile].map((file) => kimiReviewFingerprint(readKimiReviewFile(file, 2097152)));
+    const binding = projectKimiReviewPolicyBinding({
+      lexicalCwd: join7(lexicalRoot, "workspace"),
+      physicalCwd: cwd,
+      sourcePath,
+      source,
+      sourceConfig,
+      sourceConfigHash: kimiReviewFingerprint(original),
+      executable,
+      executableStat: { dev: executableStat.dev, ino: executableStat.ino, size: executableStat.size, mtimeMs: executableStat.mtimeMs, ctimeMs: executableStat.ctimeMs },
+      privateFiles: [configFile, mcpFile, agentFile].map((path, index) => ({ path, hash: fingerprints[index] })),
+      tool,
+      authTargets: sources
+    });
+    let policyProbe;
+    let cleaned = false, cleaning;
+    const remove = () => {
+      if (cleaned)
+        return;
+      rmSync2(root, { recursive: true, force: true });
+      cleaned = true;
+    };
+    const cleanup = () => {
+      if (cleaned)
+        return;
+      if (!policyProbe) {
+        remove();
+        return;
       }
-    }
+      return cleaning ??= policyProbe.stop().then(remove).catch((error) => {
+        cleaning = undefined;
+        throw error;
+      });
+    };
+    return {
+      command,
+      args: ["-p", "Review the supplied task facts and record the evidence-based verdict with hub_review.", "--output-format", "stream-json", "--agent-file", agentFile, "--skills-dir", skills],
+      cwd,
+      env,
+      envMode: "replace",
+      cleanup,
+      watchCurrent: true,
+      stop: (child) => stopKimiReview(child, [join7(sources[1], "kimi-code.lock"), join7(sources[1], `${selected.lock}.lock`)]),
+      current: () => !cleaned && !context.signal.aborted && checkKimiReviewPolicy(binding),
+      startPolicyWatch: () => {
+        if (cleaned || context.signal.aborted)
+          throw new Error("review policy is no longer current; retry the review");
+        if (!policyProbe) {
+          const probe = policyFactory(projectKimiReviewPolicyBinding(binding));
+          policyProbe = {
+            failure: probe.failure,
+            async check() {
+              if (cleaned || context.signal.aborted)
+                return false;
+              const current = await probe.check();
+              return !cleaned && !context.signal.aborted && current;
+            },
+            stop: () => probe.stop()
+          };
+        }
+        return policyProbe;
+      },
+      isolation: {
+        backend: "kimi",
+        version: verdict.version,
+        binary: executable,
+        profile: "private-config-exact-two-tools-shared-native-oauth",
+        readOnly: true,
+        strictMcp: true,
+        ephemeral: true,
+        enforcement: "native-policy",
+        freshSession: true,
+        hubToolsOnly: true,
+        evidence: ["#533 person ruling2026-10-19: native execution-time exact tool allowlist, no kernel sandbox", "private config/cwd/empty skills; shared OAuth directory symlinks and native lock/atomic rename", "task-bound in-process hub MCP; no full control token", "residual: interruption mid-refresh may require native re-login"]
+      }
+    };
+  } catch (error) {
+    if (own)
+      rmSync2(own, { recursive: true, force: true });
+    return { unavailable: `Kimi reviewer unavailable: ${error.message}` };
+  }
+}
+var MANAGED = "managed:kimi-code", object3 = (v) => !!v && typeof v === "object" && !Array.isArray(v), scalar = (value, depth = 0) => {
+  if (depth > 4)
+    throw new Error("managed model setting too deeply nested");
+  if (typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))
+    return JSON.stringify(value);
+  if (Array.isArray(value) && value.every((v) => typeof v === "string"))
+    return JSON.stringify(value);
+  if (object3(value) && Object.keys(value).length <= 32)
+    return `{ ${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)} = ${scalar(item, depth + 1)}`).join(", ")} }`;
+  throw new Error("unsupported managed model setting");
+}, kimiReviewerBackend;
+var init_kimi_review = __esm(() => {
+  init_compat();
+  init_child_process();
+  init_project();
+  init_kimi_review_policy();
+  init_kimi_review_policy_worker();
+  kimiReviewerBackend = {
+    id: "kimi",
+    taskMcp: true,
+    nativePolicy: true,
+    prepare: (context) => prepareKimiReviewer(context)
   };
 });
 
@@ -4894,9 +5263,9 @@ ${renderDigest(envs, false)}`;
 // src/adapters/jcode.ts
 import { spawn as spawn7, spawnSync as spawnSync2 } from "child_process";
 import { createConnection } from "net";
-import { closeSync as closeSync3, constants as constants2, existsSync as existsSync4, fstatSync as fstatSync3, lstatSync as lstatSync6, mkdtempSync as mkdtempSync3, openSync as openSync3, readSync as readSync2, rmSync as rmSync3 } from "fs";
+import { closeSync as closeSync3, constants as constants2, existsSync as existsSync5, fstatSync as fstatSync3, lstatSync as lstatSync7, mkdtempSync as mkdtempSync3, openSync as openSync3, readSync as readSync2, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { isAbsolute as isAbsolute4, join as join7 } from "path";
+import { isAbsolute as isAbsolute4, join as join8 } from "path";
 function jcodeCommand(command, kind, socket, cwd, model, profile, provider, peer = "jcode") {
   if (!command.length || command.some((word) => typeof word !== "string" || !word))
     throw new Error("jcode_cmd must name an executable argv");
@@ -4939,12 +5308,12 @@ function jcodeTuiCommand(command, socket, sessionId, model, profile, provider) {
 function savedSession(home, id) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id))
     throw new Error("invalid native session identity");
-  const directory = join7(home, "sessions"), info = lstatSync6(directory, { throwIfNoEntry: false });
+  const directory = join8(home, "sessions"), info = lstatSync7(directory, { throwIfNoEntry: false });
   if (!info)
     return false;
   if (!info.isDirectory() || info.isSymbolicLink())
     throw new Error("unsafe native session directory");
-  const file = join7(directory, `${id}.json`), entry = lstatSync6(file, { throwIfNoEntry: false });
+  const file = join8(directory, `${id}.json`), entry = lstatSync7(file, { throwIfNoEntry: false });
   if (!entry)
     return false;
   if (!entry.isFile() || entry.isSymbolicLink())
@@ -5092,7 +5461,7 @@ var init_jcode = __esm(() => {
         throw new Error("jcode_home must be an absolute native data path");
       const peer = jcode.peer ?? "jcode";
       jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
-      const root = mkdtempSync3(join7(tmpdir3(), "ahub-jcode-")), socket = join7(root, "j.sock");
+      const root = mkdtempSync3(join8(tmpdir3(), "ahub-jcode-")), socket = join8(root, "j.sock");
       const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile, jcode.provider, peer);
       const launchId = crypto.randomUUID();
       super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], preamble: jcodePreamble(jcode.preamble), requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
@@ -5119,9 +5488,9 @@ var init_jcode = __esm(() => {
       return typeof this.jcode.resumeSessionId === "string" && this.jcode.resumeSessionId.length > 0;
     }
     async start() {
-      if (!existsSync4(join7(this.jcode.home, "mcp.json")))
+      if (!existsSync5(join8(this.jcode.home, "mcp.json")))
         throw new Error("initialize Jcode's global MCP store with its native client before enabling this peer; the hub never initializes or copies it");
-      if (existsSync4(this.socket)) {
+      if (existsSync5(this.socket)) {
         this.preserveRoot = true;
         throw new Error("Jcode private socket is occupied; no daemon was adopted or removed");
       }
@@ -5143,7 +5512,7 @@ var init_jcode = __esm(() => {
           ready.once("data", () => {
             clearTimeout(timer);
             server.off("exit", fail);
-            if (lstatSync6(this.socket, { throwIfNoEntry: false })?.isSocket())
+            if (lstatSync7(this.socket, { throwIfNoEntry: false })?.isSocket())
               resolve();
             else
               reject(new Error("Jcode readiness has no private socket"));
@@ -5153,7 +5522,7 @@ var init_jcode = __esm(() => {
           if (!this.ending && this.server === server)
             this.stop("Jcode owned daemon disconnected").catch(() => {});
         });
-        const identity = lstatSync6(this.socket);
+        const identity = lstatSync7(this.socket);
         this.socketIdentity = { dev: identity.dev, ino: identity.ino };
         await super.start();
       } catch (error) {
@@ -5227,7 +5596,7 @@ var init_jcode = __esm(() => {
         throw new Error(reason);
       };
       const sessionId = super.recoveryMetadata().sessionId;
-      const socket = lstatSync6(this.socket, { throwIfNoEntry: false });
+      const socket = lstatSync7(this.socket, { throwIfNoEntry: false });
       if (this.state !== "busy")
         refuse(`jcode is ${this.state}`);
       if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string")
@@ -5240,7 +5609,7 @@ var init_jcode = __esm(() => {
           return "owned Jcode server changed before the steer was sent";
         if (super.recoveryMetadata().sessionId !== sessionId)
           return "jcode's session changed before the steer was sent";
-        const now = lstatSync6(this.socket, { throwIfNoEntry: false });
+        const now = lstatSync7(this.socket, { throwIfNoEntry: false });
         if (!now?.isSocket() || now.dev !== identity?.dev || now.ino !== identity.ino)
           return "owned Jcode socket changed before the steer was sent";
         return;
@@ -5265,7 +5634,7 @@ var init_jcode = __esm(() => {
     }
     tuiLaunch(expected, options = {}) {
       const sessionId = super.recoveryMetadata().sessionId;
-      const socket = lstatSync6(this.socket, { throwIfNoEntry: false });
+      const socket = lstatSync7(this.socket, { throwIfNoEntry: false });
       if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || this.state === "offline")
         throw new JcodeTuiRefusal("server_not_running");
       if (!socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino)
@@ -5302,8 +5671,8 @@ var init_process_signature = __esm(() => {
 });
 
 // src/adapters/qwen-dual.ts
-import { closeSync as closeSync4, constants as constants3, fstatSync as fstatSync4, lstatSync as lstatSync7, mkdirSync as mkdirSync5, openSync as openSync4, readSync as readSync3, realpathSync as realpathSync2, renameSync as renameSync3, writeFileSync as writeFileSync5, writeSync } from "fs";
-import { join as join8 } from "path";
+import { closeSync as closeSync4, constants as constants3, fstatSync as fstatSync4, lstatSync as lstatSync8, mkdirSync as mkdirSync5, openSync as openSync4, readSync as readSync3, realpathSync as realpathSync2, renameSync as renameSync3, writeFileSync as writeFileSync5, writeSync } from "fs";
+import { join as join9 } from "path";
 function qwenDualNamesStateDir(input, stateDir) {
   const needles = new Set([".agenthub/state", ".agenthub\\state", "qwen-dual", "input.jsonl", stateDir]);
   try {
@@ -5371,11 +5740,11 @@ var init_qwen_dual = __esm(() => {
     constructor(id, opts) {
       super(id, opts.watchdogMs);
       this.opts = opts;
-      this.dir = join8(opts.stateDir, DIR);
-      this.inputFile = join8(this.dir, "input.jsonl");
-      this.eventFile = join8(this.dir, "events.jsonl");
-      this.stateFile = join8(this.dir, "state.json");
-      this.mcpFile = join8(this.dir, "mcp.json");
+      this.dir = join9(opts.stateDir, DIR);
+      this.inputFile = join9(this.dir, "input.jsonl");
+      this.eventFile = join9(this.dir, "events.jsonl");
+      this.stateFile = join9(this.dir, "state.json");
+      this.mcpFile = join9(this.dir, "mcp.json");
       this.signature = opts.signature ?? processSignature;
     }
     get launch() {
@@ -5413,7 +5782,7 @@ var init_qwen_dual = __esm(() => {
       return { ...this.state_.sessionId ? { sessionId: this.state_.sessionId } : {}, launch: { mode: "tui" } };
     }
     ensureFile(path, create) {
-      const found = lstatSync7(path, { throwIfNoEntry: false });
+      const found = lstatSync8(path, { throwIfNoEntry: false });
       if (!found) {
         if (!create)
           throw new Error("Qwen dual-output file is missing");
@@ -5471,7 +5840,7 @@ var init_qwen_dual = __esm(() => {
     }
     async start() {
       mkdirSync5(this.dir, { recursive: true, mode: 448 });
-      const dir = lstatSync7(this.dir);
+      const dir = lstatSync8(this.dir);
       if (!dir.isDirectory() || dir.isSymbolicLink() || typeof process.getuid === "function" && dir.uid !== process.getuid() || (dir.mode & 63) !== 0)
         throw new Error("Qwen dual-output directory is not private to the person running the hub");
       this.loadState();
@@ -5499,10 +5868,10 @@ var init_qwen_dual = __esm(() => {
         this.adopting = false;
         this.resume = this.opts.sessionId !== undefined || this.state_.sessionId !== undefined;
         const resumeId = this.opts.sessionId ?? this.state_.sessionId;
-        const previous = lstatSync7(this.eventFile);
+        const previous = lstatSync8(this.eventFile);
         if (previous.size > 0) {
           try {
-            renameSync3(this.eventFile, join8(this.dir, "events.prev.jsonl"));
+            renameSync3(this.eventFile, join9(this.dir, "events.prev.jsonl"));
           } catch {}
           this.ensureFile(this.eventFile, true);
         }
@@ -5997,11 +6366,11 @@ ${text}`;
 });
 
 // src/pi/launch.ts
-import { join as join9 } from "path";
+import { join as join10 } from "path";
 function buildPiLaunch(opts, inherited, extension, bridgePort, bridgeToken) {
   const adapter = ADAPTERS.find((adapter) => adapter.start.daemonPort === "pi-rpc");
-  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join9(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
-  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join9(opts.stateDir, "pi-sessions")];
+  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join10(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
+  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join10(opts.stateDir, "pi-sessions")];
   if (opts.sessionFile)
     args.push("--session", opts.sessionFile);
   else if (opts.sessionId)
@@ -6031,7 +6400,7 @@ var init_recovery_error = __esm(() => {
 });
 
 // src/hub/recovery-store.ts
-import { chmodSync, existsSync as existsSync5, linkSync, lstatSync as lstatSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
+import { chmodSync, existsSync as existsSync6, linkSync, lstatSync as lstatSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
 import { randomUUID as randomUUID4 } from "crypto";
 function atomicPrivateJSON(file, value) {
   const temporary = `${file}.${randomUUID4()}.tmp`;
@@ -6052,7 +6421,7 @@ var init_recovery_store = __esm(() => {
 
 // src/pi/session.ts
 import { readFileSync as readFileSync6, openSync as openSync5, closeSync as closeSync5, fsyncSync, mkdirSync as mkdirSync7 } from "fs";
-import { join as join10, relative as relative2, resolve as resolve7, dirname as dirname6 } from "path";
+import { join as join11, relative as relative2, resolve as resolve8, dirname as dirname7 } from "path";
 function sessionReadFailure(error) {
   if (error.code === "ENOENT")
     throw new PiSessionUnresumable("missing", error.message, { cause: error });
@@ -6062,12 +6431,12 @@ function validatePiSession(stateDir, cwd, sessionFile, sessionId) {
   let file, sessions;
   try {
     file = realPath(sessionFile);
-    sessions = realPath(join10(stateDir, "pi-sessions"));
+    sessions = realPath(join11(stateDir, "pi-sessions"));
   } catch (error) {
     return sessionReadFailure(error);
   }
   const rel = relative2(sessions, file);
-  if (!rel || rel.startsWith("..") || resolve7(sessions, rel) !== file)
+  if (!rel || rel.startsWith("..") || resolve8(sessions, rel) !== file)
     throw new PiSessionUnresumable("outside_managed", "Pi session file is outside the managed project session directory");
   let first;
   try {
@@ -6107,10 +6476,10 @@ var init_session = __esm(() => {
 });
 
 // src/hub/permission-mode.ts
-import { lstatSync as lstatSync9 } from "fs";
+import { lstatSync as lstatSync10 } from "fs";
 function hardLinked(path) {
   try {
-    const st = lstatSync9(path);
+    const st = lstatSync10(path);
     return st.isFile() && st.nlink > 1;
   } catch {
     return false;
@@ -6129,11 +6498,11 @@ var init_permission_mode = __esm(() => {
 });
 
 // src/hub/path-policy.ts
-import { accessSync, constants as constants4, lstatSync as lstatSync10, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
-import { dirname as dirname7, isAbsolute as isAbsolute5, join as join11, relative as relative3, resolve as resolve8, sep as sep2 } from "path";
+import { accessSync, constants as constants4, lstatSync as lstatSync11, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
+import { dirname as dirname8, isAbsolute as isAbsolute5, join as join12, relative as relative3, resolve as resolve9, sep as sep2 } from "path";
 function existing(path) {
   try {
-    lstatSync10(path);
+    lstatSync11(path);
     return true;
   } catch (error) {
     if (error.code === "ENOENT")
@@ -6144,17 +6513,17 @@ function existing(path) {
 function policyRealPath(path) {
   let ancestor = path;
   while (!existing(ancestor)) {
-    const parent = dirname7(ancestor);
+    const parent = dirname8(ancestor);
     if (parent === ancestor)
       throw new Error("path cannot be resolved");
     ancestor = parent;
   }
-  return join11(realPath(ancestor), relative3(ancestor, path));
+  return join12(realPath(ancestor), relative3(ancestor, path));
 }
 function policyTargets(cwd, paths) {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap((path) => {
-    const lexical = resolve8(root, path);
+    const lexical = resolve9(root, path);
     return [lexical, policyRealPath(lexical)];
   }))];
 }
@@ -6177,14 +6546,14 @@ function directAliasTarget(path) {
     }
     let ancestor = target;
     while (!existing(ancestor)) {
-      const parent = dirname7(ancestor);
+      const parent = dirname8(ancestor);
       if (parent === ancestor)
         return;
       ancestor = parent;
     }
-    if (!lstatSync10(ancestor).isSymbolicLink())
+    if (!lstatSync11(ancestor).isSymbolicLink())
       return;
-    target = resolve8(dirname7(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
+    target = resolve9(dirname8(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
   }
   return;
 }
@@ -6201,7 +6570,7 @@ function aliasScope(dir, lexical, actual, includeParents, budget) {
       budget.entries++;
       if (!entry.isSymbolicLink())
         continue;
-      const target = directAliasTarget(join11(dir, entry.name));
+      const target = directAliasTarget(join12(dir, entry.name));
       if (target !== undefined && (beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual))))
         matched = true;
     }
@@ -6297,7 +6666,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
         if (++budget.entries > 4096)
           throw new Error("policy glob discovery unavailable");
         const next = advance(pattern, states, entry.name);
-        if (next.size && visit(join11(dir, entry.name), next, depth + 1, chain))
+        if (next.size && visit(join12(dir, entry.name), next, depth + 1, chain))
           return true;
       }
     } finally {
@@ -6313,7 +6682,7 @@ function matchesPolicy(cwd, path, paths, includeParents = false, options = {}) {
   try {
     if (path.length > 4096)
       return true;
-    const root = realPath(cwd), lexical = resolve8(root, path), actual = policyRealPath(lexical);
+    const root = realPath(cwd), lexical = resolve9(root, path), actual = policyRealPath(lexical);
     includeParents &&= !existing(lexical) || statSync2(lexical).isDirectory();
     const budget = { entries: 0, failClosedOnDiscoveryLimit: options.failClosedOnDiscoveryLimit }, roots = new Set, exact = [];
     if (paths.some((entry) => {
@@ -6348,7 +6717,7 @@ var init_path_policy = __esm(() => {
 });
 
 // src/local/deny.ts
-import { basename as basename4, dirname as dirname8 } from "path";
+import { basename as basename4, dirname as dirname9 } from "path";
 function gitRefRules(gitDirs, subDirs = []) {
   const git = hfsFoldedName(".git");
   const re = (s) => `(regex ${sbplString(s)})`;
@@ -6402,13 +6771,13 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
     return [
       `(require-all ${re(`^${root}/.`)} ${inside})`,
       ...anchored,
-      ...tree.entries.map((d) => `(require-all ${re(`^${sbplEscape(dirname8(d))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(d))}$`)})`)
+      ...tree.entries.map((d) => `(require-all ${re(`^${sbplEscape(dirname9(d))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(d))}$`)})`)
     ];
   });
   const siblings = worktreesRoot ? (() => {
     const w = sbplEscape(worktreesRoot);
     return [
-      `(require-all ${re(`^${sbplEscape(dirname8(worktreesRoot))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(worktreesRoot))}$`)})`,
+      `(require-all ${re(`^${sbplEscape(dirname9(worktreesRoot))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(worktreesRoot))}$`)})`,
       re(`^${w}/[^/]+$`),
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
@@ -6467,9 +6836,9 @@ var init_deny = __esm(() => {
 
 // src/local/sandbox.ts
 import { spawn as spawn8, spawnSync as spawnSync3 } from "child_process";
-import { existsSync as existsSync6, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync5 } from "fs";
+import { existsSync as existsSync7, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync5 } from "fs";
 import { homedir as homedir4, tmpdir as tmpdir4 } from "os";
-import { dirname as dirname9, join as join12, resolve as resolve9 } from "path";
+import { dirname as dirname10, join as join13, resolve as resolve10 } from "path";
 function developerDir() {
   const out = spawnSync3("xcode-select", ["-p"], { encoding: "utf8" });
   let dir = out.status === 0 ? out.stdout.trim() : "";
@@ -6483,12 +6852,12 @@ function externalGitDirs(root) {
   if (out.status !== 0)
     return [];
   const dirs = out.stdout.trim().split(`
-`).map((d) => resolve9(root, d));
+`).map((d) => resolve10(root, d));
   return [...new Set(dirs)].filter((d) => !d.startsWith(`${root}/`));
 }
 function worktreesRoot(root) {
   const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
-  return out.status === 0 && out.stdout.trim() ? join12(resolve9(root, out.stdout.trim()), "worktrees") : undefined;
+  return out.status === 0 && out.stdout.trim() ? join13(resolve10(root, out.stdout.trim()), "worktrees") : undefined;
 }
 function moduleGitDirs(root) {
   const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir", "--absolute-git-dir"], { encoding: "utf8" });
@@ -6498,14 +6867,14 @@ function moduleGitDirs(root) {
 `);
   if (!commonRaw || !ownRaw)
     return [];
-  const common = resolve9(root, commonRaw), own = resolve9(root, ownRaw);
-  const roots = new Set([join12(common, "modules"), join12(own, "modules")]);
+  const common = resolve10(root, commonRaw), own = resolve10(root, ownRaw);
+  const roots = new Set([join13(common, "modules"), join13(own, "modules")]);
   try {
-    for (const e of readdirSync(join12(common, "worktrees"), { withFileTypes: true })) {
+    for (const e of readdirSync(join13(common, "worktrees"), { withFileTypes: true })) {
       if (!e.isDirectory())
         continue;
-      const modules = join12(common, "worktrees", e.name, "modules");
-      if (existsSync6(modules))
+      const modules = join13(common, "worktrees", e.name, "modules");
+      if (existsSync7(modules))
         roots.add(modules);
     }
   } catch {}
@@ -6528,21 +6897,21 @@ function moduleGitDirs(root) {
       }
       for (const e of entries)
         if (e.isDirectory())
-          walk(join12(dir, e.name), depth + 1);
+          walk(join13(dir, e.name), depth + 1);
     };
     walk(modulesRoot, 0);
     const found = nesting >= MODULE_DEPTH ? [] : dirs;
     const entries = new Set([modulesRoot]);
     for (const d of found)
-      for (let p = d;p.length > modulesRoot.length; p = dirname9(p))
+      for (let p = d;p.length > modulesRoot.length; p = dirname10(p))
         entries.add(p);
     trees.push({ root: modulesRoot, entries: [...entries], dirs: found });
     for (const d of found) {
-      tree(join12(d, "modules"), nesting + 1);
+      tree(join13(d, "modules"), nesting + 1);
       try {
-        for (const e of readdirSync(join12(d, "worktrees"), { withFileTypes: true })) {
-          if (e.isDirectory() && existsSync6(join12(d, "worktrees", e.name, "modules")))
-            tree(join12(d, "worktrees", e.name, "modules"), nesting + 1);
+        for (const e of readdirSync(join13(d, "worktrees"), { withFileTypes: true })) {
+          if (e.isDirectory() && existsSync7(join13(d, "worktrees", e.name, "modules")))
+            tree(join13(d, "worktrees", e.name, "modules"), nesting + 1);
         }
       } catch {}
     }
@@ -6553,14 +6922,14 @@ function moduleGitDirs(root) {
 }
 function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
   const home = homedir4();
-  const inHome = (p) => p.startsWith("~/") ? join12(home, p.slice(2)) : p;
+  const inHome = (p) => p.startsWith("~/") ? join13(home, p.slice(2)) : p;
   const root = realPath(cwd);
   const gitDirs = externalGitDirs(root);
   const moduleGit = moduleGitDirs(root);
   const worktrees = worktreesRoot(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
-  const readable = [root, ...HOME_READABLE.map((p) => join12(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
+  const readable = [root, ...HOME_READABLE.map((p) => join13(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
   const subpaths = (paths) => paths.map((p) => `(subpath ${q(p)})`).join(" ");
   const globals = (names) => names.map((n) => `(global-name ${q(n)})`).join(" ");
   const proxy = typeof network === "object" ? `(allow network-outbound (remote ip ${q(`localhost:${network.proxyPort}`)}))` : undefined;
@@ -6578,15 +6947,15 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     '(allow file-ioctl (regex #"^/dev/"))',
     ...proxy ? [proxy] : network ? ["(allow network*)"] : []
   ];
-  const places = `${creds.map((c) => `(subpath ${q(join12(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
+  const places = `${creds.map((c) => `(subpath ${q(join13(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
   return [
     "(version 1)",
     ...start,
     "(deny file-write*)",
     ...readOnly.length ? ['(allow file-write* (literal "/dev/null"))'] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`],
     `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit, worktrees).join(" ")})`,
-    ...worktrees ? objectStoreRules(dirname9(worktrees)) : [],
-    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join12(home, c))})`).join(" ")})`,
+    ...worktrees ? objectStoreRules(dirname10(worktrees)) : [],
+    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join13(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     ...network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []
   ].join(`
@@ -6600,7 +6969,7 @@ function sandboxedExec(argv, opts) {
   if (opts.signal?.aborted)
     return Promise.resolve({ code: null, output: "error: command cancelled before execution" });
   return new Promise((resolve) => {
-    const own = realPath(mkdtempSync4(join12(tmpdir4(), "ahub-cmd-")));
+    const own = realPath(mkdtempSync4(join13(tmpdir4(), "ahub-cmd-")));
     const sandbox = `${opts.profile}
 (allow file-read* ${opts.readOnlyData ? "" : "file-write* "}process-exec (subpath ${q(own)}))`;
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir4(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
@@ -6660,7 +7029,7 @@ function proxyEnv(network) {
   const url = `http://127.0.0.1:${network.proxyPort}`;
   return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, ALL_PROXY: url, all_proxy: url, NO_PROXY: "", no_proxy: "" };
 }
-var SANDBOX_EXEC = "/usr/bin/sandbox-exec", OUTPUT_CAP = 20000, sandboxAvailable = () => process.platform === "darwin" && existsSync6(SANDBOX_EXEC), q, HOME_READABLE, CA_BUNDLES, MODULE_DEPTH = 8, SYSTEM_READABLE, MACH_SERVICES, NETWORK_MACH_SERVICES, PROXY_MACH_SERVICES;
+var SANDBOX_EXEC = "/usr/bin/sandbox-exec", OUTPUT_CAP = 20000, sandboxAvailable = () => process.platform === "darwin" && existsSync7(SANDBOX_EXEC), q, HOME_READABLE, CA_BUNDLES, MODULE_DEPTH = 8, SYSTEM_READABLE, MACH_SERVICES, NETWORK_MACH_SERVICES, PROXY_MACH_SERVICES;
 var init_sandbox = __esm(() => {
   init_project();
   init_git();
@@ -6685,7 +7054,7 @@ var init_text_projection = __esm(() => {
 });
 
 // src/local/doc-read.ts
-import { lstatSync as lstatSync11 } from "fs";
+import { lstatSync as lstatSync12 } from "fs";
 import { extname } from "path";
 function docRead(file, shown, args, port, cwd) {
   const projections = port.projections();
@@ -6695,7 +7064,7 @@ function docRead(file, shown, args, port, cwd) {
   }
   let st;
   try {
-    st = lstatSync11(file);
+    st = lstatSync12(file);
   } catch {
     return `error: ${shown} cannot be read`;
   }
@@ -7018,30 +7387,30 @@ var init_web_fetch = __esm(() => {
 });
 
 // src/local/tools.ts
-import { lstatSync as lstatSync12, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname10, join as join13, relative as relative4, resolve as resolve10 } from "path";
+import { lstatSync as lstatSync13, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname11, join as join14, relative as relative4, resolve as resolve11 } from "path";
 function guardPath(ctx, path, mode) {
   const root = realPath(ctx.cwd);
-  const abs = resolve10(root, path);
+  const abs = resolve11(root, path);
   let existing = abs;
   while (!lexists(existing))
-    existing = dirname10(existing);
+    existing = dirname11(existing);
   let realExisting;
   try {
     realExisting = realPath(existing);
   } catch {
     throw new Error(`${path} goes through a dangling symlink`);
   }
-  const real = join13(realExisting, relative4(existing, abs));
+  const real = join14(realExisting, relative4(existing, abs));
   const rel = relative4(root, real);
-  if (rel.startsWith("..") || resolve10(root, rel) !== real)
+  if (rel.startsWith("..") || resolve11(root, rel) !== real)
     throw new Error(`${path} is outside the project directory`);
   const typed = relative4(root, abs), inside = insideRoot(typed);
   if (isDenied(rel, ctx.deny) || inside && isDenied(typed, ctx.deny))
     throw new Error(`${path} is on the secrets denylist`);
   if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed)))
     throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && ctx.readOnly?.length && (lstatSync12(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync13(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? []))
     throw new Error("target is protected by data.readonly");
@@ -7112,7 +7481,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
           return "error: path target changed during approval; inspect before retrying";
-        mkdirSync8(dirname10(file), { recursive: true });
+        mkdirSync8(dirname11(file), { recursive: true });
         writeFileSync7(file, content);
         return `wrote ${a.path}`;
       }
@@ -7217,7 +7586,7 @@ note: the sandbox does not let you move a branch, tag or HEAD, or stage inside a
 }
 var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, lexists = (p) => {
   try {
-    lstatSync12(p);
+    lstatSync13(p);
     return true;
   } catch {
     return false;
@@ -7286,8 +7655,8 @@ var init_question_detach = __esm(() => {
 
 // src/adapters/pi.ts
 import { randomUUID as randomUUID5 } from "crypto";
-import { existsSync as existsSync7, mkdirSync as mkdirSync9 } from "fs";
-import { join as join14, resolve as resolve11 } from "path";
+import { existsSync as existsSync8, mkdirSync as mkdirSync9 } from "fs";
+import { join as join15, resolve as resolve12 } from "path";
 import { spawn as spawn9 } from "child_process";
 function piVersionAsync(command, cwd, timeoutMs = 1e4) {
   const [bin, ...prefix] = command;
@@ -7558,7 +7927,7 @@ var init_pi = __esm(() => {
     get recoveryReady() {
       if (this.state === "busy" || this.starting || this.activeTools)
         return false;
-      if (this.sessionFile && !existsSync7(this.sessionFile) && (this.activityObserved || this.persistedOnce))
+      if (this.sessionFile && !existsSync8(this.sessionFile) && (this.activityObserved || this.persistedOnce))
         return false;
       if (this.opts.mode === "headless")
         return this.state === "idle" || !this.proc || this.proc.exitCode !== null || this.proc.signalCode !== null;
@@ -7578,7 +7947,7 @@ var init_pi = __esm(() => {
     }
     checkpointUsesSessionGeneration = false;
     recoveryMetadata() {
-      const exists = !!this.sessionFile && existsSync7(this.sessionFile);
+      const exists = !!this.sessionFile && existsSync8(this.sessionFile);
       if (exists) {
         this.persistedOnce = true;
         this.verifiedEmptyResume = undefined;
@@ -7595,14 +7964,14 @@ var init_pi = __esm(() => {
       if (this.state === "offline") {
         if (this.canReuseVerifiedEmptyResume())
           return this.recoveryMetadata();
-        if (this.recoveryReady && this.sessionFile && existsSync7(this.sessionFile))
+        if (this.recoveryReady && this.sessionFile && existsSync8(this.sessionFile))
           return this.recoveryMetadata();
         throw new Error("Pi source session is offline and has no verified persisted resume state; inspect preserved history, then a person may run ahub pi --replace-session --session-file <managed-file>");
       }
       this.emptyResumeVerified = false;
       if (this.state !== "idle" || this.stopping || this.activeTools)
         throw new Error("Pi must settle before session capture");
-      if (this.sessionFile && existsSync7(this.sessionFile))
+      if (this.sessionFile && existsSync8(this.sessionFile))
         return this.recoveryMetadata();
       const titleRevisionBefore = this.titleRevision, titleEpochBefore = this.titleEpoch;
       const snapshot = this.opts.mode === "headless" ? (await this.waitRpc("get_state", 15000)).data : await this.sendTui({ type: "get_session_state" });
@@ -7620,7 +7989,7 @@ var init_pi = __esm(() => {
       return captured;
     }
     canReuseVerifiedEmptyResume() {
-      return !!this.verifiedEmptyResume && this.recoveryReady && !this.activityObserved && !this.persistedOnce && this.sessionId === this.verifiedEmptyResume.sessionId && (!this.sessionFile || !existsSync7(this.sessionFile));
+      return !!this.verifiedEmptyResume && this.recoveryReady && !this.activityObserved && !this.persistedOnce && this.sessionId === this.verifiedEmptyResume.sessionId && (!this.sessionFile || !existsSync8(this.sessionFile));
     }
     noteActivity() {
       this.activityObserved = true;
@@ -7871,7 +8240,7 @@ var init_pi = __esm(() => {
       this.approvalStopReason = "";
       this.approvalAbortSent = false;
       mkdirSync9(this.opts.stateDir, { recursive: true });
-      const sessions = join14(this.opts.stateDir, "pi-sessions");
+      const sessions = join15(this.opts.stateDir, "pi-sessions");
       mkdirSync9(sessions, { recursive: true, mode: 448 });
       if (this.opts.sessionFile) {
         try {
@@ -7934,7 +8303,7 @@ var init_pi = __esm(() => {
         return new Response("not found", { status: 404 });
       } });
       this.server = bridge;
-      const extension = resolve11(join14(import.meta.dir, "../pi/extension.ts"));
+      const extension = resolve12(join15(import.meta.dir, "../pi/extension.ts"));
       const inherited = {};
       for (const key of ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"])
         if (process.env[key])
@@ -7977,7 +8346,7 @@ var init_pi = __esm(() => {
         this.ownerToken = String(this._tuiLaunch?.env.AGENTHUB_PI_OWNER_TOKEN ?? "");
         this.ownerClaimed = true;
       }
-      this.persistedOnce = existsSync7(this.sessionFile);
+      this.persistedOnce = existsSync8(this.sessionFile);
       if (this.opts.sessionId && this.sessionId !== this.opts.sessionId || this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)
         throw new Error("Pi startup session identity mismatch");
       this.observeSnapshotTitle(state.data, titleRevisionBefore, titleEpochBefore);
@@ -9550,8 +9919,8 @@ var init_shipped_roles = __esm(() => {
 
 // src/hub/roles.ts
 import { createHash as createHash5 } from "crypto";
-import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync13, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
-import { join as join15 } from "path";
+import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync14, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
+import { join as join16 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
     throw new Error("invalid role size, encoding or file id");
@@ -9630,9 +9999,9 @@ function loadRoleCatalog(cwd) {
   if (!cwd)
     return { roles, errors };
   try {
-    const config = join15(cwd, ".agenthub"), dir = join15(config, "roles");
+    const config = join16(cwd, ".agenthub"), dir = join16(config, "roles");
     for (const path of [config, dir]) {
-      const stat = lstatSync13(path);
+      const stat = lstatSync14(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error("unsafe role directory");
     }
@@ -9642,7 +10011,7 @@ function loadRoleCatalog(cwd) {
     for (const file of files) {
       const id = file.slice(0, -3);
       try {
-        roles.set(id, parseRole(projectRole(join15(dir, file)), id, "project"));
+        roles.set(id, parseRole(projectRole(join16(dir, file)), id, "project"));
       } catch {
         errors.push({ id: ID.test(id) ? id : "invalid-file-id", reason: "invalid or unsafe project role" });
       }
@@ -12374,7 +12743,7 @@ var init_stage = __esm(() => {
 });
 
 // src/hub/routing.ts
-import { join as join16, resolve as resolve12 } from "path";
+import { join as join17, resolve as resolve13 } from "path";
 function effectiveLocalRoute(defaultRoute, classRoute, classFixedModel) {
   return classRoute ?? (classFixedModel === undefined ? defaultRoute : undefined);
 }
@@ -12387,7 +12756,7 @@ var init_routing = __esm(() => {
   init_spec_read();
   init_config2();
   init_stage();
-  TEMPLATE = join16(import.meta.dir, "..", "..", "templates", "routing.toml");
+  TEMPLATE = join17(import.meta.dir, "..", "..", "templates", "routing.toml");
   cache = new Map;
 });
 
@@ -14684,7 +15053,7 @@ var init_launch2 = __esm(() => {
 // src/adapters/claude-task-sessions.ts
 import { randomUUID as randomUUID8 } from "crypto";
 import { mkdirSync as mkdirSync10, readFileSync as readFileSync9 } from "fs";
-import { dirname as dirname11 } from "path";
+import { dirname as dirname12 } from "path";
 function readState(file) {
   let text;
   try {
@@ -14721,7 +15090,7 @@ class ClaudeTaskSessions {
   }
   write(sessions) {
     const next = { version: 1, sessions };
-    mkdirSync10(dirname11(this.file), { recursive: true, mode: 448 });
+    mkdirSync10(dirname12(this.file), { recursive: true, mode: 448 });
     atomicPrivateJSON(this.file, next);
     this.state = next;
   }
@@ -14811,9 +15180,9 @@ var WITHHELD = "Claude implementer turn failed (details withheld)";
 
 // src/adapters/claude-implementer.ts
 import { randomUUID as randomUUID9 } from "crypto";
-import { lstatSync as lstatSync14, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
+import { lstatSync as lstatSync15, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
-import { join as join17 } from "path";
+import { join as join18 } from "path";
 function provenVersion(binding) {
   return provenVersions.get(binding);
 }
@@ -14869,10 +15238,10 @@ function claudeImplementerArgs(turn, mcp, settings, prompt, model) {
 async function proveClaudeImplementer(peer, command) {
   const binary = Bun.which(command[0], { PATH: process.env.PATH }) ?? command[0];
   const fingerprint = () => {
-    const file = realPath(binary), stat = lstatSync14(file);
+    const file = realPath(binary), stat = lstatSync15(file);
     return [file, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
   };
-  const binding = fingerprint(), home = mkdtempSync5(join17(tmpdir5(), "ahub-claude-proof-"));
+  const binding = fingerprint(), home = mkdtempSync5(join18(tmpdir5(), "ahub-claude-proof-"));
   let version = "", timedOut = false;
   const child = new OwnedPrintChild({
     peer,
@@ -14881,7 +15250,7 @@ async function proveClaudeImplementer(peer, command) {
     cwd: home,
     input: "",
     envMode: "replace",
-    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join17(home, ".claude") },
+    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join18(home, ".claude") },
     maxFrameBytes: 4096,
     maxOutputBytes: 4096,
     onLine: (line) => {
@@ -14959,7 +15328,7 @@ var init_claude_implementer = __esm(() => {
       if (options.mode !== undefined && options.mode !== "ask" && options.mode !== "ask-when-needed")
         throw new Error("Claude implementer refuses unsupported permission mode");
       this.mode = options.mode ?? "ask";
-      this.sessions = new ClaudeTaskSessions(join17(options.stateDir, claudeStateFile("claude-task-sessions", id)));
+      this.sessions = new ClaudeTaskSessions(join18(options.stateDir, claudeStateFile("claude-task-sessions", id)));
     }
     get permissionModeState() {
       return this.mode;
@@ -15116,7 +15485,7 @@ var init_claude_implementer = __esm(() => {
           this.observerSessionIdValue = turn.sessionId;
           this.currentInputContext = inputContext;
           this.options.beforeInput?.(inputContext, group.envs);
-          const launchId = randomUUID9(), directory = mkdtempSync5(join17(this.options.stateDir, "claude-child-")), settings = join17(directory, "settings.json");
+          const launchId = randomUUID9(), directory = mkdtempSync5(join18(this.options.stateDir, "claude-child-")), settings = join18(directory, "settings.json");
           let launchFailureTrace;
           this.cleanup = () => rmSync6(directory, { recursive: true, force: true });
           writeFileSync8(settings, sessionSettings(undefined, { script: this.options.factsHook, stateDir: this.options.stateDir, purpose: "permission" }), { mode: 384, flag: "wx" });
@@ -15438,9 +15807,9 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, lstatSync as lstatSync15, openSync as openSync8, readSync as readSync6 } from "fs";
+import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, lstatSync as lstatSync16, openSync as openSync8, readSync as readSync6 } from "fs";
 import { homedir as homedir5 } from "os";
-import { isAbsolute as isAbsolute6, join as join18, relative as relative5 } from "path";
+import { isAbsolute as isAbsolute6, join as join19, relative as relative5 } from "path";
 import { createHash as createHash7 } from "crypto";
 function decodeAgyHook(event, value) {
   if (!EVENTS2.includes(event) || !record3(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute6(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute6(path)))
@@ -15473,29 +15842,35 @@ function encodeAgyHook(event, text) {
     return { injectSteps: [{ ephemeralMessage: text }] };
   return;
 }
-function readAgyTranscript(session, transcript) {
+function readAgyTranscript(session, transcript, options) {
   const empty = { factIds: [] };
   if (!UUID2.test(session))
     return empty;
   const home = process.env.HOME ?? homedir5();
-  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join18(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
+  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join19(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
   if (!candidates.includes(transcript))
     return empty;
   let fd;
   try {
     let cursor = home;
     for (const name of relative5(home, transcript).split("/")) {
-      cursor = join18(cursor, name);
-      if (lstatSync15(cursor).isSymbolicLink())
+      cursor = join19(cursor, name);
+      if (lstatSync16(cursor).isSymbolicLink())
         return empty;
     }
     fd = openSync8(transcript, constants7.O_RDONLY | constants7.O_NOFOLLOW);
     const stat = fstatSync7(fd);
     if (!stat.isFile() || stat.nlink !== 1)
       return empty;
+    if (options?.unchanged && stat.size === options.unchanged.size && stat.mtimeMs === options.unchanged.mtimeMs)
+      return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, unchanged: true };
+    const hasSince = options?.sinceOffset !== undefined && options.sinceOffset >= 0 && options.sinceOffset <= stat.size;
+    const resumeAt = options?.completion === false && hasSince ? options.sinceOffset : 0;
+    if (options?.completion === false && resumeAt === stat.size)
+      return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, scannedFrom: stat.size };
     const cap = 4 * 1024 * 1024;
     for (let window = 64 * 1024;; window = Math.min(cap, window * 2)) {
-      const start = Math.max(0, stat.size - window), from = start > 0 ? start - 1 : 0;
+      const start = Math.max(resumeAt, stat.size - window), from = start > 0 ? start - 1 : 0;
       const buffer = Buffer.alloc(stat.size - from);
       let bytes = 0;
       while (bytes < buffer.length) {
@@ -15508,7 +15883,7 @@ function readAgyTranscript(session, transcript) {
 `);
       if (start)
         lines.shift();
-      const out = { factIds: [] };
+      const out = { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, scannedFrom: window === cap && hasSince ? Math.min(start, options.sinceOffset) : start };
       for (const line of lines) {
         let row;
         try {
@@ -15522,10 +15897,10 @@ function readAgyTranscript(session, transcript) {
           for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g))
             out.factIds.push(match[1]);
         }
-        if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
+        if (options?.completion !== false && row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
           out.completion = { id: createHash7("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
       }
-      if (out.completion || start === 0 || window === cap)
+      if (out.completion && (!hasSince || start <= options.sinceOffset) || start === resumeAt || window === cap)
         return out;
     }
   } catch {
@@ -15611,7 +15986,7 @@ function builtinCliEntries(definitions) {
 }
 // src/adapters/definitions/native-cli-entry-claude.ts
 import { readFileSync as readFileSync10 } from "fs";
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 import { randomUUID as randomUUID10 } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
@@ -15662,17 +16037,17 @@ async function runClaudeEntry(ctx) {
     }
   }
   let original;
-  for (const file of [join19(executionCwd, ".claude", "settings.local.json"), join19(executionCwd, ".claude", "settings.json"), join19(process.env.HOME ?? "", ".claude", "settings.json")]) {
+  for (const file of [join20(executionCwd, ".claude", "settings.local.json"), join20(executionCwd, ".claude", "settings.json"), join20(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync10(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(projectConfig(), { script: join19(cliDir, "facts-hook.ts"), stateDir });
+  const facts = claudeObservationHooks(projectConfig(), { script: join20(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync10(join19(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync10(join20(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
-  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join19(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
+  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join20(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
   try {
     let launchRecord;
@@ -15766,10 +16141,10 @@ var init_native_cli_entry_codex = () => {};
 
 // src/cli/kimi-plugin.ts
 import { randomUUID as randomUUID11 } from "crypto";
-import { closeSync as closeSync9, lstatSync as lstatSync16, mkdirSync as mkdirSync11, openSync as openSync9, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync9 } from "fs";
-import { dirname as dirname12, isAbsolute as isAbsolute7, join as join20 } from "path";
+import { closeSync as closeSync9, lstatSync as lstatSync17, mkdirSync as mkdirSync11, openSync as openSync9, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync9 } from "fs";
+import { dirname as dirname13, isAbsolute as isAbsolute7, join as join21 } from "path";
 function file(path, cap) {
-  const stat = lstatSync16(path, { throwIfNoEntry: false });
+  const stat = lstatSync17(path, { throwIfNoEntry: false });
   if (!stat)
     return;
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > cap)
@@ -15789,7 +16164,7 @@ function parse2(value, name) {
   }
 }
 function atomic(path, bytes, before) {
-  const current = lstatSync16(path, { throwIfNoEntry: false });
+  const current = lstatSync17(path, { throwIfNoEntry: false });
   if (before ? !current || current.dev !== before.dev || current.ino !== before.ino : current)
     throw new Error(`${path} changed before its managed write`);
   const temporary = `${path}.${randomUUID11()}.tmp`;
@@ -15809,7 +16184,7 @@ function atomic(path, bytes, before) {
   }
 }
 function removeFile(path, expected) {
-  const current = lstatSync16(path, { throwIfNoEntry: false });
+  const current = lstatSync17(path, { throwIfNoEntry: false });
   if (!current || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !readFileSync11(path).equals(expected))
     return;
   unlinkSync3(path);
@@ -15824,7 +16199,7 @@ function plan2(options) {
   const hook = file(options.hookScript, MAX_HOOK);
   if (!hook)
     throw new Error("Kimi hook bundle is missing");
-  const root = join20(options.home, "plugins"), managed = join20(root, "managed", ID2), installed = join20(root, "installed.json");
+  const root = join21(options.home, "plugins"), managed = join21(root, "managed", ID2), installed = join21(root, "installed.json");
   const installedBefore = file(installed, MAX_INSTALLED), document = parse2(installedBefore, installed);
   if (document && (document.version !== 1 || !Array.isArray(document.plugins)))
     throw new Error(`${installed} has an unsupported shape`);
@@ -15835,11 +16210,11 @@ function plan2(options) {
   if (record && (record.root !== managed || record.source !== "local-path" || record.origin !== "custom" || record.enabled !== true || typeof record.originalSource !== "string" || record.agentHubLaunch !== options.launchId && options.replaceStale !== true)) {
     throw new Error("Kimi's agent-hub plugin belongs to another launch or is disabled; it was not changed");
   }
-  const manifestBefore = file(join20(managed, "kimi.plugin.json"), MAX_INSTALLED), hookBefore = file(join20(managed, "kimi-hook.js"), MAX_HOOK);
+  const manifestBefore = file(join21(managed, "kimi.plugin.json"), MAX_INSTALLED), hookBefore = file(join21(managed, "kimi-hook.js"), MAX_HOOK);
   const nextManifest = Buffer.from(`${JSON.stringify(manifest(), null, 2)}
 `);
   const now = new Date(options.now ?? Date.now()).toISOString();
-  const changed = !record || record.agentHubLaunch !== options.launchId || !manifestBefore?.bytes.equals(nextManifest) || !hookBefore?.bytes.equals(hook.bytes) || record.originalSource !== dirname12(options.hookScript);
+  const changed = !record || record.agentHubLaunch !== options.launchId || !manifestBefore?.bytes.equals(nextManifest) || !hookBefore?.bytes.equals(hook.bytes) || record.originalSource !== dirname13(options.hookScript);
   const nextRecord = {
     id: ID2,
     root: managed,
@@ -15848,7 +16223,7 @@ function plan2(options) {
     enabled: true,
     installedAt: typeof record?.installedAt === "string" ? record.installedAt : now,
     updatedAt: changed ? now : typeof record?.updatedAt === "string" ? record.updatedAt : now,
-    originalSource: dirname12(options.hookScript),
+    originalSource: dirname13(options.hookScript),
     agentHubLaunch: options.launchId
   };
   const nextDocument = { version: 1, plugins: [...records.filter((row) => row.id !== ID2), nextRecord] };
@@ -15859,8 +16234,8 @@ function plan2(options) {
     ...record ? { record } : {},
     changed,
     targets: [
-      { path: join20(managed, "kimi.plugin.json"), next: nextManifest, ...manifestBefore ? { before: manifestBefore } : {} },
-      { path: join20(managed, "kimi-hook.js"), next: hook.bytes, ...hookBefore ? { before: hookBefore } : {} },
+      { path: join21(managed, "kimi.plugin.json"), next: nextManifest, ...manifestBefore ? { before: manifestBefore } : {} },
+      { path: join21(managed, "kimi-hook.js"), next: hook.bytes, ...hookBefore ? { before: hookBefore } : {} },
       { path: installed, next: Buffer.from(`${JSON.stringify(nextDocument, null, 2)}
 `), ...installedBefore ? { before: installedBefore } : {} }
     ]
@@ -15872,13 +16247,13 @@ function kimiPluginPreview(home, hookScript) {
   directory(home);
   if (!file(hookScript, MAX_HOOK))
     throw new Error("Kimi hook bundle is missing");
-  return { file: join20(home, "plugins", "managed", ID2), changed: true, action: "install the launch-scoped native completion plugin and remove it on exit" };
+  return { file: join21(home, "plugins", "managed", ID2), changed: true, action: "install the launch-scoped native completion plugin and remove it on exit" };
 }
 function ensureKimiPlugin(options) {
   const current = plan2(options);
   if (!current.changed)
     return { changed: false };
-  for (const path of [join20(options.home, "plugins"), join20(options.home, "plugins", "managed"), current.managed]) {
+  for (const path of [join21(options.home, "plugins"), join21(options.home, "plugins", "managed"), current.managed]) {
     if (!directory(path, false))
       mkdirSync11(path, { mode: 448 });
   }
@@ -15901,14 +16276,14 @@ function cleanupKimiPlugin(options) {
   atomic(current.installed, Buffer.from(`${JSON.stringify(next, null, 2)}
 `), installedBefore?.stat);
   const [manifestTarget, hookTarget] = current.targets;
-  removeFile(join20(current.managed, "kimi.plugin.json"), manifestTarget.next);
-  removeFile(join20(current.managed, "kimi-hook.js"), hookTarget.next);
+  removeFile(join21(current.managed, "kimi.plugin.json"), manifestTarget.next);
+  removeFile(join21(current.managed, "kimi-hook.js"), hookTarget.next);
   try {
     rmdirSync2(current.managed);
   } catch {}
 }
 var EVENTS3, ID2 = "agent-hub", MAX_INSTALLED, MAX_HOOK, object8 = (value) => !!value && typeof value === "object" && !Array.isArray(value), directory = (path, required = true) => {
-  const stat = lstatSync16(path, { throwIfNoEntry: false });
+  const stat = lstatSync17(path, { throwIfNoEntry: false });
   if (stat && (!stat.isDirectory() || stat.isSymbolicLink()))
     throw new Error(`${path} must be a plain directory`);
   if (!stat && required)
@@ -15922,7 +16297,7 @@ var init_kimi_plugin = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-entry-kimi.ts
-import { join as join21, resolve as resolve13 } from "path";
+import { join as join22, resolve as resolve14 } from "path";
 import { homedir as homedir6 } from "os";
 import { spawn as spawn10, spawnSync as spawnSync4 } from "child_process";
 import { mkdirSync as mkdirSync12 } from "fs";
@@ -16033,17 +16408,17 @@ async function runKimiEntry(ctx) {
           fail(gate.message);
         if (gate.message)
           console.error(gate.message);
-        const serverBundle = bundleInStatus(snapshot) ?? resolve13(cliDir, "../../plugins/agent-hub/server.js");
+        const serverBundle = bundleInStatus(snapshot) ?? resolve14(cliDir, "../../plugins/agent-hub/server.js");
         const written = configureKimiMcp(cwd, stateDir, serverBundle, "tui");
         if (written.tracked)
           console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
         const nativeEnv = { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
-        const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join21(nativeEnv.HOME ?? homedir6(), ".kimi-code");
+        const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join22(nativeEnv.HOME ?? homedir6(), ".kimi-code");
         mkdirSync12(nativeHome, { recursive: true, mode: 448 });
         const native = await hub.request({ t: "native_hook_launch", op: "begin", peer, nativeHome });
         if (!native.ok || typeof native.launchId !== "string" || typeof native.instanceId !== "string")
           fail(native.error ?? "native hook launch was not admitted");
-        const plugin = { home: nativeHome, hookScript: resolve13(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
+        const plugin = { home: nativeHome, hookScript: resolve14(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
         let pluginReady = false;
         try {
           console.error("Kimi TUI completion facts: installing a launch-scoped native plugin; it will be removed after this TUI exits");
@@ -16075,7 +16450,7 @@ async function runKimiEntry(ctx) {
     if (owner?.pullOnly && owner.state !== "offline")
       fail("Kimi runs in a terminal; end it there before starting a headless one");
     if (!ctx.instance)
-      configureKimiMcp(cwd, stateDir, resolve13(cliDir, "../../plugins/agent-hub/server.js"), "headless");
+      configureKimiMcp(cwd, stateDir, resolve14(cliDir, "../../plugins/agent-hub/server.js"), "headless");
     const res = await hub.request({ t: "start", peer, args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     if (!res.ok)
       fail(res.error);
@@ -16228,7 +16603,7 @@ async function runLocalEntry(ctx) {
 var init_native_cli_entry_local = () => {};
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
-import { resolve as resolve14 } from "path";
+import { resolve as resolve15 } from "path";
 function jcodeTuiCauseMessage(code, resumed = false) {
   const recoveredStep = `${JCODE_HEADLESS_AFTER_RECOVERY}`;
   const step = (own) => resumed ? recoveredStep : own;
@@ -16386,7 +16761,7 @@ async function runJcodeEntry(ctx) {
         return;
       }
     }
-    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve14(cliDir, "../../plugins/agent-hub/server.js"));
+    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve15(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked)
       console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
     const reply = await hub.request({ t: "start", peer, args: { mode, ...options }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
@@ -16421,7 +16796,7 @@ var init_native_cli_entry_jcode = __esm(() => {
 
 // src/adapters/definitions/native-cli-preview-claude.ts
 import { readFileSync as readFileSync12 } from "fs";
-import { join as join22 } from "path";
+import { join as join23 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
   const { buildLaunch, claudeObservationHooks } = ctx.helpers;
@@ -16429,13 +16804,13 @@ function previewClaude(ctx) {
   let envNames = state.envNames;
   let launch;
   let original;
-  for (const file of [join22(cwd, ".claude/settings.local.json"), join22(cwd, ".claude/settings.json"), join22(process.env.HOME ?? "", ".claude/settings.json")]) {
+  for (const file of [join23(cwd, ".claude/settings.local.json"), join23(cwd, ".claude/settings.json"), join23(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync12(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(config, { script: join22(cliDir, "facts-hook.ts"), stateDir });
-  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join22(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
+  const facts = claudeObservationHooks(config, { script: join23(cliDir, "facts-hook.ts"), stateDir });
+  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join23(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
   const safeArgs = args.map((arg, i) => {
     if (args[i - 1] === "--settings")
       return "{}";
@@ -16446,7 +16821,7 @@ function previewClaude(ctx) {
     return publicArg(arg);
   });
   const publicLaunch = buildLaunch("claude", safeArgs, { preview: true, unattended, statusLine: {
-    script: join22(cliDir, "statusline-tee.ts"),
+    script: join23(cliDir, "statusline-tee.ts"),
     stateDir,
     ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {}
   }, facts });
@@ -16479,7 +16854,7 @@ function previewCodex(ctx) {
 var init_native_cli_preview_codex = () => {};
 
 // src/adapters/definitions/native-cli-preview-kimi.ts
-import { join as join23 } from "path";
+import { join as join24 } from "path";
 import { homedir as homedir7 } from "os";
 function previewKimi(ctx) {
   const { args, cwd, stateDir, cliDir, config } = ctx;
@@ -16505,10 +16880,10 @@ function previewKimi(ctx) {
     const nativeEnv = nativeLaunchEnv("kimi", childEnv());
     envNames = Object.keys(nativeEnv).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_HOOK_PURPOSE"]);
     unresolved.push({ field: "nativeLaunchId", reason: "native completion facts bind to the launch admitted by the running hub" });
-    const home = nativeEnv.KIMI_CODE_HOME ?? join23(nativeEnv.HOME ?? homedir7(), ".kimi-code");
-    completionPlugin = kimiPluginPreview(home, join23(cliDir, "../../plugins/agent-hub/kimi-hook.js"));
+    const home = nativeEnv.KIMI_CODE_HOME ?? join24(nativeEnv.HOME ?? homedir7(), ".kimi-code");
+    completionPlugin = kimiPluginPreview(home, join24(cliDir, "../../plugins/agent-hub/kimi-hook.js"));
   }
-  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join23(cliDir, "../../plugins/agent-hub/server.js"), mode);
+  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join24(cliDir, "../../plugins/agent-hub/server.js"), mode);
   kimiMetadata = { mode, mcp: { file, action, changed, tracked }, ...completionPlugin ? { completionPlugin } : {} };
   return finishPreview(ctx, launch, envNames, unresolved, kimiMetadata);
 }
@@ -16517,7 +16892,7 @@ var init_native_cli_preview_kimi = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-preview-pi.ts
-import { join as join24, resolve as resolve15 } from "path";
+import { join as join25, resolve as resolve16 } from "path";
 function previewPi(ctx) {
   const { args, stateDir, cliDir, config } = ctx;
   const { relayModelIds, buildPiLaunch, startModeOf } = ctx.helpers;
@@ -16552,7 +16927,7 @@ function previewPi(ctx) {
     tools: [],
     preamble: REDACTED,
     maxSteps: config.pi.max_steps
-  }, {}, resolve15(join24(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
+  }, {}, resolve16(join25(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
   launch = pi;
   envNames = Object.keys(pi.env).concat(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"].filter((key) => process.env[key] !== undefined));
   if (mode === "tui")
@@ -16643,7 +17018,7 @@ var init_native_config_policy = __esm(() => {
 
 // src/adapters/definitions/native-policy-aux.ts
 import { closeSync as closeSync10, constants as constants8, fstatSync as fstatSync8, openSync as openSync10, readdirSync as readdirSync3, readFileSync as readFileSync13 } from "fs";
-import { isAbsolute as isAbsolute8, join as join25, normalize } from "path";
+import { isAbsolute as isAbsolute8, join as join26, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
 }
@@ -16688,13 +17063,13 @@ function localCrashPlan(meta) {
 }
 function claudePlugins(root, cwd) {
   const enabled = new Map;
-  for (const file of [join25(root, "settings.json"), ...cwd ? [join25(cwd, ".claude", "settings.json"), join25(cwd, ".claude", "settings.local.json")] : []]) {
+  for (const file of [join26(root, "settings.json"), ...cwd ? [join26(cwd, ".claude", "settings.json"), join26(cwd, ".claude", "settings.local.json")] : []]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object")
       for (const [key, on] of Object.entries(map))
         enabled.set(key, on === true);
   }
-  const installed = json(join25(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
+  const installed = json(join26(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
   const out = [];
   for (const [key, on] of enabled) {
     if (!on)
@@ -16708,7 +17083,7 @@ function claudePlugins(root, cwd) {
   return out;
 }
 function codexPlugins(root) {
-  const config = text2(join25(root, "config.toml"));
+  const config = text2(join26(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -16727,7 +17102,7 @@ function codexPlugins(root) {
       continue;
     let versions = [];
     try {
-      versions = readdirSync3(join25(root, "plugins", "cache", market, plugin));
+      versions = readdirSync3(join26(root, "plugins", "cache", market, plugin));
     } catch {}
     out.push({ name, version: versions.length === 1 ? version2(versions[0]) : null });
   }
@@ -16765,7 +17140,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   } catch {
     return;
   }
-}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join25(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join25(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
+}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join26(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join26(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
 var init_native_policy_aux = __esm(() => {
   PLUGINS = new Map([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
   CLAUDE_ONLY = new Map([["codex@openai-codex", "codex-plugin"]]);
@@ -16810,17 +17185,17 @@ var init_native_cli_launch_common = __esm(() => {
 // src/adapters/definitions/native-cli-claude-launch.ts
 import { mkdirSync as mkdirSync13, writeFileSync as writeFileSync10, renameSync as renameSync6, unlinkSync as unlinkSync4, readFileSync as readFileSync14 } from "fs";
 import { randomUUID as randomUUID12 } from "crypto";
-import { resolve as resolve16, join as join26 } from "path";
+import { resolve as resolve17, join as join27 } from "path";
 function claudeChannel(userArgs) {
-  const bundle = resolve16(import.meta.dir, "../../../plugins/agent-hub/server.js");
+  const bundle = resolve17(import.meta.dir, "../../../plugins/agent-hub/server.js");
   for (let i = 0;i < userArgs.length; i++) {
     const arg = userArgs[i];
     const path = arg === "--mcp-config" ? userArgs[i + 1] : arg.startsWith("--mcp-config=") ? arg.slice("--mcp-config=".length) : undefined;
     if (!path)
       continue;
     try {
-      const server = JSON.parse(readFileSync14(resolve16(path), "utf8")).mcpServers?.["agent-hub"];
-      if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve16(value) === bundle))
+      const server = JSON.parse(readFileSync14(resolve17(path), "utf8")).mcpServers?.["agent-hub"];
+      if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve17(value) === bundle))
         return "server:agent-hub";
     } catch {}
   }
@@ -16843,7 +17218,7 @@ function claudeNativeLaunch(ctx) {
         throw new Error("--settings requires a JSON object or readable file so the hub permission hook can be installed");
       let caller;
       try {
-        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync14(resolve16(value), "utf8"));
+        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync14(resolve17(value), "utf8"));
         if (!caller || typeof caller !== "object" || Array.isArray(caller))
           throw new Error("not an object");
       } catch {
@@ -16872,7 +17247,7 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join26(stateDir, `claude-settings-${randomUUID12()}.json`);
+      const file = join27(stateDir, `claude-settings-${randomUUID12()}.json`);
       try {
         mkdirSync13(stateDir, { recursive: true, mode: 448 });
         writeFileSync10(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
@@ -16929,9 +17304,9 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync11, existsSync as existsSync8, fstatSync as fstatSync9, openSync as openSync11, readFileSync as readFileSync15, readSync as readSync7 } from "fs";
+import { appendFileSync, closeSync as closeSync11, existsSync as existsSync9, fstatSync as fstatSync9, openSync as openSync11, readFileSync as readFileSync15, readSync as readSync7 } from "fs";
 function readEvents(file, since = 0) {
-  if (!existsSync8(file))
+  if (!existsSync9(file))
     return [];
   return readFileSync15(file, "utf8").split(`
 `).flatMap((line) => {
@@ -16955,13 +17330,13 @@ var init_events = () => {};
 // src/cli/recovery-session-file.ts
 import { statSync as statSync4 } from "fs";
 import { homedir as homedir8 } from "os";
-import { join as join27 } from "path";
+import { join as join28 } from "path";
 function checkedSessionPath(binding, kind) {
   if (kind === "rollout")
-    return join27(binding.launch.env.CODEX_HOME ?? join27(homedir8(), ".codex"), "sessions");
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join27(homedir8(), ".claude");
+    return join28(binding.launch.env.CODEX_HOME ?? join28(homedir8(), ".codex"), "sessions");
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join28(homedir8(), ".claude");
   const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return join27(config, "projects", slug, `${binding.sessionId}.jsonl`);
+  return join28(config, "projects", slug, `${binding.sessionId}.jsonl`);
 }
 function recordedFileState(file) {
   try {
@@ -16974,7 +17349,7 @@ var init_recovery_session_file = () => {};
 
 // src/adapters/definitions/native-recovery.ts
 import { readdirSync as readdirSync4 } from "fs";
-import { basename as basename5, join as join28 } from "path";
+import { basename as basename5, join as join29 } from "path";
 var rolloutState = (binding) => {
   try {
     return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
@@ -16998,7 +17373,7 @@ var init_native_recovery = __esm(() => {
       if (phase !== "plan")
         return false;
       let current, started = false, turned = false;
-      for (const e of readEvents(join28(stateDir, "events.jsonl"))) {
+      for (const e of readEvents(join29(stateDir, "events.jsonl"))) {
         if (e.type === "native_thread" && e.peer === binding.peer) {
           current = e.thread;
           if (e.thread === binding.sessionId && e.fresh)
@@ -17100,9 +17475,9 @@ function claudeWindows(rateLimits) {
 }
 
 // src/adapters/kimi-tui-facts.ts
-import { closeSync as closeSync12, constants as constants9, fstatSync as fstatSync10, lstatSync as lstatSync17, openSync as openSync12, readSync as readSync8, readdirSync as readdirSync5 } from "fs";
+import { closeSync as closeSync12, constants as constants9, fstatSync as fstatSync10, lstatSync as lstatSync18, openSync as openSync12, readSync as readSync8, readdirSync as readdirSync5 } from "fs";
 import { createHash as createHash8 } from "crypto";
-import { basename as basename6, dirname as dirname13, isAbsolute as isAbsolute9, join as join29, relative as relative6 } from "path";
+import { basename as basename6, dirname as dirname14, isAbsolute as isAbsolute9, join as join30, relative as relative6 } from "path";
 import { homedir as homedir9 } from "os";
 function decodeKimiTuiHook(event, value) {
   if (!EVENTS4.includes(event) || !record4(value) || value.hook_event_name !== event || value.client_type !== "kimi_code_cli" || typeof value.session_id !== "string" || !SESSION.test(value.session_id) || typeof value.cwd !== "string" || !isAbsolute9(value.cwd) || value.cwd.length > 4096)
@@ -17111,8 +17486,8 @@ function decodeKimiTuiHook(event, value) {
     return;
   if (event === "TaskStarted" && (typeof value.task_id !== "string" || !TASK.test(value.task_id)))
     return;
-  const home = process.env.KIMI_CODE_HOME ?? join29(process.env.HOME ?? homedir9(), ".kimi-code");
-  const transcriptPath = value.agentHubTranscriptPath ?? join29(home, "session_index.jsonl");
+  const home = process.env.KIMI_CODE_HOME ?? join30(process.env.HOME ?? homedir9(), ".kimi-code");
+  const transcriptPath = value.agentHubTranscriptPath ?? join30(home, "session_index.jsonl");
   if (typeof transcriptPath !== "string" || !isAbsolute9(transcriptPath) || transcriptPath.length > 4096)
     return;
   const phase = { TurnStarted: "start", Stop: "stop", StopFailure: "stop", Interrupt: "stop", SessionEnd: "session", TaskStarted: "pre", Notification: "post" }[event];
@@ -17122,7 +17497,7 @@ function encodeKimiTuiHook() {
   return;
 }
 function readBytes(path, cap, tail = false) {
-  const link = lstatSync17(path);
+  const link = lstatSync18(path);
   if (!link.isFile() || link.isSymbolicLink() || link.nlink !== 1)
     throw new Error("not a regular file");
   const fd = openSync12(path, constants9.O_RDONLY | constants9.O_NOFOLLOW);
@@ -17145,7 +17520,7 @@ function readBytes(path, cap, tail = false) {
   }
 }
 function sessionDirectory(index, session) {
-  const home = dirname13(index), sessions = realPath(join29(home, "sessions"));
+  const home = dirname14(index), sessions = realPath(join30(home, "sessions"));
   let listed;
   for (const line of readBytes(index, INDEX_CAP).toString("utf8").split(`
 `)) {
@@ -17180,8 +17555,8 @@ function taskInventory(agents) {
       continue;
     if (!entry.isDirectory())
       continue;
-    const tasks = join29(agents, entry.name, "tasks");
-    const dir = lstatSync17(tasks, { throwIfNoEntry: false });
+    const tasks = join30(agents, entry.name, "tasks");
+    const dir = lstatSync18(tasks, { throwIfNoEntry: false });
     if (!dir)
       continue;
     if (!dir.isDirectory() || dir.isSymbolicLink())
@@ -17192,7 +17567,7 @@ function taskInventory(agents) {
     for (const name of files) {
       if (!TASK.test(name.slice(0, -5)))
         throw new Error("invalid task name");
-      const row = JSON.parse(readBytes(join29(tasks, name), TASK_CAP).toString("utf8"));
+      const row = JSON.parse(readBytes(join30(tasks, name), TASK_CAP).toString("utf8"));
       if (!record4(row) || row.taskId !== name.slice(0, -5) || typeof row.status !== "string")
         throw new Error("invalid task");
       if (row.status === "running" && row.endedAt === null) {
@@ -17211,7 +17586,7 @@ function readKimiTuiTranscript(session, index) {
     return empty();
   try {
     const directory = sessionDirectory(index, session);
-    const wire = join29(directory, "agents", "main", "wire.jsonl");
+    const wire = join30(directory, "agents", "main", "wire.jsonl");
     if (!inside2(directory, realPath(wire)))
       return empty();
     const bytes = readBytes(wire, WIRE_CAP, true);
@@ -17267,7 +17642,7 @@ function readKimiTuiTranscript(session, index) {
       factIds: [],
       ...completion ? { completion } : {},
       ...started ? { started: { id: createHash8("sha256").update(`${session}:${started.turn}:${started.id}`).digest("hex"), index: started.turn, origin: started.origin } } : {},
-      background: taskInventory(join29(directory, "agents"))
+      background: taskInventory(join30(directory, "agents"))
     };
   } catch {
     return empty();
@@ -17637,7 +18012,7 @@ var init_native_cli_entry_qwen = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-preview-qwen.ts
-import { join as join30 } from "path";
+import { join as join31 } from "path";
 function previewQwen(ctx) {
   const { tool, args, cwd, stateDir, cliDir, config } = ctx;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
@@ -17667,7 +18042,7 @@ function previewQwen(ctx) {
     form: "headless",
     projectRoot: cwd,
     stateDir,
-    entrypoint: join30(cliDir, "main.js"),
+    entrypoint: join31(cliDir, "main.js"),
     userArgs: [],
     unattended: false,
     env: {},
@@ -18229,12 +18604,12 @@ init_registry();
 init_path_policy();
 init_project();
 init_permission_mode();
-import { relative as relative7, resolve as resolve18, isAbsolute as isAbsolute10 } from "path";
+import { relative as relative7, resolve as resolve19, isAbsolute as isAbsolute10 } from "path";
 
 // src/hub/control-client.ts
 init_project();
 import { readFileSync as readFileSync16 } from "fs";
-import { join as join31, resolve as resolve17 } from "path";
+import { join as join32, resolve as resolve18 } from "path";
 
 // src/hub/tool-request.ts
 init_capabilities();
@@ -18441,8 +18816,8 @@ function controlProtocolWindow(descriptor) {
 }
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync16(join31(stateDir, "status.json"), "utf8"));
-    const token = readFileSync16(join31(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync16(join32(stateDir, "status.json"), "utf8"));
+    const token = readFileSync16(join32(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
@@ -18506,7 +18881,7 @@ class ControlClient {
     this.ws = ws;
   }
   static pinInstance(stateDir, instanceId) {
-    const key = resolve17(stateDir), pin = { instanceId };
+    const key = resolve18(stateDir), pin = { instanceId };
     if (!instanceId || instancePins.has(key))
       throw new Error("control instance is already pinned or unavailable");
     instancePins.set(key, pin);
@@ -18521,7 +18896,7 @@ class ControlClient {
     const control = readControl(stateDir);
     if (!control)
       return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
-    const pin = instancePins.get(resolve17(stateDir));
+    const pin = instancePins.get(resolve18(stateDir));
     if (pin && (control.instanceId !== pin.instanceId || hello.instanceId !== undefined && hello.instanceId !== pin.instanceId)) {
       return Promise.reject(new Error("delegated audit consumer changed; refusing a connection to its replacement"));
     }
@@ -18722,7 +19097,7 @@ function projectFileTool(tool, input, projectRoot, protectInstructions = false, 
     const mutates = ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(String(tool));
     const protectedPath = (path) => isAgentConfigPath(path) || isHubWritePath(path) || protectInstructions && mutates && isInstructionPath(path);
     const safe = (path) => {
-      const requested = resolve18(root, path), lexical = relative7(root, requested);
+      const requested = resolve19(root, path), lexical = relative7(root, requested);
       if (protectedPath(lexical))
         return false;
       const real = realPath(requested), canonical = relative7(root, real);
@@ -18736,7 +19111,7 @@ function projectFileTool(tool, input, projectRoot, protectInstructions = false, 
     if (tool === "Grep" && args.glob !== undefined) {
       if (typeof args.glob !== "string" || !args.glob || args.glob.split(/[\\/]/).includes("..") || protectedPath(args.glob))
         return false;
-      if (/[?*[{]/.test(args.glob) || !safe(resolve18(root, target, args.glob)))
+      if (/[?*[{]/.test(args.glob) || !safe(resolve19(root, target, args.glob)))
         return false;
     }
     if (tool === "Glob") {
@@ -18744,7 +19119,7 @@ function projectFileTool(tool, input, projectRoot, protectInstructions = false, 
         return false;
       if (args.pattern.split(/[\\/]/).includes("..") || protectedPath(args.pattern))
         return false;
-      if (/[?*[{]/.test(args.pattern) || !safe(resolve18(root, target, args.pattern)))
+      if (/[?*[{]/.test(args.pattern) || !safe(resolve19(root, target, args.pattern)))
         return false;
     }
     return true;
@@ -18764,7 +19139,7 @@ async function factsHook(stdin, stateDir, peer, timeoutMs = 2000, nativeEvent) {
     const forwarded = payload && typeof payload === "object" && !Array.isArray(payload) ? { ...payload, agentHubTranscriptPath: decoded.transcriptPath } : payload;
     const hub = await ControlClient.connect(stateDir, { role: "tools", peer, ...nativeHookIdentity(stateDir, peer).nativeLaunchId ? { launchId: nativeHookIdentity(stateDir, peer).nativeLaunchId } : {} }, timeoutMs);
     try {
-      const reply = await hub.request({ t: "native_facts", event: nativeEvent, payload: forwarded, ...nativeHookIdentity(stateDir, peer) }, timeoutMs);
+      const reply = await hub.request({ t: "native_facts", event: nativeEvent, payload: forwarded, ...nativeHookIdentity(stateDir, peer), startedMs: performance.now() }, timeoutMs);
       const output = reply.ok ? port.encode(nativeEvent, typeof reply.text === "string" ? reply.text : undefined) : undefined;
       return output ? JSON.stringify(output) : undefined;
     } finally {

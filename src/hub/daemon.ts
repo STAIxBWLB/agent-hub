@@ -209,6 +209,8 @@ import { ClaudeTodoSource, DoingTracker, readAiTitle, DOING_STUB, SESSION_TITLE_
 import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
+import { readEvidence } from "./research-record.ts";
+import { memoryFigures, onlyTaskMemory, UNKNOWN_MEMORY_FIGURES, type MemoryFigures } from "./research-memory.ts";
 import { parseResearchRunners, type RegisteredRunnerV1 } from "./research-runner.ts";
 import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
 import { projectChain } from "@staix/agent-mem";
@@ -1251,12 +1253,42 @@ export async function startDaemon(opts: DaemonOptions) {
   // first writes once its peers have stopped and their turns ended.
   const researchGraceMs = opts.researchGraceMs ?? 10_000;
   const researchPending = new Map<number, { since: number; timer: ReturnType<typeof setTimeout> }>();
+  /**
+   * #1279: the counter figures of one task, read from agent-mem's sidecar at the moment the record is written (the sidecar, the store and the memory project are bound further down, and exist by
+   * then). Undefined when memory or the sidecar is off, so the record's counters stay unknown; a task that is private reports none, whatever the sidecar holds.
+   */
+  const memoryFiguresFor = (taskId: number): MemoryFigures => {
+    const row = board.get(taskId);
+    if (!candidates || !memoryStore || !row || tasks.isPii(row)) return { ...UNKNOWN_MEMORY_FIGURES };
+    try {
+      const store = memoryStore, project = memoryProject;
+      const planContext = { cwd: opts.cwd, project, repo: memoryRepo, deny: config.local.deny };
+      const briefTask = { id: row.id, created: row.created, title: "", refs: { paths: row.refs.paths ?? [] }, plan: { paths: row.plan?.paths ?? [], symbols: row.plan?.symbols ?? [] } };
+      // The store has no read by id (`get` and `list` each rebuild the whole live view), so it is listed at most once per record, and only when the task has a rendered counter at all: a task with
+      // none never touches it. Only the rendered entries are screened, not the store. A hidden or unreadable entry is simply absent, and the figures then call their fail counts unknown.
+      let listed: Map<string, ReturnType<MemoryStore["list"]>[number]> | undefined;
+      const view = (id: string) => {
+        listed ??= new Map(store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map(v => [v.id, v]));
+        const found = listed.get(id);
+        return found ? screenMemory([found])[0] : undefined;
+      };
+      return memoryFigures({
+        counters: candidates.counters(project),
+        taskKey: taskKey(project, row),
+        view,
+        matchingPlan: fails => matchingPlanFails(briefTask, fails, planContext),
+      });
+    } catch { return { ...UNKNOWN_MEMORY_FIGURES }; }
+  };
   const writeResearch = (taskId: number) => {
     const pending = researchPending.get(taskId);
     if (pending) clearTimeout(pending.timer);
     researchPending.delete(taskId);
     try {
-      appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }).filter((r) => r.task === taskId));
+      // #1277: the board and journal are read through a read-only handle, so the record carries its v2 blocks; the family lookup is the project's own (instances resolve there).
+      // Scoped to the one task: the live writer runs on the daemon thread and must not parse every task's history and the whole journal for one record (a backfill reads them all).
+      const evidence = { ...readEvidence(opts.stateDir, projectId, taskId), familyOf: (peer: string) => adapterCatalog.familyOf(peer, declarations), memory: onlyTaskMemory(taskId, memoryFiguresFor) };
+      appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }, evidence).filter((r) => r.task === taskId));
     } catch (error) {
       if (!researchLogged) log(`research record not written: ${(error as Error).message}`);
       researchLogged = true;
@@ -3166,8 +3198,19 @@ export async function startDaemon(opts: DaemonOptions) {
   const nativeTurnStart = new Map<PeerId, NativeTurnStart>();
   const stopUnconfirmedNoticed = new WeakSet<NativeTurnStart>();
   const nativeStopWaits = new Map<PeerId, { start: NativeTurnStart; wait: ReturnType<typeof waitForClaudeCompletion> }>();
-  /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
+  /** Every Claude or managed native hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
   const hookStats = new Map<PeerId, { n: number; startupMs: number; hubMs: number; maxStartupMs: number }>();
+  const tallyHook = (peer: PeerId, callStarted: number, startedMs: unknown) => {
+    const st = hookStats.get(peer) ?? { n: 0, startupMs: 0, hubMs: 0, maxStartupMs: 0 };
+    const startup = typeof startedMs === "number" && Number.isFinite(startedMs) ? Math.max(0, startedMs) : 0;
+    hookStats.set(peer, { n: st.n + 1, startupMs: st.startupMs + startup, hubMs: st.hubMs + (performance.now() - callStarted), maxStartupMs: Math.max(st.maxStartupMs, startup) });
+  };
+  const emitHookStats = (peer: PeerId) => {
+    const st = hookStats.get(peer);
+    if (!st) return;
+    event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
+    hookStats.delete(peer);
+  };
   /**
    * Between native turns now: Claude stopped after its last tool call began (its channel going offline says nothing
    * about its session, whose hooks may still run); any other peer's adapter is not in a turn. The adapter's own state,
@@ -3194,7 +3237,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if ((h.event === "proposed" || h.event === "backlog pulled" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(t.planningRevision ? { release: t.release ?? null, priority: t.priority ?? null, plannedStart: t.plannedStart ?? null, due: t.due ?? null } : {}), ...(h.reason ? { reason: h.reason } : {}) });
-    if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
+    // #1277 AC6: a cancelled task is a terminal task too, and the guarded merge writes its receipt after the approval, so its result completes the record's merge block.
+    if (config.research.enabled && ((t.state === "approved" && (h.event === "approved" || h.event === "done" || h.event === "merge result")) || (t.state === "cancelled" && h.event === "cancelled"))) recordResearch(t.id);
     if (memoryStore && (t.state === "in_progress" || h.event === "done") && !tasks.isPii(t)) renewLeases(t);
     if ((h.event === "proposed" || h.event === "backlog pulled") && projections.enabled && turnLog) {
       const created = taskProposalAt(t);
@@ -5116,6 +5160,9 @@ export async function startDaemon(opts: DaemonOptions) {
         const completion = t.history.findLast(h => h.by === by && (h.event === "done" || h.event === "done (checking)"));
         if (!piiTurn && !reviewTurn && !tasks.isPii(t) && completion && !completion.withheld && typeof a.summary === "string" && completion.note?.startsWith(a.summary)) {
           citeMemory(by, a.summary, `summary:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
+          // #1279: the reasons of a spec acknowledgement are hub-screened text too, and one key per task keeps a repeat idempotent.
+          const reasons = Array.isArray(a.spec_ack) ? a.spec_ack.flatMap((row: unknown) => typeof (row as { reason?: unknown })?.reason === "string" ? [(row as { reason: string }).reason] : []).join("\n") : "";
+          if (reasons) citeMemory(by, reasons, `spec_ack:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
         }
         // A silent cohort (issue #107): the member that integrates is asked to check its work first; no done yet.
         const last = t.history.at(-1);
@@ -5129,10 +5176,24 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_sdlc_record":
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(await tasks.recordSdlc(by, a.id, a.receipt));
-      case "hub_review":
-        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings));
-      case "hub_remember":
-        return tasks.remember(by, a);
+      case "hub_review": {
+        const reviewed = await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings);
+        // #1279: a verdict note that names a brief entry is a citation. The same exclusions as a done summary apply (a PII or review-observer turn, withheld text), and the key binds it to this verdict.
+        const verdict = reviewed.history.findLast(h => h.by === by && (h.event === "approved" || h.event === "changes_requested"));
+        if (!piiTurn && !reviewTurn && !tasks.isPii(reviewed) && verdict && !verdict.withheld && typeof a.note === "string" && a.note && verdict.note?.startsWith(a.note)) {
+          citeMemory(by, a.note, `review:${reviewed.id}:${reviewed.history.indexOf(verdict)}`, [newEnvelope(by, "", { refs: { task: String(reviewed.id) } })]);
+        }
+        return line(reviewed);
+      }
+      case "hub_remember": {
+        const saved = await tasks.remember(by, a);
+        // #1279: a saved note that names another entry cites it. `tasks.remember` already refused a PII task, a private path and a secret, so only a note it saved gets here.
+        if (!piiTurn && !reviewTurn && typeof a.text === "string" && a.text && !/not saved|nothing saved/.test(saved)) {
+          const task = a.task !== undefined && Number.isSafeInteger(Number(a.task)) ? Number(a.task) : undefined;
+          citeMemory(by, a.text, `remember:${task ?? "none"}:${createHash("sha256").update(a.text).digest("hex").slice(0, 16)}`, task !== undefined ? [newEnvelope(by, "", { refs: { task: String(task) } })] : []);
+        }
+        return saved;
+      }
       case "hub_checkpoint": {
         const summary = String(a.summary ?? "").trim();
         if (!summary) throw new Error("summary is required");
@@ -10480,12 +10541,36 @@ export async function startDaemon(opts: DaemonOptions) {
         if (launch.generation && launch.generation !== owner.sessionGeneration) return void reply({ ok: false });
         launch.generation = owner.sessionGeneration;
         launch.transcript = native.transcriptPath;
+        const callStarted = performance.now();
+        const tally = () => tallyHook(peer, callStarted, msg.startedMs);
         const current = () => !stopping && nativeHookLaunches.get(peer, msg.nativeLaunchId) === launch && bus.peers.get(peer) === owner && owner.sessionGeneration === launch.generation && owner.state !== "offline";
         // Preserve the start baseline at observation, even if native output is flushed before recall allows attach.
-        const readback = port.read(native.sessionId, native.transcriptPath);
+        // Skip transcript I/O on PostToolUse, PostInvocation, Stop, and active-turn PreToolUse with no pending fact offers (#1280).
+        const needsBaseline = (native.event === "PreInvocation" || native.event === "PreToolUse") && (!launch.active || native.event === "PreInvocation" && native.invocation === 0)
+          || native.event === "TurnStarted" || native.event === "Stop" || native.event === "StopFailure" || native.event === "Interrupt";
+        const needsAck = factsOn() && (native.event === "SessionStart" || native.event === "PreInvocation" || native.event === "PreToolUse" && factsFor(peer).pending(peer).length > 0);
+        const since = launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
+        const readback: ReturnType<typeof port.read> = needsBaseline
+          ? port.read(native.sessionId, native.transcriptPath, since)
+          : needsAck
+            ? port.read(native.sessionId, native.transcriptPath, { completion: false, ...since })
+            : { factIds: [] };
+        // ponytail: an unacknowledged fact row followed by >4 MiB of output before the next readback hits the 4 MiB lookback cap in readAgyTranscript.
+        const acknowledge = (read: ReturnType<typeof port.read>) => {
+          if (!factsOn()) return;
+          factSession(peer, native.sessionId);
+          for (const id of read.factIds) acked(peer, id, "native-hook");
+          if (read.size !== undefined && read.scannedFrom !== undefined) {
+            const prev = launch.transcriptPath === native.transcriptPath ? (launch.transcriptOffset ?? 0) : 0;
+            if (read.scannedFrom <= prev) {
+              launch.transcriptPath = native.transcriptPath;
+              launch.transcriptOffset = read.size;
+            }
+          }
+        };
         const apply = () => {
           if (!current()) return void reply({ ok: false });
-          if (factsOn()) { factSession(peer, native.sessionId); for (const id of readback.factIds) acked(peer, id, "native-hook"); }
+          acknowledge(readback);
           if (native.event === "TurnStarted") {
             const started = readback.started;
             if (!started) return void reply({ ok: false });
@@ -10500,23 +10585,47 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
             activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
           }
+          if (native.event === "Stop" && native.terminationReason !== undefined) {
+            if (!launch.active || native.fullyIdle !== true) return void reply({ ok: false });
+            const terminalReason = ({ USER_CANCELED: "user_canceled", ERROR: "error", MAX_INVOCATIONS: "max_invocations", MAX_FORCED_INVOCATIONS: "max_forced_invocations", MAX_TOKEN_BUDGET_EXCEEDED: "max_token_budget_exceeded", TERMINAL_STEP_TYPE: "terminal_step_type", TERMINAL_CUSTOM_HOOK: "terminal_custom_hook" } as const)[native.terminationReason];
+            if (terminalReason) {
+              launch.active = false; turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
+              tally(); emitHookStats(peer);
+              event({ type: "native_turn_end", peer, reason: terminalReason }); owner.nativeStopped(native.sessionId);
+              // #1054: pull-only agy opens no run (`settles(peer)` is false); if a future native-hook peer does, settle an open run by its closed reason.
+              try {
+                const run = runs.get(peer);
+                if (run) {
+                  if (terminalReason === "user_canceled") { completionDone(peer, run, "interrupted"); runs.close(peer); }
+                  else { runs.note(peer, terminalReason === "error" || terminalReason === "terminal_step_type" || terminalReason === "terminal_custom_hook" ? { failed: true } : { limit: true }); runs.signalled(peer); settleCheck(peer); }
+                }
+              } catch { log(`completion settle for ${peer} failed`); }
+              return void reply({ ok: true });
+            }
+            if (native.terminationReason !== "NO_TOOL_CALL") return void reply({ ok: false });
+            tally();
+          }
           if (native.event === "Stop" || native.event === "StopFailure" || native.event === "Interrupt") {
-            if (!launch.active || native.event === "Stop" && native.terminationReason !== undefined && (native.fullyIdle !== true || native.terminationReason !== "NO_TOOL_CALL")) return void reply({ ok: false });
+            if (!launch.active || native.event === "Stop" && native.terminationReason !== undefined && native.fullyIdle !== true) return void reply({ ok: false });
             // A hook is only the candidate. The final native turn and prompt rows, correlated by id and reason, are the completion evidence.
             const turn = launch.turn, baseline = launch.baseline ?? -1, expected = native.event === "StopFailure" ? "failed" : native.event === "Interrupt" ? "cancelled" : "completed";
             reply({ ok: true, pending: true });
             void (async () => {
               const deadline = Date.now() + 2000;
               let delay = 5;
-              // ponytail: an unverified Stop may re-read up to 8 MiB per poll within this 2 s wait.
-              // Upgrade: cache unchanged transcript evidence within the wait.
+              let lastStat: { size: number; mtimeMs: number } | undefined;
               while (current() && launch.active && launch.turn === turn) {
-                const completion = port.read(native.sessionId, native.transcriptPath).completion;
+                const pollSince = factsOn() && launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
+                const polled = port.read(native.sessionId, native.transcriptPath, { ...(lastStat ? { unchanged: lastStat } : {}), ...pollSince });
+                if (polled.size !== undefined && polled.mtimeMs !== undefined) lastStat = { size: polled.size, mtimeMs: polled.mtimeMs };
+                acknowledge(polled);
+                const completion = polled.completion;
                 if (completion && completion.index > baseline && completion.id !== launch.completed && (completion.reason ?? "completed") === expected) {
                   completeNativeTurn(peer, launch, completion);
+                  emitHookStats(peer);
                   return;
                 }
-                if (Date.now() >= deadline) { notify(`${peer}: native completion could not be verified; it stays busy until a verified turn end or detach`); return; }
+                if (Date.now() >= deadline) { emitHookStats(peer); notify(`${peer}: native completion could not be verified; it stays busy until a verified turn end or detach`); return; }
                 await Bun.sleep(delay); delay = Math.min(50, delay * 2);
               }
             })().catch(() => log("managed native completion unavailable"));
@@ -10524,6 +10633,7 @@ export async function startDaemon(opts: DaemonOptions) {
           }
           if (native.event === "TaskStarted") activeAt.set(peer, Date.now());
           if (native.event === "TaskStarted" || native.event === "Notification") settleCheck(peer);
+          queueMicrotask(tally);
           const offered = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
           // The decoded native read (agy view_file or read_file, as `Read`) is a peer fact: its target is observed before it runs and the
           // view moves after it. Nothing is offered here: agy's hook encodes an offer only on SessionStart/PreInvocation.
@@ -10551,11 +10661,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const toolUseId = typeof msg.toolUseId === "string" && msg.toolUseId ? msg.toolUseId.slice(0, 128) : undefined;
         const sessionId = typeof msg.sessionId === "string" && msg.sessionId ? msg.sessionId.slice(0, 128) : undefined;
         const callStarted = performance.now();
-        const tally = (peer: PeerId) => {
-          const st = hookStats.get(peer) ?? { n: 0, startupMs: 0, hubMs: 0, maxStartupMs: 0 };
-          const startup = typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? Math.max(0, msg.startedMs) : 0;
-          hookStats.set(peer, { n: st.n + 1, startupMs: st.startupMs + startup, hubMs: st.hubMs + (performance.now() - callStarted), maxStartupMs: Math.max(st.maxStartupMs, startup) });
-        };
+        const tally = (peer: PeerId) => tallyHook(peer, callStarted, msg.startedMs);
         try {
           const peer = c.peer;
           if (definitionOf(peer)?.start.daemonPort === "claude-implementer") {
@@ -10630,10 +10736,7 @@ export async function startDaemon(opts: DaemonOptions) {
                 event({ type: "native_turn_end", peer, id });
                 try { if (runs.get(peer)) { runs.signalled(peer); settleCheck(peer); } } catch { log(`completion settle for ${peer} failed`); } // #1054: the verified native Stop
               }
-              turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer); tally(peer);
-              const st = hookStats.get(peer)!;
-              event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
-              hookStats.delete(peer);
+              turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer); tally(peer); emitHookStats(peer);
               if (id && nativePeer) nativePeer.nativeStopped(sessionId!);
               if (factsOn()) { factSession(peer, sessionId); readbacks(peer, claudeTranscript(sessionId, msg.transcriptPath, peer)); }
             };

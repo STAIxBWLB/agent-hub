@@ -461,6 +461,18 @@ test("AC7: the Settings section renders every row from the registry with its sou
   for (const label of ["Confirm removal of kimi", "Stop an active turn now", "Preview kimi: participates"]) expect(root.all().find(n => n.attrs["aria-label"] === label)).toBeDefined();
 });
 
+test("#1292 budget.gate is a registered setting: a number from 0 to 1 that applies at the next quota reading, raising it needs a settings session or a terminal, and a conductor cannot set it", () => {
+  const gate = def("budget.gate");
+  expect(gate).toMatchObject({ type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["budget", "gate"] });
+  expect(checkSettingValue(gate, 0.95)).toBe(0.95);
+  expect(checkSettingValue(gate, null)).toBeNull();
+  for (const bad of [1.5, -0.1, Number.NaN, "0.9"]) expect(() => checkSettingValue(gate, bad)).toThrow("budget.gate takes a number from 0 to 1");
+  expect(settingRefusal(gate, 0.99, "terminal")).toBeUndefined();
+  expect(settingRefusal(gate, 0.99, "settings")).toBeUndefined();
+  expect(settingRefusal(gate, 0.99, "ordinary")).toContain("ahub settings in a terminal");
+  expect(settingRefusal(gate, 0.99, "conductor")).toBe("budget.gate is not an operational conductor setting");
+});
+
 test("checkSettingValue and settingRefusal: the pure rules behind every surface", () => {
   expect(checkSettingValue(def("routing.classes.implement.peers"), ["kimi", "codex"])).toEqual(["kimi", "codex"]);
   expect(checkSettingValue(def("routing.classes.implement.route"), "sy/coding", ["sy/coding"])).toBe("sy/coding");

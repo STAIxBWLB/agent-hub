@@ -16,6 +16,7 @@ if (Bun.version !== pinned) {
 
 const out = "plugins/agent-hub/server.js";
 const kimiHookOut = "plugins/agent-hub/kimi-hook.js";
+const policyWorkerOut = "plugins/agent-hub/kimi-review-policy-worker.js";
 const manifest = "plugins/agent-hub/.claude-plugin/plugin.json";
 const roleNotice = readFileSync("templates/roles/NOTICE.md", "utf8");
 const roleNoticeOut = "plugins/agent-hub/ROLE-NOTICE.md";
@@ -33,6 +34,12 @@ const output = async (name) => {
 };
 const code = await output("claude-channel.js");
 const kimiHook = await output("kimi-facts-hook.js");
+const policyWorker = await Bun.build({ entrypoints: ["src/adapters/kimi-review-policy-worker.ts"], target: "bun", minify: false });
+if (!policyWorker.success) {
+  console.error(policyWorker.logs.join("\n"));
+  process.exit(1);
+}
+const policyWorkerCode = await policyWorker.outputs[0].text();
 const stamped = `${JSON.stringify({ ...JSON.parse(readFileSync(manifest, "utf8")), version }, null, 2)}\n`;
 
 const read = (file) => {
@@ -44,7 +51,7 @@ const read = (file) => {
 };
 
 if (process.argv.includes("--check")) {
-  const stale = [[out, code], [kimiHookOut, kimiHook], [manifest, stamped], [roleNoticeOut, roleNotice]].filter(([file, want]) => read(file) !== want).map(([file]) => file);
+  const stale = [[out, code], [kimiHookOut, kimiHook], [policyWorkerOut, policyWorkerCode], [manifest, stamped], [roleNoticeOut, roleNotice]].filter(([file, want]) => read(file) !== want).map(([file]) => file);
   if (stale.length) {
     console.error(`${stale.join(", ")} stale against package.json ${version}: run "bun run build" and commit the result`);
     process.exit(1);
@@ -53,6 +60,7 @@ if (process.argv.includes("--check")) {
   writeFileSync(roleNoticeOut, roleNotice);
   writeFileSync(out, code);
   writeFileSync(kimiHookOut, kimiHook);
+  writeFileSync(policyWorkerOut, policyWorkerCode);
   writeFileSync(manifest, stamped);
-  console.log(`built ${out} (${(code.length / 1024).toFixed(0)} KB), ${kimiHookOut} (${(kimiHook.length / 1024).toFixed(0)} KB), plugin ${version}`);
+  console.log(`built ${out} (${(code.length / 1024).toFixed(0)} KB), ${kimiHookOut} (${(kimiHook.length / 1024).toFixed(0)} KB), ${policyWorkerOut} (${(policyWorkerCode.length / 1024).toFixed(0)} KB), plugin ${version}`);
 }

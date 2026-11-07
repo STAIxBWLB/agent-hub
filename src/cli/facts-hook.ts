@@ -69,7 +69,7 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
     const forwarded = payload && typeof payload === "object" && !Array.isArray(payload) ? { ...payload, agentHubTranscriptPath: decoded.transcriptPath } : payload;
     const hub = await ControlClient.connect(stateDir, { role: "tools", peer, ...(nativeHookIdentity(stateDir, peer).nativeLaunchId ? { launchId: nativeHookIdentity(stateDir, peer).nativeLaunchId } : {}) }, timeoutMs);
     try {
-      const reply = await hub.request({ t: "native_facts", event: nativeEvent, payload: forwarded, ...nativeHookIdentity(stateDir, peer) }, timeoutMs);
+      const reply = await hub.request({ t: "native_facts", event: nativeEvent, payload: forwarded, ...nativeHookIdentity(stateDir, peer), startedMs: performance.now() }, timeoutMs);
       const output = reply.ok ? port.encode(nativeEvent, typeof reply.text === "string" ? reply.text : undefined) : undefined;
       return output ? JSON.stringify(output) : undefined;
     } finally { hub.close(); }

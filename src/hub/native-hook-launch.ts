@@ -9,6 +9,8 @@ export interface NativeHookLaunch {
   turn?: string;
   active: boolean;
   completed?: string;
+  transcriptPath?: string;
+  transcriptOffset?: number;
 }
 export class NativeHookLaunches {
   private readonly launches = new Map<string, NativeHookLaunch>();
