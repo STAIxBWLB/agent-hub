@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { KIMI_WATCH_INPUT_BYTES, recordWatch1284Sample, runKimiReviewWatchBaseline, sampleCurrentAuthority, type Watch1284Sample } from "../../scripts/benchmarks/kimi-review-watch-1284.ts";
+import { KIMI_WATCH_INPUT_BYTES, recordWatch1284Sample, runKimiReviewWatchBenchmark, sampleCurrentAuthority, type Watch1284Sample } from "../../scripts/benchmarks/kimi-review-watch-1284.ts";
 
-test("Kimi max-input baseline uses actual prepare and old peer timer, retaining separate authority cost and causal control ordering", async () => {
-  const result = await runKimiReviewWatchBaseline();
+for (const engine of ["inline-reference", "worker"] as const) test(`Kimi max-input ${engine} uses actual prepare and the new controller, retaining authority cost and causal control ordering`, async () => {
+  const result = await runKimiReviewWatchBenchmark(engine);
+  expect(result.schema).toBe(2); expect(result.engine).toBe(engine === "worker" ? 1 : 0);
   expect(result.inputBytes).toBe(KIMI_WATCH_INPUT_BYTES); expect(result.agentBytes).toBeGreaterThan(result.inputBytes);
   expect(result.authorityMs).toHaveLength(8); expect(result.authorityMs.every(ms => Number.isFinite(ms) && ms >= 0)).toBe(true);
   for (const rows of [result.ordinary, result.slow]) {
@@ -14,9 +15,13 @@ test("Kimi max-input baseline uses actual prepare and old peer timer, retaining 
   expect(result.slow.syntheticMs.every(ms => Number.isFinite(ms) && ms >= 0)).toBe(true);
   expect(result.ordering.firstCheckStart).toBeGreaterThan(0);
   expect(result.ordering.firstCheckEnd).toBeGreaterThan(result.ordering.firstCheckStart);
-  expect(result.ordering.controlDispatch).toBeGreaterThan(result.ordering.firstCheckEnd);
+  if (engine === "inline-reference") expect(result.ordering.controlDispatch).toBeGreaterThan(result.ordering.firstCheckEnd);
+  else {
+    expect(result.ordering.controlDispatch).toBeGreaterThan(result.ordering.firstCheckStart);
+    expect(result.ordering.firstCheckEnd).toBeGreaterThan(result.ordering.controlResponse);
+  }
   expect(result.ordering.controlResponse).toBeGreaterThan(result.ordering.controlDispatch);
-  expect(result.cleanup).toEqual({ peerStopped: 1, requesterJoined: 1, profileRemoved: 1, sourceUnchanged: 1 });
+  expect(result.cleanup).toEqual({ peerStopped: 1, requesterJoined: 1, policyJoined: 1, profileRemoved: 1, sourceUnchanged: 1 });
   const onlyNumbers = (value: unknown): boolean => {
     if (typeof value === "number") return Number.isFinite(value);
     if (Array.isArray(value)) return value.every(onlyNumbers);
