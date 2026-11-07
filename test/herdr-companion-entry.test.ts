@@ -12,7 +12,7 @@ const MOD = join(import.meta.dir, "../integrations/herdr/mod");
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-type Row = { id: string; root: string; state?: string; status?: unknown };
+type Row = { id: string; root: string; state?: string; status?: unknown; stateDir?: string };
 interface Cfg {
   rows?: Record<string, Row[] | string>;               // by machine ("" = this computer): rows, or raw stdout
   status?: (cwd: string | undefined, on: string | null | undefined) => { stdout?: string; stderr?: string; exitCode?: number | null; truncated?: boolean; timedOut?: boolean };
@@ -30,7 +30,10 @@ function setup(cfg: Cfg = {}, opts: { machine?: string | null; cwd?: string | nu
   const cli: HerdrFixtureCliPort = async call => {
     execs.push({ ...call, args: [...call.args] });
     const key = call.on ?? "";
-    const j = call.args.join(" ");
+    // ahub's own rule (src/cli/main.ts): `--project <id>` selects the registration with the state directory it recorded; with no selector the project is resolved from the cwd and the DEFAULT
+    // state directory is assumed. The fake models both, so a command that forgets the selector fails for a project with a custom state directory, as it does for real.
+    const selector = call.args[0] === "--project" ? call.args[1] : null;
+    const j = (selector === null ? call.args : call.args.slice(2)).join(" ");
     const ok = (stdout: string, exitCode = 0, extra = {}) => ({ stdout, stderr: "", exitCode, timedOut: false, truncated: false, ...extra });
     if (j === "projects --json") {
       const r = rows[key];
@@ -40,7 +43,10 @@ function setup(cfg: Cfg = {}, opts: { machine?: string | null; cwd?: string | nu
     if (j === "status --json") {
       if (cfg.hold?.status) { cfg.hold.reached?.(); await cfg.hold.status; }
       if (cfg.status) { const r = cfg.status(call.cwd, call.on); return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", exitCode: r.exitCode === undefined ? 0 : r.exitCode, timedOut: r.timedOut ?? false, truncated: r.truncated ?? false }; }
-      const list = rows[key]; const hit = Array.isArray(list) ? list.find(x => x.root === call.cwd) : undefined;
+      const list = rows[key];
+      const hit = !Array.isArray(list) ? undefined
+        : selector !== null ? list.find(x => x.id === selector)
+        : list.find(x => x.root === call.cwd && (x.stateDir ?? `${x.root}/.agenthub/state`) === `${x.root}/.agenthub/state`);
       return hit ? ok(JSON.stringify({ projectId: hit.id, cwd: hit.root })) : ok("", 1, { stderr: "ahub: no hub running for /x/.agenthub/state (run: ahub up)\n" });
     }
     if (j === "ui") return ok(cfg.ui?.stdout ?? "", cfg.ui?.exitCode ?? 0);
@@ -89,9 +95,9 @@ test("AC2: after the selection, Open console is ONE explicit action: it re-reads
   const s = setup(); await pick(s);
   const r = await s.entry.openConsole();
   expect(r).toMatchObject({ ok: true, opened: "console", machineLabel: "this computer" });
-  expect(s.runs).toEqual([{ name: "tab.new", args: { space: "s1", folder: "/work/a", argv: ["ahub", "console"], name: "ahub: a" } }]);
+  expect(s.runs).toEqual([{ name: "tab.new", args: { space: "s1", folder: "/work/a", argv: ["ahub", "--project", "p_a", "console"], name: "ahub: a" } }]);
   // the exec calls are the two bounded reads and the project proof, all fixed argv, the proof run from the project folder
-  expect(s.execs.map(c => [c.command, c.args.join(" "), c.cwd, c.on])).toEqual([["ahub", "projects --json", undefined, undefined], ["ahub", "projects --json", undefined, undefined], ["ahub", "status --json", "/work/a", undefined]]);
+  expect(s.execs.map(c => [c.command, c.args.join(" "), c.cwd, c.on])).toEqual([["ahub", "projects --json", undefined, undefined], ["ahub", "projects --json", undefined, undefined], ["ahub", "--project p_a status --json", "/work/a", undefined]]);
   for (const c of s.execs) { expect(c.timeoutMs).toBe(30_000); expect(c.maxOutputBytes).toBe(8 * 1024 * 1024); }
 });
 
@@ -101,8 +107,8 @@ test("AC1/AC8: special-character folders are opaque: never in a command line, on
   await pick(s, "p_w");
   expect((await s.entry.openConsole()).ok).toBe(true);
   expect(s.runs[0]!.args.folder).toBe(weird);
-  expect(JSON.stringify(s.runs[0]!.args.argv)).toBe('["ahub","console"]');
-  expect(s.execs.find(c => c.args[0] === "status")!.cwd).toBe(weird);
+  expect(JSON.stringify(s.runs[0]!.args.argv)).toBe('["ahub","--project","p_w","console"]');
+  expect(s.execs.find(c => c.args.includes("status"))!.cwd).toBe(weird);
   for (const c of s.execs) expect(c.args.join(" ")).not.toContain("rm -rf");
   const copy = s.entry.copyCommand();
   expect(copy.command).toBe(`ahub --project '/work/it'\\''s a "proj" $(rm -rf x);\`y\` ü 한글 & | > <' console`);
@@ -119,7 +125,7 @@ test("AC1: a remote space reads and proves its project ON its machine, opens the
   expect(await s.entry.openConsole()).toMatchObject({ ok: true, opened: "console", machineLabel: "vps" });
   expect(s.execs.every(c => c.on === "vps")).toBe(true);
   expect(s.execs.some(c => c.on === null || c.on === undefined)).toBe(false);
-  expect(s.execs.find(c => c.args[0] === "status")!.cwd).toBe("/home/dev/app");
+  expect(s.execs.find(c => c.args.includes("status"))!.cwd).toBe("/home/dev/app");
   expect(s.runs[0]).toMatchObject({ name: "tab.new", args: { space: "s1", folder: "/home/dev/app" } });
   expect(JSON.stringify(s.runs[0])).not.toMatch(/vps/); // tab.new takes no machine: the space is the machine
   expect(existsSync("/home/dev/app")).toBe(false);
@@ -139,7 +145,7 @@ test("AC3: the dashboard is local only; for a remote space it refuses before any
 test("AC3: the local dashboard runs the existing `ahub ui` from the project folder, drops its output, and refuses to keep or show a link or ticket", async () => {
   const ok = setup({ ui: { stdout: "", exitCode: 0 } }); await pick(ok);
   expect(await ok.entry.openDashboard()).toEqual({ ok: true, opened: "dashboard", machineLabel: "this computer" });
-  expect(ok.execs.at(-1)).toMatchObject({ command: "ahub", args: ["ui"], cwd: "/work/a" });
+  expect(ok.execs.at(-1)).toMatchObject({ command: "ahub", args: ["--project", "p_a", "ui"], cwd: "/work/a" });
   const ticket = "http://127.0.0.1:4601/?ticket=SECRET-ONE-TIME-abc123";
   const link = setup({ ui: { stdout: `${ticket}\n`, exitCode: 0 } }); await pick(link);
   const r = await link.entry.openDashboard();
@@ -194,6 +200,104 @@ test("AC1/AC8: a duplicate, replaced, moved or re-pointed project is explicit an
   for (const x of [dup, dupId, re, point]) expect(x.runs).toEqual([]);
 });
 
+test("review thread (custom state directory): every project command names the registration by id, so a project with a custom state directory is not read as offline", async () => {
+  const rows = { "": [{ id: "p_c", root: "/work/c", stateDir: "/elsewhere/custom-state" }] };
+  const s = setup({ rows }, { cwd: "/work/c/src" });
+  // the fake models ahub: a folder-only status call assumes the default state directory and so finds no hub for this registration
+  const folderOnly = await s.host.exec("ahub", ["status", "--json"], { cwd: "/work/c" });
+  expect(folderOnly.code).toBe(1); expect(folderOnly.stderr).toContain("no hub running");
+  const byId = await s.host.exec("ahub", ["--project", "p_c", "status", "--json"], { cwd: "/work/c" });
+  expect(byId.code).toBe(0);
+  const probes = s.execs.length; // the two direct probes above are the test's own, not the entry's
+  await pick(s, "p_c");
+  expect(await s.entry.openConsole()).toMatchObject({ ok: true, opened: "console" });
+  expect(s.runs[0]!.args.argv).toEqual(["ahub", "--project", "p_c", "console"]);
+  const mine = s.execs.slice(probes).filter(c => c.args.includes("status"));
+  expect(mine.length).toBeGreaterThan(0);
+  expect(mine.every(c => c.args[0] === "--project" && c.args[1] === "p_c" && c.args[2] === "status")).toBe(true);
+  const dash = await s.entry.openDashboard();
+  expect(dash).toMatchObject({ ok: true, opened: "dashboard" });
+  expect(s.execs.at(-1)).toMatchObject({ command: "ahub", args: ["--project", "p_c", "ui"], cwd: "/work/c" });
+  // the selector never carries a shell: an id with a leading dash, a space or a metacharacter is refused at the read, so it cannot become a flag or a second word
+  for (const id of ["-x", "--project", "a b", "p;rm", "p$(x)", "", "p\nq"]) {
+    const bad = setup({ rows: { "": JSON.stringify([{ id, root: "/work/c" }]) } });
+    expect(await bad.entry.refresh(), JSON.stringify(id)).toMatchObject({ status: "refused", refusal: "bad_output" });
+    expect(bad.runs).toEqual([]);
+  }
+});
+
+test("review thread (cwd proof): a registration whose reported folder is not the selected root is `changed`, never opened", async () => {
+  const s = setup({ status: () => ({ stdout: JSON.stringify({ projectId: "p_a", cwd: "/somewhere/else" }) }) }); await pick(s);
+  expect(await s.entry.openConsole()).toMatchObject({ ok: false, refusal: "changed" });
+  const none = setup({ status: () => ({ stdout: JSON.stringify({ projectId: "p_a" }) }) }); await pick(none);
+  expect(await none.entry.openConsole()).toMatchObject({ ok: false, refusal: "bad_output" });
+  expect(s.runs).toEqual([]); expect(none.runs).toEqual([]);
+});
+
+test("review thread (machine change during the reads): the space and machine are re-read right before the tab, so a console is never opened on a machine other than the one checked", async () => {
+  const hold = (n: number) => {
+    let release!: () => void, reached!: () => void;
+    return { release: () => release(), at: new Promise<void>(r => { reached = r; }), gate: new Promise<void>(r => { release = r; }), reached: () => reached() };
+  };
+  const scenarios: [string, (s: ReturnType<typeof setup>) => void, string][] = [
+    ["the space moves to another machine", s => s.fake.setSpaces([space("s1", "vps")]), "changed"],
+    ["the checked machine becomes unavailable", s => s.fake.setMachines([{ name: null, layout: "unavailable" }, { name: "vps", layout: "ready" }]), "machine_unavailable"],
+    ["the machine goes away", s => s.fake.setMachines([]), "machine_unavailable"],
+    ["the space is closed", s => s.fake.setSpaces([]), "changed"],
+  ];
+  for (const [name, change, refusal] of scenarios) {
+    const h = hold(0);
+    const s = setup({ hold: { status: h.gate, reached: h.reached } }); await pick(s);
+    const pending = s.entry.openConsole();
+    await h.at; // the action is inside the project proof, after both earlier reads
+    change(s);
+    h.release();
+    expect(await pending, name).toMatchObject({ ok: false, refusal });
+    expect(s.runs, name).toEqual([]);
+  }
+  // the same for a remote selection whose space is moved onto this computer while the proof is held
+  const h = hold(0);
+  const remote = setup({ rows: { vps: [{ id: "p_r", root: "/home/dev/app" }] }, hold: { status: h.gate, reached: h.reached } }, { machine: "vps", cwd: "/home/dev/app" });
+  await pick(remote, "p_r");
+  const pending = remote.entry.openConsole();
+  await h.at;
+  remote.fake.setSpaces([space("s1", null)]);
+  h.release();
+  expect(await pending).toMatchObject({ ok: false, refusal: "changed" });
+  expect(remote.runs).toEqual([]);
+  // and the dashboard is guarded the same way (its machine is checked again before `ahub ui` runs)
+  const hd = hold(0);
+  const dash = setup({ hold: { status: hd.gate, reached: hd.reached } }); await pick(dash);
+  const pd = dash.entry.openDashboard();
+  await hd.at;
+  dash.fake.setSpaces([space("s1", "vps")]);
+  hd.release();
+  expect(await pd).toMatchObject({ ok: false, refusal: "changed" });
+  expect(dash.execs.some(c => c.args.includes("ui"))).toBe(false);
+});
+
+test("review thread (tab confirmation): a tab that appears in the space while ahub was answering is not mistaken for the console that was opened", async () => {
+  let release!: () => void, reached!: () => void;
+  const gate = new Promise<void>(r => { release = r; }), at = new Promise<void>(r => { reached = r; });
+  const s = setup({ hold: { status: gate, reached } }); await pick(s);
+  const pending = s.entry.openConsole();
+  await at;
+  // someone opens a tab in the same space during the held read; the tab list the entry compares against must be the one read right before its own request
+  s.fake.setSpaces([space("s1", null, 2)]);
+  release();
+  const r = await pending;
+  expect(r).toMatchObject({ ok: true, opened: "console" });
+  expect(r.tab).toBe("s1/t3"); // the third tab is the one this request opened, not the second that was already there
+});
+
+test("review thread (cwd proof): a reported folder that only starts with the selected root is `changed`, not accepted", async () => {
+  for (const reported of ["/work/a/sub", "/work/ab", "/work", "/work/a/"]) {
+    const s = setup({ status: () => ({ stdout: JSON.stringify({ projectId: "p_a", cwd: reported }) }) }); await pick(s);
+    expect(await s.entry.openConsole(), reported).toMatchObject({ ok: false, refusal: "changed" });
+    expect(s.runs, reported).toEqual([]);
+  }
+});
+
 test("AC1: a space that is gone, or moved to another machine, since selection is `changed`", async () => {
   const gone = setup(); await pick(gone);
   gone.fake.setSpaces([]);
@@ -210,7 +314,7 @@ test("AC4/AC8: no running hub is `offline` with the setup instruction, and the e
   expect(r).toMatchObject({ ok: false, refusal: "offline" });
   expect(r.message).toMatch(/ahub up/); expect(r.message).toMatch(/never starts/);
   expect(s.runs).toEqual([]);
-  expect(s.execs.every(c => ["projects", "status"].includes(c.args[0]!))).toBe(true);
+  expect(s.execs.every(c => c.args[0] === "projects" || (c.args[0] === "--project" && c.args[2] === "status"))).toBe(true);
 });
 
 test("AC8: invalid, truncated, oversized or wrong-shaped output refuses with a distinct state and never opens anything", async () => {
@@ -321,7 +425,7 @@ test("AC8: on Windows nothing is opened or copied, because the folder and quotin
 test("the boundary: across a full flow only fixed `ahub` argument lists reach exec, and only `tab.new` reaches run", async () => {
   const s = setup(); await pick(s);
   await s.entry.openConsole(); await pick(s); await s.entry.openDashboard(); s.entry.copyCommand();
-  const allowed = new Set([core.FIXED.projects.join(" "), core.FIXED.status.join(" "), core.FIXED.ui.join(" ")]);
+  const allowed = new Set([core.FIXED.projects.join(" "), core.projectArgs("p_a", core.FIXED.status).join(" "), core.projectArgs("p_a", core.FIXED.ui).join(" ")]);
   for (const c of s.execs) { expect(c.command).toBe("ahub"); expect(allowed.has(c.args.join(" ")), c.args.join(" ")).toBe(true); }
   expect([...new Set(s.runs.map(r => r.name))]).toEqual(["tab.new"]);
   expect(Object.keys(core.FIXED).sort()).toEqual(["console", "projects", "status", "ui"]);

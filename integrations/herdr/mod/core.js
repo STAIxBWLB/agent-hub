@@ -17,6 +17,13 @@ export const FIXED = Object.freeze({
   ui: Object.freeze(["ui"]),
 });
 export const PROGRAM = "ahub";
+/**
+ * Every command that acts on ONE project names it with `--project <id>` before the command. A command run with only a folder resolves its project from that folder and assumes the default
+ * state directory, so a registered project with a custom one would read as offline; the id selects the registration, with the state directory it recorded.
+ */
+export const projectArgs = (id, fixed) => ["--project", id, ...fixed];
+/** A registration id is passed as one argument, never through a shell. Only these characters, and never a leading dash (a selector must not look like a flag). */
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 /** Closed vocabulary. Fixed sentences: a refusal never carries raw CLI output, stderr or a link. */
 export const REFUSALS = Object.freeze({
@@ -67,7 +74,7 @@ function parseRows(stdout) {
   if (value.length > MAX_PROJECTS) return { refusal: "too_many" };
   const rows = [];
   for (const row of value) {
-    if (!row || typeof row !== "object" || !text(row.id, 128) || !text(row.root) || !row.root.startsWith("/")) return { refusal: "bad_output" };
+    if (!row || typeof row !== "object" || typeof row.id !== "string" || !SAFE_ID.test(row.id) || !text(row.root) || !row.root.startsWith("/")) return { refusal: "bad_output" };
     // Only these fields are kept. The rest of a row (it embeds a whole status) is dropped here and never stored or shown.
     rows.push({ id: row.id, root: row.root, state: row.state === "running" ? "running" : row.state === "stopped" ? "stopped" : "unknown" });
   }
@@ -112,16 +119,18 @@ export function createHerdrEntry({ host }) {
     if (got.result.code !== 0) return { refusal: "cli_failed" };
     return parseRows(got.result.stdout);
   }
-  /** Run `ahub status --json` with the project folder as cwd, exactly where `ahub console` will resolve the project, and require it to name the selected id. */
+  /** Run `ahub --project <id> status --json` from the project folder (the folder must still exist) and require it to name the selected id, using the registration's own state directory. */
   async function checkProject(binding) {
     const options = binding.machine === null ? { cwd: binding.root } : { cwd: binding.root, on: binding.machine };
-    const got = await run(FIXED.status, options);
+    const got = await run(projectArgs(binding.id, FIXED.status), options);
     if (!got.ok) return { refusal: "read_failed" };
     if (got.result.code !== 0) return { refusal: typeof got.result.stderr === "string" && got.result.stderr.includes("no hub running") ? "offline" : "cli_failed" };
     let status;
     try { status = JSON.parse(got.result.stdout); } catch { return { refusal: "bad_output" }; }
     if (!status || typeof status !== "object" || typeof status.projectId !== "string") return { refusal: "bad_output" };
-    return status.projectId === binding.id ? { ok: true } : { refusal: "changed" };
+    // Selected by id, `projectId` equals the id by construction, so it proves little. What proves the registration still owns this folder is the root the hub reports for itself.
+    if (status.projectId !== binding.id) return { refusal: "changed" };
+    return typeof status.cwd === "string" && status.cwd === binding.root ? { ok: true } : { refusal: status.cwd === undefined ? "bad_output" : "changed" };
   }
 
   function setView(patch) { view = { ...view, ...patch }; return view; }
@@ -176,6 +185,17 @@ export function createHerdrEntry({ host }) {
     },
   };
 
+  /** Re-read the selected space and its machine's readiness, with no await in between and the effect right after. A mismatch is a refusal, never a retry. */
+  function recheckSpace(sel) {
+    let spaces, machines;
+    try { spaces = host.spaces(); machines = host.machines(); } catch { return { refusal: "host_unavailable" }; }
+    if (!Array.isArray(spaces) || !Array.isArray(machines)) return { refusal: "host_unavailable" };
+    const space = spaces.find(s => s && s.id === sel.spaceId);
+    if (!space || (space.machine ?? null) !== sel.machine) return { refusal: "changed" };
+    const state = ready(machines, sel.machine);
+    return state ? { refusal: state } : { space };
+  }
+
   async function effect(kind) {
     const sel = view.selection;
     if (!sel) return fail("no_selection");
@@ -189,8 +209,8 @@ export function createHerdrEntry({ host }) {
       let spaces, machines;
       try { spaces = host.spaces(); machines = host.machines(); } catch { return fail("host_unavailable"); }
       if (!Array.isArray(spaces) || !Array.isArray(machines)) return fail("host_unavailable");
-      const space = spaces.find(s => s && s.id === sel.spaceId);
-      if (!space || (space.machine ?? null) !== sel.machine) return fail("changed");
+      const early = spaces.find(s => s && s.id === sel.spaceId);
+      if (!early || (early.machine ?? null) !== sel.machine) return fail("changed");
       const state = ready(machines, sel.machine);
       if (state) return fail(state);
       const read = await readProjects(sel.machine);
@@ -202,21 +222,24 @@ export function createHerdrEntry({ host }) {
       const checked = await checkProject(sel);
       if (gen !== generation) return fail("stale");
       if (!checked.ok) return fail(checked.refusal);
-      // 3. The effect.
+      // 3. The effect. The reads above were awaited, and only refresh and select move the generation, so the space and its machine are read again here, synchronously with the effect: a space that moved
+      // to another machine, or a machine that went away, while ahub was answering must not receive the tab.
+      const live = recheckSpace(sel);
+      if (live.refusal) return fail(live.refusal);
       if (kind === "dashboard") {
-        const got = await run(FIXED.ui, { cwd: sel.root });
+        const got = await run(projectArgs(sel.id, FIXED.ui), { cwd: sel.root });
         // No stale check here: the dashboard was already requested, so reporting "stale" would misstate what happened.
         if (!got.ok) return fail("read_failed");
         if (got.result.code !== 0) return fail("cli_failed");
         // The output is never returned, logged or stored. If it holds a link, ahub could not open one.
         return /https?:\/\//i.test(String(got.result.stdout)) ? fail("link_printed") : { ok: true, opened: "dashboard", machineLabel: sel.machineLabel };
       }
-      const before = new Set((space.tabs ?? []).map(t => t.id));
-      try { host.run("tab.new", { space: space.id, folder: sel.root, argv: [PROGRAM, ...FIXED.console], name: tabName(sel.root) }); }
+      const before = new Set((live.space.tabs ?? []).map(t => t.id));
+      try { host.run("tab.new", { space: live.space.id, folder: sel.root, argv: [PROGRAM, ...projectArgs(sel.id, FIXED.console)], name: tabName(sel.root) }); }
       catch { return fail("host_refused"); }
       // `run` returns null whatever happened, so the result is learned only by re-reading. There is no retry: a second request could open a second console.
       let after;
-      try { after = host.spaces().find(s => s && s.id === space.id); } catch { return fail("unconfirmed"); }
+      try { after = host.spaces().find(s => s && s.id === live.space.id); } catch { return fail("unconfirmed"); }
       const added = (after?.tabs ?? []).find(t => !before.has(t.id));
       return added ? { ok: true, opened: "console", tab: added.id, machineLabel: sel.machineLabel } : fail("unconfirmed");
     } finally { busy = false; }

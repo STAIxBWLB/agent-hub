@@ -14,15 +14,19 @@ matching project is only a default you still select.
 
 For the selected project:
 
-- **Open console** opens one new tab in that space running `ahub console` with the project root as the tab's
+- **Open console** opens one new tab in that space running `ahub --project <id> console` with the project root as the tab's
   folder, so Herdr starts it on that space's machine. The hub must already be running.
 - **Open dashboard** (this computer only) runs the existing `ahub ui` from the project folder. Its output is dropped:
   a printed link or one-time ticket is never kept, shown or rewritten. If ahub printed one, the entry says so.
 - **Copy command** puts `ahub --project '<root>' console` on the clipboard, quoted as one shell word, for you to run
   on the machine named in the dialog. It runs nothing. This is the route for a remote project's dashboard too.
 
-Before every effect it re-reads the space, the machine, the registrations, and runs `ahub status --json` from the
-project folder to prove that folder still resolves to the selected project id with a running hub. A changed,
+Every command that acts on the project names it by registration id (`--project <id>`, before the command), so a project
+with a custom state directory is read from the state directory it registered, not assumed to use the default. Before
+every effect it re-reads the space, the machine, the registrations, and runs `ahub --project <id> status --json` from the
+project folder to prove the registration still owns that folder (the hub's reported folder must equal the selected root)
+with a running hub. The space and its machine are read once more immediately before the tab or `ahub ui` is requested,
+because the reads before it are awaited: a space that moved to another machine in the meantime refuses, and nothing opens. A changed,
 replaced, moved, duplicate or unknown project, an unready machine or a hub that is not running each refuse with a
 fixed sentence and open nothing. It never starts, stops, restarts or upgrades anything, and never touches tasks,
 reviews, approvals, roles, budget or memory. There is no polling and it keeps no state.

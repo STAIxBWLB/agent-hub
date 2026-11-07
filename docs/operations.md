@@ -6592,7 +6592,7 @@ procedure counts that have not been run in a native window.
 [`integrations/herdr/`](../integrations/herdr/README.md) is an optional mod: three files the person copies to
 `mods/ahub` in the Herdr app home, which Herdr reads live and which declares `place: none`, so no layout changes.
 It lists the focused space's machine and folder and that machine's registered projects, and opens nothing until a
-row is selected. Open console starts one new tab in the selected space running `ahub console`, with the project root
+row is selected. Open console starts one new tab in the selected space running `ahub --project <id> console`, with the project root
 as the tab's folder. Before every effect it re-reads the space, the machine and the registrations and runs
 `ahub status --json` from the project folder, and refuses a changed, duplicate, offline or unready target. The local
 dashboard runs the existing `ahub ui` and keeps no link or ticket. A remote space gets the console tab or a copyable
