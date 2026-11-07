@@ -46,6 +46,12 @@ terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
 
+## Upgrading to 0.34.0
+
+TODO(agent): say what changes for a person who upgrades, or that nothing does until they use something new.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.34.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
+
 ## Upgrading to 0.33.0
 
 Rooms now show refused-frame counts, outbox depth/ages and a closed link cause with a recovery step. Store-open failures retry, receive-only work wakes after journal recovery, and selective traffic no longer produces false sequence-gap notices. For a rolling room upgrade, update the broker first, then every member, then reconnect: 0.33.0 person-inbox (`user@label`) and invocation sends to a released 0.32.0 member, or through a released 0.32.0 broker are refused before effects with the upgrade step; plain chat keeps working. Use the matching CLI for the new diagnostics: 0.32.0 `ahub room status` drops the new fields, including in its JSON output, while `ahub status --json` passes raw daemon fields through.
