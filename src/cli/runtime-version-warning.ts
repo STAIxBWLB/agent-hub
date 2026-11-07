@@ -76,5 +76,5 @@ export function globalUpdateAdvice(input: GlobalUpdateInputs): string[] {
     const state = pluginState(parseList<InstalledPlugin>(probed.status === 0 ? probed.stdout ?? "" : ""), input.packageRoot);
     plugin = state.state === "missing" ? undefined : state.version;
   } catch { /* an unknown plugin: the CLI half below does not depend on it */ }
-  try { return globalUpdateAfterUpgrade(input.target, input.cli, plugin, input.handedOver, { ...input.install, packageRoot: input.packageRoot }); } catch { return []; }
+  try { return globalUpdateAfterUpgrade(input.target, input.cli, plugin, input.handedOver, input.install); } catch { return []; }
 }

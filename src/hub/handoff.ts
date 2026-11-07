@@ -1,5 +1,4 @@
-import { globalCliUpdateStep } from "../cli/install-paths.ts";
-// Cross-project task handoff (#604, agent-hub#1030). Policy is values in, values out; install-aware update advice reads only the local CLI path. The daemon, the registry and the control client are
+// Cross-project task handoff (#604, agent-hub#1030). Pure: values in, values out, no clock, no file system, no socket. The daemon, the registry and the control client are
 // passed in as data or as small ports, so every refusal here is testable without a second daemon and the policy cannot drift from what the daemon enforces.
 import { createHash } from "node:crypto";
 import { CLASSES, type TaskClass } from "./board.ts";
@@ -131,7 +130,7 @@ export function resolveTarget(name: string, projects: readonly RegisteredProject
 export function handoffConnectFailure(error: unknown, target: { id: string; root: string }): { code: HandoffRefusalCode; reach: "unreachable"; cause: string; message: string } {
   const code = typeof (error as { code?: unknown })?.code === "number" || typeof (error as { code?: unknown })?.code === "string" ? (error as { code: number | string }).code : undefined;
   if (code === 4426) return { code: "older_target", reach: "unreachable", cause: "wire version differs",
-    message: `the hub of ${target.id} speaks another wire version than this one: upgrade whichever is older (\`ahub upgrade\` in ${target.root}, and ${globalCliUpdateStep()}), then hand the task off again` };
+    message: `the hub of ${target.id} speaks another wire version than this one: upgrade whichever is older (\`ahub upgrade\` in ${target.root}, and the global CLI the way it was installed; \`ahub doctor\` names the exact step), then hand the task off again` };
   if (code === 4404) return { code: "mismatch", reach: "unreachable", cause: "another hub or instance answered",
     message: `the hub answering for ${target.root} is not the instance this project's registry names (it was restarted, or another project took its port): run \`ahub projects\` to see what is registered, and \`ahub up\` in ${target.root} if it is not running` };
   if (code === "AHUB_CONNECT_TIMEOUT") return { code: "not_running", reach: "unreachable", cause: "no answer in time",

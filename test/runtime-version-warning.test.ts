@@ -1,15 +1,18 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { InstallPathOptions } from "../src/cli/install-paths.ts";
 import { runtimeVersionWarnings } from "../src/cli/runtime-version-warning.ts";
 
 const installHome = mkdtempSync(join(tmpdir(), "ahub-version-install-1245-"));
 const bunPrefix = join(installHome, "bun"), bunPackage = join(bunPrefix, "install/global/node_modules/@staix/agent-hub");
-mkdirSync(bunPackage, { recursive: true });
+const bunBin = join(installHome, "bun-bin");
+mkdirSync(join(bunPackage, "src/cli"), { recursive: true }); mkdirSync(bunBin);
+writeFileSync(join(bunPackage, "src/cli/main.js"), "// fixture CLI\n", { mode: 0o755 });
+symlinkSync(relative(bunBin, join(bunPackage, "src/cli/main.js")), join(bunBin, "ahub"));
 afterAll(() => rmSync(installHome, { recursive: true, force: true }));
-const bunInstall: InstallPathOptions = { packageRoot: bunPackage, env: { BUN_INSTALL: bunPrefix }, home: installHome };
+const bunInstall: InstallPathOptions = { env: { BUN_INSTALL: bunPrefix, PATH: bunBin }, home: installHome };
 
 test("doctor warns about an older CLI and plugin with separate manual update commands", () => {
   const rows = runtimeVersionWarnings("0.25.0", "0.24.0", "0.23.1", bunInstall);
@@ -120,10 +123,15 @@ test("a handed-over upgrade speaks for the CLI that started it even when the plu
   expect(lines).toContain("bun add -g @staix/agent-hub@0.31.0");
 });
 
-test("doctor and post-upgrade advice name an outside install without proposing a second Bun copy", () => {
-  const outside = join(installHome, "tools/ahub/current/lib/node_modules/@staix/agent-hub");
-  mkdirSync(outside, { recursive: true });
-  const install = { ...bunInstall, packageRoot: outside };
+test("doctor and post-upgrade advice follow a stable outside PATH install instead of the executing package", () => {
+  const versioned = join(installHome, "tools/ahub/A"), current = join(installHome, "tools/ahub/current");
+  const outside = join(current, "lib/node_modules/@staix/agent-hub"), outsideBin = join(installHome, "outside-bin");
+  const realPackage = join(versioned, "lib/node_modules/@staix/agent-hub");
+  mkdirSync(join(realPackage, "src/cli"), { recursive: true }); mkdirSync(outsideBin);
+  writeFileSync(join(realPackage, "src/cli/main.js"), "// fixture CLI\n", { mode: 0o755 });
+  symlinkSync("A", current);
+  symlinkSync(relative(outsideBin, join(outside, "src/cli/main.js")), join(outsideBin, "ahub"));
+  const install: InstallPathOptions = { ...bunInstall, env: { BUN_INSTALL: bunPrefix, PATH: outsideBin } };
   const doctor = runtimeVersionWarnings("0.33.1", "0.33.0", "0.33.0", install);
   expect(doctor.filter(row => row.level === "warn")).toHaveLength(2);
   expect(doctor[0]!.detail).toContain("the way it was installed");
@@ -135,8 +143,34 @@ test("doctor and post-upgrade advice name an outside install without proposing a
   const handover = globalUpdateAfterUpgrade("0.33.1", "0.33.1", undefined, true, install).join(" ");
   expect(handover).toContain("The CLI that started this upgrade is older");
   expect(handover).toContain(outside); expect(handover).not.toContain("bun add");
-  // The probe's packageRoot identifies this installed CLI, even when install options describe a Bun prefix.
-  const probed = globalUpdateAdvice({ target: "0.33.1", cli: "0.33.0", handedOver: false, packageRoot: outside, install: bunInstall,
+  const staged = join(installHome, "bun-x/target/node_modules/@staix/agent-hub"); mkdirSync(staged, { recursive: true });
+  // packageRoot locates the staged plugin only; the global CLI update follows PATH independently.
+  const probed = globalUpdateAdvice({ target: "0.33.1", cli: "0.33.1", handedOver: true, packageRoot: staged, install,
     probe: () => ({ status: 0, stdout: listing("0.33.0") }) }).join(" ");
+  expect(probed).toContain("The CLI that started this upgrade is older");
   expect(probed).toContain(outside); expect(probed).toContain("ahub setup"); expect(probed).not.toContain("bun add");
+  expect(probed).not.toContain(staged);
+});
+
+test("a staged handover still recommends Bun when PATH proves the global CLI is a Bun-global install", () => {
+  const staged = join(installHome, "bun-x/other-target/node_modules/@staix/agent-hub"); mkdirSync(staged, { recursive: true });
+  const lines = globalUpdateAdvice({ target: "0.33.1", cli: "0.33.1", handedOver: true, packageRoot: staged, install: bunInstall,
+    probe: () => ({ status: 0, stdout: listing("0.33.0") }) }).join(" ");
+  expect(lines).toContain("The CLI that started this upgrade is older");
+  expect(lines).toContain("bun add -g @staix/agent-hub@0.33.1");
+  expect(lines).toContain("`ahub setup`"); expect(lines).not.toContain(staged);
+});
+
+test("a staged handover with no PATH CLI gives generic guidance without claiming any installation root", () => {
+  const staged = join(installHome, "bun-x/unknown-target/node_modules/@staix/agent-hub"); mkdirSync(staged, { recursive: true });
+  const install: InstallPathOptions = { ...bunInstall, env: { BUN_INSTALL: bunPrefix, PATH: "" } };
+  const doctor = runtimeVersionWarnings("0.33.1", "0.33.0", "0.33.0", install).map(row => row.detail).join(" ");
+  const lines = globalUpdateAdvice({ target: "0.33.1", cli: "0.33.1", handedOver: true, packageRoot: staged, install,
+    probe: () => ({ status: 0, stdout: listing("0.33.0") }) }).join(" ");
+  for (const output of [doctor, lines]) {
+    expect(output).toContain("the way it was installed");
+    expect(output).not.toContain("bun add"); expect(output).not.toContain("running from");
+    expect(output).not.toContain(staged); expect(output).not.toContain(bunPackage);
+    expect(output).not.toContain(join(import.meta.dir, ".."));
+  }
 });

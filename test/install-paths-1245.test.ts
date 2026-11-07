@@ -71,38 +71,61 @@ test("the PATH-stable Bun spelling is kept only when it resolves to the running 
   expect(stableBunRuntime({ runtime, pathRuntime: cycle })).toBe(runtime);
 });
 
-test("update advice proves a Bun-global prefix boundary and otherwise names the running install", () => {
+test("update advice resolves PATH ahub, proving the Bun-global boundary independently of this process", () => {
   const f = fixture(), home = join(f.root, "home"), prefix = join(f.root, "bun-prefix"), global = join(prefix, "install/global/node_modules");
   const installed = join(global, "@staix/agent-hub"), outside = join(global + "-sibling", "@staix/agent-hub");
   const fallback = join(home, ".bun/install/global/node_modules/@staix/agent-hub");
-  for (const directory of [installed, outside, fallback]) mkdirSync(directory, { recursive: true });
-  const options = { packageRoot: installed, env: { BUN_INSTALL: prefix }, home };
+  const pathFor = (root: string, name: string) => {
+    f.file(relative(f.root, join(root, "src/cli/main.js")));
+    const bin = join(f.root, name);
+    f.link(relative(bin, join(root, "src/cli/main.js")), `${name}/ahub`);
+    return bin;
+  };
+  const options = { env: { BUN_INSTALL: prefix, PATH: pathFor(installed, "bun-bin") }, home };
   expect(globalCliUpdateStep("0.33.1", options)).toBe("run `bun add -g @staix/agent-hub@0.33.1`");
   expect(globalCliUpdateStep(undefined, options)).toBe("run `bun add -g @staix/agent-hub`");
   expect(globalCliUpdateStep("0.33.1", { ...options, globalFlag: "--global" })).toBe("run `bun add --global @staix/agent-hub@0.33.1`");
-  expect(globalCliUpdateStep("0.33.1", { packageRoot: fallback, env: {}, home })).toBe("run `bun add -g @staix/agent-hub@0.33.1`");
-  for (const packageRoot of [outside, fallback, global]) {
-    const advice = globalCliUpdateStep("0.33.1", { ...options, packageRoot });
-    expect(advice).toContain("the way it was installed"); expect(advice).toContain(packageRoot); expect(advice).not.toContain("bun add");
-  }
-  const missingPrefix = globalCliUpdateStep("0.33.1", { ...options, env: { BUN_INSTALL: join(f.root, "not-installed") } });
+  const fallbackPath = pathFor(fallback, "fallback-bin");
+  expect(globalCliUpdateStep("0.33.1", { env: { PATH: fallbackPath }, home })).toBe("run `bun add -g @staix/agent-hub@0.33.1`");
+  const siblingAdvice = globalCliUpdateStep("0.33.1", { ...options, env: { ...options.env, PATH: pathFor(outside, "sibling-bin") } });
+  expect(siblingAdvice).toContain("the way it was installed"); expect(siblingAdvice).toContain(outside); expect(siblingAdvice).not.toContain("bun add");
+  const otherPrefix = globalCliUpdateStep("0.33.1", { ...options, env: { ...options.env, PATH: fallbackPath } });
+  expect(otherPrefix).toContain(fallback); expect(otherPrefix).not.toContain("bun add");
+  const missingPrefix = globalCliUpdateStep("0.33.1", { ...options, env: { ...options.env, BUN_INSTALL: join(f.root, "not-installed") } });
   expect(missingPrefix).toContain(installed); expect(missingPrefix).not.toContain("bun add");
 });
 
-test("handoff wire-skew guidance identifies this outside installation without a Bun-global update", () => {
+test("unknown PATH CLI never claims this process's staged or bun-x package as the global install", () => {
+  const f = fixture(), generic = "update the global CLI to 0.33.1 the way it was installed";
+  const missing = join(f.root, "empty-bin"); mkdirSync(missing);
+  expect(globalCliUpdateStep("0.33.1", { env: { PATH: missing } })).toBe(generic);
+  expect(globalCliUpdateStep("0.33.1", { env: { PATH: "" } })).toBe(generic);
+  f.file("not-a-package/ahub");
+  expect(globalCliUpdateStep("0.33.1", { env: { PATH: join(f.root, "not-a-package") } })).toBe(generic);
+});
+
+test("a dotfiles-style PATH alias is named even while this module runs from another package", () => {
+  const f = versionedInstall();
+  const advice = globalCliUpdateStep("0.33.1", { env: { PATH: dirname(f.entry), BUN_INSTALL: join(f.root, "bun") } });
+  expect(advice).toContain(f.alias); expect(advice).not.toContain("bun add");
+  expect(advice).not.toContain(resolve(import.meta.dir, ".."));
+});
+
+test("handoff wire-skew guidance stays generic and names doctor without claiming an installation", () => {
   const f = fixture(), previous = process.env.BUN_INSTALL;
   try {
     process.env.BUN_INSTALL = join(f.root, "bun"); mkdirSync(join(process.env.BUN_INSTALL, "install/global/node_modules"), { recursive: true });
     const result = handoffConnectFailure({ code: 4426 }, { id: "target", root: join(f.root, "project") });
     expect(result.code).toBe("older_target"); expect(result.cause).toBe("wire version differs");
     expect(result.message).toContain("the way it was installed");
-    expect(result.message).toContain(resolve(import.meta.dir, "..")); expect(result.message).not.toContain("bun add");
+    expect(result.message).not.toContain(resolve(import.meta.dir, "..")); expect(result.message).not.toContain("bun add");
+    expect(result.message).not.toContain("running from"); expect(result.message).toContain("`ahub doctor` names the exact step");
     expect(result.message).toContain("then hand the task off again");
   } finally { if (previous === undefined) delete process.env.BUN_INSTALL; else process.env.BUN_INSTALL = previous; }
 });
 
 test("the interactive no-hub upgrade screen names this outside install without executing an update", async () => {
-  const f = fixture(), previous = process.env.BUN_INSTALL, root = resolve(import.meta.dir, "..");
+  const f = versionedInstall(), previous = process.env.BUN_INSTALL, previousPath = process.env.PATH, root = resolve(import.meta.dir, "..");
   const body: Omit<UpgradePlan, "fingerprint"> = { schema: 1, kind: "upgrade", version: "0.33.1", integrity: "sha512-fixture", sourceRoot: root, sourceDigest: "d".repeat(64), blockers: ["no running registered projects in scope"], projects: [] };
   const plan = { ...body, fingerprint: planFingerprint(body) }, lines: string[] = [];
   const unexpected = (): never => { throw new Error("no-hub advice must not perform lifecycle work"); };
@@ -111,9 +134,13 @@ test("the interactive no-hub upgrade screen names this outside install without e
   const io: ScreenIO = { ask: async () => "q", out: line => lines.push(line), run: async () => unexpected(), sleep: async () => unexpected(), interrupted: () => false, typed: () => false };
   try {
     process.env.BUN_INSTALL = join(f.root, "bun"); mkdirSync(join(process.env.BUN_INSTALL, "install/global/node_modules"), { recursive: true });
+    process.env.PATH = dirname(f.entry);
     await planScreen(host, io);
     const output = lines.join("\n");
     expect(output).toContain("no hub is running"); expect(output).toContain("the way it was installed");
-    expect(output).toContain(root); expect(output).not.toContain("bun add"); expect(output).toContain("ahub setup");
-  } finally { if (previous === undefined) delete process.env.BUN_INSTALL; else process.env.BUN_INSTALL = previous; }
+    expect(output).toContain(f.alias); expect(output).not.toContain(`running from ${root}`); expect(output).not.toContain("bun add"); expect(output).toContain("ahub setup");
+  } finally {
+    if (previous === undefined) delete process.env.BUN_INSTALL; else process.env.BUN_INSTALL = previous;
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+  }
 });

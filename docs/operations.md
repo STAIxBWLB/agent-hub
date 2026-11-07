@@ -2355,10 +2355,14 @@ a Claude home step fails, setup still records the `start.agents` answer before i
 reports the failure.
 
 Updating a project's daemon does not update the global CLI or shared plugin.
-When a global CLI update is needed, upgrade and doctor guidance names its running
-installation path outside a proven Bun-global prefix: update it using the method
-that installed it, then run `ahub setup`. A Bun-global command is suggested only for a running
-package verified inside that prefix, avoiding an update to a second CLI copy.
+When a global CLI update is needed, upgrade and doctor guidance resolves the
+`ahub` package on PATH independently of the executing staged daemon or `bun x`
+coordinator. Outside a proven Bun-global prefix it names that installation path:
+update it using the method that installed it, then run `ahub setup`. A Bun-global
+command is suggested only for a PATH-selected package verified inside that prefix.
+An unknown PATH installation gets generic update advice without an inferred path.
+Handoff wire-version refusals keep fixed guidance to update the older hub and the
+global CLI the way it was installed; `ahub doctor` names the exact step.
 
 `ahub autonomy status [--json]` includes the machine default and each discovered Claude home's plugin/hook state. Missing, unsafe, stale, unavailable or incomplete evidence is explicit; a missing selected home is reported without starting a native inventory command that could create it. The native Orca zero-prompt receipt remains T4.
 

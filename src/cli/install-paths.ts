@@ -4,12 +4,10 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realPath } from "../hub/project.ts";
 
 export interface InstallPathOptions {
-  packageRoot?: string;
   env?: NodeJS.ProcessEnv;
   home?: string;
   globalFlag?: "-g" | "--global";
 }
-const packageRoot = resolve(import.meta.dir, "../..");
 // Contract: #1245 limits lexical symlink inspection to eight hops; unknown paths use the resolved fallback.
 const MAX_LINK_HOPS = 8;
 const samePath = (left: string, right: string): boolean => {
@@ -31,17 +29,23 @@ function lexicalTarget(entry: string): string | undefined {
   } catch { /* Missing, unreadable and cyclic aliases are not evidence of this install. */ }
 }
 
+/** The PATH entry's canonical target must also be a CLI entry, not just a lookalike parent. */
+function pathPackageRoot(invocation: string): string | undefined {
+  const target = lexicalTarget(invocation);
+  if (!target?.endsWith(`${sep}src${sep}cli${sep}main.js`)) return;
+  try {
+    const canonical = realPath(invocation);
+    if (!canonical.endsWith(`${sep}src${sep}cli${sep}main.js`)) return;
+    const candidate = dirname(dirname(dirname(target)));
+    return samePath(candidate, dirname(dirname(dirname(canonical)))) ? candidate : undefined;
+  } catch { return; }
+}
+
 /** Bun resolves argv[1], Bun.main and import.meta.dir, through both bun <link> and a shebang (native probe, #1245). */
 export function stablePackageRoot(root: string, options: { invocation?: string } = {}): string {
   const invocation = options.invocation ?? Bun.which("ahub", { PATH: process.env.PATH });
-  if (invocation) {
-    const target = lexicalTarget(invocation);
-    if (target?.endsWith(`${sep}src${sep}cli${sep}main.js`)) {
-      const candidate = dirname(dirname(dirname(target)));
-      if (samePath(candidate, root)) return candidate;
-    }
-  }
-  return root;
+  const candidate = invocation ? pathPackageRoot(invocation) : undefined;
+  return candidate && samePath(candidate, root) ? candidate : root;
 }
 
 export function stableBunRuntime(options: { runtime?: string; pathRuntime?: string } = {}): string {
@@ -51,7 +55,11 @@ export function stableBunRuntime(options: { runtime?: string; pathRuntime?: stri
 
 /** Advice only; a staged daemon upgrade does not update the person's global CLI installation. */
 export function globalCliUpdateStep(version?: string, options: InstallPathOptions = {}): string {
-  const root = options.packageRoot ?? packageRoot, env = options.env ?? process.env;
+  const env = options.env ?? process.env;
+  const invocation = Bun.which("ahub", { PATH: env.PATH ?? "" });
+  const root = invocation ? pathPackageRoot(invocation) : undefined;
+  const generic = `update the global CLI${version ? ` to ${version}` : ""} the way it was installed`;
+  if (!root) return generic;
   const global = join(env.BUN_INSTALL || join(options.home ?? homedir(), ".bun"), "install/global/node_modules");
   let bunGlobal = false;
   try {
@@ -59,5 +67,5 @@ export function globalCliUpdateStep(version?: string, options: InstallPathOption
     bunGlobal = within !== "" && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within);
   } catch { /* An unproven Bun prefix must not suggest updating a different CLI. */ }
   if (bunGlobal) return `run \`bun add ${options.globalFlag ?? "-g"} @staix/agent-hub${version ? `@${version}` : ""}\``;
-  return `update the global CLI${version ? ` to ${version}` : ""} the way it was installed (running from ${root})`;
+  return `${generic} (running from ${root})`;
 }
