@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.33.0 and control protocols 16 through 17. Live verification
+This guide describes ahub 0.34.0 and control protocols 16 through 17. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -3625,7 +3625,7 @@ or the plugin is older than the daemon it installed (#1179). It prints nothing w
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
-| 0.26.0 through 0.33.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.26.0 through 0.34.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The protocol window remains 16
 through 17, so the published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -3633,7 +3633,10 @@ capabilities still require their own labels. A disjoint window refuses with 4426
 The compatibility-floor `protocol` field remains readable by old clients.
 
 Release N-1 is counted in minor versions, separately from this protocol window
-(#1164, family contract entelecheia/ai-workspace#70). For 0.33.x, N-1 is 0.32.0,
+(#1164, family contract entelecheia/ai-workspace#70). For 0.34.x, N-1 is 0.33.0,
+the latest published patch of 0.33.x (exact `@staix/agent-mem` 0.22.1, control
+protocol 17 with descriptor floor 16). Every patch on 0.34.x keeps that release
+baseline. For 0.33.x, N-1 is 0.32.0,
 the latest published patch of 0.32.x (exact `@staix/agent-mem` 0.21.0, control
 protocol 17 with descriptor floor 16). Every patch on 0.33.x keeps that release
 baseline. For 0.32.x, N-1 is 0.31.0,

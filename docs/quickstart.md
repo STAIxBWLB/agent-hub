@@ -48,7 +48,7 @@ it; other projects keep their version. It then names the `bun add -g` and
 
 ## Upgrading to 0.34.0
 
-TODO(agent): say what changes for a person who upgrades, or that nothing does until they use something new.
+After an Orca restart, `ahub upgrade` no longer stops at panes that are orphaned but still connected: the plan screen offers `[t]` to reattach exactly the panes it verified (each Orca call bounded by 5 s), and the blocker names the refresh key. `ahub setup` now writes the stable install path of a symlinked CLI (for example a dotfiles-managed `~/.local/bin/ahub`) into the marketplace and the Claude profile hook instead of a versioned one, replaces a stale managed hook in place, and a refused marketplace replacement names every blocking row and the next step; `ahub doctor` checks the profile hook of each Claude home it can see. If you installed with dotfiles, follow [Installed with dotfiles](#installed-with-dotfiles) instead of `bun add -g`. Nothing else changes until you use it; N-1 is published 0.33.0 and control remains 16 through 17.
 
 `ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.34.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
