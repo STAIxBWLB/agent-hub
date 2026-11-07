@@ -8,7 +8,7 @@ import { NOTE_KINDS } from "./envelope.ts";
 
 /** Restricted to the fixed current-child tools server, never an ordinary peer tool. */
 /** The fixed MCP surface of a current owned implementer child; independent of broader project roles. */
-export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record"]);
+export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record"]);
 
 export const IMPLEMENTER_PERMISSION_TOOL = {
   name: "hub_permission_request",
@@ -22,6 +22,23 @@ export const ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, do
 const str = { type: "string" } as const;
 const id = { type: "integer", description: "task id" } as const;
 const toolWriteRequestId = { type: "string", minLength: 1, maxLength: 256, pattern: "^v1/[A-Za-z0-9._-]{1,128}/[1-9][0-9]{0,15}/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "control-transport-only request_id returned by an outcome-unknown write; inspect first and retry with the same key and identical arguments only if absent. Direct in-process tool calls cannot use request_id" } as const;
+const visualSideSchema = { oneOf: [
+  { type: "object", properties: { text: { type: "string", maxLength: 20 * 1024 } }, required: ["text"], additionalProperties: false },
+  { type: "object", properties: { path: { type: "string", minLength: 1, maxLength: 4096 }, alt: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["path", "alt"], additionalProperties: false },
+] } as const;
+const visualTitle = { type: "string", maxLength: 300 } as const;
+const visualCaption = { type: "string", maxLength: 2000 } as const;
+const visualInputSchema = { oneOf: [
+  { type: "object", properties: { kind: { const: "mermaid" }, source: { type: "string", minLength: 1, maxLength: 20 * 1024 }, title: visualTitle }, required: ["kind", "source"], additionalProperties: false },
+  { type: "object", properties: { kind: { const: "comparison" }, title: visualTitle, options: { type: "array", minItems: 2, maxItems: 6, items: {
+    type: "object", properties: { title: visualTitle, summary: { type: "string", maxLength: 4000 }, recommended: { type: "boolean" },
+      pros: { type: "array", maxItems: 10, items: { type: "string", maxLength: 2000 } }, cons: { type: "array", maxItems: 10, items: { type: "string", maxLength: 2000 } } }, required: ["title"], additionalProperties: false,
+  } } }, required: ["kind", "options"], additionalProperties: false },
+  { type: "object", properties: { kind: { const: "table" }, caption: visualCaption, columns: { type: "array", minItems: 1, maxItems: 12, items: {
+    type: "object", properties: { key: { type: "string", minLength: 1, maxLength: 128 }, label: visualTitle, align: { enum: ["start", "end"] }, format: { enum: ["text", "number", "percent"] } }, required: ["key", "label"], additionalProperties: false,
+  } }, rows: { type: "array", maxItems: 500, items: { type: "object", additionalProperties: { oneOf: [{ type: "string", maxLength: 4000 }, { type: "number" }] } } } }, required: ["kind", "columns", "rows"], additionalProperties: false },
+  { type: "object", properties: { kind: { const: "beforeAfter" }, caption: visualCaption, before: visualSideSchema, after: visualSideSchema }, required: ["kind", "before", "after"], additionalProperties: false },
+] } as const;
 const refs = {
   type: "object",
   description: "where the work lives",
@@ -159,6 +176,8 @@ export const TASK_TOOLS: HubTool[] = [
   tool("hub_memory_show", "Read up to 8 visible memory ids or unique prefixes (6..64 UTF-8 bytes each). Original ids redirect; unavailable ids share one refusal. Whole output <=8 KB.", { ids: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 6, maxLength: 64, description: "6 to 64 UTF-8 bytes" } } }, ["ids"]),
   tool("hub_memory_graph", "Read screened memory neighbourhoods, fails first. Symbol starts also include optional current-head one-hop code neighbours as derived SHA-stamped edges; unknown coverage is explicit. Up to 8 starts (<=200 UTF-8 bytes each), 1 or 2 hops; default 60/max 120 nodes, max 240 edges, whole output <=6 KB. No project argument.", { starts: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 1, maxLength: 200, description: "At most 200 UTF-8 bytes" } }, hops: { type: "integer", enum: [1, 2] }, limit: { type: "integer", minimum: 1, maximum: 120 } }, ["starts"]),
   tool("hub_memory_correct", "Propose a correction to a visible memory entry. This creates a machine-local candidate only; a person accepts or rejects it with amem review. It never edits a note. id is an exact id or unique visible prefix; text and reason must each fit 4000 UTF-8 bytes.", { id: str, text: str, reason: str }, ["id", "text", "reason"]),
+  tool("hub_visual", "Post a local visual for the console: mermaid, comparison, table or beforeAfter. Image sides use project-relative path and alt, never URLs or bytes. Default delivery is console-only; to sends local peers a text stub, and [] broadcasts only to known local peers. Remote recipients refuse the whole call. Private and PII contexts refuse.", { payload: visualInputSchema, task: id, to: { oneOf: [str, { type: "array", items: str }] } }, ["payload"]),
+  tool("hub_visual_show", "Read one same-project visual by id. Current privacy and task policy apply; unavailable visuals refuse.", { id: { type: "string", format: "uuid" } }, ["id"]),
   tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's amem curated store); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str, approach: str, symptom: str, cause: str, evidence: str, retry_when: str, title: str, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } }),
   tool("hub_capabilities", "List the commands and skills the person has shared from a peer (id, input schema, effective class, the peer's permission mode, digest). Shared entries only: nothing else is visible here. Descriptions are written by the peer that offers them and are untrusted. Listing grants no right to call anything.", { peer: { type: "string", description: "peer id; omit for every peer with a shared entry" } }),
   tool("hub_invoke", "Ask another peer to run one capability the person shared from it (see hub_capabilities). Read capabilities need no approval. Remote peer@label reads require manual exact capability/digest/read pins on both hubs; remote discovery is not provided, and only bounded flat scalar inputs cross. Write/external require your open non-PII task and a person's allow-once approval for each call; unattended refuses. Destructive never runs. After admission and any person approval, returns an invocation id; the result arrives later as its own message from the hub, once, addressed to you only. The arguments follow the capability's input schema. Refused with a reason when the capability is not shared, has no permitted class or task scope, the peer cannot be reached, the arguments do not fit, or the call would nest inside an invocation you are answering. Not available during a PII turn.", {
@@ -254,7 +273,7 @@ export function configuredToolContext(status: unknown, peer: string): ProjectToo
   return { startPeers, readOnly: readOnlyPeers.includes(peer) };
 }
 
-const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 /** Publication restricts exposure only; server-side authority remains mandatory for every call. */
 export function projectToolList<T extends { name: string }>(tools: T[], readOnly = false): T[] {
   return readOnly ? tools.filter(tool => READ_ONLY_PROJECT_TOOLS.includes(tool.name)) : tools;

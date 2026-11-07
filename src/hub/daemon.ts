@@ -1,3 +1,6 @@
+import { VisualStore, validateVisualInput, validateVisualPayload, VISUAL_ID_PATTERN, type VisualRecord, type VisualSummary } from "./visual.ts";
+import { resolveVisualAssets } from "./visual-assets.ts";
+import { vetDeliverables, type DeliverablePorts } from "./deliverable-files.ts";
 import { readStartupEventSeeds } from "./startup-event-seeds.ts";
 import { StartupTimings } from "./startup-timing.ts";
 import { repoGitArgs, repoGitEnv } from "./snapshots.ts";
@@ -311,6 +314,8 @@ export interface HubConfig {
   checks: { timeout_s: number; runner?: "container" | "remote"; remote?: RemoteRunnerConfig; [cls: string]: string | number | RemoteRunnerConfig | undefined };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
   snapshots: { enabled: boolean; keep: number };
+  /** Unbound visuals expire; task-bound records retain the task lifetime. */
+  visuals: { retention_days: number };
   /** #1057: the worktree shelf. `quiet_days` shelves a worktree idle that long (0 = never); `alert_over` is the settled count that raises one inbox alert (0 = never). */
   worktrees: { quiet_days: number; alert_over: number };
   /** #1053: `ttl_s` expires an unanswered question (default 86400); `wait_ms` overrides an adapter definition's `questionWaitMs` per kind. */
@@ -389,6 +394,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   snapshots: { enabled: false, keep: 20 },
   worktrees: { quiet_days: 7, alert_over: 10 },
   questions: { ttl_s: 86_400, wait_ms: {} },
+  visuals: { retention_days: 30 },
   research: { enabled: false },
   bench: { enabled: false },
   peers: {},
@@ -404,7 +410,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -654,6 +660,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     worktrees: { quiet_days: wholeDays(file.worktrees?.quiet_days, DEFAULT_CONFIG.worktrees.quiet_days), alert_over: wholeDays(file.worktrees?.alert_over, DEFAULT_CONFIG.worktrees.alert_over) },
     questions: questionsConfig(file.questions),
+    visuals: { retention_days: typeof file.visuals?.retention_days === "number" && Number.isSafeInteger(file.visuals.retention_days) && file.visuals.retention_days >= 1 && file.visuals.retention_days <= 3650 ? file.visuals.retention_days : DEFAULT_CONFIG.visuals.retention_days },
     research: { enabled: file.research?.enabled === true, ...(file.research?.runners !== undefined ? { runners: parseResearchRunners(file.research.runners) } : {}) }, // opt-in: anything but true is off
     bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
     peers: { ...instanceModes, ...peerStartConfig(file.peers, instances, adapterCatalog) },
@@ -2209,6 +2216,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const inboxPolling = new InboxPolling();
   startupTimings.mark("model_runtime");
   const board = new Board(join(opts.stateDir, "hub.db"));
+  const visuals = new VisualStore(join(opts.stateDir, "hub.db"));
+  startupCleanup.push(() => visuals.close());
+  visuals.prune(config.visuals.retention_days, Date.now(), task => !!board.get(task));
   startupTimings.mark("board");
   const reviewInputHeld = (peer: PeerId, envs: readonly Envelope[]): boolean => {
     if (envs.some(isReviewObserverExcluded)) return true;
@@ -4225,6 +4235,10 @@ export async function startDaemon(opts: DaemonOptions) {
       void tasks.runSecurityScan().catch(error => log(`sdlc security scan failed: ${sanitize((error as Error).message).slice(0, 160)}`));
     }, opts.securityScanEveryMs ?? 3_600_000),
     setInterval(() => {
+      if (!stopping && !recoveryActive()) {
+        try { visuals.prune(config.visuals.retention_days, Date.now(), task => !!board.get(task)); }
+        catch { /* retention retries on the existing maintenance tick */ }
+      }
       if (!ready || !memoryBinding) return;
       const before = memoryProblem;
       memoryBinding.status(memoryStore);
@@ -4635,13 +4649,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
       if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
@@ -4807,7 +4821,106 @@ export async function startDaemon(opts: DaemonOptions) {
         catch (error) { finishInvocation(row, "refused", { reason: "the hub could not queue the request; nothing ran" }); throw new PreEffectToolRefusal(error instanceof Error ? error.message : "the request could not be queued"); }
         return JSON.stringify({ invocation: row.id, state: "queued", note: "the result arrives later as one message from the hub, addressed to you only; do not wait for it in this turn" });
   }
+  const visualUnavailable = () => new PreEffectToolRefusal("visual unavailable under the current privacy or project policy; use a public visual in an ordinary context and retry");
+  const visualTaskPublic = (task?: number): boolean => task === undefined || (() => {
+    const current = board.get(task);
+    return !!current && !tasks.isPii(current) && [...(current.refs.paths ?? []), ...(current.plan?.paths ?? [])].every(path =>
+      !matchesPolicy(opts.cwd, path, [...config.pii?.paths ?? [], ...config.local.deny], true) && boundedSafe(path));
+  })();
+  const visualPorts = (): DeliverablePorts => ({ cwd: opts.cwd, deny: [...config.local.deny], private: path =>
+    !boundedSafe(path) || !tasks.publicMetadataText(path) || matchesPolicy(opts.cwd, path, config.pii?.paths ?? [], true) });
+  const visualPublic = (record: VisualRecord | VisualSummary): boolean => {
+    try {
+      return !stopping && (record.task !== undefined || record.created >= Date.now() - config.visuals.retention_days * 86_400_000) && !turns.get(record.from)?.private && !contextPii(record.from) && visualTaskPublic(record.task)
+        && boundedSafe(record.title) && tasks.publicMetadataText(record.title) && boundedSafe(record.from);
+    } catch { return false; }
+  };
+  const visualRecord = (id: unknown): VisualRecord | undefined => {
+    if (typeof id !== "string" || !new RegExp(VISUAL_ID_PATTERN).test(id)) return undefined;
+    try {
+      const record = visuals.get(id);
+      if (!record || !visualPublic(record)) return undefined;
+      validateVisualPayload(record.payload, text => boundedSafe(text) && tasks.publicMetadataText(text));
+      const ports = visualPorts();
+      for (const file of record.files) {
+        if (ports.private(file.path)) return undefined;
+        vetDeliverables([{ path: file.path, format: "bin" }], ports);
+      }
+      return record;
+    } catch { return undefined; }
+  };
+  const visualView = (record: VisualRecord) => ({ id: record.id, ...(record.task === undefined ? {} : { task: record.task }), from: record.from,
+    kind: record.kind, title: record.title, payload: record.payload, created: record.created });
+  const visualList = (task?: number): VisualSummary[] => {
+    try { return visuals.list({ ...(task === undefined ? {} : { task }), limit: 20 }).filter(record => !!visualRecord(record.id)); }
+    catch { return []; }
+  };
+  async function visualTool(by: PeerId, op: string, a: Record<string, unknown>, piiTurn: boolean): Promise<string> {
+    if (!a || typeof a !== "object" || Array.isArray(a)) throw new PreEffectToolRefusal("visual arguments must be an object; retry with the documented fields");
+    const authority = childToolAuthority.getStore();
+    const authorityCurrent = () => { try { return !authority || authority.by === by && authority.current(); } catch { return false; } };
+    if (!authorityCurrent() || piiTurn || turns.get(by)?.private || contextPii(by)) throw visualUnavailable();
+    if (op === "hub_visual_show") {
+      if (Object.keys(a).some(key => key !== "id")) throw new PreEffectToolRefusal("visual show takes only id; retry with a visual id");
+      const record = visualRecord(a.id);
+      if (!record) throw visualUnavailable();
+      return JSON.stringify(visualView(record));
+    }
+    if (!may(by, "remember") || readOnlyPeer(by) || !membershipAllowed(by) || recoveryActive() || reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded)) throw visualUnavailable();
+    if (Object.keys(a).some(key => !["payload", "task", "to"].includes(key))) throw new PreEffectToolRefusal("visual has an unsupported field; use payload, task and to only");
+    if (a.task !== undefined && (!Number.isSafeInteger(a.task) || Number(a.task) < 1)) throw new PreEffectToolRefusal("visual task must be a positive integer; retry with a task id");
+    const task = a.task as number | undefined, before = task === undefined ? undefined : board.get(task);
+    const generation = connectionGeneration(by), turn = turns.get(by);
+    const policyVersion = () => JSON.stringify({ revision: configRevision, pii: config.pii, deny: config.local.deny, signals: activeRouting().signals, constraints: activeRouting().constraints, mlx: config.mlx, model: activeRouting().local.fixed_model });
+    const policy = policyVersion();
+    const valid = () => authorityCurrent() && bus.deliveryJournalAvailable() && !stopping && !recoveryActive() && policyVersion() === policy && connectionGeneration(by) === generation && turns.get(by) === turn
+      && !turns.get(by)?.private && !contextPii(by) && membershipAllowed(by) && !readOnlyPeer(by) && may(by, "remember")
+      && !reviewObserverHeld(by) && !bus.lastDeliveredTo(by).some(isReviewObserverExcluded) && visualTaskPublic(task)
+      && (task === undefined || (() => { const now = board.get(task); return !!before && !!now && now.created === before.created && now.updated === before.updated && now.history.length === before.history.length; })());
+    if (!valid()) throw visualUnavailable();
+    const input = validateVisualInput(a.payload, text => boundedSafe(text) && tasks.publicMetadataText(text));
+    const recipients = typeof a.to === "string" && a.to.length ? [a.to] : a.to;
+    if (a.to !== undefined && (!Array.isArray(recipients) || recipients.some(id => typeof id !== "string" || !id.length)))
+      throw new PreEffectToolRefusal("visual to must be a peer id or array of peer ids; retry with local recipients");
+    const to = a.to === undefined ? [USER] : Array.isArray(recipients) && recipients.length ? [...new Set(recipients as string[])] : bus.knownPeers().filter(id => !parseRemotePeerId(id));
+    if (a.to !== undefined && to.some(id => !bus.knownPeers().includes(id) || parseRemotePeerId(id))) throw new PreEffectToolRefusal("visual recipient unavailable; choose a known local peer and retry");
+    if (tasks.screenOn()) {
+      const screen = opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model }));
+      const verdict = await screen(JSON.stringify(input)).catch(() => undefined);
+      if (verdict?.label !== "clear") throw visualUnavailable();
+    }
+    if (!valid()) throw visualUnavailable();
+    const id = randomUUID(), resolved = await resolveVisualAssets(input, id, visualPorts());
+    if (!valid()) throw visualUnavailable();
+    const payload = validateVisualPayload(resolved.payload, text => boundedSafe(text) && tasks.publicMetadataText(text));
+    const title = "title" in payload ? payload.title ?? "" : "caption" in payload ? payload.caption ?? "" : "";
+    const record: VisualRecord = { id, ...(task === undefined ? {} : { task }), from: by, kind: payload.kind, title, payload, files: resolved.files, created: Date.now() };
+    const stub = newEnvelope(by, `[visual ${id}] ${payload.kind}: ${sanitize(title)}`, { priority: a.to === undefined ? "fyi" : "status", ...(to ? { to } : {}), refs: { visual: id, ...(task === undefined ? {} : { task: String(task) }) } });
+    if (!valid() || !visualPublic(record)) throw visualUnavailable();
+    const currentPorts = visualPorts();
+    for (const file of resolved.files) {
+      if (currentPorts.private(file.path)) throw visualUnavailable();
+      try { vetDeliverables([{ path: file.path, format: "bin" }], currentPorts); } catch { throw visualUnavailable(); }
+    }
+    try { bus.checkRemotePublication(stub); } catch { throw new PreEffectToolRefusal("visual delivery unavailable; choose local recipients and retry"); }
+    const offRoster = a.to === undefined ? [] : bus.offRosterRecipients(stub);
+    if (offRoster.length && offRoster.length === new Set(stub.to?.filter(id => id !== by)).size)
+      throw new PreEffectToolRefusal("visual recipients are off roster; choose an available local peer and retry");
+    const hushed = bus.hushed(stub);
+    if (hushed.length && hushed.length === bus.audience(stub).length)
+      throw new PreEffectToolRefusal("visual delivery is held by the current silence policy; wait for the hold to clear");
+    const refused = admit(offRoster.length ? { ...stub, to: stub.to!.filter(id => !offRoster.includes(id)) } : stub);
+    if (refused) throw new PreEffectToolRefusal("visual delivery is rate limited; wait before retrying");
+    visuals.prune(config.visuals.retention_days, Date.now(), id => !!board.get(id));
+    visuals.insert(record);
+    try {
+      event({ type: "visual", id, kind: payload.kind, bytes: Buffer.byteLength(JSON.stringify(payload)), files: resolved.files.length, ...(task === undefined ? {} : { task }) });
+      bus.publish(stub);
+    } catch { throw new Error(`visual ${id} was stored but its stub delivery failed; inspect the visual before posting again`); }
+    return `visual ${id}`;
+  }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+    if (op === "hub_visual" || op === "hub_visual_show") return visualTool(by, op, a, piiTurn);
     const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
     if (op === "hub_ask") {
@@ -8347,6 +8460,20 @@ export async function startDaemon(opts: DaemonOptions) {
     const start = input?.view === "memory" && query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
     const code = start ? await memoryCode([start]).catch(() => unavailableMemoryCodeOverlay()) : undefined;
     const snapshot = uiSnapshot(after, input, session);
+    if (input?.visual !== undefined) {
+      const record = visualRecord(input.visual);
+      return { ...snapshot, visual: record ? visualView(record) : null };
+    }
+    if (input?.visualTask !== undefined) {
+      const task = input.visualTask;
+      return { ...snapshot, visuals: Number.isSafeInteger(task) && Number(task) > 0 && visualTaskPublic(Number(task)) ? visualList(Number(task)) : [] };
+    }
+    if (input?.visualAsset !== undefined) {
+      const match = typeof input.visualAsset === "string" ? /^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}):(before|after)$/.exec(input.visualAsset) : null;
+      const record = match ? visualRecord(match[1]) : undefined;
+      const file = record?.files.find(file => file.asset === input.visualAsset);
+      return { ...snapshot, visualAsset: record && file ? { id: record.id, ...(record.task === undefined ? {} : { task: record.task }), from: record.from, created: record.created, file } : null };
+    }
     if (code && "memory" in snapshot && snapshot.memory && typeof snapshot.memory === "object") {
       const published = currentMemoryCode(code), tier = query?.tier === "goals" ? "goals" : query?.tier === "short" ? "short" : "long";
       const search = typeof query?.q === "string" ? query.q.toLowerCase() : undefined;
@@ -8435,6 +8562,7 @@ export async function startDaemon(opts: DaemonOptions) {
       status: { peers: peerView, pendingRestart: allPendingRestart(), retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo, ownerIsolation: attentionStatus.ownerIsolation, ownerIsolationNotes: attentionStatus.ownerIsolationNotes },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
+      visuals: visualList(),
       // #1144: source metadata only, including private records; never expose origins or stored text.
       sources: sourceRegistry.list().map(({ id, kind, bytes, sha256, added_at }) => ({ id, kind, bytes, hashPrefix: sha256.slice(0, 12), added_at })),
       releases: tasks.releaseList(USER),
@@ -11100,7 +11228,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
-        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || msg.reviewRefresh === true || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(msg.reviewRefresh === true && msg.reviewTask !== undefined ? { reviewTask: msg.reviewTask, reviewRefresh: true } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
+        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || msg.reviewRefresh === true || dashboardView(msg.view) || msg.visual !== undefined || msg.visualTask !== undefined || msg.visualAsset !== undefined ? { ...(msg.visual !== undefined ? { visual: msg.visual } : {}), ...(msg.visualTask !== undefined ? { visualTask: msg.visualTask } : {}), ...(msg.visualAsset !== undefined ? { visualAsset: msg.visualAsset } : {}), ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(msg.reviewRefresh === true && msg.reviewTask !== undefined ? { reviewTask: msg.reviewTask, reviewRefresh: true } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
         return;
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
@@ -11551,6 +11679,7 @@ export async function startDaemon(opts: DaemonOptions) {
       memory.close();
       candidates?.close();
       memoryStore?.close();
+      visuals.close();
       board.close();
       turnLog?.close();
       server.stop(true);
