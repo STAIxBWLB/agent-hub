@@ -2,25 +2,49 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 import { runCompatReceipt } from "../scripts/compat-receipt.ts";
-import type { InstalledArtifact, ManifestEntry, ProofResults, ReceiptContext, ReceiptPorts, ReceiptSummary } from "../scripts/compat-receipts/types.ts";
+import { runBoundedReceiptCommand } from "../scripts/compat-receipts/runner.ts";
+import type { CommandResult, InstalledArtifact, ManifestEntry, ProofResults, ReceiptContext, ReceiptPorts, ReceiptSummary } from "../scripts/compat-receipts/types.ts";
 
-const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-const nativeLeg = "native-identity", modelLeg = "model-backed-hub-call", version = "9.8.7";
+const roots: string[] = [], cleanup: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const finish of cleanup.splice(0).reverse()) await finish();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+const nativeLeg = "native-identity", modelLeg = "model-backed-hub-call", cleanupLeg = "isolated-home-cleanup", version = "9.8.7";
+function live(pid: number): boolean {
+  const ps = Bun.which("ps", { PATH: "/usr/bin:/bin" });
+  if (!ps) throw new Error("fixture process observation unavailable");
+  const result = Bun.spawnSync([ps, "-p", String(pid), "-o", "stat="], { env: { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" }, stdin: "ignore" });
+  if (![0, 1].includes(result.exitCode)) throw new Error("fixture process table could not confirm stopped state");
+  return result.stdout.toString().trim().split(/\s+/).filter(Boolean).some(state => !state.startsWith("Z"));
+}
 function fixtureEntry(withModel = false): ManifestEntry {
   const manifest = JSON.parse(readFileSync(join(import.meta.dir, "../scripts/compat-receipts/manifest.json"), "utf8")) as { entries: Record<string, ManifestEntry> };
-  const pi = manifest.entries.pi!, identity = pi.legs.find(leg => leg.id === nativeLeg)!;
-  return { ...pi, install: { ...pi.install }, autoAdmit: true, legs: [identity, ...(withModel ? [{ id: modelLeg, label: "Person-authorized model-backed hub call", category: "account-or-model", runnerOS: ["macos"], requiredForAdmission: true }] : [])] };
+  const pi = manifest.entries.pi!, identity = pi.legs.find(leg => leg.id === nativeLeg)!, cleanup = pi.legs.find(leg => leg.id === cleanupLeg)!;
+  return { ...pi, install: { ...pi.install }, autoAdmit: true, legs: [identity, cleanup, ...(withModel ? [{ id: modelLeg, label: "Person-authorized model-backed hub call", category: "account-or-model", runnerOS: ["macos"], requiredForAdmission: true }] : [])] };
 }
 interface Observation { role: string; mode: string; leg: string; pid: number; cwd: string; homes: Record<string, string>; sensitiveKeys: string[]; parentCanarySeen: boolean }
-function fixture(mode: "pass" | "fail" | "hang" = "pass", withModel = false) {
+function fixture(mode: "pass" | "fail" | "hang" | "detach-normal" = "pass", withModel = false) {
   const root = mkdtempSync(join(tmpdir(), "ahub-compat-receipt-")); roots.push(root);
   const out = join(root, "out"), observed = join(root, "observed.jsonl"), entry = fixtureEntry(withModel);
-  const contexts: ReceiptContext[] = [], requestedLegs: string[][] = [], artifacts: InstalledArtifact[] = [];
-  const ports: ReceiptPorts = { entry, platform: "darwin", architecture: "arm64", limits: { totalMs: 10_000, installMs: 2000, legMs: 3000 },
+  const contexts: ReceiptContext[] = [], requestedLegs: string[][] = [], artifacts: InstalledArtifact[] = [], commands: CommandResult[] = [];
+  const knownPids = (): number[] => existsSync(`${observed}.children.json`)
+    ? Object.values(JSON.parse(readFileSync(`${observed}.children.json`, "utf8")) as { leader: number; descendant: number })
+    : observations().map(row => row.pid);
+  const ports: ReceiptPorts = { disposable: true, entry, platform: "darwin", architecture: "arm64", limits: { totalMs: 10_000, installMs: 2000, legMs: 3000 },
+    run: async (argv, options) => {
+      const result = await runBoundedReceiptCommand(argv, options);
+      const controlled = ["pass", "fail", "hang"].includes(mode);
+      // Trusted fake-host attestation only: these authored modes cannot detach,
+      // and every process they create is enumerated and observed stopped.
+      const proven = controlled && !result.survivorDetected && result.ownedStopConfirmed && knownPids().length > 0 && knownPids().every(pid => !live(pid));
+      const final = proven ? { ...result, processCleanup: "proven" as const, processCleanupReason: "controlled fixture modes have no detach path; every enumerated process stopped" } : result;
+      commands.push(final); return final;
+    },
     install: async context => {
+      if (!basename(context.root).startsWith("ahub-compat-receipt-") || !within(context.root, context.prefix)) throw new Error("unsafe fixture install context");
       contexts.push(context);
       const packageRoot = join(context.prefix, "node_modules/fixture-agent"); mkdirSync(packageRoot, { recursive: true });
       const cli = join(packageRoot, "cli.ts"), code = readFileSync(join(import.meta.dir, "fakes/compat-receipt.ts")); writeFileSync(cli, code);
@@ -32,6 +56,7 @@ function fixture(mode: "pass" | "fail" | "hang" = "pass", withModel = false) {
       requestedLegs.push(context.entry.legs.map(leg => leg.id));
       const results: ProofResults = {};
       for (const leg of context.entry.legs) {
+        if (leg.id === cleanupLeg) { results[leg.id] = { status: "pass", cause: "ok" }; continue; }
         const selected = leg.category === "account-or-model" ? "model" : mode;
         const result = await context.run([...context.artifact.command, selected, observed, leg.id], { cwd: context.cwd, env: context.env, signal: context.signal,
           timeoutMs: context.limits.legMs, maxBytes: context.limits.outputBytes });
@@ -46,15 +71,25 @@ function fixture(mode: "pass" | "fail" | "hang" = "pass", withModel = false) {
     },
   };
   const observations = (): Observation[] => existsSync(observed) ? readFileSync(observed, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
-  const run = () => runCompatReceipt({ id: "pi", version, out }, ports);
-  return { root, out, observed, entry, contexts, requestedLegs, artifacts, ports, observations, run };
+  const run = () => runCompatReceipt({ id: "pi", version, out, disposableRunner: true }, ports);
+  cleanup.push(async () => {
+    writeFileSync(`${observed}.stop`, "fixture-owned stop request");
+    const end = performance.now() + 7000;
+    while (knownPids().some(live) && performance.now() < end) await Bun.sleep(20);
+    if (knownPids().some(live)) throw new Error("fixture helper is still live; its workspace was retained without signalling an unknown PID");
+    for (const context of contexts) if (existsSync(context.root)) rmSync(context.root, { recursive: true, force: true });
+  });
+  return { root, out, observed, entry, contexts, requestedLegs, artifacts, commands, ports, observations, run };
 }
 function output(summary: ReceiptSummary, out: string) {
   expect(readdirSync(out).sort()).toEqual(["receipt.md", "summary.json"]);
   const json = JSON.parse(readFileSync(join(out, "summary.json"), "utf8"));
   expect(json).toEqual(summary);
+  expect(json).not.toHaveProperty("cleanupConfirmed");
+  expect(json.containment).toBe("disposable-runner-lifetime");
   const markdown = readFileSync(join(out, "receipt.md"), "utf8");
   expect(markdown).toContain(summary.id); expect(markdown).toContain(summary.version);
+  expect(markdown).not.toContain("Cleanup confirmed: true");
   expect(markdown).not.toContain("PARENT_RECEIPT_CANARY"); expect(JSON.stringify(json)).not.toContain("PARENT_RECEIPT_CANARY");
   return { json, markdown };
 }
@@ -70,7 +105,7 @@ test("a fake receipt pass writes both bound artifacts after private-home child p
   try {
     for (const key of parentKeys) process.env[key] = canaries[key];
     const summary = await f.run(), context = f.contexts[0]!;
-    expect(summary).toMatchObject({ schemaVersion: 1, id: "pi", version, runnerOS: "macos", architecture: "arm64", eligible: true, outcome: "pass", cleanupConfirmed: true,
+    expect(summary).toMatchObject({ schemaVersion: 1, id: "pi", version, runnerOS: "macos", architecture: "arm64", eligible: true, outcome: "pass", ownedStopConfirmed: true, processCleanup: "proven", containment: "disposable-runner-lifetime",
       installation: { status: "pass" }, artifact: { method: "npm-exact", integrity: f.artifacts[0]!.integrity } });
     expect(summary.legs).toContainEqual(expect.objectContaining({ id: nativeLeg, status: "pass", cause: "ok", requiredForAdmission: true }));
     const observed = f.observations(); expect(observed).toHaveLength(1);
@@ -89,7 +124,7 @@ test("a fake receipt pass writes both bound artifacts after private-home child p
 
 test("an actual failing fake proof produces a non-eligible failure receipt and no PR artifact", async () => {
   const f = fixture("fail"), summary = await f.run();
-  expect(summary).toMatchObject({ eligible: false, outcome: "fail", cleanupConfirmed: true, installation: { status: "pass" } });
+  expect(summary).toMatchObject({ eligible: false, outcome: "fail", ownedStopConfirmed: true, processCleanup: "proven", containment: "disposable-runner-lifetime", installation: { status: "pass" } });
   const failed = summary.legs.find(leg => leg.id === nativeLeg)!;
   expect(failed).toMatchObject({ status: "fail", cause: "proof-failed" }); expect(failed.reason.length).toBeGreaterThan(0); expect(failed.nextStep.length).toBeGreaterThan(0);
   const written = output(summary, f.out);
@@ -101,7 +136,8 @@ test("required model legs remain not-run before dispatch even if a fake producer
   const f = fixture("pass", true), summary = await f.run();
   expect(summary.eligible).toBe(false);
   expect(summary.legs.find(leg => leg.id === modelLeg)).toMatchObject({ status: "not-run", cause: "model-required", requiredForAdmission: true });
-  expect(f.requestedLegs).toEqual([[nativeLeg]]);
+  expect(f.requestedLegs).toHaveLength(1);
+  expect(f.requestedLegs[0]).toContain(nativeLeg); expect(f.requestedLegs[0]).not.toContain(modelLeg);
   expect(f.observations().map(row => row.leg)).toEqual([nativeLeg]); expect(existsSync(`${f.observed}.model-executed`)).toBe(false);
   output(summary, f.out);
 });
@@ -110,18 +146,12 @@ for (const bound of ["leg", "total"] as const) test(`the ${bound} deadline settl
   const f = fixture("hang");
   f.ports.limits = { totalMs: bound === "total" ? 2000 : 8000, legMs: bound === "leg" ? 2000 : 6000, installMs: 1000 };
   const summary = await f.run();
-  expect(summary.eligible).toBe(false); expect(summary.outcome).toBe("fail"); expect(summary.cleanupConfirmed).toBe(true);
+  expect(summary.eligible).toBe(false); expect(summary.outcome).toBe("fail"); expect(summary.ownedStopConfirmed).toBe(true); expect(summary.processCleanup).toBe("proven");
   expect(summary.legs.find(leg => leg.id === nativeLeg)).toMatchObject({ status: "fail", cause: "timeout" });
   expect(existsSync(`${f.observed}.children.json`)).toBe(true);
   const child = JSON.parse(readFileSync(`${f.observed}.children.json`, "utf8")) as { leader: number; descendant: number };
   expect(child.leader).not.toBe(child.descendant);
-  const ps = Bun.which("ps", { PATH: "/usr/bin:/bin" }); expect(ps).not.toBeNull();
-  for (const pid of [child.leader, child.descendant]) {
-    const observed = Bun.spawnSync([ps!, "-p", String(pid), "-o", "stat="], { env: { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" }, stdin: "ignore" });
-    expect([0, 1]).toContain(observed.exitCode);
-    // Production cleanup excludes zombies: they have exited and cannot execute.
-    for (const state of observed.stdout.toString().trim().split(/\s+/).filter(Boolean)) expect(state.startsWith("Z")).toBe(true);
-  }
+  for (const pid of [child.leader, child.descendant]) expect(live(pid)).toBe(false);
   expect(existsSync(f.contexts[0]!.root)).toBe(false);
   output(summary, f.out);
 }, 20_000);
@@ -136,7 +166,7 @@ test("an unsupported native platform never dispatches the fake native leg", asyn
 test("invalid identifiers and non-exact versions refuse before fake installation or output", async () => {
   for (const input of [{ id: "not-a-compat-id", version }, { id: "pi", version: "latest" }, { id: "pi", version: "^1.2.3" }]) {
     const f = fixture();
-    await expect(runCompatReceipt({ ...input, out: f.out }, f.ports)).rejects.toThrow();
+    await expect(runCompatReceipt({ ...input, out: f.out, disposableRunner: true }, f.ports)).rejects.toThrow();
     expect(f.contexts).toEqual([]); expect(existsSync(f.out)).toBe(false);
   }
 });
@@ -158,3 +188,45 @@ test("an inconsistent optimistic producer result cannot make a receipt eligible"
   expect(summary.legs.find(leg => leg.id === nativeLeg)).toMatchObject({ status: "fail", cause: "proof-failed" });
   output(summary, f.out);
 });
+
+
+test("the disposable-runner declaration is mandatory even for a trusted fake host", async () => {
+  const f = fixture();
+  const input = { id: "pi", version, out: f.out } as Parameters<typeof runCompatReceipt>[0];
+  await expect(runCompatReceipt(input, f.ports)).rejects.toMatchObject({ causeCode: "disposable-required" });
+  expect(f.contexts).toEqual([]); expect(f.commands).toEqual([]); expect(existsSync(f.out)).toBe(false);
+});
+
+test("a local Mac cannot use the disposable flag without trusted disposable containment", async () => {
+  const f = fixture(); f.ports.disposable = false;
+  await expect(f.run()).rejects.toMatchObject({ causeCode: "disposable-required" });
+  expect(f.contexts).toEqual([]); expect(f.commands).toEqual([]); expect(existsSync(f.out)).toBe(false);
+});
+
+test("normal leader exit and an empty old PGID never prove a detached helper's lifetime cleanup", async () => {
+  const f = fixture("detach-normal");
+  f.ports.limits = { totalMs: 15_000, legMs: 8000, installMs: 2000 };
+  const summary = await f.run();
+  expect(summary.eligible).toBe(false); expect(summary.processCleanup).toBe("unproven");
+  expect(summary.processCleanupReason.length).toBeGreaterThan(0);
+  expect(summary.containment).toBe("disposable-runner-lifetime");
+  expect(f.commands).toHaveLength(1);
+  const command = f.commands[0]!;
+  expect(command.exitCode).toBe(0); expect(command.timedOut).toBe(false);
+  expect(command.processCleanup).toBe("unproven"); expect(command).not.toHaveProperty("cleanup");
+  const child = JSON.parse(readFileSync(`${f.observed}.children.json`, "utf8")) as { leader: number; descendant: number };
+  const helper = JSON.parse(readFileSync(`${f.observed}.detached-ready.json`, "utf8")) as { pid: number; pgid: number };
+  expect(helper.pid).toBe(child.descendant); expect(helper.pgid).toBe(helper.pid); expect(helper.pgid).not.toBe(child.leader);
+  expect(live(child.leader)).toBe(false); expect(live(child.descendant)).toBe(true);
+  const isolation = summary.legs.find(leg => leg.id === cleanupLeg)!;
+  if (command.survivorDetected) {
+    expect(summary.outcome).toBe("fail"); expect(isolation).toMatchObject({ status: "fail", cause: "cleanup" });
+  } else {
+    expect(isolation).toMatchObject({ status: "not-run", cause: "process-cleanup-unproven" });
+  }
+  expect(existsSync(f.contexts[0]!.root)).toBe(true);
+  output(summary, f.out);
+  // The fixture helper exits itself on its stop file or bounded deadline. Teardown
+  // observes that exit before deleting only this fixture's retained workspace.
+  writeFileSync(`${f.observed}.stop`, "fixture-owned stop request");
+}, 20_000);

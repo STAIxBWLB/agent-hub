@@ -1,16 +1,32 @@
 /** Fixture executable only: no native CLI, package installer, network or model. */
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 
 const [mode, observed, leg] = process.argv.slice(2);
 if (!mode || !observed || !leg) throw new Error("compat receipt fake requires mode, observation file and leg");
 const homeKeys = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR", "QWEN_HOME", "KIMI_CODE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"];
 const sensitiveKeys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL", "PI_MODEL"];
-appendFileSync(observed, JSON.stringify({ role: mode === "descendant" ? "descendant" : "proof", mode, leg, pid: process.pid, cwd: process.cwd(),
+appendFileSync(observed, JSON.stringify({ role: mode === "descendant" || mode === "detached-helper" ? "descendant" : "proof", mode, leg, pid: process.pid, cwd: process.cwd(),
   homes: Object.fromEntries(homeKeys.filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]])),
   sensitiveKeys: sensitiveKeys.filter(key => process.env[key] !== undefined),
   parentCanarySeen: [...homeKeys, ...sensitiveKeys].some(key => process.env[key]?.includes("PARENT_RECEIPT_CANARY")),
 }) + "\n");
-if (mode === "hang" || mode === "descendant") {
+if (mode === "detached-helper") {
+  const ps = Bun.which("ps", { PATH: "/usr/bin:/bin" });
+  if (!ps) throw new Error("fixture process observation unavailable");
+  const result = Bun.spawnSync([ps, "-p", String(process.pid), "-o", "pgid="], { env: { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" }, stdin: "ignore" });
+  writeFileSync(`${observed}.detached-ready.json`, JSON.stringify({ pid: process.pid, pgid: Number(result.stdout.toString().trim()) }));
+  const end = performance.now() + 10_000;
+  while (!existsSync(`${observed}.stop`) && performance.now() < end) await Bun.sleep(20);
+  writeFileSync(`${observed}.detached-stopped`, "fixture helper exited itself");
+} else if (mode === "detach-normal") {
+  const child = Bun.spawn([process.execPath, import.meta.path, "detached-helper", observed, leg], { detached: true, env: process.env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  child.unref();
+  writeFileSync(`${observed}.children.json`, JSON.stringify({ leader: process.pid, descendant: child.pid }));
+  const end = performance.now() + 2000;
+  while (!existsSync(`${observed}.detached-ready.json`) && performance.now() < end) await Bun.sleep(10);
+  if (!existsSync(`${observed}.detached-ready.json`)) throw new Error("detached fixture did not start within its own bound");
+  console.log(JSON.stringify({ schemaVersion: 1, legs: { [leg]: { status: "pass", cause: "ok" } } }));
+} else if (mode === "hang" || mode === "descendant") {
   if (mode === "hang") {
     const child = Bun.spawn([process.execPath, import.meta.path, "descendant", observed, leg], { env: process.env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     writeFileSync(`${observed}.children.json`, JSON.stringify({ leader: process.pid, descendant: child.pid }));
