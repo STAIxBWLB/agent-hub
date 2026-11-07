@@ -93,7 +93,7 @@ function fixture() {
       const descriptor = JSON.stringify({ schemaVersion: 1, id: "pi", version, sourceBaseSha: baseSha, originalSourceSha256: hash(mainSource), receiptPath, files });
       writeFileSync(join(target, "descriptor.json"), descriptor, { mode: 0o600 }); bundles.push({ id: "pi", version, directory: bundleName, descriptorSha256: hash(descriptor), descriptorSize: Buffer.byteLength(descriptor) });
     }
-    const index = { schemaVersion: 1, sourceBaseSha: baseSha, dryRun: false, watch: { code: 3, report: "Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).\n", candidates }, artifacts: raw, rejectedBatch: false, plan, projections: plan.actions, bundles };
+    const index = { schemaVersion: 1, sourceBaseSha: baseSha, dryRun: false, watch: { code: 3, report: "Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).\n", candidates, verified: [] as string[] }, artifacts: raw, rejectedBatch: false, plan, projections: plan.actions, bundles };
     writeFileSync(join(directory, "index.json"), JSON.stringify(index), { mode: 0o600 });
     return { input: { preparedDir: directory, repository: REPO, sourceBaseSha: baseSha, dryRun: false }, index, directory };
   }
@@ -215,5 +215,38 @@ test("duplicate exact-title issues and malformed owned blocks refuse before writ
     await expect(runCompatPublisher(p.input, f.api)).rejects.toThrow(); expect(f.api.writes).toHaveLength(0);
     f.api.issues.pop(); f.api.issues[0]!.body = "<!-- agent-compat-receipt:end -->";
     await expect(runCompatPublisher(p.input, f.api)).rejects.toThrow("issue-marker"); expect(f.api.writes).toHaveLength(0);
+  } finally { f.cleanup(); }
+});
+
+test("today's confirmed verified IDs clear yesterday's stale blocks while drifting and unknown IDs remain", async () => {
+  const f = fixture(); try {
+    const failed = f.summary("99.0.0"); failed.legs[0]!.status = "fail"; failed.legs[0]!.cause = "proof-failed"; failed.outcome = "fail";
+    await runCompatPublisher(f.prepare("99.0.0", BASE, [failed]).input, f.api);
+    const issue = f.api.issues.find(row => row.title === AGENT_COMPAT_ISSUE_TITLE)!, block = issue.body.slice(issue.body.indexOf("<!-- agent-compat-receipt:start "));
+    const renamed = (id: string) => block.replaceAll('"id":"pi"', `"id":"${id}"`).replace("### pi ", `### ${id} `);
+    // Yesterday both Kimi and Qwen failed, and an older unknown jcode observation remains.
+    const previous = `Human context.\n${renamed("kimi-review")}\n${renamed("qwen")}\n${renamed("jcode")}\n`;
+    const report = "Today's watcher report.\n", known = ["pi", "kimi-review", "qwen", "jcode"];
+    const retained = retainManagedReceiptRows(report, previous, ["kimi-review"], known, ["qwen"]);
+    expect(retained).not.toContain("### kimi-review "); expect(retained).toContain("### qwen 99.0.0"); expect(retained).toContain("### jcode 99.0.0");
+    expect(() => retainManagedReceiptRows(report, previous, ["unknown-id"], known, ["qwen"])).toThrow("verified-ids");
+    expect(() => retainManagedReceiptRows(report, previous, ["qwen"], known, ["qwen"])).toThrow("verified-ids");
+
+    // Exercise the full publisher with canonical structured watch state, not report parsing.
+    const manifest = { entries: { pi: f.entry, "kimi-review": f.entry, qwen: f.entry, jcode: f.entry } };
+    const currentBase = "b".repeat(40);
+    f.api.addCommit(currentBase, { ...f.baseFiles, "scripts/compat-receipts/manifest.json": JSON.stringify(manifest) }, [BASE]); f.api.refs.set("main", currentBase); issue.body = previous;
+    const p = f.prepare("99.0.0", currentBase, [failed]);
+    p.index.watch.candidates = [{ id: "qwen", version: "99.0.0" }];
+    p.index.artifacts = [{ ...failed, id: "qwen" }]; p.index.watch.verified = ["kimi-review"];
+    writeFileSync(join(p.directory, "index.json"), JSON.stringify(p.index)); f.api.calls = [];
+    await runCompatPublisher(p.input, f.api);
+    expect(issue.body).not.toContain("### kimi-review "); expect(issue.body).toContain("### qwen 99.0.0"); expect(issue.body).toContain("### jcode 99.0.0"); expect(issue.body).toContain("Human context.");
+    expect(f.api.pulls).toHaveLength(0);
+
+    for (const verified of [["qwen"], ["unknown-id"], ["kimi-review", "kimi-review"]]) {
+      p.index.watch.verified = verified; writeFileSync(join(p.directory, "index.json"), JSON.stringify(p.index)); f.api.calls = [];
+      await expect(runCompatPublisher(p.input, f.api)).rejects.toThrow("verified-ids"); expect(f.api.writes).toHaveLength(0);
+    }
   } finally { f.cleanup(); }
 });

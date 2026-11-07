@@ -75,8 +75,8 @@ function load(input: CompatPublisherInput): { index: PreparedCompatArtifact; bun
   exact(index, ["schemaVersion", "sourceBaseSha", "dryRun", "watch", "artifacts", "rejectedBatch", "plan", "projections", "bundles"]);
   if (index.schemaVersion !== 1 || index.sourceBaseSha !== input.sourceBaseSha || typeof index.dryRun !== "boolean" || !Array.isArray(index.artifacts)
     || typeof index.rejectedBatch !== "boolean" || !Array.isArray(index.bundles) || index.bundles.length > 8) fail("index");
-  const watch = object(index.watch); exact(watch, ["code", "report", "candidates"]);
-  if (watch.code !== 0 && watch.code !== 3 || !Array.isArray(watch.candidates)) fail("watch");
+  const watch = object(index.watch); exact(watch, ["code", "report", "candidates", "verified"]);
+  if (watch.code !== 0 && watch.code !== 3 || !Array.isArray(watch.candidates) || !Array.isArray(watch.verified)) fail("watch");
   const report = string(watch.report);
   const header = watch.code === 0 ? "Every watched agent CLI's latest published version is verified." : "Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).";
   if (report.split("\n")[0] !== header || /[<>]|```|[\p{Cc}\p{Cf}]/u.test(report.replaceAll("\n", ""))) fail("watch-report");
@@ -224,8 +224,19 @@ function replaceRows(body: string, changes: Map<string, string | undefined>): st
   for (const block of changes.values()) if (block) result += `${result.endsWith("\n") ? "\n" : "\n\n"}${block}\n`;
   if (Buffer.byteLength(result) > JSON_CAP) fail("issue-size"); return result;
 }
-export function retainManagedReceiptRows(report: string, previous: string): string {
-  return replaceRows(report, new Map([...receiptBlocks(previous)].map(([id, row]) => [id, row.block])));
+function confirmedVerified(value: unknown, knownIds: readonly string[], candidateIds: readonly string[]): string[] {
+  const verified: string[] = [], seen = new Set<string>();
+  for (const item of array(value, 8, "verified-ids")) {
+    if (typeof item !== "string" || !ID.test(item) || !knownIds.includes(item) || candidateIds.includes(item) || seen.has(item)) return fail("verified-ids");
+    seen.add(item); verified.push(item);
+  }
+  return verified;
+}
+export function retainManagedReceiptRows(report: string, previous: string, verifiedIds: readonly string[] = [], knownIds: readonly string[] = [], candidateIds: readonly string[] = []): string {
+  const candidates = confirmedVerified(candidateIds, knownIds, []), verified = confirmedVerified(verifiedIds, knownIds, candidates);
+  const rows = new Map<string, string | undefined>([...receiptBlocks(previous)].filter(([id]) => !verified.includes(id)).map(([id, row]) => [id, row.block]));
+  for (const id of verified) rows.set(id, undefined);
+  return replaceRows(report, rows);
 }
 async function issue(api: GithubAPI, base: string): Promise<{ number: number; body: string } | undefined> {
   const rows = (await inventory(api, `${base}/issues?state=open`)).filter(value => !Object.hasOwn(object(value), "pull_request"));
@@ -251,6 +262,7 @@ export async function runCompatPublisher(input: CompatPublisherInput, api: Githu
   const rows = await inventory(api, `${base}/pulls?state=all`), pulls = rows.map(row => botPull(row, input.repository, manifest)).filter((p): p is BotPull => !!p);
   const args = { manifest, candidates: data.index.watch.candidates, artifacts: data.index.rejectedBatch ? [{}] : data.index.artifacts, dryRun: input.dryRun };
   const baseline = planCompatPublish({ ...args, existingPullRequests: [] }), plan = planCompatPublish({ ...args, existingPullRequests: pulls });
+  const verified = confirmedVerified(object(data.index.watch).verified, Object.keys(manifest), data.index.watch.candidates.map(row => row.id));
   const baselinePrs = baseline.actions.filter(action => action.kind === "create-pr" || action.kind === "update-pr");
   if (baselinePrs.length !== data.bundles.size) fail("bundle-plan");
   const packageJson = object(parse(await blob(api, base, main, "package.json")));
@@ -318,7 +330,7 @@ export async function runCompatPublisher(input: CompatPublisherInput, api: Githu
     await api.request("POST", `${base}/issues/${action.number}/comments`, { body: `Superseded by the successful compatibility candidate ${action.replacementVersion} on \`${action.replacementBranch}\`. Review the replacement PR and its checks. Refs #888.` });
     await api.request("PATCH", `${base}/pulls/${action.number}`, { state: "closed" });
   }
-  const changes = new Map<string, string | undefined>();
+  const changes = new Map<string, string | undefined>(verified.map(id => [id, undefined]));
   for (const action of plan.actions) if (action.kind === "update-drift") changes.set(action.id, driftBlock(action));
   for (const pull of result.pullRequests) changes.set(pull.id, undefined);
   if (changes.size) {
@@ -364,13 +376,19 @@ if (import.meta.main) {
       const key = args.shift()!;
       if (key === "--dry-run" && !dryRun) { dryRun = true; continue; }
       if (key === "--validate-only" && !validateOnly) { validateOnly = true; continue; }
-      if (!["--prepared", "--repo", "--source-base", "--retain-rows"].includes(key) || fields[key] || !args.length) fail("arguments"); fields[key] = args.shift()!;
+      if (!["--prepared", "--repo", "--source-base", "--retain-rows", "--verified-ids", "--candidate-ids"].includes(key) || fields[key] || !args.length) fail("arguments"); fields[key] = args.shift()!;
     }
     const repo = repository(fields["--repo"] ?? process.env.GITHUB_REPOSITORY ?? ""), api = ghRestAPI();
     if (fields["--retain-rows"]) {
       if (fields["--prepared"] || fields["--source-base"] || validateOnly) fail("arguments");
       const previous = await issue(api, `/repos/${repo}`), file = resolve(fields["--retain-rows"]), original = read(file, JSON_CAP).toString("utf8");
-      const merged = retainManagedReceiptRows(original, previous?.body ?? "");
+      const main = await ref(api, `/repos/${repo}`, "main"); if (!main) fail("main-missing");
+      const tree = await snapshot(api, `/repos/${repo}`, main!);
+      const manifest = object(object(parse(await blob(api, `/repos/${repo}`, tree, "scripts/compat-receipts/manifest.json"))).entries);
+      if ((fields["--verified-ids"] === undefined) !== (fields["--candidate-ids"] === undefined)) fail("arguments");
+      const verified = fields["--verified-ids"] === undefined ? [] : parse(Buffer.from(fields["--verified-ids"]!));
+      const candidates = fields["--candidate-ids"] === undefined ? [] : parse(Buffer.from(fields["--candidate-ids"]!));
+      const merged = retainManagedReceiptRows(original, previous?.body ?? "", confirmedVerified(verified, Object.keys(manifest), []), Object.keys(manifest), confirmedVerified(candidates, Object.keys(manifest), []));
       if (dryRun) console.log(merged);
       else {
         const fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -382,7 +400,7 @@ if (import.meta.main) {
         } finally { closeSync(fd); }
       }
     } else {
-      if (!fields["--prepared"] || !fields["--source-base"]) fail("arguments");
+      if (!fields["--prepared"] || !fields["--source-base"] || fields["--verified-ids"] || fields["--candidate-ids"]) fail("arguments");
       console.log(JSON.stringify(await runCompatPublisher({ preparedDir: fields["--prepared"]!, repository: repo, sourceBaseSha: fields["--source-base"]!, dryRun, validateOnly }, api)));
     }
   } catch (error) { console.error(error instanceof CompatPublisherError || error instanceof GithubApiError ? error.message : "compat publisher input invalid; inspect the trusted preparation before retrying"); process.exitCode = 1; }
