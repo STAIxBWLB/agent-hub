@@ -67,9 +67,9 @@ for (const bufferBytes of [1, 2, 7, 64 * 1024]) test(`streaming startup seeds pr
     "token-boundary", "token-old", "token-recent", "token-future", "token-other", "token-invalid", "usage-other", "tail",
   ]);
   expect(seeds.nativeStopsSeen).toEqual(new Set(legacy.flatMap(event => event.type === "native_turn_end" && event.id ? [event.id] : [])));
-  expect(seeds.nativeStopsSeen).toEqual(new Set<unknown>(["old-native", "native-제주", 42, "tail-native"]));
+  expect(new Set<unknown>(seeds.nativeStopsSeen)).toEqual(new Set<unknown>(["old-native", "native-제주", 42, "tail-native"]));
   expect(seeds.claudeNativeUsageSeen).toEqual(new Set(legacy.filter(event => event.type === "usage" && event.source === "claude_transcript").map(event => (event as { id: string }).id)));
-  expect(seeds.claudeNativeUsageSeen).toEqual(new Set<unknown>(["claude-a", undefined, "claude-measured"]));
+  expect(new Set<unknown>(seeds.claudeNativeUsageSeen)).toEqual(new Set<unknown>(["claude-a", undefined, "claude-measured"]));
   expect(consumers(seeds.events)).toEqual(consumers(legacy));
   const replay = consumers(seeds.events);
   expect(replay.resetKeys).toEqual(new Set(["kimi|tokens|none", "kimi|tokens|1700"]));
