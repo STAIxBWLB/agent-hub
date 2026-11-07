@@ -24,6 +24,7 @@ if (args[0] === "--proof-worker") {
   const session = "receipt-session";
   let sessionContext = `<system-reminder>\n# Session Context\nDate: 2026-11-07\nTime: 12:00:00\nTimezone: UTC\nOS: linux\nArchitecture: x86_64\nJcode version: v0.99.1 (fixture)\nWorking directory: ${process.cwd()}\n</system-reminder>`;
   if (fault === "context-fields") sessionContext = sessionContext.replace("Architecture: ", "Unknown architecture: ");
+  if (fault === "context-extra-field") sessionContext = sessionContext.replace("\n</system-reminder>", "\nUnrecognized field: fixture\n</system-reminder>");
   if (fault === "context-app-sentinel") sessionContext = sessionContext.replace("# Session Context", "# Session Context\nreceipt original prompt");
   const contextMessage = () => ({ role: "user", content: sessionContext });
   const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);

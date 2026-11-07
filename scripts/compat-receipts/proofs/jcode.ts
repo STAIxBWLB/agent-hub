@@ -137,7 +137,8 @@ function isSessionContext(text: string): boolean {
     if (indexes.length !== 1 || indexes[0]! <= previous) return false;
     previous = indexes[0]!;
   }
-  return true;
+  const body = text.slice("<system-reminder>\n# Session Context\n".length, -"\n</system-reminder>".length).split("\n");
+  return body.length === fields.length && body.every((line, index) => line.startsWith(fields[index]!));
 }
 /** Read only the new private session snapshot. Wire role:user alone is never a System-role binding. */
 function storedSessionContext(context: ProofContext, nativeHome: string, id: string): string {

@@ -134,7 +134,7 @@ test("a matched telemetry directory reports bounded child count without relaxing
   expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
 }, 20000);
 
-for (const fault of ["forged-context", "duplicate-context", "duplicate-stored-context", "context-fields", "context-changed", "context-position", "context-app-sentinel", "snapshot-symlink", "snapshot-hardlink"]) {
+for (const fault of ["forged-context", "duplicate-context", "duplicate-stored-context", "context-fields", "context-extra-field", "context-changed", "context-position", "context-app-sentinel", "snapshot-symlink", "snapshot-hardlink"]) {
   test(`source-bound context rejects ${fault} without dropping an application message`, async () => {
     const result = await run(fault);
     expect(result["active-turn-soft-interrupt"]).toEqual({ status: "fail", cause: "proof-failed" });
