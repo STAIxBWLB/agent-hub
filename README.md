@@ -99,7 +99,8 @@ defaults. The
   the project's own peer appears as `<peer>~<origin>` with none of that peer's
   roles: sessions are distinguishable, which is provenance, not authentication.
   Budgets pause an
-  agent before it runs out of quota, and recovery never replays an
+  agent before it runs out of quota (at 99% of a window by default, the
+  `budget.gate` setting), and recovery never replays an
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
   worktree with a machine-wide view, live settings reload, machine-local schedules

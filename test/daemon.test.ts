@@ -1129,7 +1129,7 @@ test("budget relay end to end: checkpoint, pause, task to local with the summary
   expect(notices().filter((l) => l.includes("kimi paused"))).toHaveLength(1);
   const shown = await console_.request({ t: "budget" });
   expect(shown.budget.kimi.paused.reason).toContain("99%");
-  expect((await console_.request({ t: "status" })).status.peers.kimi.paused).toContain("budget: 5h window at 95%");
+  expect((await console_.request({ t: "status" })).status.peers.kimi.paused).toContain("budget: 5h window at 99%");
   const refused = await console_.request({ t: "resume", peer: "kimi" }); // ahub resume does not override the coordinator
   expect(refused).toMatchObject({ ok: false });
   expect(refused.error).toContain("ahub budget resume kimi");
