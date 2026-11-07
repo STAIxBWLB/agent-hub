@@ -6575,3 +6575,14 @@ Upgrade the broker, then every room member to a codec-capable release, then reco
 `ahub status` distinguishes local room storage opening from a failed broker
 connection; direct `ahub room status` failures expose only closed cause/action
 metadata. A healthy online link needs no broker repair advice.
+
+## Herdr companion host contract (#1199 H0)
+
+[`integrations/herdr/host-contract-v1.md`](../integrations/herdr/host-contract-v1.md) freezes what an optional Herdr mod may
+rely on, taken from the installed app's own declarations (Herdr 0.1.13, herdr-core 0.1.18, hashes recorded), and records
+what was not observed. It changes no ahub runtime and installs nothing. `exec` is bounded (30 s, 8 MiB) and used for
+reads only. The pane's machine and cwd are a navigation hint: the project root comes from `ahub projects --json` read on
+that same machine, and a remote cwd is never resolved on this Mac. Herdr has no install or disable command, so a mod is
+a folder the person adds and removes, and what removal does to a shown copy is for the H1 native receipt. Existing
+terminal focus is unbuilt until a Herdr terminal can be mapped to an ahub console. The three baseline journeys are
+procedure counts that have not been run in a native window.
