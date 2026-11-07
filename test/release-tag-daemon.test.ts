@@ -43,7 +43,7 @@ test("the real tag run refuses until the person authorizes through the real daem
   write("src/covered.ts", "initial\n"); write("CHANGELOG.md", "# Changelog\n\n## Unreleased\n\n## 0.1.0\n\n- first\n");
   // The release scripts live in the project they release; the hub's own default doc reader runs the checker it ships.
   mkdirSync(join(work, "scripts/lib"), { recursive: true });
-  for (const file of ["scripts/release-tag.ts", "scripts/lib/release-plan.ts", "scripts/check-docs.mjs"]) copyFileSync(join(ROOT, file), join(work, file));
+  for (const file of ["scripts/release-tag.ts", "scripts/lib/release-plan.ts", "scripts/lib/readme-facts.ts", "scripts/check-docs.mjs"]) copyFileSync(join(ROOT, file), join(work, file));
   git("add", "-A"); git("commit", "-qm", "chore: initial"); git("tag", "v0.1.0"); git("push", "-q", "origin", "main", "v0.1.0"); // before the hook exists: a real hook refuses an unauthorized v* push
   init(work, undefined, false, true); // writes .agenthub, AGENTS.md, .gitignore and the real release pre-push hook
   const routing = join(work, ".agenthub/routing.toml");
