@@ -25,6 +25,9 @@ export function boardWith(stateDir: string, rows: { id: number; history: unknown
   const db = new Database(join(stateDir, "hub.db"));
   try {
     for (const r of rows) db.query("INSERT INTO tasks (id, title, class, state, history, sdlc, created, updated) VALUES (?, ?, 'implement', 'approved', ?, ?, 0, 0)").run(r.id, r.title ?? `title-${r.id}`, JSON.stringify(r.history), r.sdlc === undefined ? null : JSON.stringify(r.sdlc));
+    // The journal's own tables, as it creates them: the reader checks the meta row's review-input coverage before it claims any delivery figure is complete.
+    db.run("CREATE TABLE IF NOT EXISTS delivery_meta (project_id TEXT PRIMARY KEY, review_input_coverage_complete INTEGER NOT NULL DEFAULT 0)");
+    for (const project of new Set(deliveries.map(d => d.project))) db.query("INSERT OR REPLACE INTO delivery_meta (project_id, review_input_coverage_complete) VALUES (?, 1)").run(project);
     // The journal creates its own table; the fixture needs only the columns the research reader selects.
     db.run("CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, peer TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, originals TEXT NOT NULL, out_json TEXT NOT NULL, reason TEXT, attempt INTEGER, previous_id TEXT)");
     let n = 0;

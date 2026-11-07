@@ -2,8 +2,8 @@ import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { appendRecords, fillsMerge, latestTaskRecords, readStore, researchFile, researchReport, RESEARCH_SCHEMA, RESEARCH_SCHEMA_V1, taskRecords, type TaskRecord } from "../src/hub/research.ts";
-import { cancelCauseOf, NO_EVIDENCE, readEvidence } from "../src/hub/research-record.ts";
+import { appendRecords, fillsMerge, labelTarget, latestTaskRecords, readStore, researchFile, researchReport, RESEARCH_SCHEMA, RESEARCH_SCHEMA_V1, taskRecords, type TaskRecord } from "../src/hub/research.ts";
+import { cancelCauseOf, journalFigures, NO_EVIDENCE, readEvidence } from "../src/hub/research-record.ts";
 import { boardWith, cleanDirs, familyOf, iso, minutes, PROJECT, scenarioBoard, scenarioDeliveries, scenarioEvents, taskEvent, tempDir } from "./helpers/research-fixture.ts";
 
 // #1277 AC1, AC2, AC6: record v2 over a real hub.db, with every expected figure computed by hand from the fixture below.
@@ -56,7 +56,7 @@ test("AC1: with no board or journal every board-derived field is null and counte
 
 test("AC1: a journal that does not reach back to the task's proposal leaves the delivery figures null", () => {
   const { evidence } = fixture();
-  const short = { ...evidence, journal: { ...evidence.journal!, oldestAt: minutes(5) } };
+  const short = { ...evidence, journal: { ...evidence.journal!, coveredAfter: minutes(5) } };
   expect(byTask(taskRecords(scenarioEvents(), PROJECT, writer, short), 1).delivery).toMatchObject({ count: 3, firstDeliveryMs: { p50: null, p95: null }, needsReview: null, failed: null, discarded: null });
 });
 
@@ -137,4 +137,59 @@ test("readEvidence opens the board read-only and an unreadable store leaves its 
   const broken = tempDir(dirs, "broken");
   writeFileSync(join(broken, "hub.db"), "not a database");
   expect(readEvidence(broken, PROJECT).board).toBe(false);
+});
+
+// #1290 review: the journal prunes terminal rows oldest-updated first beyond a cap and keeps protected ones, so the oldest surviving row is not a completeness watermark.
+test("journal coverage is bounded by the oldest unprotected terminal row, never by an old protected row that survived pruning", async () => {
+  const { DeliveryJournal } = await import("../src/hub/delivery-journal.ts");
+  const { HUB, newEnvelope } = await import("../src/hub/envelope.ts");
+  const dir = tempDir(dirs, "journal"), stateDir = dir;
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: PROJECT, instanceId: "i", terminalHistoryLimit: () => 1 });
+  const make = (id: string, task: string, at: number, extra: Record<string, unknown> = {}) => {
+    const env = newEnvelope(HUB, `body ${id}`, { to: ["codex"], ...("reviewPackage" in extra ? { kind: "review" as const } : {}), refs: { task, ...extra } });
+    const row = journal.createDelivery({ id, peer: "codex", state: "queued", createdAt: at, originals: [env], out: [env] });
+    journal.transition(id, "dispatching", undefined, row.revision);
+    const sent = journal.get(id)!; journal.transition(id, "accepted", undefined, sent.revision);
+    const done = journal.get(id)!; journal.transition(id, "completed", undefined, done.revision);
+  };
+  // An old review-package receipt is protected and survives. Three newer deliveries of task 1 follow; with a cap of one, the two oldest unprotected ones are pruned.
+  make("old-protected", "1", minutes(1), { reviewPackage: "review-abc" });
+  make("a", "1", minutes(10)); make("b", "1", minutes(20)); make("c", "1", minutes(30));
+  journal.close();
+  const ids = () => { const db = new Database(join(dir, "hub.db"), { readonly: true }); try { return (db.query("SELECT id FROM deliveries ORDER BY created_at").all() as { id: string }[]).map(r => r.id); } finally { db.close(); } };
+  expect(ids()).toContain("old-protected");
+  expect(ids()).not.toContain("a"); // pruned: the premise of the review thread holds on the real journal
+  const evidence = readEvidence(stateDir, PROJECT);
+  // The old watermark (the oldest surviving row, minute 1) would have called a task proposed at minute 5 covered. It is not: deliveries of minute 10 and 20 are gone.
+  // The bound is exactly the oldest unprotected terminal row that survived (`c`), not the old protected row.
+  const survivors = evidence.journal!.rows;
+  expect(survivors).toHaveLength(2);
+  expect(evidence.journal!.coveredAfter).toBe(Math.min(...survivors.filter(r => r.createdAt === minutes(30)).map(r => r.updatedAt)));
+  const record = (createdMin: number, closedMin: number) => journalFigures(evidence, 1, minutes(createdMin), minutes(closedMin));
+  expect(record(5, 40)).toEqual({ firstDeliveryMs: { p50: null, p95: null }, needsReview: null, failed: null, discarded: null });
+  // A task created after every surviving unprotected row is covered.
+  // A task proposed after the journal's last write (real time: `updated_at` is the journal's own clock) is covered, and no failure in its window is a known 0.
+  const later = journalFigures(evidence, 1, Date.now() + 60_000, Date.now() + 120_000);
+  expect(later).toMatchObject({ needsReview: 0, failed: 0, discarded: 0 });
+});
+
+test("journal coverage is unknown when the journal's own review-input coverage is incomplete, and not claimed for a missing table", () => {
+  const { stateDir } = fixture();
+  const db = new Database(join(stateDir, "hub.db"));
+  db.run("CREATE TABLE IF NOT EXISTS delivery_meta (project_id TEXT PRIMARY KEY, review_input_coverage_complete INTEGER NOT NULL DEFAULT 0)");
+  db.run("INSERT OR REPLACE INTO delivery_meta (project_id, review_input_coverage_complete) VALUES (?, 0)", [PROJECT]);
+  db.close();
+  expect(readEvidence(stateDir, PROJECT).journal!.coveredAfter).toBeNull();
+});
+
+test("#1290 review: a label resolves against the latest revision of a task, so a v1 row and its v2 row are one candidate after a reset", () => {
+  const { evidence } = fixture();
+  const v2 = byTask(taskRecords(scenarioEvents(), PROJECT, writer, evidence), 1);
+  const { review: _r, delivery: _d, merge: _m, specs: _s, memory: _me, person: _p, stalls: _st, handoffs: _h, cohort: _co, declines: _de, escalations: _es, outcome: _o, closedAt: _c, ...rest } = v2 as TaskRecord & Record<string, unknown>;
+  const v1 = { ...rest, schema: RESEARCH_SCHEMA_V1, outcome: "approved" } as unknown as TaskRecord;
+  const bare = { ...v2, merge: { ...v2.merge!, ciRuns: null, ciReruns: null, githubReviews: null, approvedToMergedMs: null } };
+  // After `ahub reset --all` the proposal event is gone from the log: the store alone resolves the task.
+  expect(labelTarget([v1, v2], [], 1)).toBe(v2);
+  expect(labelTarget([bare, v2], [], 1)).toBe(v2);
+  expect(labelTarget([v1, v2], [], 1, v2.createdAt!)).toBe(v2);
 });

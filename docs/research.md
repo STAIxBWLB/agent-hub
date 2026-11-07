@@ -75,8 +75,10 @@ Schema v2 is additive: a v1 file still loads (a v1 row reads as `outcome: "appro
 ### v2 blocks (#1277)
 
 Every value is a count, a duration or a member of a closed vocabulary. A value that cannot be derived is `null`, never 0,
-and `quality.json` counts it as unknown. Journal-derived fields are null when the journal does not reach back to the
-task's proposal; board-derived fields are null when `hub.db` could not be read.
+and `quality.json` counts it as unknown. Journal-derived fields are null unless the journal is known to hold every delivery from the
+task's proposal on: the journal prunes its oldest-updated terminal rows beyond a cap and keeps unresolved rows, review-package receipts and retry parents, so the
+oldest surviving row proves nothing. The record uses the oldest-updated unprotected terminal row that survived as its bound (every pruned row is no newer than it, and a
+delivery is created no later than it is updated), and treats the journal as unknown when its own review-input coverage is incomplete; board-derived fields are null when `hub.db` could not be read.
 
 | Field | Meaning |
 | --- | --- |

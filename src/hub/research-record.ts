@@ -72,7 +72,11 @@ export interface JournalRow { task: number; state: string; createdAt: number; up
 export interface ResearchEvidence {
   tasks: ReadonlyMap<number, EvidenceTask>;
   /** Absent: the journal was not read, so every journal-derived field is unknown. */
-  journal?: { rows: readonly JournalRow[]; oldestAt: number | null };
+  /**
+   * `coveredAfter`: a delivery created strictly after this time is in `rows` if it ever existed; null when that cannot be established. The journal prunes its oldest-updated terminal rows beyond a
+   * cap and keeps unresolved rows, review-package receipts and retry parents, so the oldest surviving row is no watermark (an old protected row survives while newer ones are gone).
+   */
+  journal?: { rows: readonly JournalRow[]; coveredAfter: number | null };
   /** Whether the board was read at all: without it every board-derived field is unknown, also for a task the map lacks. */
   board: boolean;
   familyOf?: (peer: string) => string | undefined;
@@ -169,11 +173,31 @@ export function readEvidence(stateDir: string, projectId: string): ResearchEvide
     try {
       const rows = (db.query("SELECT d.state AS state, d.created_at AS createdAt, d.updated_at AS updatedAt, json_extract(e.value, '$.refs.task') AS task FROM deliveries d, json_each(d.originals) e WHERE d.project_id = ?").all(projectId) as Record<string, unknown>[])
         .flatMap(r => { const row = journalRow(r.task, r.state, r.createdAt, r.updatedAt); return row ? [row] : []; });
-      const oldest = db.query("SELECT MIN(created_at) AS at FROM deliveries WHERE project_id = ?").get(projectId) as { at: number | null } | null;
-      journal = { rows, oldestAt: typeof oldest?.at === "number" ? oldest.at : null };
+      journal = { rows, coveredAfter: journalCoveredAfter(db, projectId) };
     } catch { /* no journal table: delivery timing is unknown */ }
     return { tasks, board, ...(journal ? { journal } : {}) };
   } finally { db.close(); }
+}
+
+/**
+ * Why this bound is sound (#1290 review): pruning deletes only terminal rows, oldest `updated_at` first (ties by id), and never a protected one, so every pruned row's `updated_at` is at most the
+ * smallest `updated_at` among the terminal, unprotected rows that survive (W). A delivery is created no later than it is last updated, so a delivery created after W cannot be a pruned one.
+ * Protected rows are left out of W on purpose: including one (old, kept) would lower W and claim coverage the pruning did not keep. Unresolved rows are never pruned, so they need no bound.
+ * Unknown (null) when the journal's own review-input coverage is incomplete (legacy candidates are protected in memory only, where this reader cannot see them) or the tables cannot be read.
+ * No terminal row at all: nothing was kept and nothing needs bounding (-1, before any time).
+ */
+function journalCoveredAfter(db: ReturnType<typeof openHubDatabase>, projectId: string): number | null {
+  try {
+    const meta = db.query("SELECT review_input_coverage_complete AS ok FROM delivery_meta WHERE project_id = ?").get(projectId) as { ok: number } | null;
+    if (meta?.ok !== 1) return null;
+    const terminal = "d.project_id = ? AND d.state IN ('completed','discarded','failed')";
+    const any = db.query(`SELECT COUNT(*) AS n FROM deliveries d WHERE ${terminal}`).get(projectId) as { n: number };
+    if (any.n === 0) return -1;
+    const unprotected = db.query(`SELECT MIN(d.updated_at) AS w FROM deliveries d WHERE ${terminal}
+      AND NOT EXISTS (SELECT 1 FROM json_each(d.originals) e WHERE json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review' AND json_extract(e.value,'$.refs.reviewPackage') GLOB 'review-*')
+      AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id)`).get(projectId) as { w: number | null };
+    return typeof unprotected.w === "number" && Number.isFinite(unprotected.w) ? unprotected.w : null;
+  } catch { return null; }
 }
 
 /** Nearest-rank quantile of whole numbers, or null for none. */
@@ -237,7 +261,7 @@ export function specsBlock(task: EvidenceTask | undefined, pii: boolean): SpecsB
 /** Delivery states and first-delivery times of one task from the journal rows in `[from, to]` (the task's life plus a settling hour); everything is null when the journal does not reach back that far. */
 export function journalFigures(evidence: ResearchEvidence, task: number, fromMs: number | null, toMs: number): Pick<DeliveryBlock, "firstDeliveryMs" | "needsReview" | "failed" | "discarded"> {
   const journal = evidence.journal;
-  if (!journal || journal.oldestAt === null || fromMs === null || fromMs < journal.oldestAt) return { firstDeliveryMs: { p50: null, p95: null }, needsReview: null, failed: null, discarded: null };
+  if (!journal || journal.coveredAfter === null || fromMs === null || fromMs <= journal.coveredAfter) return { firstDeliveryMs: { p50: null, p95: null }, needsReview: null, failed: null, discarded: null };
   const rows = journal.rows.filter(r => r.task === task && r.createdAt >= fromMs && r.createdAt <= toMs + 3_600_000);
   const latencies = rows.filter(r => r.state === "completed" && r.updatedAt >= r.createdAt).map(r => r.updatedAt - r.createdAt);
   const n = (state: string) => rows.filter(r => r.state === state).length;

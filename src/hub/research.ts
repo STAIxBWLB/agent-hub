@@ -305,7 +305,8 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
 export function labelTarget(records: ResearchRecord[], events: StampedEvent[], task: number, created?: string): TaskRecord {
   // A record without a proposal time (its proposal was not in the events) cannot be told apart, so it takes no label.
   // A label is a verdict on an approved task: a cancelled record takes none.
-  const mine = records.filter((r): r is TaskRecord => r.kind === "task" && r.outcome === "approved" && r.task === task && r.createdAt !== null);
+  // One candidate per task: a later revision of a record (the merge figures filled in, or a v2 row over a v1 one) is the same task, and listing it twice would refuse an unambiguous historical label.
+  const mine = latestTaskRecords(records).filter((r) => r.outcome === "approved" && r.task === task && r.createdAt !== null);
   if (created !== undefined) {
     return mine.find((r) => r.createdAt === created) ?? fail(`no research record for task #${task} proposed at ${created}${mine.length ? ` (it has: ${mine.map((r) => r.createdAt).join(", ")})` : ""}`);
   }
