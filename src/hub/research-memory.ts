@@ -57,3 +57,12 @@ export function memoryFigures(ports: MemoryFigurePorts): MemoryFigures {
     failRetrySignal: complete ? ports.matchingPlan(uncited).length : null,
   };
 }
+
+/**
+ * The evidence port of the LIVE writer: it answers for the task being recorded and says unknown for every other task. `taskRecords` builds a record for every terminal task in the log and the live
+ * writer keeps one, so without this each approval would compute (terminal tasks in the log) figures, each reading the sidecar and the store, on the daemon thread (#1297 review). `read` is called
+ * at most once per port, for `only`. A backfill passes its reader directly: it wants every task.
+ */
+export function onlyTaskMemory(only: number, read: (task: number) => MemoryFigures): (task: number) => MemoryFigures {
+  return task => task === only ? read(task) : { ...UNKNOWN_MEMORY_FIGURES };
+}

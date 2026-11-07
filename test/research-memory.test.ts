@@ -104,3 +104,37 @@ test("AC4: the figures hold only counts: no entry id, text or path leaves with t
   expect(text).not.toContain("/Users/secret");
   for (const value of Object.values(JSON.parse(text))) expect(value === null || typeof value === "number").toBe(true);
 });
+
+// #1297 review: the live writer builds every terminal task's record from the log and keeps one, so the memory reader must run once, for the task being recorded.
+test("a live write with many earlier terminal tasks calls the memory reader once, for the recorded task", async () => {
+  const { taskRecords } = await import("../src/hub/research.ts");
+  const { onlyTaskMemory } = await import("../src/hub/research-memory.ts");
+  const { taskEvent } = await import("./helpers/research-fixture.ts");
+  const log = [];
+  for (let id = 1; id <= 12; id++) log.push(taskEvent(id * 10, id, "proposed", "proposed"), taskEvent(id * 10 + 1, id, "accepted", "in_progress", { owner: "codex" }), taskEvent(id * 10 + 2, id, "approved", "approved"));
+  const calls: number[] = [];
+  const read = (task: number) => { calls.push(task); return { rendered: 1, delivered: null, cited: 0, failsExposed: 0, failsCited: 0, failRetrySignal: 0 }; };
+  const records = taskRecords(log, "p", { version: "t", source: "live" }, { tasks: new Map(), board: false, memory: onlyTaskMemory(12, read) });
+  expect(records).toHaveLength(12); // the log still yields every record: the live writer filters to its task afterwards
+  expect(calls).toEqual([12]);
+  expect(records.find(r => r.task === 12)!.memory).toMatchObject({ rendered: 1, cited: 0 });
+  // Every other task reads unknown, never another task's figures and never zero.
+  expect(records.find(r => r.task === 3)!.memory).toMatchObject({ rendered: null, delivered: null, cited: null, failsExposed: null, failRetrySignal: null });
+  // A backfill passes its reader directly and wants all of them.
+  calls.length = 0;
+  taskRecords(log, "p", { version: "t", source: "backfill" }, { tasks: new Map(), board: false, memory: read });
+  expect(calls).toHaveLength(12);
+});
+
+test("a task with no rendered counter never touches the store, and one with a rendered entry reads it once, whatever its fail count", () => {
+  const w = world();
+  let listed = 0;
+  const a = w.note("alpha", "decision"), b = w.note("beta fail", "fail", ["path:src/hub/research.ts"]);
+  const views = new Map(screen(w.store.list({ project, limit: 1000, includeSuperseded: true })).map(v => [v.id, v]));
+  const run = () => memoryFigures({ counters: w.sidecar.counters(project), taskKey: w.key, view: id => { listed++; return views.get(id); }, matchingPlan: x => x });
+  expect(run()).toEqual(UNKNOWN_MEMORY_FIGURES);
+  expect(listed).toBe(0);
+  w.observations.delivery("codex", "d-1", [w.brief([a, b])], "rendered");
+  run();
+  expect(listed).toBe(2); // one lookup per rendered entry, nothing for the rest of the store
+});
