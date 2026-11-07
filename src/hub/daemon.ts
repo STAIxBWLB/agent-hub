@@ -1,3 +1,5 @@
+import { readStartupEventSeeds } from "./startup-event-seeds.ts";
+import { StartupTimings } from "./startup-timing.ts";
 import { repoGitArgs, repoGitEnv } from "./snapshots.ts";
 import { createReviewMaterialReader, type ReviewReadRequest, type ReviewMaterialBatch } from "./review-material.ts";
 import { readSdlcPr } from "./sdlc.ts";
@@ -686,6 +688,8 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 }
 
 export interface DaemonOptions {
+  /** Host-only numeric startup reader observation; never read from config or control input. Observer failure changes no replay state. */
+  startupSeedObserved?: (observation: { readPasses: number; readBytes: number }) => void;
   /** Host-only test/embedding port; never read from project configuration or a tool. */
   memoryClient?: MemoryClient;
   /** Host-only remote-default evidence seam; never read from config or control messages. */
@@ -863,13 +867,16 @@ function capturedRecoverySourceDigest(): string | undefined {
 }
 
 export async function startDaemon(opts: DaemonOptions) {
+  const startupTimings = new StartupTimings();
   // Refuse unknown formats before logs, session cleanup, module factories or any writable store is opened.
   assertHubDbCompatible(join(opts.stateDir, "hub.db"));
+  startupTimings.mark("schema");
   if (opts.toolWriteReplayMaxEntries !== undefined && (!Number.isSafeInteger(opts.toolWriteReplayMaxEntries) || opts.toolWriteReplayMaxEntries < 1 || opts.toolWriteReplayMaxEntries > 512)) throw new Error("invalid host tool write replay capacity");
   const resolveExecutionCwd = (peer: string, currentDeclarations: InstancesConfig | undefined, currentRoles: readonly string[], catalog: ReturnType<typeof createProjectAdapterCatalog>): string =>
     resolveInstanceExecutionCwd(opts.cwd, peer, currentDeclarations, currentRoles, catalog, undefined, undefined, opts.instanceExecutionGit);
   const projectId = opts.projectId ?? randomUUID();
   const sourcePackageDigest = capturedRecoverySourceDigest();
+  startupTimings.mark("source");
   const instanceId = opts.instanceId ?? randomUUID();
   const startupCleanup: (() => void | Promise<void>)[] = [];
   let ready = false;
@@ -1121,6 +1128,7 @@ export async function startDaemon(opts: DaemonOptions) {
     let publicLine:string|undefined,view:ReturnType<typeof operationalView>|undefined;
     for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");view??=publicOperationalView();publicLine??=view.line(text);sock.send(JSON.stringify({t:"operational_log",line:publicLine,complete:view.complete,...(!view.complete?{incompleteReason:view.incompleteReason}:{})}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
   };
+  startupTimings.mark("configuration");
   let runningRoutingDefault = recoveryDefaultRouting;
   if (runningRoutingDefault === undefined) try { runningRoutingDefault = recoveryRoutingFallback(); } catch { /* unknown defaults refuse conductor recovery */ }
   let runningRouting = recoveryRouting ?? currentRouting(opts.cwd, log);
@@ -1323,6 +1331,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // is running) never marks a run boundary in the live one's events.
   event({ type: "hub_start", instance: instanceId });
   startupCleanup.push(() => server.stop(true));
+  startupTimings.mark("control");
 
 
   const recoveryOperation = process.env.AGENTHUB_RECOVERY_OPERATION;
@@ -1374,12 +1383,14 @@ export async function startDaemon(opts: DaemonOptions) {
   const { terminalHistoryLimit, ...busReaders } = busOperationalReaders(() => config);
   const adapterTiming = adapterOperationalReaders(() => config);
   const modelTiming = modelOperationalReaders(() => config);
+  startupTimings.mark("recovery");
   const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation, terminalHistoryLimit });
   // What the crash left in flight, per recipient: opening the journal just marked these needs_review.
   const lost = new Map<PeerId, JournalDelivery[]>();
   if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) { lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]); crashLostIds.add(d.id); }
   // Capabilities (issue #39): enforced here and in taskOp, never by role text alone. Unlisted peers keep everything.
   // A listed peer whose value is not a list gets nothing: whoever listed it meant to narrow it.
+  startupTimings.mark("journal");
   const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "memory_correct" | "memory_read" | "important" | "spec_read" | "check_run" | "invoke"): boolean => {
     if (peer === USER || peer === HUB || !Object.hasOwn(config.capabilities, peer)) return true;
     const list = config.capabilities[peer];
@@ -1769,6 +1780,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }, delayMs);
     recoveryLeaseTimer.unref?.();
   };
+  startupTimings.mark("bus");
   const chain = projectChain(opts.cwd);
   const recalled = new Set<PeerId>(); // once per peer per hub run, however often the peer's session restarts
   // #258: the hub's own store, machine-wide in ~/.agenthub/memory. Entries are filed under the project's memory key (its
@@ -1863,6 +1875,7 @@ export async function startDaemon(opts: DaemonOptions) {
     capture: () => ({ memoryDir: captureBinding!.home }), log,
   });
   const memoryTelemetry = candidates && memoryStore ? new MemoryTelemetry(candidates, memoryStore, memoryProject, screenMemory, checkMemory) : undefined;
+  startupTimings.mark("memory");
   const staleness = () => createStalenessProbe({ cwd: opts.cwd, privatePaths: config.pii?.paths ?? [], deny: config.local.deny });
   const memoryLine = (v: MemoryView) => `mem:${v.id.slice(0, 8)} ${v.kind} ${v.tier}: ${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 160)}`;
   /** A task's own nodes: what its title names (an issue, a path), its refs and plan paths, plan symbols, and the task itself. */
@@ -2162,7 +2175,9 @@ export async function startDaemon(opts: DaemonOptions) {
     try { notify(`conductor ${action.actor}: ${action.action}${action.task === undefined ? "" : ` #${action.task}`}${action.peer ? ` ${action.peer}` : ""}`); } catch { /* never throw after a task/hold write */ }
   };
   const inboxPolling = new InboxPolling();
+  startupTimings.mark("model_runtime");
   const board = new Board(join(opts.stateDir, "hub.db"));
+  startupTimings.mark("board");
   const reviewInputHeld = (peer: PeerId, envs: readonly Envelope[]): boolean => {
     if (envs.some(isReviewObserverExcluded)) return true;
     const taskIds = envs.flatMap(env => {
@@ -3134,7 +3149,11 @@ export async function startDaemon(opts: DaemonOptions) {
   // same peer cannot undo a settlement.
   const turnEnded = new Map<PeerId, number>();
   const nativeCompletedAt = new Map<PeerId, number>();
-  const nativeStopsSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(event => event.type === "native_turn_end" && event.id ? [event.id] : []));
+  startupTimings.mark("task_runtime");
+  const startupSeeds = readStartupEventSeeds(join(opts.stateDir, "events.jsonl"));
+  try { opts.startupSeedObserved?.({ readPasses: startupSeeds.readPasses, readBytes: startupSeeds.readBytes }); } catch { /* Diagnostic observers cannot change replay or readiness. */ }
+  const nativeStopsSeen = startupSeeds.nativeStopsSeen;
+  startupTimings.mark("native_stop_seed");
   const activeAt = new Map<PeerId, number>();
   interface NativeTurnStart { at: number; baseline?: string; generation: string; session: string; launch: string }
   const nativeTurnStart = new Map<PeerId, NativeTurnStart>();
@@ -3400,10 +3419,9 @@ export async function startDaemon(opts: DaemonOptions) {
     notify: (line) => { notify(line); feedBudgetPauses(); },
   }, accountMembers, accountOf));
   budget.setRecoveryHold(recoveryActive());
-  // ponytail: a third full read of events.jsonl at startup (after nativeStopsSeen and claudeNativeUsageSeen). Measured at about 70 ms on the real
-  // 46 MB, 238k-line log, so it is not folded into one pass across startup. Ceiling: the log is never rotated, so the cost grows with it; when a
-  // read passes a few hundred ms, make one `readEvents` pass feed all three sets (or keep the resets in hub.db, the #683 U2 roll-up).
-  const startupEvents = readEvents(join(opts.stateDir, "events.jsonl"));
+  // Share the single streaming startup pass; quota, Kimi and token-window replay keep their existing predicates.
+  startupTimings.mark("budget");
+  const startupEvents = startupSeeds.events;
   budget.seedResets(startupEvents.flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
   // #285 phase 2: Kimi's consumption is the hub's own count of its session wire log (`src/adapters/kimi-wire-usage.ts`), not an ACP total.
   const kimiUsage = new KimiUsage({
@@ -3422,6 +3440,7 @@ export async function startDaemon(opts: DaemonOptions) {
     notice: line => notify(line),
   });
   kimiUsage.seed(kimiSeedRows(startupEvents, Math.max(0, ...startupEvents.flatMap(e => e.type === "budget_resume" && definitionOf(e.peer)?.budget?.resetSoftTokensOnResume ? [Date.parse(e.at)] : []).filter(Number.isFinite))));
+  startupTimings.mark("usage_seed");
   /** Why a peer shows no number (no quota, nothing read yet): one line each, from the definition and the counters, never from a log's text. */
   const budgetPeerNotes = (): BudgetPeerNote[] => {
     const quota = budget.status();
@@ -3438,6 +3457,7 @@ export async function startDaemon(opts: DaemonOptions) {
   startupCleanup.push(() => usageRollup.close());
   const pollUsageRollup = () => { try { usageRollup.poll(); } catch (error) { log(`usage roll-up pass failed: ${(error as Error).message.slice(0, 120)}`); } };
   pollUsageRollup();
+  startupTimings.mark("usage_rollup");
   // Turns and their tokens for telemetry (issue #40). Turn ids carry the hub run, so they stay unique across restarts.
   const runId = Date.now().toString(36);
   let turnSeq = 0;
@@ -4014,9 +4034,11 @@ export async function startDaemon(opts: DaemonOptions) {
   const noQuotaPeer = (peer: PeerId): boolean => !!definitionOf(peer)?.budget?.noQuotaReason;
   const hubTokenWindow = (peer: PeerId): TokenWindow => hubTokenWindows.get(peer) ?? hubTokenWindows.set(peer, new TokenWindow(5 * 3_600_000)).get(peer)!;
   // Replayed through `seed`, which skips rows older than 5 h before inserting any: a long-lived project's whole log costs one pass, not one search per row.
+  startupTimings.mark("token_runtime");
   const seedNow = Date.now(), seedRows = new Map<PeerId, { at: number; n: number }[]>();
   for (const e of startupEvents) if (e.type === "tokens" && noQuotaPeer(e.peer)) (seedRows.get(e.peer) ?? seedRows.set(e.peer, []).get(e.peer)!).push({ at: Date.parse(e.at), n: e.n });
   for (const [peer, rows] of seedRows) hubTokenWindow(peer).seed(rows, seedNow);
+  startupTimings.mark("token_seed");
   const addTokens = (peer: PeerId, n: number, task?: number): number => {
     if (n > 0 && noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(n));
     const supervisionTurn = supervisionTurns.get(peer);
@@ -5886,7 +5908,9 @@ export async function startDaemon(opts: DaemonOptions) {
     join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects", opts.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`), path => pathEvidence(path, lstatSync));
   // Optional native usage: only the instance-fenced explicit Claude session is read.
   // IDs persist in telemetry, so a restart/resume never counts the same native message twice.
-  const claudeNativeUsageSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).filter(e => e.type === "usage" && e.source === "claude_transcript").map(e => (e as { id: string }).id));
+  startupTimings.mark("services");
+  const claudeNativeUsageSeen = startupSeeds.claudeNativeUsageSeen;
+  startupTimings.mark("transcript_usage_seed");
   const collectClaudeUsage = () => { for (const peer of channelPeers) {
     const session = claudeSession(peer);
     if (!session.sessionId || !session.transcriptPath) continue;
@@ -11429,6 +11453,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // #1054: a run a restart cut short settles `interrupted`, once. Every process of the earlier run is gone by now, and the unique run turn makes repeated restarts yield one completion.
   reconstructRuns();
   ready = true;
+  startupTimings.mark("ready");
   controlWriteTelemetry?.start();
   void handoffCatchUp();
   // #733: the periodic catch-up and the descriptor watch. Unref'd, cleared with the other intervals at stop; each pass is guarded by `stopping` and never overlaps another.
@@ -11479,6 +11504,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // #843 AC3: at hub start, after the roster and the control socket exist; never awaited, so a slow probe delays no start.
   void sweepAgentDrift();
   // #515b: the loopback ports of the two egress proxies, for a host-only test that connects to the proxy this daemon actually started. Ports only: no list, no authority.
+  startupTimings.mark("post_ready");
+  log(startupTimings.finish());
   return { bus, token, port: server.port as number, egressPorts: () => ({ bash: egress?.port, web: webEgress?.port }), bandEvaluations: () => bandEvaluations, sdlcFileReads: () => sdlcFileReads, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { await cleanup(); } catch { /* preserve startup error */ } }

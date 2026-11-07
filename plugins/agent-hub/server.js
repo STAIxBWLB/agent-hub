@@ -16680,16 +16680,20 @@ function readEvents(file, since = 0) {
     return [];
   return readFileSync14(file, "utf8").split(`
 `).flatMap((line) => {
-    if (!line.trim())
-      return [];
-    try {
-      const e = JSON.parse(line);
-      const measuredAt = e.type === "usage" && typeof e.measuredAt === "string" ? e.measuredAt : e.at;
-      return Date.parse(measuredAt) >= since ? [e] : [];
-    } catch {
-      return [];
-    }
+    const event = parseEventLine(line, since);
+    return event === undefined ? [] : [event];
   });
+}
+function parseEventLine(line, since = 0) {
+  if (!line.trim())
+    return;
+  try {
+    const e = JSON.parse(line);
+    const measuredAt = e.type === "usage" && typeof e.measuredAt === "string" ? e.measuredAt : e.at;
+    return Date.parse(measuredAt) >= since ? e : undefined;
+  } catch {
+    return;
+  }
 }
 var init_events = () => {};
 

@@ -1055,6 +1055,20 @@ ahub up
 `ahub init` writes the project configuration and managed instruction blocks.
 Run it after an upgrade when those blocks need refreshing.
 
+`ahub up` waits for authenticated readiness. After 12 seconds, a verified live
+child that is still pending produces a `still starting, pid N` message on stderr;
+the CLI keeps waiting and confirms the retained runtime when it becomes ready.
+At 120 seconds it reports unconfirmed readiness and exits unsuccessfully, leaving
+the daemon running. Run `ahub status` and inspect `hub.log` before another start.
+An owned child observed to exit before readiness produces an error; a cancelled
+operation cannot confirm startup.
+
+Each completed daemon startup writes one `startup timings ms:` line to `hub.log`,
+with fixed phase names and durations. The three event-seed consumers share one
+lossless streaming pass; abandoned snapshot bodies are not read for startup.
+The [startup receipt](verification/2026-11-07-daemon-startup-1232.md) separates
+seed I/O from bounded usage-rollup I/O and records the isolated measurements.
+
 Settings flags (#1100) set the main project settings without a file edit.
 `--agents <a,b,...|none>` (`start.agents`) and `--autonomy inherit|off` (whether a
 new project inherits the machine autonomy preset) go to the untracked
