@@ -88,7 +88,8 @@ async function releaseFixture(data: Buffer): Promise<{ context: ReceiptContext; 
     return { ...ok, stdout, stderr, exitCode };
   });
   context.id = "jcode";
-  // GHA 42361191648 cold maximum: 2032.190 ms; prior complete CI: 3835.40 ms.
+  // GHA 42361191648 cold maximum: 2032.190 ms; prior complete CI: 3835.40 ms
+  // (the next archive took 454.92 ms in run 42355168440).
   // Reuse one measured helper allowance only for archive fixtures. Generic npm
   // and explicit timeout-control budgets retain their original values.
   context.limits.totalMs = RECEIPT_OUTPUT_MS / 2;

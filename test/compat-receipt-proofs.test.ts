@@ -138,15 +138,15 @@ test("reviewer module rejects the caller HOME before importing preparation or ex
   expect(readdirSync(f.root)).toEqual(before);
 });
 
-test("manifest dispatcher runs the actual isolated worker for unsupported qwen and never executes its artifact", async () => {
+test("manifest dispatcher refuses an invalid Qwen artifact through the promoted producer without executing it", async () => {
   const f = fixture();
   const results = await runManifestProofs({ ...f, id: "qwen", entry: entry("native-acp-auth-session-modes"), run: runBoundedReceiptCommand });
-  expect(results).toEqual({});
+  expect(results["native-acp-auth-session-modes"]).toEqual({ status: "fail", cause: "proof-failed" });
   expect(existsSync(f.marker)).toBe(false);
   expect(readdirSync(f.root).some(name => name.startsWith("request-"))).toBe(false);
 }, 20_000);
 
-test("default qwen receipt wiring records not-run after the real worker, with only fake installation", async () => {
+test("default Qwen receipt wiring reports a real producer failure for invalid package metadata", async () => {
   const f = fixture(), calls: { argv: readonly string[]; env: NodeJS.ProcessEnv; cwd: string }[] = [];
   const result = await runCompatReceipt({ id: "qwen", version: "9.9.9", out: join(f.root, "output"), disposableRunner: true }, {
     disposable: true,
@@ -163,8 +163,8 @@ test("default qwen receipt wiring records not-run after the real worker, with on
   expect(calls[0]!.env.HOME).not.toBe(process.env.HOME);
   expect(calls[0]!.env.AGENTHUB_PEER_ID).toBeUndefined();
   expect(calls[0]!.env.NODE_OPTIONS).toBeUndefined();
-  expect(result.legs).toMatchObject([{ id: "native-acp-auth-session-modes", status: "not-run", cause: "producer-not-committed" }]);
-  expect(result.outcome).toBe("not-run"); expect(result.eligible).toBe(false);
+  expect(result.legs).toMatchObject([{ id: "native-acp-auth-session-modes", status: "fail", cause: "proof-failed" }]);
+  expect(result.outcome).toBe("fail"); expect(result.eligible).toBe(false);
   expect(result.ownedStopConfirmed).toBe(true);
   expect(result.processCleanup).toBe("unproven");
   expect(result.processCleanupReason).toBeTruthy();

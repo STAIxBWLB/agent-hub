@@ -34,9 +34,15 @@ async function main(): Promise<void> {
   const signal = AbortSignal.timeout(data.limits.legMs);
   const context: ProofContext = { ...data, env: { ...process.env }, signal, run: runBoundedReceiptCommand };
   let result: ProofResults = {};
-  if (data.id === "codex-review" || data.id === "kimi-review") {
+  if (data.id === "codex-review") {
     const { runReviewerProofs } = await import("./proofs/reviewers.ts");
     result = await runReviewerProofs(context);
+  } else if (data.id === "kimi-review") {
+    const { runKimiProofs } = await import("./proofs/kimi.ts");
+    result = await runKimiProofs(context);
+  } else if (data.id === "qwen") {
+    const { runQwenProofs } = await import("./proofs/qwen.ts");
+    result = await runQwenProofs(context);
   } else if (data.id === "claude-implementer") {
     const { runClaudeProofs } = await import("./proofs/claude.ts");
     result = await runClaudeProofs(context);
