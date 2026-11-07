@@ -23,6 +23,7 @@ import { CLAUDE_DISPLAY, CODEX_DISPLAY, KIMI_DISPLAY, PI_DISPLAY, LOCAL_DISPLAY,
 import { CLAUDE_RECOVERY_SESSION, CODEX_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, PI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION } from "./native-recovery.ts";
 import { claudeWindows, codexWindows } from "./native-quota.ts";
 import { claudeContext, codexContext, acpContextValue, jcodeContextValue } from "./native-context.ts";
+import { KIMI_TUI_FACTS_HOOK } from "../kimi-tui-facts.ts";
 import type { AdapterDefinition } from "../registry-types.ts";
 import type { PeerAdapter } from "../../hub/peers.ts";
 
@@ -114,7 +115,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     permission: { grants: { ask: "Kimi asks as it does on its own", "ask-when-needed": "Kimi's yolo mode: it asks only where it judges it must", "never-ask": "Kimi's auto mode: nothing asks" },
       unmanagedForms: Object.freeze(["tui"] as const), unmanagedStatusNote: "Kimi approves tools in its own TUI; no hub permission mode", unmanagedNote: "Kimi approves tools and selects its permission mode in its own TUI; no hub permission mode" },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "acp", ...KIMI_RECOVERY_SESSION, crashPlan: kimiCrashPlan },
-    turnEnd: "adapter", settle: { signal: "prompt-response" }, budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } }, capabilities: { watch: true }, hooks: { recallPlatform: "kimi", recallSource: "kimi" },
+    turnEnd: "adapter", settle: { signal: "prompt-response" }, budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } }, capabilities: { watch: true }, hooks: { factsHook: KIMI_TUI_FACTS_HOOK, recallPlatform: "kimi", recallSource: "kimi" },
     cli: { command: "kimi", entry: { lifecycleAdmission: true, execute: runKimiEntry }, preview: previewKimi, usage: [["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"]], launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: form => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: form => ["kimi", "--mode", form] }, display: KIMI_DISPLAY,
   },
   {

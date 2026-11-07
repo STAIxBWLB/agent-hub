@@ -37,7 +37,7 @@ import type { DocEvidence } from "./sdlc-release.ts";
 import { loadExternalAdapterDefinitions, readAdapterModuleDeclarations, externalModuleIdentity, externalModuleIdentityCurrent, type AdapterModuleDeclaration } from "../adapters/external-modules.ts";
 import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
-import { NativeHookLaunches } from "./native-hook-launch.ts";
+import { NativeHookLaunches, type NativeHookLaunch } from "./native-hook-launch.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
 import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
@@ -77,6 +77,7 @@ import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf, createProjectAdapterCatalog, isFixedBuiltinDefinition } from "../adapters/registry.ts";
 import { isSupportedPeer as registrySupportedPeer, definitionOf as builtinDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
+import type { NativeFactsTranscript } from "../adapters/registry-types.ts";
 import type { ReviewScope } from "./review-scope.ts";
 import { checkJcodeInstanceHomes, instanceDefinitionOf, effectiveInstanceRoles, isPlannerOnly, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
 import { INSTANCE_CONFIG_FILES, readInstanceConfig, withoutInertInstancePolicy, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
@@ -1306,7 +1307,13 @@ export async function startDaemon(opts: DaemonOptions) {
         sock.data.closed = true;
         for (const request of sock.data.invocationRequests?.values() ?? []) request.abort();
         sock.data.invocationRequests?.clear();
-        nativeHookLaunches.endOwner(sock);
+        for (const { peer } of nativeHookLaunches.endOwner(sock)) {
+          const run = runs.get(peer);
+          if (!run) continue;
+          if (budget.record(peer)) completionStore.dropRun(run.runTurn);
+          else completionDone(peer, run, "interrupted");
+          runs.close(peer);
+        }
         if (sock.data.session && sock.data.peer) sessionIds.delete(sock.data.peer);
         consoles.delete(sock);
         operationalLogSubscribers.delete(sock);
@@ -3470,6 +3477,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const supervisionTurns = new Map<PeerId, { id: string; at: number; tokens?: number; session?: string }>();
   /** #1054: who started the turn a delivery begins. The person's message (console, `ahub say`, an acon send: from `user`, never the hub's own `answer` envelope) opens a run; ids only. */
   const pendingPersonDelivery = new Map<PeerId, { envelope: string; private: boolean }>();
+  /** A native turn whose transcript, not its hook payload, proved a person origin. Native prompt text is never available here, so the result stays private. */
+  const pendingNativePerson = new Set<PeerId>();
   bus.onDeliver = (peer, originals) => {
     if (peer.includes("@")) return;
     resetReviewObserverSessionIfChanged(peer);
@@ -5553,6 +5562,7 @@ export async function startDaemon(opts: DaemonOptions) {
   startupCleanup.push(() => completionStore.close());
   const runs = new RunTracker();
   const checkOwners = new Map<PeerId, number>();
+  const nativeBackgroundWaits = new Map<PeerId, ReturnType<typeof setTimeout>>();
   /**
    * A delivery handed to the peer whose turn has not started yet: the bus has already taken it out of its queue and the peer is still idle, so neither the queue nor the busy state
    * shows the continuation in that window. Cleared at the turn start or a failed delivery. ponytail: bounded to 10 s, so a delivery that never starts a turn (an adapter that
@@ -5563,8 +5573,8 @@ export async function startDaemon(opts: DaemonOptions) {
   /** A turn of the open run ended in a failure the adapter reported: a closed fact, never its text. */
   const runFailed = (peer: PeerId): void => { try { runs.note(peer, { failed: true }); } catch { /* advisory */ } };
   const settles = (peer: PeerId): boolean => {
-    // A pull-only attach (Kimi's TUI) has no hub turn machinery and no signal; the definition declares `settle` for its headless form, which attaches as a hub peer.
-    return !!definitionOf(peer)?.settle && !peer.includes("@") && bus.peers.get(peer)?.pullOnly !== true;
+    // A pull-only native TUI earns a signal only through its launcher-bound native facts. An unattached pull-only peer still creates no run.
+    return !!definitionOf(peer)?.settle && !peer.includes("@") && (bus.peers.get(peer)?.pullOnly !== true || nativeHookLaunches.current(peer) !== undefined);
   };
   /** Deliveries queued for the peer that will start another turn: all of them but the hub's own `presence` preface (a `fyi` never reaches the queue). */
   // The bus drains its queue into a dispatching journal row before the idle state reaches this tap, so the in-memory queue alone would read empty while a continuation is already on its
@@ -5584,6 +5594,26 @@ export async function startDaemon(opts: DaemonOptions) {
   const checksOwnedBy = (peer: PeerId): number => (checkOwners.get(peer) ?? 0) + tasks.checksOwnedBy(peer);
   // The peer's OWN adapter state, not the displayed one (a pause shows a busy peer as paused, and its work goes on): an owned child or a continuation the adapter still runs keeps it busy.
   const ownedChildrenOf = (peer: PeerId): number => (bus.peers.get(peer)?.state === "busy" ? 1 : 0);
+  const nativeBackgroundOf = (peer: PeerId): number | null | undefined => {
+    const launch = nativeHookLaunches.current(peer), port = definitionOf(peer)?.hooks?.factsHook;
+    if (!launch?.session || !launch.transcript || !port) return undefined;
+    return port.read(launch.session, launch.transcript).background ?? null;
+  };
+  const completeNativeTurn = (peer: PeerId, launch: NativeHookLaunch, completion: NonNullable<NativeFactsTranscript["completion"]>): boolean => {
+    const owner = bus.peers.get(peer);
+    if (!launch.active || !isWsPeer(owner) || owner.state === "offline" || owner.sessionGeneration !== launch.generation || nativeHookLaunches.current(peer) !== launch) return false;
+    launch.completed = completion.id; launch.active = false;
+    turnEnded.set(peer, Date.now()); nativeCompletedAt.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
+    event({ type: "native_turn_end", peer, id: completion.id }); owner.nativeStopped(launch.session!);
+    const run = runs.get(peer);
+    if (completion.reason === "cancelled") {
+      if (run) { completionStore.dropRun(run.runTurn); runs.quietStop(peer); }
+    } else {
+      if (completion.reason === "failed") runFailed(peer);
+      try { if (run) { runs.signalled(peer); settleCheck(peer); } } catch { log(`completion settle for ${peer} failed`); }
+    }
+    return true;
+  };
   const completionDone = (peer: PeerId, run: Run, outcome: "done" | "failed" | "limit" | "interrupted"): void => {
     const made = completionStore.settle({ peer, runTurn: run.runTurn, lastTurn: run.lastTurn, startedAt: run.startedAt, ...(run.promptEnvelope ? { promptEnvelope: run.promptEnvelope } : {}), ...(run.replyEnvelope ? { replyEnvelope: run.replyEnvelope } : {}), private: run.private }, outcome, Date.now(), `cmp-${randomUUID().replaceAll("-", "").slice(0, 12)}`);
     if (!made) return;
@@ -5595,10 +5625,25 @@ export async function startDaemon(opts: DaemonOptions) {
    */
   const settleCheck = (peer: PeerId): void => {
     try {
+      const launch = nativeHookLaunches.current(peer), port = definitionOf(peer)?.hooks?.factsHook;
+      if (launch?.active && launch.session && launch.transcript && port) {
+        const completion = port.read(launch.session, launch.transcript).completion;
+        if (completion && completion.index > (launch.baseline ?? -1) && completion.id !== launch.completed) completeNativeTurn(peer, launch, completion);
+      }
       const run = runs.get(peer);
       if (!run || stopping) return;
-      const state = settleVerdict({ signal: run.signalled, queuedContinuations: queuedContinuations(peer), openPermissions: openPermissionsOf(peer), openQuestions: questionStore.openCount(peer), ownedChildren: ownedChildrenOf(peer), runningChecks: checksOwnedBy(peer), heldDeliveries: heldDeliveries(peer) });
-      if (state !== "settled") return;
+      const nativeBackground = nativeBackgroundOf(peer);
+      const state = settleVerdict({ signal: run.signalled, queuedContinuations: queuedContinuations(peer), openPermissions: openPermissionsOf(peer), openQuestions: questionStore.openCount(peer), ownedChildren: ownedChildrenOf(peer), runningChecks: checksOwnedBy(peer), heldDeliveries: heldDeliveries(peer), nativeBackground });
+      if (state !== "settled") {
+        // Native task notifications are optional observations. Re-read the inventory and final turn until both are settled or the run/launch ends.
+        if ((launch?.active || nativeBackground === null || (nativeBackground ?? 0) > 0) && !nativeBackgroundWaits.has(peer)) {
+          const timer = setTimeout(() => { nativeBackgroundWaits.delete(peer); settleCheck(peer); }, 250);
+          nativeBackgroundWaits.set(peer, timer); timer.unref?.();
+        }
+        return;
+      }
+      const waiting = nativeBackgroundWaits.get(peer);
+      if (waiting) { clearTimeout(waiting); nativeBackgroundWaits.delete(peer); }
       // Persist FIRST and drop the in-memory run only after the store call returned: a write that throws (SQLite busy or locked) leaves the run open, so a later settle check retries it, and
       // the open-run row never outlives a run the daemon no longer tracks (a false `interrupted` after a restart, and a peer index that silently refuses the next run).
       // A budget pause stays a budget need (ahub budget): the run ends without a completion rather than reading as a result.
@@ -6544,9 +6589,9 @@ export async function startDaemon(opts: DaemonOptions) {
         try {
           deliveredAwaitingTurn.delete(e.peer);
           if (settles(e.peer)) {
-            const person = pendingPersonDelivery.get(e.peer);
+            const person = pendingPersonDelivery.get(e.peer), nativePerson = pendingNativePerson.delete(e.peer);
             pendingPersonDelivery.delete(e.peer);
-            const run = runs.turnStarted({ peer: e.peer, turn: id, at: Date.now(), personOriginated: person !== undefined, ...(person ? { promptEnvelope: person.envelope } : {}), private: person?.private === true || pii || holdsPii(e.peer) });
+            const run = runs.turnStarted({ peer: e.peer, turn: id, at: Date.now(), personOriginated: person !== undefined || nativePerson, ...(person ? { promptEnvelope: person.envelope } : {}), private: nativePerson || person?.private === true || pii || holdsPii(e.peer) });
             if (run) { if (run.runTurn === id) completionStore.openRun(run); else completionStore.touchRun(run); }
           }
         } catch { log(`completion run start for ${e.peer} failed; no completion for this turn`); }
@@ -6629,9 +6674,10 @@ export async function startDaemon(opts: DaemonOptions) {
           // After the turn_end event: a notice delivered at once starts the peer's next turn, which must come after it.
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
         }
-        // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn.
-        if (definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
-        if (definitionOf(e.peer)?.turnEnd !== "native-hook") { // Claude's native turn end is its Stop hook
+        // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn. A launcher-bound pull-only native turn follows the same rule.
+        const nativeFactsTurn = nativeHookLaunches.current(e.peer) !== undefined && bus.peers.get(e.peer)?.pullOnly === true;
+        if (!nativeFactsTurn && (definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start)) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
+        if (!nativeFactsTurn && definitionOf(e.peer)?.turnEnd !== "native-hook") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());
           tasks.cohorts.turnEnded(e.peer);
@@ -10400,13 +10446,24 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "native_hook_launch": {
         if (c.role !== "console" || typeof msg.peer !== "string" || !definitionOf(msg.peer)?.hooks?.factsHook) return void reply({ ok: false, error: "managed native launch requires the person and a supported hook adapter" });
-        if (msg.op === "end") return void reply({ ok: nativeHookLaunches.end(msg.peer, msg.launchId) });
+        if (msg.op === "end") {
+          const launch = nativeHookLaunches.get(msg.peer, msg.launchId);
+          if (!launch) return void reply({ ok: false });
+          const run = runs.get(msg.peer);
+          if (run) {
+            if (budget.record(msg.peer)) completionStore.dropRun(run.runTurn);
+            else completionDone(msg.peer, run, "interrupted");
+            runs.close(msg.peer);
+          }
+          return void reply({ ok: nativeHookLaunches.end(msg.peer, msg.launchId) });
+        }
         if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding native launches" });
         if (!membershipAllowed(msg.peer)) return void reply({ ok: false, error: "peer is off roster" });
         if (msg.op !== "begin") return void reply({ ok: false, error: "unknown native launch operation" });
+        if (msg.nativeHome !== undefined && (typeof msg.nativeHome !== "string" || !isAbsolute(msg.nativeHome) || msg.nativeHome.length > 4096 || /[\u0000-\u001f\u007f]/.test(msg.nativeHome))) return void reply({ ok: false, error: "native home must be an absolute control-free path" });
         const owner = bus.peers.get(msg.peer);
         if (owner && owner.state !== "offline") return void reply({ ok: false, error: "native peer is already attached; end it in its terminal first" });
-        try { return void reply({ ok: true, launchId: nativeHookLaunches.begin(msg.peer, sock).id, instanceId }); }
+        try { return void reply({ ok: true, launchId: nativeHookLaunches.begin(msg.peer, sock, typeof msg.nativeHome === "string" ? msg.nativeHome : undefined).id, instanceId }); }
         catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       }
       case "native_facts": {
@@ -10415,40 +10472,48 @@ export async function startDaemon(opts: DaemonOptions) {
         const launch = nativeHookLaunches.get(peer, msg.nativeLaunchId);
         const native = typeof msg.event === "string" ? port.decode(msg.event, msg.payload) : undefined;
         if (!launch || !native || !native.workspacePaths.every(root => { try { return realPath(root) === realPath(opts.cwd); } catch { return false; } })) return void reply({ ok: false });
+        if (launch.home && native.transcriptPath !== join(launch.home, "session_index.jsonl")) return void reply({ ok: false });
         if (launch.session && launch.session !== native.sessionId) return void reply({ ok: false });
         launch.session = native.sessionId;
         const owner = bus.peers.get(peer);
         if (!isWsPeer(owner) || owner.state === "offline" && !owner.claiming) return void reply({ ok: false });
         if (launch.generation && launch.generation !== owner.sessionGeneration) return void reply({ ok: false });
         launch.generation = owner.sessionGeneration;
+        launch.transcript = native.transcriptPath;
         const current = () => !stopping && nativeHookLaunches.get(peer, msg.nativeLaunchId) === launch && bus.peers.get(peer) === owner && owner.sessionGeneration === launch.generation && owner.state !== "offline";
         // Preserve the start baseline at observation, even if native output is flushed before recall allows attach.
         const readback = port.read(native.sessionId, native.transcriptPath);
         const apply = () => {
           if (!current()) return void reply({ ok: false });
           if (factsOn()) { factSession(peer, native.sessionId); for (const id of readback.factIds) acked(peer, id, "native-hook"); }
+          if (native.event === "TurnStarted") {
+            const started = readback.started;
+            if (!started) return void reply({ ok: false });
+            if (launch.active && launch.turn === started.id) return void reply({ ok: true });
+            if (readback.completion && readback.completion.index >= started.index) return void reply({ ok: true });
+            launch.active = true; launch.turn = started.id; launch.baseline = started.index - 1;
+            pendingNativePerson.delete(peer);
+            if (started.origin === "user") pendingNativePerson.add(peer);
+            activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+          }
           if (native.event === "PreInvocation" || native.event === "PreToolUse") {
             if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
             activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
           }
-          if (native.event === "Stop") {
-            if (!launch.active || !native.fullyIdle || native.terminationReason !== "NO_TOOL_CALL") return void reply({ ok: false });
-            // Native output can be flushed after its Stop command returns. Acknowledge observation, then wait for
-            // a fresh completion row while the same launcher/session/socket generation still owns the turn.
-            const turn = launch.turn, baseline = launch.baseline ?? -1;
+          if (native.event === "Stop" || native.event === "StopFailure" || native.event === "Interrupt") {
+            if (!launch.active || native.event === "Stop" && native.terminationReason !== undefined && (native.fullyIdle !== true || native.terminationReason !== "NO_TOOL_CALL")) return void reply({ ok: false });
+            // A hook is only the candidate. The final native turn and prompt rows, correlated by id and reason, are the completion evidence.
+            const turn = launch.turn, baseline = launch.baseline ?? -1, expected = native.event === "StopFailure" ? "failed" : native.event === "Interrupt" ? "cancelled" : "completed";
             reply({ ok: true, pending: true });
             void (async () => {
               const deadline = Date.now() + 2000;
               let delay = 5;
-              // ponytail: an unverified Stop may re-read up to 4 MiB per poll within this 2 s wait.
+              // ponytail: an unverified Stop may re-read up to 8 MiB per poll within this 2 s wait.
               // Upgrade: cache unchanged transcript evidence within the wait.
               while (current() && launch.active && launch.turn === turn) {
                 const completion = port.read(native.sessionId, native.transcriptPath).completion;
-                if (completion && completion.index > baseline && completion.id !== launch.completed) {
-                  launch.completed = completion.id; launch.active = false;
-                  turnEnded.set(peer, Date.now()); nativeCompletedAt.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
-                  event({ type: "native_turn_end", peer, id: completion.id }); owner.nativeStopped(native.sessionId);
-                  try { if (runs.get(peer)) { runs.signalled(peer); settleCheck(peer); } } catch { log(`completion settle for ${peer} failed`); } // #1054: the verified native Stop
+                if (completion && completion.index > baseline && completion.id !== launch.completed && (completion.reason ?? "completed") === expected) {
+                  completeNativeTurn(peer, launch, completion);
                   return;
                 }
                 if (Date.now() >= deadline) { notify(`${peer}: native completion could not be verified; it stays busy until a verified turn end or detach`); return; }
@@ -10457,6 +10522,8 @@ export async function startDaemon(opts: DaemonOptions) {
             })().catch(() => log("managed native completion unavailable"));
             return;
           }
+          if (native.event === "TaskStarted") activeAt.set(peer, Date.now());
+          if (native.event === "TaskStarted" || native.event === "Notification") settleCheck(peer);
           const offered = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
           // The decoded native read (agy view_file or read_file, as `Read`) is a peer fact: its target is observed before it runs and the
           // view moves after it. Nothing is offered here: agy's hook encodes an offer only on SessionStart/PreInvocation.

@@ -44,7 +44,7 @@ var __esm = (fn, res, err) => () => {
   return res;
 };
 
-// node_modules/@staix/agent-mem/src/memory/platform.ts
+// ../../node_modules/@staix/agent-mem/src/memory/platform.ts
 import { realpathSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
 import { createRequire } from "module";
@@ -346,6 +346,15 @@ var init_compat = __esm(() => {
       parse: (out) => plain(out.trim()),
       trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven.",
       receipt: "docs/verification/2026-11-06-kimi-251-reviewer-compat.md"
+    },
+    "kimi-tui": {
+      label: "Kimi TUI completion facts",
+      verified: ["2.5.2"],
+      gate: "contract",
+      probe: ["kimi", "--version"],
+      parse: (out) => plain(out.trim()),
+      trustNote: "Only 2.5.2 has a live receipt for turn.prompt/turn.ended/prompt completion rows, background task inventory and launcher-bound plugin hooks. Another version keeps completion receipts disabled.",
+      receipt: "docs/verification/2026-11-08-kimi-tui-completion-1282.md"
     },
     jcode: {
       label: "Jcode",
@@ -6080,7 +6089,16 @@ var init_session = __esm(() => {
 });
 
 // src/hub/permission-mode.ts
-var PERMISSION_MODES, isPermissionMode = (value) => typeof value === "string" && PERMISSION_MODES.includes(value), PI_EDIT_TOOLS, AGENT_CONFIG_SEGMENTS, INSTRUCTION_FILES, foldSegment = (segment) => segment.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "").toLowerCase().toUpperCase().toLowerCase(), HUB_WRITE_SEGMENTS, isHubWritePath = (path) => path.split(/[\\/]/).some((segment) => HUB_WRITE_SEGMENTS.has(foldSegment(segment)));
+import { lstatSync as lstatSync9 } from "fs";
+function hardLinked(path) {
+  try {
+    const st = lstatSync9(path);
+    return st.isFile() && st.nlink > 1;
+  } catch {
+    return false;
+  }
+}
+var PERMISSION_MODES, isPermissionMode = (value) => typeof value === "string" && PERMISSION_MODES.includes(value), PI_EDIT_TOOLS, AGENT_CONFIG_SEGMENTS, INSTRUCTION_FILES, isInstructionPath = (path) => path.split(/[\\/]/).some((segment) => INSTRUCTION_FILES.has(foldSegment(segment))), foldSegment = (segment) => segment.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "").toLowerCase().toUpperCase().toLowerCase(), HUB_WRITE_SEGMENTS, isHubWritePath = (path) => path.split(/[\\/]/).some((segment) => HUB_WRITE_SEGMENTS.has(foldSegment(segment))), isAgentConfigPath = (path) => path.split(/[\\/]/).some((segment) => AGENT_CONFIG_SEGMENTS.has(foldSegment(segment)));
 var init_permission_mode = __esm(() => {
   init_registry();
   init_kimi_native();
@@ -6093,11 +6111,11 @@ var init_permission_mode = __esm(() => {
 });
 
 // src/hub/path-policy.ts
-import { accessSync, constants as constants4, lstatSync as lstatSync9, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
+import { accessSync, constants as constants4, lstatSync as lstatSync10, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
 import { dirname as dirname7, isAbsolute as isAbsolute5, join as join11, relative as relative3, resolve as resolve8, sep as sep2 } from "path";
 function existing(path) {
   try {
-    lstatSync9(path);
+    lstatSync10(path);
     return true;
   } catch (error) {
     if (error.code === "ENOENT")
@@ -6146,7 +6164,7 @@ function directAliasTarget(path) {
         return;
       ancestor = parent;
     }
-    if (!lstatSync9(ancestor).isSymbolicLink())
+    if (!lstatSync10(ancestor).isSymbolicLink())
       return;
     target = resolve8(dirname7(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
   }
@@ -6649,7 +6667,7 @@ var init_text_projection = __esm(() => {
 });
 
 // src/local/doc-read.ts
-import { lstatSync as lstatSync10 } from "fs";
+import { lstatSync as lstatSync11 } from "fs";
 import { extname } from "path";
 function docRead(file, shown, args, port, cwd) {
   const projections = port.projections();
@@ -6659,7 +6677,7 @@ function docRead(file, shown, args, port, cwd) {
   }
   let st;
   try {
-    st = lstatSync10(file);
+    st = lstatSync11(file);
   } catch {
     return `error: ${shown} cannot be read`;
   }
@@ -6982,7 +7000,7 @@ var init_web_fetch = __esm(() => {
 });
 
 // src/local/tools.ts
-import { lstatSync as lstatSync11, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
+import { lstatSync as lstatSync12, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname10, join as join13, relative as relative4, resolve as resolve10 } from "path";
 function guardPath(ctx, path, mode) {
   const root = realPath(ctx.cwd);
@@ -7005,7 +7023,7 @@ function guardPath(ctx, path, mode) {
     throw new Error(`${path} is on the secrets denylist`);
   if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed)))
     throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && ctx.readOnly?.length && (lstatSync11(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync12(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? []))
     throw new Error("target is protected by data.readonly");
@@ -7181,7 +7199,7 @@ note: the sandbox does not let you move a branch, tag or HEAD, or stage inside a
 }
 var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, lexists = (p) => {
   try {
-    lstatSync11(p);
+    lstatSync12(p);
     return true;
   } catch {
     return false;
@@ -9514,7 +9532,7 @@ var init_shipped_roles = __esm(() => {
 
 // src/hub/roles.ts
 import { createHash as createHash5 } from "crypto";
-import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync12, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
+import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync13, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
 import { join as join15 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
@@ -9596,7 +9614,7 @@ function loadRoleCatalog(cwd) {
   try {
     const config = join15(cwd, ".agenthub"), dir = join15(config, "roles");
     for (const path of [config, dir]) {
-      const stat = lstatSync12(path);
+      const stat = lstatSync13(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error("unsafe role directory");
     }
@@ -10438,30 +10456,30 @@ var init_review_comments = __esm(() => {
   init_review_anchor();
 });
 
-// node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
+// ../../node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
 var init_public_prune_view = __esm(() => {
   init_generation();
   init_platform();
 });
-// node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
+// ../../node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
 var MAX_LOG_BYTES;
 var init_lifecycle_log = __esm(() => {
   MAX_LOG_BYTES = 8 * 1024 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/aliases.ts
+// ../../node_modules/@staix/agent-mem/src/memory/aliases.ts
 var init_aliases = __esm(() => {
   init_lifecycle_log();
 });
 
-// node_modules/@staix/agent-mem/src/memory/profile-lock-diagnostic.ts
+// ../../node_modules/@staix/agent-mem/src/memory/profile-lock-diagnostic.ts
 var recognised;
 var init_profile_lock_diagnostic = __esm(() => {
   init_platform();
   recognised = new WeakMap;
 });
 
-// node_modules/@staix/agent-mem/src/memory/shard.ts
+// ../../node_modules/@staix/agent-mem/src/memory/shard.ts
 var init_shard = __esm(() => {
   init_sync_placement_active();
   init_sync_placement_format();
@@ -10473,7 +10491,7 @@ var init_shard = __esm(() => {
   init_aliases();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-format.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-format.ts
 var METADATA_MAX, WIRE_MAX;
 var init_sync_placement_format = __esm(() => {
   init_generation();
@@ -10482,14 +10500,14 @@ var init_sync_placement_format = __esm(() => {
   WIRE_MAX = 64 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/mutation.ts
+// ../../node_modules/@staix/agent-mem/src/memory/mutation.ts
 var mutations;
 var init_mutation = __esm(() => {
   init_platform();
   mutations = new WeakMap;
 });
 
-// node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
+// ../../node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
 var PUBLIC_PRUNE_REPLAY_MAX_BYTES;
 var init_public_prune_input_chain = __esm(() => {
   init_generation();
@@ -10497,7 +10515,7 @@ var init_public_prune_input_chain = __esm(() => {
   PUBLIC_PRUNE_REPLAY_MAX_BYTES = 256 * 1024 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/generation.ts
+// ../../node_modules/@staix/agent-mem/src/memory/generation.ts
 var init_generation = __esm(() => {
   init_sync_placement_format();
   init_sync_placement_guard();
@@ -10509,21 +10527,21 @@ var init_generation = __esm(() => {
   init_profile_lock_diagnostic();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-plan.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-plan.ts
 var init_sync_placement_plan = __esm(() => {
   init_generation();
   init_sync_placement_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/screen.ts
+// ../../node_modules/@staix/agent-mem/src/memory/screen.ts
 var init_screen = () => {};
 
-// node_modules/@staix/agent-mem/src/memory/project.ts
+// ../../node_modules/@staix/agent-mem/src/memory/project.ts
 var init_project2 = __esm(() => {
   init_platform();
 });
 
-// node_modules/@staix/agent-mem/src/memory/policy.ts
+// ../../node_modules/@staix/agent-mem/src/memory/policy.ts
 var MAX_BYTES3, MAX_STRING_BYTES, flags;
 var init_policy = __esm(() => {
   init_screen();
@@ -10534,7 +10552,7 @@ var init_policy = __esm(() => {
   flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-journal-format.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-journal-format.ts
 var PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_ROOT_MAX_BYTES;
 var init_sync_placement_journal_format = __esm(() => {
   init_generation();
@@ -10544,7 +10562,7 @@ var init_sync_placement_journal_format = __esm(() => {
   PLACEMENT_JOURNAL_ROOT_MAX_BYTES = 256 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-active.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-active.ts
 var init_sync_placement_active = __esm(() => {
   init_generation();
   init_platform();
@@ -10555,7 +10573,7 @@ var init_sync_placement_active = __esm(() => {
   init_public_prune_input_chain();
   init_shard();
 });
-// node_modules/@staix/agent-mem/src/memory/sync-placement-guard.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-guard.ts
 var init_sync_placement_guard = __esm(() => {
   init_sync_placement_active();
   init_generation();
@@ -10564,7 +10582,7 @@ var init_sync_placement_guard = __esm(() => {
   init_profile_lock_diagnostic();
 });
 
-// node_modules/@staix/agent-mem/src/memory/formats.ts
+// ../../node_modules/@staix/agent-mem/src/memory/formats.ts
 import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, openSync as openSync7, readFileSync as readFileSync8, readSync as readSync5 } from "fs";
 var MAX_BYTES4, SEMVER, READER_VERSION;
 var init_formats = __esm(() => {
@@ -10580,7 +10598,7 @@ var init_formats = __esm(() => {
   })();
 });
 
-// node_modules/@staix/agent-mem/src/memory/ops-contract.ts
+// ../../node_modules/@staix/agent-mem/src/memory/ops-contract.ts
 function current(op, fields, required, placement, targets, precedence, legacyOptional = []) {
   const keys = [...Object.keys(base), ...required];
   return Object.freeze({
@@ -10754,7 +10772,7 @@ var init_ops_contract = __esm(() => {
   GENERATION_OP_CONTRACTS = Object.freeze({ prune: PRUNE_GENERATION_CONTRACT, vault_link: VAULT_LINK_GENERATION_CONTRACT });
 });
 
-// node_modules/@staix/agent-mem/src/memory/bridge.ts
+// ../../node_modules/@staix/agent-mem/src/memory/bridge.ts
 var init_bridge = __esm(() => {
   init_platform();
   init_generation();
@@ -10762,45 +10780,45 @@ var init_bridge = __esm(() => {
   init_store();
 });
 
-// node_modules/@staix/agent-mem/src/memory/shard-bridge.ts
+// ../../node_modules/@staix/agent-mem/src/memory/shard-bridge.ts
 var init_shard_bridge = __esm(() => {
   init_bridge();
 });
 
-// node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
+// ../../node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "async_hooks";
 var scope;
 var init_cli_attribution = __esm(() => {
   scope = new AsyncLocalStorage2;
 });
 
-// node_modules/@staix/agent-mem/src/memory/private-spans.ts
+// ../../node_modules/@staix/agent-mem/src/memory/private-spans.ts
 var init_private_spans = () => {};
 
-// node_modules/@staix/agent-mem/src/memory/config.ts
+// ../../node_modules/@staix/agent-mem/src/memory/config.ts
 var MAX_CONFIG_BYTES2;
 var init_config = __esm(() => {
   init_policy();
   MAX_CONFIG_BYTES2 = 64 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/home.ts
+// ../../node_modules/@staix/agent-mem/src/memory/home.ts
 var init_home = __esm(() => {
   init_platform();
   init_config();
 });
 
-// node_modules/@staix/agent-mem/src/memory/machine.ts
+// ../../node_modules/@staix/agent-mem/src/memory/machine.ts
 var init_machine = () => {};
 
-// node_modules/@staix/agent-mem/src/memory/lifecycle.ts
+// ../../node_modules/@staix/agent-mem/src/memory/lifecycle.ts
 var init_lifecycle = __esm(() => {
   init_aliases();
   init_lifecycle_log();
   init_shard();
 });
 
-// node_modules/@staix/agent-mem/src/memory/search-score.ts
+// ../../node_modules/@staix/agent-mem/src/memory/search-score.ts
 function sql(expr, rank) {
   const get = (part) => sql(part, rank);
   switch (expr.op) {
@@ -10836,7 +10854,7 @@ var init_search_score = __esm(() => {
   SCORE = { op: "multiply", left: { op: "multiply", left: { op: "negative", value: { op: "rank" } }, right: TIER_FACTOR }, right: RECENCY_FACTOR };
 });
 
-// node_modules/@staix/agent-mem/src/memory/search-fts.ts
+// ../../node_modules/@staix/agent-mem/src/memory/search-fts.ts
 var SCREENED_SCORE, SCREENED_SUBSTRING_SCORE;
 var init_search_fts = __esm(() => {
   init_search_score();
@@ -10844,7 +10862,7 @@ var init_search_fts = __esm(() => {
   SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
 });
 
-// node_modules/@staix/agent-mem/src/memory/capture-input.ts
+// ../../node_modules/@staix/agent-mem/src/memory/capture-input.ts
 var TOOL_INPUT_OMIT;
 var init_capture_input = __esm(() => {
   init_screen();
@@ -10853,7 +10871,7 @@ var init_capture_input = __esm(() => {
   TOOL_INPUT_OMIT = new Set(["content", "old_string", "new_string", "edits"]);
 });
 
-// node_modules/@staix/agent-mem/src/memory/capture.ts
+// ../../node_modules/@staix/agent-mem/src/memory/capture.ts
 var SPOOL_MAX_BYTES;
 var init_capture = __esm(() => {
   init_formats();
@@ -10870,7 +10888,7 @@ var init_capture = __esm(() => {
   SPOOL_MAX_BYTES = 256 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/style.ts
+// ../../node_modules/@staix/agent-mem/src/memory/style.ts
 function style(color) {
   return { color, ok: wrap(color, 32, 39), attention: wrap(color, 33, 39), error: wrap(color, 31, 39), dim: wrap(color, 2, 22), bold: wrap(color, 1, 22) };
 }
@@ -10879,21 +10897,21 @@ var init_style = __esm(() => {
   PLAIN = style(false);
 });
 
-// node_modules/@staix/agent-mem/src/memory/prune.ts
+// ../../node_modules/@staix/agent-mem/src/memory/prune.ts
 var init_prune = __esm(() => {
   init_generation();
   init_store();
   init_style();
 });
 
-// node_modules/@staix/agent-mem/src/memory/public-prune-witness.ts
+// ../../node_modules/@staix/agent-mem/src/memory/public-prune-witness.ts
 var init_public_prune_witness = __esm(() => {
   init_generation();
   init_prune();
   init_shard_sync_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/shard-sync-format.ts
+// ../../node_modules/@staix/agent-mem/src/memory/shard-sync-format.ts
 var SHARD_PACK_MAX_BYTES;
 var init_shard_sync_format = __esm(() => {
   init_sync_placement_format();
@@ -10906,7 +10924,7 @@ var init_shard_sync_format = __esm(() => {
   SHARD_PACK_MAX_BYTES = 1024 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/public-prune-inputs.ts
+// ../../node_modules/@staix/agent-mem/src/memory/public-prune-inputs.ts
 var PUBLIC_PRUNE_GRAPH_MAX_BYTES, OBJECT_MAX, plans, batches;
 var init_public_prune_inputs = __esm(() => {
   init_generation();
@@ -10924,7 +10942,7 @@ var init_public_prune_inputs = __esm(() => {
   batches = new WeakMap;
 });
 
-// node_modules/@staix/agent-mem/src/memory/generation-index.ts
+// ../../node_modules/@staix/agent-mem/src/memory/generation-index.ts
 var init_generation_index = __esm(() => {
   init_public_prune_inputs();
   init_public_prune_view();
@@ -10936,7 +10954,7 @@ var init_generation_index = __esm(() => {
   init_store();
 });
 
-// node_modules/@staix/agent-mem/src/memory/migrate.ts
+// ../../node_modules/@staix/agent-mem/src/memory/migrate.ts
 var init_migrate = __esm(() => {
   init_bridge();
   init_mutation();
@@ -10945,7 +10963,7 @@ var init_migrate = __esm(() => {
   init_style();
 });
 
-// node_modules/@staix/agent-mem/src/memory/reader-lease.ts
+// ../../node_modules/@staix/agent-mem/src/memory/reader-lease.ts
 var open;
 var init_reader_lease = __esm(() => {
   init_generation();
@@ -10956,7 +10974,7 @@ var init_reader_lease = __esm(() => {
   open = new Map;
 });
 
-// node_modules/@staix/agent-mem/src/memory/store.ts
+// ../../node_modules/@staix/agent-mem/src/memory/store.ts
 var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
 var init_store = __esm(() => {
   init_sync_placement_guard();
@@ -10988,7 +11006,7 @@ var init_store = __esm(() => {
   MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
 });
 
-// node_modules/@staix/agent-mem/src/memory/catalog.ts
+// ../../node_modules/@staix/agent-mem/src/memory/catalog.ts
 var init_catalog = __esm(() => {
   init_home();
   init_shard();
@@ -10998,13 +11016,13 @@ var init_catalog = __esm(() => {
   init_lifecycle();
 });
 
-// node_modules/@staix/agent-mem/src/memory/metrics.ts
+// ../../node_modules/@staix/agent-mem/src/memory/metrics.ts
 var METRICS_MAX_BYTES;
 var init_metrics = __esm(() => {
   METRICS_MAX_BYTES = 64 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/capacity.ts
+// ../../node_modules/@staix/agent-mem/src/memory/capacity.ts
 var init_capacity = __esm(() => {
   init_home();
   init_metrics();
@@ -11015,25 +11033,25 @@ var init_capacity = __esm(() => {
   init_style();
 });
 
-// node_modules/@staix/agent-mem/src/memory/usage.ts
+// ../../node_modules/@staix/agent-mem/src/memory/usage.ts
 var init_usage = __esm(() => {
   init_catalog();
 });
 
-// node_modules/@staix/agent-mem/src/memory/gc.ts
+// ../../node_modules/@staix/agent-mem/src/memory/gc.ts
 var init_gc = __esm(() => {
   init_capture();
   init_catalog();
   init_lifecycle();
 });
 
-// node_modules/@staix/agent-mem/src/memory/curated-read.ts
+// ../../node_modules/@staix/agent-mem/src/memory/curated-read.ts
 var init_curated_read = __esm(() => {
   init_store();
   init_shard();
 });
 
-// node_modules/@staix/agent-mem/src/memory/work-lists.ts
+// ../../node_modules/@staix/agent-mem/src/memory/work-lists.ts
 var forbidden;
 var init_work_lists = __esm(() => {
   init_formats();
@@ -11047,7 +11065,7 @@ var init_work_lists = __esm(() => {
   forbidden = new Set(["__proto__", "constructor", "prototype"]);
 });
 
-// node_modules/@staix/agent-mem/src/memory/project-export.ts
+// ../../node_modules/@staix/agent-mem/src/memory/project-export.ts
 var init_project_export = __esm(() => {
   init_catalog();
   init_curated_read();
@@ -11059,7 +11077,7 @@ var init_project_export = __esm(() => {
   init_work_lists();
 });
 
-// node_modules/@staix/agent-mem/src/memory/project-import.ts
+// ../../node_modules/@staix/agent-mem/src/memory/project-import.ts
 var PROJECT_IMPORT_MAX_BYTES, PROJECT_IMPORT_MAX_LINE_BYTES, PROJECT_IMPORT_FUTURE_SKEW_MS, NOTE_KEYS;
 var init_project_import = __esm(() => {
   init_bridge();
@@ -11073,7 +11091,7 @@ var init_project_import = __esm(() => {
   NOTE_KEYS = new Set(["schema", "id", "at", "machine", "op", "project", "scope", "tier", "kind", "peer", "title", "text", "task", "about", "supersedes", "promotedFrom", "source", "expires"]);
 });
 
-// node_modules/@staix/agent-mem/src/memory/candidate-pending.ts
+// ../../node_modules/@staix/agent-mem/src/memory/candidate-pending.ts
 var CANDIDATE_AGE_MS, CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_DUE_MS;
 var init_candidate_pending = __esm(() => {
   CANDIDATE_AGE_MS = 30 * 86400000;
@@ -11081,13 +11099,13 @@ var init_candidate_pending = __esm(() => {
   CANDIDATE_DUE_MS = 7 * 86400000;
 });
 
-// node_modules/@staix/agent-mem/src/memory/note-add.ts
+// ../../node_modules/@staix/agent-mem/src/memory/note-add.ts
 var init_note_add = __esm(() => {
   init_store();
   init_cli_attribution();
 });
 
-// node_modules/@staix/agent-mem/src/memory/candidates.ts
+// ../../node_modules/@staix/agent-mem/src/memory/candidates.ts
 var CANDIDATE_RETENTION, COUNTER_RETENTION;
 var init_candidates = __esm(() => {
   init_formats();
@@ -11101,7 +11119,7 @@ var init_candidates = __esm(() => {
   COUNTER_RETENTION = { count: 1e4, ageMs: 90 * 86400000 };
 });
 
-// node_modules/@staix/agent-mem/src/memory/external-import.ts
+// ../../node_modules/@staix/agent-mem/src/memory/external-import.ts
 var EXTERNAL_IMPORT_LIMITS;
 var init_external_import = __esm(() => {
   init_aliases();
@@ -11113,7 +11131,7 @@ var init_external_import = __esm(() => {
   EXTERNAL_IMPORT_LIMITS = { maxFiles: 256, maxDirectories: 512, maxEntriesPerDirectory: 512, maxDepth: 16, maxFileBytes: 1024 * 1024, maxCandidatesPerRun: 100, candidateTextChars: 3000, titleChars: 200 };
 });
 
-// node_modules/@staix/agent-mem/src/memory/vault.ts
+// ../../node_modules/@staix/agent-mem/src/memory/vault.ts
 var init_vault = __esm(() => {
   init_generation();
   init_policy();
@@ -11121,7 +11139,7 @@ var init_vault = __esm(() => {
   init_generation();
 });
 
-// node_modules/@staix/agent-mem/src/memory/cross-project.ts
+// ../../node_modules/@staix/agent-mem/src/memory/cross-project.ts
 var init_cross_project = __esm(() => {
   init_search_fts();
   init_capture();
@@ -11131,7 +11149,7 @@ var init_cross_project = __esm(() => {
   init_vault();
 });
 
-// node_modules/@staix/agent-mem/src/memory/generation-sync.ts
+// ../../node_modules/@staix/agent-mem/src/memory/generation-sync.ts
 var zero;
 var init_generation_sync = __esm(() => {
   init_sync_placement_guard();
@@ -11144,7 +11162,7 @@ var init_generation_sync = __esm(() => {
   zero = "0".repeat(40);
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-screen.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-screen.ts
 var SYNC_SCREEN_MAX_BYTES, GENERATED;
 var init_sync_screen = __esm(() => {
   init_ops_contract();
@@ -11156,10 +11174,10 @@ var init_sync_screen = __esm(() => {
   GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "promotedFrom", "supersedes", "expires", "tier", "scope", "kind", "source"]);
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-binding.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-binding.ts
 var init_sync_binding = () => {};
 
-// node_modules/@staix/agent-mem/src/memory/sync.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync.ts
 var liveGroups;
 var init_sync = __esm(() => {
   init_sync_placement_guard();
@@ -11174,7 +11192,7 @@ var init_sync = __esm(() => {
   liveGroups = new Set;
 });
 
-// node_modules/@staix/agent-mem/src/memory/import.ts
+// ../../node_modules/@staix/agent-mem/src/memory/import.ts
 var init_import = __esm(() => {
   init_platform();
   init_store();
@@ -11186,13 +11204,13 @@ var init_import = __esm(() => {
   init_policy();
   init_private_spans();
 });
-// node_modules/@staix/agent-mem/src/memory/consolidation-clusters.ts
+// ../../node_modules/@staix/agent-mem/src/memory/consolidation-clusters.ts
 var init_consolidation_clusters = __esm(() => {
   init_search_fts();
   init_candidates();
 });
 
-// node_modules/@staix/agent-mem/src/memory/forget-nearby.ts
+// ../../node_modules/@staix/agent-mem/src/memory/forget-nearby.ts
 var init_forget_nearby = __esm(() => {
   init_machine();
   init_shard();
@@ -11202,7 +11220,7 @@ var init_forget_nearby = __esm(() => {
   init_work_lists();
 });
 
-// node_modules/@staix/agent-mem/src/memory/commands.ts
+// ../../node_modules/@staix/agent-mem/src/memory/commands.ts
 var AMEM_NAMES, memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`, MEMORY_USAGE, goalUsage = (name = AMEM_NAMES.goal) => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`, GOAL_USAGE;
 var init_commands = __esm(() => {
   init_cli_attribution();
@@ -11217,7 +11235,7 @@ var init_commands = __esm(() => {
   GOAL_USAGE = goalUsage();
 });
 
-// node_modules/@staix/agent-mem/src/memory/shard-migration.ts
+// ../../node_modules/@staix/agent-mem/src/memory/shard-migration.ts
 var USER2;
 var init_shard_migration = __esm(() => {
   init_bridge();
@@ -11234,7 +11252,7 @@ var init_shard_migration = __esm(() => {
   USER2 = Symbol("shared-user-shard");
 });
 
-// node_modules/@staix/agent-mem/src/mcp.ts
+// ../../node_modules/@staix/agent-mem/src/mcp.ts
 var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLength }), limit, object7 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false }), tool = (name, description, inputSchema, readOnlyHint = true) => ({
   name,
   description,
@@ -11273,30 +11291,30 @@ var init_mcp = __esm(() => {
   ];
 });
 
-// node_modules/@staix/agent-mem/src/memory/evidence.ts
+// ../../node_modules/@staix/agent-mem/src/memory/evidence.ts
 var init_evidence = __esm(() => {
   init_policy();
 });
 
-// node_modules/@staix/agent-mem/src/memory/plan-guard.ts
+// ../../node_modules/@staix/agent-mem/src/memory/plan-guard.ts
 var init_plan_guard = __esm(() => {
   init_store();
   init_project2();
 });
 
-// node_modules/@staix/agent-mem/src/memory/intent-brief.ts
+// ../../node_modules/@staix/agent-mem/src/memory/intent-brief.ts
 var init_intent_brief = __esm(() => {
   init_plan_guard();
   init_policy();
 });
 
-// node_modules/@staix/agent-mem/src/memory/recall-staleness.ts
+// ../../node_modules/@staix/agent-mem/src/memory/recall-staleness.ts
 var init_recall_staleness = __esm(() => {
   init_platform();
   init_policy();
   init_project2();
 });
-// node_modules/@staix/agent-mem/src/memory/candidate-overlaps.ts
+// ../../node_modules/@staix/agent-mem/src/memory/candidate-overlaps.ts
 var init_candidate_overlaps = __esm(() => {
   init_consolidation_clusters();
   init_policy();
@@ -11304,12 +11322,12 @@ var init_candidate_overlaps = __esm(() => {
   init_shard();
 });
 
-// node_modules/@staix/agent-mem/src/memory/path-glob.ts
+// ../../node_modules/@staix/agent-mem/src/memory/path-glob.ts
 var init_path_glob = __esm(() => {
   init_project2();
 });
 
-// node_modules/@staix/agent-mem/src/memory/repo-scope.ts
+// ../../node_modules/@staix/agent-mem/src/memory/repo-scope.ts
 var REPO_DIR = ".amem", REPO_LOG = "log.jsonl", REPO_ATTRIBUTES_LINE, MAX_LINE_BYTES, MAX_FILE_BYTES, MAX_CONFIG_BYTES3;
 var init_repo_scope = __esm(() => {
   init_platform();
@@ -11323,7 +11341,7 @@ var init_repo_scope = __esm(() => {
   MAX_CONFIG_BYTES3 = 1024 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/mcp-memory.ts
+// ../../node_modules/@staix/agent-mem/src/mcp-memory.ts
 var init_mcp_memory = __esm(() => {
   init_evidence();
   init_intent_brief();
@@ -11348,22 +11366,22 @@ var init_mcp_memory = __esm(() => {
   init_work_lists();
 });
 
-// node_modules/@staix/agent-mem/src/hook-resources.ts
+// ../../node_modules/@staix/agent-mem/src/hook-resources.ts
 var init_hook_resources = () => {};
 
-// node_modules/@staix/agent-mem/src/hook-git.ts
+// ../../node_modules/@staix/agent-mem/src/hook-git.ts
 var init_hook_git = __esm(() => {
   init_platform();
   init_platform();
 });
 
-// node_modules/@staix/agent-mem/src/hook-contract.ts
+// ../../node_modules/@staix/agent-mem/src/hook-contract.ts
 var HOOK_INPUT_BYTES;
 var init_hook_contract = __esm(() => {
   HOOK_INPUT_BYTES = 64 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/hook-spool.ts
+// ../../node_modules/@staix/agent-mem/src/hook-spool.ts
 var RECORD_BYTES, MAX_BYTES5, HOOK_REPLAY_MAX_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
 var init_hook_spool = __esm(() => {
   init_formats();
@@ -11384,7 +11402,7 @@ var init_hook_spool = __esm(() => {
   RETIRE_AFTER_MS = 7 * 24 * 3600000;
 });
 
-// node_modules/@staix/agent-mem/src/hook-native.ts
+// ../../node_modules/@staix/agent-mem/src/hook-native.ts
 var SUPERVISOR;
 var init_hook_native = __esm(() => {
   init_hook_resources();
@@ -11403,7 +11421,7 @@ var init_hook_native = __esm(() => {
   ].join("; ");
 });
 
-// node_modules/@staix/agent-mem/src/hook-project.ts
+// ../../node_modules/@staix/agent-mem/src/hook-project.ts
 var init_hook_project = __esm(() => {
   init_hook_resources();
   init_hook_git();
@@ -11414,18 +11432,18 @@ var init_hook_project = __esm(() => {
   init_hook_native();
 });
 
-// node_modules/@staix/agent-mem/src/hook-rss-wire.ts
+// ../../node_modules/@staix/agent-mem/src/hook-rss-wire.ts
 var init_hook_rss_wire = __esm(() => {
   init_hook_resources();
 });
 
-// node_modules/@staix/agent-mem/src/hook-jcode.ts
+// ../../node_modules/@staix/agent-mem/src/hook-jcode.ts
 var FIELD_BYTES;
 var init_hook_jcode = __esm(() => {
   FIELD_BYTES = 16 * 1024 + 64;
 });
 
-// node_modules/@staix/agent-mem/src/hooks.ts
+// ../../node_modules/@staix/agent-mem/src/hooks.ts
 var hookStartedAt;
 var init_hooks = __esm(() => {
   init_hook_project();
@@ -11445,7 +11463,7 @@ var init_hooks = __esm(() => {
   hookStartedAt = performance.now();
 });
 
-// node_modules/@staix/agent-mem/src/ingest.ts
+// ../../node_modules/@staix/agent-mem/src/ingest.ts
 var MAX_BYTES6, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
 var init_ingest = __esm(() => {
   init_capture();
@@ -11462,7 +11480,7 @@ var init_ingest = __esm(() => {
   MAX_RECORD = 256 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/session-brief.ts
+// ../../node_modules/@staix/agent-mem/src/session-brief.ts
 var init_session_brief = __esm(() => {
   init_generation();
   init_home();
@@ -11478,13 +11496,13 @@ var init_session_brief = __esm(() => {
   init_work_lists();
 });
 
-// node_modules/@staix/agent-mem/src/memory/decay-review.ts
+// ../../node_modules/@staix/agent-mem/src/memory/decay-review.ts
 var init_decay_review = __esm(() => {
   init_generation();
   init_candidates();
 });
 
-// node_modules/@staix/agent-mem/src/memory/goal-promotion.ts
+// ../../node_modules/@staix/agent-mem/src/memory/goal-promotion.ts
 var init_goal_promotion = __esm(() => {
   init_candidates();
   init_generation();
@@ -11493,14 +11511,14 @@ var init_goal_promotion = __esm(() => {
   init_shard();
 });
 
-// node_modules/@staix/agent-mem/src/memory/consolidation-model.ts
+// ../../node_modules/@staix/agent-mem/src/memory/consolidation-model.ts
 var init_consolidation_model = __esm(() => {
   init_candidates();
   init_policy();
   init_platform();
 });
 
-// node_modules/@staix/agent-mem/src/memory/consolidate.ts
+// ../../node_modules/@staix/agent-mem/src/memory/consolidate.ts
 var init_consolidate = __esm(() => {
   init_candidates();
   init_consolidation_clusters();
@@ -11509,7 +11527,7 @@ var init_consolidate = __esm(() => {
   init_consolidation_model();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-policy-inspection.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-policy-inspection.ts
 var init_sync_policy_inspection = __esm(() => {
   init_bridge();
   init_platform();
@@ -11521,7 +11539,7 @@ var init_sync_policy_inspection = __esm(() => {
   init_sync_screen();
 });
 
-// node_modules/@staix/agent-mem/src/memory/public-prune-activation.ts
+// ../../node_modules/@staix/agent-mem/src/memory/public-prune-activation.ts
 var MAX;
 var init_public_prune_activation = __esm(() => {
   init_generation();
@@ -11536,7 +11554,7 @@ var init_public_prune_activation = __esm(() => {
   MAX = 1024 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-activation-storage.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-activation-storage.ts
 var MAX_BYTES7;
 var init_sync_placement_activation_storage = __esm(() => {
   init_generation();
@@ -11549,7 +11567,7 @@ var init_sync_placement_activation_storage = __esm(() => {
   MAX_BYTES7 = 1024 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-activation-proof.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-activation-proof.ts
 var owners, captures;
 var init_sync_placement_activation_proof = __esm(() => {
   init_generation();
@@ -11560,19 +11578,19 @@ var init_sync_placement_activation_proof = __esm(() => {
   captures = new WeakMap;
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-publication-plan.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-publication-plan.ts
 var init_sync_placement_publication_plan = __esm(() => {
   init_generation();
   init_sync_placement_journal_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-projection.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-projection.ts
 var init_sync_placement_projection = __esm(() => {
   init_generation();
   init_sync_placement_journal_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-writers.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-writers.ts
 var MAX_BYTES8, MAX_PACKAGE;
 var init_sync_placement_writers = __esm(() => {
   init_generation();
@@ -11582,7 +11600,7 @@ var init_sync_placement_writers = __esm(() => {
   MAX_PACKAGE = 64 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-writer-revision-format.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-writer-revision-format.ts
 var WRITER_REVISION_MAX_BYTES, WRITER_COMMIT_MAX_BYTES, WRITER_RENEWAL_INTENT_MAX_BYTES;
 var init_sync_placement_writer_revision_format = __esm(() => {
   init_generation();
@@ -11593,7 +11611,7 @@ var init_sync_placement_writer_revision_format = __esm(() => {
   WRITER_RENEWAL_INTENT_MAX_BYTES = 1024 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-writer-history.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-writer-history.ts
 var init_sync_placement_writer_history = __esm(() => {
   init_generation();
   init_platform();
@@ -11601,7 +11619,7 @@ var init_sync_placement_writer_history = __esm(() => {
   init_sync_placement_writer_revision_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-journal-storage.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-journal-storage.ts
 var inflight, publicationDurability;
 var init_sync_placement_journal_storage = __esm(() => {
   init_generation();
@@ -11618,7 +11636,7 @@ var init_sync_placement_journal_storage = __esm(() => {
   publicationDurability = new WeakMap;
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-writer-roots.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-writer-roots.ts
 var MAX_BYTES9;
 var init_sync_placement_writer_roots = __esm(() => {
   init_generation();
@@ -11634,7 +11652,7 @@ var init_sync_placement_writer_roots = __esm(() => {
   MAX_BYTES9 = 256 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-prerequisites.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-prerequisites.ts
 var init_sync_placement_prerequisites = __esm(() => {
   init_platform();
   init_generation();
@@ -11644,7 +11662,7 @@ var init_sync_placement_prerequisites = __esm(() => {
   init_sync_placement_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-effective-writers.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-effective-writers.ts
 var init_sync_placement_effective_writers = __esm(() => {
   init_generation();
   init_sync_placement_guard();
@@ -11656,7 +11674,7 @@ var init_sync_placement_effective_writers = __esm(() => {
   init_sync_placement_prerequisites();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-capture.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-capture.ts
 var init_sync_placement_capture = __esm(() => {
   init_sync_placement_journal_format();
   init_generation();
@@ -11678,7 +11696,7 @@ var init_sync_placement_capture = __esm(() => {
   init_sync_placement_writer_revision_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-dependencies.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-dependencies.ts
 var init_sync_placement_dependencies = __esm(() => {
   init_bridge();
   init_generation();
@@ -11688,7 +11706,7 @@ var init_sync_placement_dependencies = __esm(() => {
   init_sync_placement_journal_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-git.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-git.ts
 var typedArrayPrototype, getBuffer, getOffset, getLength, mapSize;
 var init_sync_placement_git = __esm(() => {
   init_public_prune_input_chain();
@@ -11700,7 +11718,7 @@ var init_sync_placement_git = __esm(() => {
   mapSize = Object.getOwnPropertyDescriptor(Map.prototype, "size").get;
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-materialize.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-materialize.ts
 var init_sync_placement_materialize = __esm(() => {
   init_generation();
   init_sync_screen();
@@ -11712,20 +11730,20 @@ var init_sync_placement_materialize = __esm(() => {
   init_public_prune_witness();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-cache.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-cache.ts
 var init_sync_placement_cache = __esm(() => {
   init_generation();
   init_sync_placement_journal_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/shard-sync-graph.ts
+// ../../node_modules/@staix/agent-mem/src/memory/shard-sync-graph.ts
 var init_shard_sync_graph = __esm(() => {
   init_public_prune_inputs();
   init_shard_sync_format();
   init_public_prune_witness();
 });
 
-// node_modules/@staix/agent-mem/src/memory/shard-sync-history.ts
+// ../../node_modules/@staix/agent-mem/src/memory/shard-sync-history.ts
 var init_shard_sync_history = __esm(() => {
   init_generation();
   init_prune();
@@ -11734,7 +11752,7 @@ var init_shard_sync_history = __esm(() => {
   init_shard_sync_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-evidence.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-evidence.ts
 var init_sync_placement_inspection_evidence = __esm(() => {
   init_sync_placement_journal_storage();
   init_sync_placement_projection();
@@ -11750,7 +11768,7 @@ var init_sync_placement_inspection_evidence = __esm(() => {
   init_sync_placement_journal_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/prune-publisher-lineage.ts
+// ../../node_modules/@staix/agent-mem/src/memory/prune-publisher-lineage.ts
 var init_prune_publisher_lineage = __esm(() => {
   init_generation();
   init_mutation();
@@ -11760,7 +11778,7 @@ var init_prune_publisher_lineage = __esm(() => {
   init_sync_screen();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-pending.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-pending.ts
 var init_sync_placement_inspection_pending = __esm(() => {
   init_generation();
   init_platform();
@@ -11768,7 +11786,7 @@ var init_sync_placement_inspection_pending = __esm(() => {
   init_sync_placement_journal_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-inspection.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-inspection.ts
 var init_sync_placement_inspection = __esm(() => {
   init_bridge();
   init_generation();
@@ -11791,7 +11809,7 @@ var init_sync_placement_inspection = __esm(() => {
   init_sync_placement_writer_revision_format();
 });
 
-// node_modules/@staix/agent-mem/src/memory/sync-placement-journal.ts
+// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-journal.ts
 var init_sync_placement_journal = __esm(() => {
   init_sync_placement_format();
   init_sync_placement_active();
@@ -11810,14 +11828,14 @@ var init_sync_placement_journal = __esm(() => {
   init_sync_placement_writer_revision_format();
 });
 
-// node_modules/@staix/agent-mem/src/setup-toml.ts
+// ../../node_modules/@staix/agent-mem/src/setup-toml.ts
 var SETUP_CONFIG_BYTES, temporal;
 var init_setup_toml = __esm(() => {
   SETUP_CONFIG_BYTES = 8 * 1024 * 1024;
   temporal = new Set(["[object Temporal.Instant]", "[object Temporal.PlainDate]", "[object Temporal.PlainTime]", "[object Temporal.PlainDateTime]"]);
 });
 
-// node_modules/@staix/agent-mem/src/setup-json.ts
+// ../../node_modules/@staix/agent-mem/src/setup-json.ts
 import { isDeepStrictEqual as isDeepStrictEqual2 } from "util";
 function createJsonMcpCodec(options) {
   const { canonicalKey, label } = options, keys = new Set([canonicalKey, ...options.aliases ?? []]);
@@ -12023,7 +12041,7 @@ var init_setup_json = __esm(() => {
   decode = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 });
 
-// node_modules/@staix/agent-mem/src/setup-jcode.ts
+// ../../node_modules/@staix/agent-mem/src/setup-jcode.ts
 var codec;
 var init_setup_jcode = __esm(() => {
   init_setup_json();
@@ -12031,21 +12049,21 @@ var init_setup_jcode = __esm(() => {
   codec = createJsonMcpCodec({ canonicalKey: "servers", aliases: ["mcpServers"], label: "Jcode" });
 });
 
-// node_modules/@staix/agent-mem/src/setup-agy.ts
+// ../../node_modules/@staix/agent-mem/src/setup-agy.ts
 var codec2;
 var init_setup_agy = __esm(() => {
   init_setup_json();
   codec2 = createJsonMcpCodec({ canonicalKey: "mcpServers", label: "Antigravity strict JSON" });
 });
 
-// node_modules/@staix/agent-mem/src/setup-opencode.ts
+// ../../node_modules/@staix/agent-mem/src/setup-opencode.ts
 var codec3;
 var init_setup_opencode = __esm(() => {
   init_setup_json();
   codec3 = createJsonMcpCodec({ canonicalKey: "mcp", label: "OpenCode strict JSON" });
 });
 
-// node_modules/@staix/agent-mem/src/setup-owned.ts
+// ../../node_modules/@staix/agent-mem/src/setup-owned.ts
 var qwenHookControls;
 var init_setup_owned = __esm(() => {
   init_setup_toml();
@@ -12055,16 +12073,16 @@ var init_setup_owned = __esm(() => {
   qwenHookControls = new Set(["enabled", "disabled", "notifications"]);
 });
 
-// node_modules/@staix/agent-mem/src/setup-gemini.ts
+// ../../node_modules/@staix/agent-mem/src/setup-gemini.ts
 var init_setup_gemini = () => {};
 
-// node_modules/@staix/agent-mem/src/setup-paths.ts
+// ../../node_modules/@staix/agent-mem/src/setup-paths.ts
 var init_setup_paths = __esm(() => {
   init_platform();
   init_setup_gemini();
 });
 
-// node_modules/@staix/agent-mem/src/setup.ts
+// ../../node_modules/@staix/agent-mem/src/setup.ts
 var SETUP_TARGETS, SETUP_ALL_TARGETS, MAX2, JOURNAL_MAX, PACKAGE_JSON_MAX;
 var init_setup = __esm(() => {
   init_cli_attribution();
@@ -12086,7 +12104,7 @@ var init_setup = __esm(() => {
   PACKAGE_JSON_MAX = 64 * 1024;
 });
 
-// node_modules/@staix/agent-mem/src/index.ts
+// ../../node_modules/@staix/agent-mem/src/index.ts
 var init_src = __esm(() => {
   init_search_fts();
   init_platform();
@@ -14792,7 +14810,7 @@ var WITHHELD = "Claude implementer turn failed (details withheld)";
 
 // src/adapters/claude-implementer.ts
 import { randomUUID as randomUUID9 } from "crypto";
-import { lstatSync as lstatSync13, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
+import { lstatSync as lstatSync14, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
 import { join as join17 } from "path";
 function provenVersion(binding) {
@@ -14850,7 +14868,7 @@ function claudeImplementerArgs(turn, mcp, settings, prompt, model) {
 async function proveClaudeImplementer(peer, command) {
   const binary = Bun.which(command[0], { PATH: process.env.PATH }) ?? command[0];
   const fingerprint = () => {
-    const file = realPath(binary), stat = lstatSync13(file);
+    const file = realPath(binary), stat = lstatSync14(file);
     return [file, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
   };
   const binding = fingerprint(), home = mkdtempSync5(join17(tmpdir5(), "ahub-claude-proof-"));
@@ -15419,7 +15437,7 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, lstatSync as lstatSync14, openSync as openSync8, readSync as readSync6 } from "fs";
+import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, lstatSync as lstatSync15, openSync as openSync8, readSync as readSync6 } from "fs";
 import { homedir as homedir5 } from "os";
 import { isAbsolute as isAbsolute6, join as join18, relative as relative5 } from "path";
 import { createHash as createHash7 } from "crypto";
@@ -15467,7 +15485,7 @@ function readAgyTranscript(session, transcript) {
     let cursor = home;
     for (const name of relative5(home, transcript).split("/")) {
       cursor = join18(cursor, name);
-      if (lstatSync14(cursor).isSymbolicLink())
+      if (lstatSync15(cursor).isSymbolicLink())
         return empty;
     }
     fd = openSync8(transcript, constants7.O_RDONLY | constants7.O_NOFOLLOW);
@@ -15745,9 +15763,206 @@ async function runCodexEntry(ctx) {
 }
 var init_native_cli_entry_codex = () => {};
 
+// src/cli/kimi-plugin.ts
+import { randomUUID as randomUUID11 } from "crypto";
+import { closeSync as closeSync9, lstatSync as lstatSync16, mkdirSync as mkdirSync11, openSync as openSync9, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync9 } from "fs";
+import { dirname as dirname12, isAbsolute as isAbsolute7, join as join20 } from "path";
+function file(path, cap) {
+  const stat = lstatSync16(path, { throwIfNoEntry: false });
+  if (!stat)
+    return;
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > cap)
+    throw new Error(`${path} must be a bounded regular file`);
+  return { stat, bytes: readFileSync11(path) };
+}
+function parse2(value, name) {
+  if (!value)
+    return;
+  try {
+    const row = JSON.parse(value.bytes.toString("utf8"));
+    if (!object8(row))
+      throw new Error("not an object");
+    return row;
+  } catch {
+    throw new Error(`${name} is not valid JSON`);
+  }
+}
+function atomic(path, bytes, before) {
+  const current = lstatSync16(path, { throwIfNoEntry: false });
+  if (before ? !current || current.dev !== before.dev || current.ino !== before.ino : current)
+    throw new Error(`${path} changed before its managed write`);
+  const temporary = `${path}.${randomUUID11()}.tmp`;
+  let fd;
+  try {
+    fd = openSync9(temporary, "wx", 384);
+    writeFileSync9(fd, bytes);
+    closeSync9(fd);
+    fd = undefined;
+    renameSync5(temporary, path);
+  } finally {
+    if (fd !== undefined)
+      closeSync9(fd);
+    try {
+      unlinkSync3(temporary);
+    } catch {}
+  }
+}
+function removeFile(path, expected) {
+  const current = lstatSync16(path, { throwIfNoEntry: false });
+  if (!current || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !readFileSync11(path).equals(expected))
+    return;
+  unlinkSync3(path);
+}
+function manifest() {
+  return { name: ID2, version: "1.0.0", description: "Managed by the ahub kimi launcher for this launch only.", hooks: EVENTS3.map((event) => ({ event, command: `bun ./kimi-hook.js ${event}`, timeout: 5 })) };
+}
+function plan2(options) {
+  if (!isAbsolute7(options.home) || !isAbsolute7(options.hookScript) || !/^[A-Za-z0-9._:-]{1,128}$/.test(options.launchId))
+    throw new Error("Kimi home, hook bundle and launch identity must be valid");
+  directory(options.home);
+  const hook = file(options.hookScript, MAX_HOOK);
+  if (!hook)
+    throw new Error("Kimi hook bundle is missing");
+  const root = join20(options.home, "plugins"), managed = join20(root, "managed", ID2), installed = join20(root, "installed.json");
+  const installedBefore = file(installed, MAX_INSTALLED), document = parse2(installedBefore, installed);
+  if (document && (document.version !== 1 || !Array.isArray(document.plugins)))
+    throw new Error(`${installed} has an unsupported shape`);
+  const records = document?.plugins ?? [];
+  if (records.some((row) => !object8(row)))
+    throw new Error(`${installed} has an invalid plugin row`);
+  const record = records.find((row) => row.id === ID2);
+  if (record && (record.root !== managed || record.source !== "local-path" || record.origin !== "custom" || record.enabled !== true || typeof record.originalSource !== "string" || record.agentHubLaunch !== options.launchId && options.replaceStale !== true)) {
+    throw new Error("Kimi's agent-hub plugin belongs to another launch or is disabled; it was not changed");
+  }
+  const manifestBefore = file(join20(managed, "kimi.plugin.json"), MAX_INSTALLED), hookBefore = file(join20(managed, "kimi-hook.js"), MAX_HOOK);
+  const nextManifest = Buffer.from(`${JSON.stringify(manifest(), null, 2)}
+`);
+  const now = new Date(options.now ?? Date.now()).toISOString();
+  const changed = !record || record.agentHubLaunch !== options.launchId || !manifestBefore?.bytes.equals(nextManifest) || !hookBefore?.bytes.equals(hook.bytes) || record.originalSource !== dirname12(options.hookScript);
+  const nextRecord = {
+    id: ID2,
+    root: managed,
+    source: "local-path",
+    origin: "custom",
+    enabled: true,
+    installedAt: typeof record?.installedAt === "string" ? record.installedAt : now,
+    updatedAt: changed ? now : typeof record?.updatedAt === "string" ? record.updatedAt : now,
+    originalSource: dirname12(options.hookScript),
+    agentHubLaunch: options.launchId
+  };
+  const nextDocument = { version: 1, plugins: [...records.filter((row) => row.id !== ID2), nextRecord] };
+  return {
+    root,
+    managed,
+    installed,
+    ...record ? { record } : {},
+    changed,
+    targets: [
+      { path: join20(managed, "kimi.plugin.json"), next: nextManifest, ...manifestBefore ? { before: manifestBefore } : {} },
+      { path: join20(managed, "kimi-hook.js"), next: hook.bytes, ...hookBefore ? { before: hookBefore } : {} },
+      { path: installed, next: Buffer.from(`${JSON.stringify(nextDocument, null, 2)}
+`), ...installedBefore ? { before: installedBefore } : {} }
+    ]
+  };
+}
+function kimiPluginPreview(home, hookScript) {
+  if (!isAbsolute7(home) || !isAbsolute7(hookScript))
+    throw new Error("Kimi home and hook bundle must be absolute paths");
+  directory(home);
+  if (!file(hookScript, MAX_HOOK))
+    throw new Error("Kimi hook bundle is missing");
+  return { file: join20(home, "plugins", "managed", ID2), changed: true, action: "install the launch-scoped native completion plugin and remove it on exit" };
+}
+function ensureKimiPlugin(options) {
+  const current = plan2(options);
+  if (!current.changed)
+    return { changed: false };
+  for (const path of [join20(options.home, "plugins"), join20(options.home, "plugins", "managed"), current.managed]) {
+    if (!directory(path, false))
+      mkdirSync11(path, { mode: 448 });
+  }
+  for (const target of current.targets)
+    atomic(target.path, target.next, target.before?.stat);
+  return { changed: true };
+}
+function cleanupKimiPlugin(options) {
+  const current = plan2(options);
+  const installedBefore = file(current.installed, MAX_INSTALLED), document = parse2(installedBefore, current.installed);
+  const records = document?.plugins;
+  if (!document || !Array.isArray(records) || records.some((row) => !object8(row)))
+    throw new Error(`${current.installed} changed during the launch`);
+  const record = records.find((row) => row.id === ID2);
+  if (!record)
+    return;
+  if (record.root !== current.managed || record.enabled !== true)
+    throw new Error("Kimi's agent-hub plugin changed during the launch; leaving it installed");
+  const next = { version: 1, plugins: records.filter((row) => row.id !== ID2) };
+  atomic(current.installed, Buffer.from(`${JSON.stringify(next, null, 2)}
+`), installedBefore?.stat);
+  const [manifestTarget, hookTarget] = current.targets;
+  removeFile(join20(current.managed, "kimi.plugin.json"), manifestTarget.next);
+  removeFile(join20(current.managed, "kimi-hook.js"), hookTarget.next);
+  try {
+    rmdirSync2(current.managed);
+  } catch {}
+}
+var EVENTS3, ID2 = "agent-hub", MAX_INSTALLED, MAX_HOOK, object8 = (value) => !!value && typeof value === "object" && !Array.isArray(value), directory = (path, required = true) => {
+  const stat = lstatSync16(path, { throwIfNoEntry: false });
+  if (stat && (!stat.isDirectory() || stat.isSymbolicLink()))
+    throw new Error(`${path} must be a plain directory`);
+  if (!stat && required)
+    throw new Error(`${path} must exist`);
+  return stat;
+};
+var init_kimi_plugin = __esm(() => {
+  EVENTS3 = ["TurnStarted", "Stop", "StopFailure", "Interrupt", "SessionEnd", "TaskStarted", "Notification"];
+  MAX_INSTALLED = 1024 * 1024;
+  MAX_HOOK = 8 * 1024 * 1024;
+});
+
 // src/adapters/definitions/native-cli-entry-kimi.ts
-import { resolve as resolve13 } from "path";
-import { spawnSync as spawnSync4 } from "child_process";
+import { join as join21, resolve as resolve13 } from "path";
+import { homedir as homedir6 } from "os";
+import { spawn as spawn10, spawnSync as spawnSync4 } from "child_process";
+import { mkdirSync as mkdirSync12 } from "fs";
+function kimiTuiVersionGate(stdout) {
+  const verdict = assessVersion("kimi-tui", COMPAT["kimi-tui"].parse(stdout));
+  if (!verdict.ok)
+    return { ok: false, message: verdict.reason };
+  return verdict.note ? { ok: true, message: verdict.note } : { ok: true };
+}
+function kimiTuiSpawnOptions(cwd, env) {
+  return { cwd, env, stdio: "inherit" };
+}
+function runKimiTui(cmd, args, cwd, env) {
+  const child = spawn10(cmd, args, kimiTuiSpawnOptions(cwd, env));
+  return new Promise((resolveExit, reject) => {
+    const forward = (signal) => {
+      if (child.exitCode !== null || child.signalCode !== null)
+        return;
+      try {
+        child.kill(signal);
+      } catch {}
+    };
+    const onInterrupt = () => forward("SIGINT"), onTerminate = () => forward("SIGTERM"), onHangup = () => forward("SIGHUP");
+    const cleanup = () => {
+      process.off("SIGINT", onInterrupt);
+      process.off("SIGTERM", onTerminate);
+      process.off("SIGHUP", onHangup);
+    };
+    process.on("SIGINT", onInterrupt);
+    process.on("SIGTERM", onTerminate);
+    process.on("SIGHUP", onHangup);
+    child.once("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.once("close", (code) => {
+      cleanup();
+      resolveExit({ status: code });
+    });
+  });
+}
 async function runKimiEntry(ctx) {
   const peer = ctx.instance ?? "kimi";
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;
@@ -15811,10 +16026,38 @@ async function runKimiEntry(ctx) {
         } catch (error) {
           throw running ? new Error(`${error.message} (the command is the running hub's kimi_cmd: the value in the config file is retained until ahub settings reload)`) : error;
         }
-        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve13(cliDir, "../../plugins/agent-hub/server.js"), "tui");
+        const version = spawnSync4(launch.cmd, ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: nativeLaunchEnv("kimi", childEnv()) });
+        const gate = kimiTuiVersionGate(version.status === 0 ? version.stdout : "");
+        if (!gate.ok)
+          fail(gate.message);
+        if (gate.message)
+          console.error(gate.message);
+        const serverBundle = bundleInStatus(snapshot) ?? resolve13(cliDir, "../../plugins/agent-hub/server.js");
+        const written = configureKimiMcp(cwd, stateDir, serverBundle, "tui");
         if (written.tracked)
           console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
-        result = spawnSync4(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+        const nativeEnv = { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+        const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join21(nativeEnv.HOME ?? homedir6(), ".kimi-code");
+        mkdirSync12(nativeHome, { recursive: true, mode: 448 });
+        const native = await hub.request({ t: "native_hook_launch", op: "begin", peer, nativeHome });
+        if (!native.ok || typeof native.launchId !== "string" || typeof native.instanceId !== "string")
+          fail(native.error ?? "native hook launch was not admitted");
+        const plugin = { home: nativeHome, hookScript: resolve13(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
+        let pluginReady = false;
+        try {
+          console.error("Kimi TUI completion facts: installing a launch-scoped native plugin; it will be removed after this TUI exits");
+          ensureKimiPlugin(plugin);
+          pluginReady = true;
+          result = await runKimiTui(launch.cmd, launch.args, cwd, { ...nativeEnv, AGENTHUB_INSTANCE_ID: native.instanceId, AGENTHUB_LAUNCH_ID: native.launchId, AGENTHUB_HOOK_PURPOSE: "facts" });
+        } finally {
+          await hub.request({ t: "native_hook_launch", op: "end", peer, launchId: native.launchId }).catch(() => {});
+          if (pluginReady)
+            try {
+              cleanupKimiPlugin(plugin);
+            } catch {
+              console.error("Managed Kimi plugin cleanup refused: files or ownership changed; inspect the launch-scoped plugin before removing it");
+            }
+        }
       } finally {
         if (admission.admissionId)
           await hub.request({ t: "kimi_launch_end", admissionId: admission.admissionId }).catch(() => {});
@@ -15840,7 +16083,10 @@ async function runKimiEntry(ctx) {
     hub.close();
   }
 }
-var init_native_cli_entry_kimi = () => {};
+var init_native_cli_entry_kimi = __esm(() => {
+  init_compat();
+  init_kimi_plugin();
+});
 
 // src/adapters/definitions/native-cli-pi.ts
 function parsePiFlags(args, fail) {
@@ -16173,8 +16419,8 @@ var init_native_cli_entry_jcode = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-preview-claude.ts
-import { readFileSync as readFileSync11 } from "fs";
-import { join as join20 } from "path";
+import { readFileSync as readFileSync12 } from "fs";
+import { join as join22 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
   const { buildLaunch, claudeObservationHooks } = ctx.helpers;
@@ -16182,13 +16428,13 @@ function previewClaude(ctx) {
   let envNames = state.envNames;
   let launch;
   let original;
-  for (const file of [join20(cwd, ".claude/settings.local.json"), join20(cwd, ".claude/settings.json"), join20(process.env.HOME ?? "", ".claude/settings.json")]) {
+  for (const file of [join22(cwd, ".claude/settings.local.json"), join22(cwd, ".claude/settings.json"), join22(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
-      original ??= JSON.parse(readFileSync11(file, "utf8")).statusLine;
+      original ??= JSON.parse(readFileSync12(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(config, { script: join20(cliDir, "facts-hook.ts"), stateDir });
-  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join20(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
+  const facts = claudeObservationHooks(config, { script: join22(cliDir, "facts-hook.ts"), stateDir });
+  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join22(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
   const safeArgs = args.map((arg, i) => {
     if (args[i - 1] === "--settings")
       return "{}";
@@ -16199,7 +16445,7 @@ function previewClaude(ctx) {
     return publicArg(arg);
   });
   const publicLaunch = buildLaunch("claude", safeArgs, { preview: true, unattended, statusLine: {
-    script: join20(cliDir, "statusline-tee.ts"),
+    script: join22(cliDir, "statusline-tee.ts"),
     stateDir,
     ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {}
   }, facts });
@@ -16232,7 +16478,8 @@ function previewCodex(ctx) {
 var init_native_cli_preview_codex = () => {};
 
 // src/adapters/definitions/native-cli-preview-kimi.ts
-import { join as join21 } from "path";
+import { join as join23 } from "path";
+import { homedir as homedir7 } from "os";
 function previewKimi(ctx) {
   const { args, cwd, stateDir, cliDir, config } = ctx;
   const { childEnv, startModeOf, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, kimiMcpPlan } = ctx.helpers;
@@ -16240,6 +16487,7 @@ function previewKimi(ctx) {
   let envNames = state.envNames;
   let launch;
   let kimiMetadata;
+  let completionPlugin;
   const model = value("--model");
   const mode = value("--mode") ?? startModeOf(config.peers, "kimi");
   if (mode !== "tui" && mode !== "headless")
@@ -16253,16 +16501,22 @@ function previewKimi(ctx) {
   } else {
     const native = buildKimiTuiLaunch(config.kimi_cmd, model ? REDACTED : undefined);
     launch = { ...native, cmd: native.cmd === "kimi" ? "kimi" : REDACTED, args: native.args.map((arg) => arg === "--model" || arg === REDACTED ? arg : REDACTED) };
-    envNames = Object.keys(nativeLaunchEnv("kimi", childEnv())).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]);
+    const nativeEnv = nativeLaunchEnv("kimi", childEnv());
+    envNames = Object.keys(nativeEnv).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_HOOK_PURPOSE"]);
+    unresolved.push({ field: "nativeLaunchId", reason: "native completion facts bind to the launch admitted by the running hub" });
+    const home = nativeEnv.KIMI_CODE_HOME ?? join23(nativeEnv.HOME ?? homedir7(), ".kimi-code");
+    completionPlugin = kimiPluginPreview(home, join23(cliDir, "../../plugins/agent-hub/kimi-hook.js"));
   }
-  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join21(cliDir, "../../plugins/agent-hub/server.js"), mode);
-  kimiMetadata = { mode, mcp: { file, action, changed, tracked } };
+  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join23(cliDir, "../../plugins/agent-hub/server.js"), mode);
+  kimiMetadata = { mode, mcp: { file, action, changed, tracked }, ...completionPlugin ? { completionPlugin } : {} };
   return finishPreview(ctx, launch, envNames, unresolved, kimiMetadata);
 }
-var init_native_cli_preview_kimi = () => {};
+var init_native_cli_preview_kimi = __esm(() => {
+  init_kimi_plugin();
+});
 
 // src/adapters/definitions/native-cli-preview-pi.ts
-import { join as join22, resolve as resolve15 } from "path";
+import { join as join24, resolve as resolve15 } from "path";
 function previewPi(ctx) {
   const { args, stateDir, cliDir, config } = ctx;
   const { relayModelIds, buildPiLaunch, startModeOf } = ctx.helpers;
@@ -16297,7 +16551,7 @@ function previewPi(ctx) {
     tools: [],
     preamble: REDACTED,
     maxSteps: config.pi.max_steps
-  }, {}, resolve15(join22(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
+  }, {}, resolve15(join24(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
   launch = pi;
   envNames = Object.keys(pi.env).concat(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"].filter((key) => process.env[key] !== undefined));
   if (mode === "tui")
@@ -16387,8 +16641,8 @@ var init_native_config_policy = __esm(() => {
 });
 
 // src/adapters/definitions/native-policy-aux.ts
-import { closeSync as closeSync9, constants as constants8, fstatSync as fstatSync8, openSync as openSync9, readdirSync as readdirSync3, readFileSync as readFileSync12 } from "fs";
-import { isAbsolute as isAbsolute7, join as join23, normalize } from "path";
+import { closeSync as closeSync10, constants as constants8, fstatSync as fstatSync8, openSync as openSync10, readdirSync as readdirSync3, readFileSync as readFileSync13 } from "fs";
+import { isAbsolute as isAbsolute8, join as join25, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
 }
@@ -16433,13 +16687,13 @@ function localCrashPlan(meta) {
 }
 function claudePlugins(root, cwd) {
   const enabled = new Map;
-  for (const file of [join23(root, "settings.json"), ...cwd ? [join23(cwd, ".claude", "settings.json"), join23(cwd, ".claude", "settings.local.json")] : []]) {
+  for (const file of [join25(root, "settings.json"), ...cwd ? [join25(cwd, ".claude", "settings.json"), join25(cwd, ".claude", "settings.local.json")] : []]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object")
       for (const [key, on] of Object.entries(map))
         enabled.set(key, on === true);
   }
-  const installed = json(join23(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
+  const installed = json(join25(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
   const out = [];
   for (const [key, on] of enabled) {
     if (!on)
@@ -16453,7 +16707,7 @@ function claudePlugins(root, cwd) {
   return out;
 }
 function codexPlugins(root) {
-  const config = text2(join23(root, "config.toml"));
+  const config = text2(join25(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -16472,7 +16726,7 @@ function codexPlugins(root) {
       continue;
     let versions = [];
     try {
-      versions = readdirSync3(join23(root, "plugins", "cache", market, plugin));
+      versions = readdirSync3(join25(root, "plugins", "cache", market, plugin));
     } catch {}
     out.push({ name, version: versions.length === 1 ? version2(versions[0]) : null });
   }
@@ -16487,21 +16741,21 @@ function parsePiContinuity(value) {
   return { sessionId: value.sessionId, ...value.sessionFile === undefined ? {} : { sessionFile: value.sessionFile }, ...value.backend === undefined ? {} : { backend: value.backend }, ...value.model === undefined ? {} : { model: value.model } };
 }
 function absoluteContinuityPath(value) {
-  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) && isAbsolute7(value) && normalize(value) === value;
+  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) && isAbsolute8(value) && normalize(value) === value;
 }
 var str3 = (value) => typeof value === "string" && value ? value : undefined, PLUGINS, CLAUDE_ONLY, text2 = (file) => {
   let fd;
   try {
-    fd = openSync9(file, constants8.O_RDONLY | constants8.O_NONBLOCK);
+    fd = openSync10(file, constants8.O_RDONLY | constants8.O_NONBLOCK);
     const st = fstatSync8(fd);
     if (!st.isFile() || st.size > 1024 * 1024)
       return;
-    return readFileSync12(fd, "utf8");
+    return readFileSync13(fd, "utf8");
   } catch {
     return;
   } finally {
     if (fd !== undefined)
-      closeSync9(fd);
+      closeSync10(fd);
   }
 }, json = (file) => {
   try {
@@ -16510,7 +16764,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   } catch {
     return;
   }
-}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join23(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join23(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
+}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join25(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join25(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
 var init_native_policy_aux = __esm(() => {
   PLUGINS = new Map([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
   CLAUDE_ONLY = new Map([["codex@openai-codex", "codex-plugin"]]);
@@ -16553,9 +16807,9 @@ var init_native_cli_launch_common = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-claude-launch.ts
-import { mkdirSync as mkdirSync11, writeFileSync as writeFileSync9, renameSync as renameSync5, unlinkSync as unlinkSync3, readFileSync as readFileSync13 } from "fs";
-import { randomUUID as randomUUID11 } from "crypto";
-import { resolve as resolve16, join as join24 } from "path";
+import { mkdirSync as mkdirSync13, writeFileSync as writeFileSync10, renameSync as renameSync6, unlinkSync as unlinkSync4, readFileSync as readFileSync14 } from "fs";
+import { randomUUID as randomUUID12 } from "crypto";
+import { resolve as resolve16, join as join26 } from "path";
 function claudeChannel(userArgs) {
   const bundle = resolve16(import.meta.dir, "../../../plugins/agent-hub/server.js");
   for (let i = 0;i < userArgs.length; i++) {
@@ -16564,7 +16818,7 @@ function claudeChannel(userArgs) {
     if (!path)
       continue;
     try {
-      const server = JSON.parse(readFileSync13(resolve16(path), "utf8")).mcpServers?.["agent-hub"];
+      const server = JSON.parse(readFileSync14(resolve16(path), "utf8")).mcpServers?.["agent-hub"];
       if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve16(value) === bundle))
         return "server:agent-hub";
     } catch {}
@@ -16588,7 +16842,7 @@ function claudeNativeLaunch(ctx) {
         throw new Error("--settings requires a JSON object or readable file so the hub permission hook can be installed");
       let caller;
       try {
-        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync13(resolve16(value), "utf8"));
+        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync14(resolve16(value), "utf8"));
         if (!caller || typeof caller !== "object" || Array.isArray(caller))
           throw new Error("not an object");
       } catch {
@@ -16617,14 +16871,14 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join24(stateDir, `claude-settings-${randomUUID11()}.json`);
+      const file = join26(stateDir, `claude-settings-${randomUUID12()}.json`);
       try {
-        mkdirSync11(stateDir, { recursive: true, mode: 448 });
-        writeFileSync9(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
-        renameSync5(`${file}.tmp`, file);
+        mkdirSync13(stateDir, { recursive: true, mode: 448 });
+        writeFileSync10(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
+        renameSync6(`${file}.tmp`, file);
       } catch {
         try {
-          unlinkSync3(`${file}.tmp`);
+          unlinkSync4(`${file}.tmp`);
         } catch {}
         throw new Error("cannot write private Claude session settings in the hub state directory");
       }
@@ -16674,11 +16928,11 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync10, existsSync as existsSync8, fstatSync as fstatSync9, openSync as openSync10, readFileSync as readFileSync14, readSync as readSync7 } from "fs";
+import { appendFileSync, closeSync as closeSync11, existsSync as existsSync8, fstatSync as fstatSync9, openSync as openSync11, readFileSync as readFileSync15, readSync as readSync7 } from "fs";
 function readEvents(file, since = 0) {
   if (!existsSync8(file))
     return [];
-  return readFileSync14(file, "utf8").split(`
+  return readFileSync15(file, "utf8").split(`
 `).flatMap((line) => {
     const event = parseEventLine(line, since);
     return event === undefined ? [] : [event];
@@ -16699,14 +16953,14 @@ var init_events = () => {};
 
 // src/cli/recovery-session-file.ts
 import { statSync as statSync4 } from "fs";
-import { homedir as homedir6 } from "os";
-import { join as join25 } from "path";
+import { homedir as homedir8 } from "os";
+import { join as join27 } from "path";
 function checkedSessionPath(binding, kind) {
   if (kind === "rollout")
-    return join25(binding.launch.env.CODEX_HOME ?? join25(homedir6(), ".codex"), "sessions");
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join25(homedir6(), ".claude");
+    return join27(binding.launch.env.CODEX_HOME ?? join27(homedir8(), ".codex"), "sessions");
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join27(homedir8(), ".claude");
   const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return join25(config, "projects", slug, `${binding.sessionId}.jsonl`);
+  return join27(config, "projects", slug, `${binding.sessionId}.jsonl`);
 }
 function recordedFileState(file) {
   try {
@@ -16719,7 +16973,7 @@ var init_recovery_session_file = () => {};
 
 // src/adapters/definitions/native-recovery.ts
 import { readdirSync as readdirSync4 } from "fs";
-import { basename as basename5, join as join26 } from "path";
+import { basename as basename5, join as join28 } from "path";
 var rolloutState = (binding) => {
   try {
     return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
@@ -16729,7 +16983,7 @@ var rolloutState = (binding) => {
 }, transcriptState = (binding) => {
   const state = recordedFileState(checkedSessionPath(binding, "transcript"));
   return state === "unknown" ? "unknown" : state === "found";
-}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text3 = (value) => typeof value === "string" && value.length > 0, object8 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
+}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text3 = (value) => typeof value === "string" && value.length > 0, object9 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
 var init_native_recovery = __esm(() => {
   init_events();
   init_recovery_session_file();
@@ -16743,7 +16997,7 @@ var init_native_recovery = __esm(() => {
       if (phase !== "plan")
         return false;
       let current, started = false, turned = false;
-      for (const e of readEvents(join26(stateDir, "events.jsonl"))) {
+      for (const e of readEvents(join28(stateDir, "events.jsonl"))) {
         if (e.type === "native_thread" && e.peer === binding.peer) {
           current = e.thread;
           if (e.thread === binding.sessionId && e.fresh)
@@ -16784,7 +17038,7 @@ var init_native_recovery = __esm(() => {
       return args;
     },
     crashIdentity: (row) => {
-      const value = object8(row), args = object8(value.args), session = object8(value.session);
+      const value = object9(row), args = object9(value.args), session = object9(value.session);
       const sessionId = [value.sessionId, value.agentSessionId, value.resumeSessionId, session.id, session.sessionId].find(text3);
       const sessionFile = [value.sessionFile, value.sessionPath, args.sessionFile, session.file, session.path].find(text3);
       return { ...sessionId ? { sessionId } : {}, ...sessionFile ? { sessionFile } : {} };
@@ -16844,6 +17098,196 @@ function claudeWindows(rateLimits) {
   return out;
 }
 
+// src/adapters/kimi-tui-facts.ts
+import { closeSync as closeSync12, constants as constants9, fstatSync as fstatSync10, lstatSync as lstatSync17, openSync as openSync12, readSync as readSync8, readdirSync as readdirSync5 } from "fs";
+import { createHash as createHash8 } from "crypto";
+import { basename as basename6, dirname as dirname13, isAbsolute as isAbsolute9, join as join29, relative as relative6 } from "path";
+import { homedir as homedir9 } from "os";
+function decodeKimiTuiHook(event, value) {
+  if (!EVENTS4.includes(event) || !record4(value) || value.hook_event_name !== event || value.client_type !== "kimi_code_cli" || typeof value.session_id !== "string" || !SESSION.test(value.session_id) || typeof value.cwd !== "string" || !isAbsolute9(value.cwd) || value.cwd.length > 4096)
+    return;
+  if ((event === "TurnStarted" || event === "Interrupt") && !integer(value.turn_id))
+    return;
+  if (event === "TaskStarted" && (typeof value.task_id !== "string" || !TASK.test(value.task_id)))
+    return;
+  const home = process.env.KIMI_CODE_HOME ?? join29(process.env.HOME ?? homedir9(), ".kimi-code");
+  const transcriptPath = value.agentHubTranscriptPath ?? join29(home, "session_index.jsonl");
+  if (typeof transcriptPath !== "string" || !isAbsolute9(transcriptPath) || transcriptPath.length > 4096)
+    return;
+  const phase = { TurnStarted: "start", Stop: "stop", StopFailure: "stop", Interrupt: "stop", SessionEnd: "session", TaskStarted: "pre", Notification: "post" }[event];
+  return { event, phase, sessionId: value.session_id, transcriptPath, workspacePaths: [value.cwd], tool: "", input: {} };
+}
+function encodeKimiTuiHook() {
+  return;
+}
+function readBytes(path, cap, tail = false) {
+  const link = lstatSync17(path);
+  if (!link.isFile() || link.isSymbolicLink() || link.nlink !== 1)
+    throw new Error("not a regular file");
+  const fd = openSync12(path, constants9.O_RDONLY | constants9.O_NOFOLLOW);
+  try {
+    const stat = fstatSync10(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || !tail && stat.size > cap)
+      throw new Error("invalid file");
+    const length = Math.min(stat.size, cap), start = tail ? stat.size - length : 0;
+    const bytes = Buffer.alloc(length);
+    let offset = 0;
+    while (offset < length) {
+      const count = readSync8(fd, bytes, offset, length - offset, start + offset);
+      if (count <= 0)
+        throw new Error("short read");
+      offset += count;
+    }
+    return bytes;
+  } finally {
+    closeSync12(fd);
+  }
+}
+function sessionDirectory(index, session) {
+  const home = dirname13(index), sessions = realPath(join29(home, "sessions"));
+  let listed;
+  for (const line of readBytes(index, INDEX_CAP).toString("utf8").split(`
+`)) {
+    if (!line.includes(session))
+      continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record4(row) && row.sessionId === session && typeof row.sessionDir === "string") {
+      if (listed)
+        throw new Error("duplicate session");
+      listed = row.sessionDir;
+    }
+  }
+  if (!listed)
+    throw new Error("session not indexed");
+  const directory = realPath(listed);
+  if (!inside2(sessions, directory))
+    throw new Error("session outside home");
+  return directory;
+}
+function taskInventory(agents) {
+  let active = 0;
+  const names = readdirSync5(agents, { withFileTypes: true });
+  if (names.length > MAX_AGENTS)
+    throw new Error("too many agents");
+  for (const entry of names) {
+    if (!AGENT.test(entry.name))
+      continue;
+    if (!entry.isDirectory())
+      continue;
+    const tasks = join29(agents, entry.name, "tasks");
+    const dir = lstatSync17(tasks, { throwIfNoEntry: false });
+    if (!dir)
+      continue;
+    if (!dir.isDirectory() || dir.isSymbolicLink())
+      throw new Error("invalid task directory");
+    const files = readdirSync5(tasks).filter((name) => name.endsWith(".json")).sort();
+    if (files.length > MAX_TASKS)
+      throw new Error("too many tasks");
+    for (const name of files) {
+      if (!TASK.test(name.slice(0, -5)))
+        throw new Error("invalid task name");
+      const row = JSON.parse(readBytes(join29(tasks, name), TASK_CAP).toString("utf8"));
+      if (!record4(row) || row.taskId !== name.slice(0, -5) || typeof row.status !== "string")
+        throw new Error("invalid task");
+      if (row.status === "running" && row.endedAt === null) {
+        active++;
+        continue;
+      }
+      const terminal = ["completed", "failed", "cancelled"].includes(row.status) && integer(row.endedAt);
+      if (!terminal)
+        throw new Error("unknown task state");
+    }
+  }
+  return active;
+}
+function readKimiTuiTranscript(session, index) {
+  if (!SESSION.test(session) || basename6(index) !== "session_index.jsonl" || !isAbsolute9(index))
+    return empty();
+  try {
+    const directory = sessionDirectory(index, session);
+    const wire = join29(directory, "agents", "main", "wire.jsonl");
+    if (!inside2(directory, realPath(wire)))
+      return empty();
+    const bytes = readBytes(wire, WIRE_CAP, true);
+    if (bytes.length === 0 || bytes[bytes.length - 1] !== 10)
+      return empty();
+    const lines = bytes.toString("utf8").split(`
+`);
+    if (bytes.length === WIRE_CAP && !lines[0]?.startsWith('{"type":"metadata"'))
+      lines.shift();
+    const prompts = new Map;
+    const ends = new Map;
+    const promptEnds = new Map;
+    const promptEndTurnIds = new Map;
+    let started;
+    for (const line of lines) {
+      if (!line || !/"(?:turn\.prompt|turn\.ended|prompt\.completed|prompt\.aborted)"/.test(line))
+        continue;
+      let row;
+      try {
+        row = JSON.parse(line);
+      } catch {
+        return empty();
+      }
+      if (!record4(row))
+        return empty();
+      if (row.type === "turn.prompt" && integer(row.turnId) && record4(row.origin) && typeof row.origin.kind === "string") {
+        const turn = row.turnId, id = typeof row.promptId === "string" ? row.promptId : typeof row.origin.notificationId === "string" ? row.origin.notificationId : `turn-${turn}`;
+        const prompt = { turn, id, origin: row.origin.kind };
+        prompts.set(turn, prompt);
+        started = prompt;
+      } else if (row.type === "turn.ended" && integer(row.turnId) && ["completed", "failed", "cancelled"].includes(String(row.reason))) {
+        const turn = row.turnId;
+        ends.set(turn, { turn, reason: row.reason });
+      } else if (row.type === "prompt.completed" && typeof row.promptId === "string" && ["completed", "failed"].includes(String(row.reason))) {
+        promptEnds.set(row.promptId, row.reason);
+        if (integer(row.turnId))
+          promptEndTurnIds.set(row.turnId, row.promptId);
+      } else if (row.type === "prompt.aborted" && typeof row.promptId === "string") {
+        promptEnds.set(row.promptId, "cancelled");
+        if (integer(row.turnId))
+          promptEndTurnIds.set(row.turnId, row.promptId);
+      } else if (row.type === "turn.prompt" || row.type === "turn.ended")
+        return empty();
+    }
+    let completion;
+    for (const [turn, end] of ends) {
+      const prompt = prompts.get(turn), promptReason = prompt ? promptEnds.get(prompt.id) : undefined, turnPromptId = promptEndTurnIds.get(turn);
+      if (!prompt || promptReason !== undefined && promptReason !== end.reason || turnPromptId !== undefined && turnPromptId !== prompt.id)
+        continue;
+      completion = { id: createHash8("sha256").update(`${session}:${turn}:${prompt.id}:${end.reason}`).digest("hex"), index: turn, reason: end.reason };
+    }
+    return {
+      factIds: [],
+      ...completion ? { completion } : {},
+      ...started ? { started: { id: createHash8("sha256").update(`${session}:${started.turn}:${started.id}`).digest("hex"), index: started.turn, origin: started.origin } } : {},
+      background: taskInventory(join29(directory, "agents"))
+    };
+  } catch {
+    return empty();
+  }
+}
+var EVENTS4, SESSION, AGENT, TASK, INDEX_CAP, WIRE_CAP, TASK_CAP, MAX_AGENTS = 256, MAX_TASKS = 256, record4 = (value) => !!value && typeof value === "object" && !Array.isArray(value), integer = (value) => Number.isSafeInteger(value) && value >= 0, inside2 = (root, path) => {
+  const rel = relative6(root, path);
+  return rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute9(rel);
+}, empty = () => ({ factIds: [] }), KIMI_TUI_FACTS_HOOK;
+var init_kimi_tui_facts = __esm(() => {
+  init_project();
+  EVENTS4 = ["TurnStarted", "Stop", "StopFailure", "Interrupt", "SessionEnd", "TaskStarted", "Notification"];
+  SESSION = /^session_[A-Za-z0-9_-]{1,120}$/;
+  AGENT = /^[A-Za-z0-9._-]{1,64}$/;
+  TASK = /^[A-Za-z0-9._:-]{1,128}$/;
+  INDEX_CAP = 16 * 1024 * 1024;
+  WIRE_CAP = 8 * 1024 * 1024;
+  TASK_CAP = 64 * 1024;
+  KIMI_TUI_FACTS_HOOK = { decode: decodeKimiTuiHook, encode: encodeKimiTuiHook, read: readKimiTuiTranscript };
+});
+
 // src/adapters/definitions/builtin-metadata.ts
 function sessionId(field) {
   return (peer) => {
@@ -16872,6 +17316,7 @@ var init_builtin_metadata = __esm(() => {
   init_native_factories();
   init_native_display();
   init_native_recovery();
+  init_kimi_tui_facts();
   switches = Object.freeze(["--unattended", "--safe", "--new"]);
   implementerRoles = Object.freeze(["implementer", "verifier"]);
   dualForms = Object.freeze(["tui", "headless"]);
@@ -17035,7 +17480,7 @@ var init_builtin_metadata = __esm(() => {
       settle: { signal: "prompt-response" },
       budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } },
       capabilities: { watch: true },
-      hooks: { recallPlatform: "kimi", recallSource: "kimi" },
+      hooks: { factsHook: KIMI_TUI_FACTS_HOOK, recallPlatform: "kimi", recallSource: "kimi" },
       cli: { command: "kimi", entry: { lifecycleAdmission: true, execute: runKimiEntry }, preview: previewKimi, usage: [["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"]], launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
       display: KIMI_DISPLAY
     },
@@ -17191,7 +17636,7 @@ var init_native_cli_entry_qwen = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-preview-qwen.ts
-import { join as join27 } from "path";
+import { join as join30 } from "path";
 function previewQwen(ctx) {
   const { tool, args, cwd, stateDir, cliDir, config } = ctx;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
@@ -17221,7 +17666,7 @@ function previewQwen(ctx) {
     form: "headless",
     projectRoot: cwd,
     stateDir,
-    entrypoint: join27(cliDir, "main.js"),
+    entrypoint: join30(cliDir, "main.js"),
     userArgs: [],
     unattended: false,
     env: {},
@@ -17318,7 +17763,7 @@ var init_qwen = __esm(() => {
 });
 
 // src/adapters/configured-acp.ts
-import { basename as basename6 } from "path";
+import { basename as basename7 } from "path";
 import { types } from "util";
 function fields(raw, at) {
   if (!raw || typeof raw !== "object" || types.isProxy(raw) || Array.isArray(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) || Object.getOwnPropertySymbols(raw).length)
@@ -17386,7 +17831,7 @@ function configuredAcpDefinitions(raw, builtinKinds) {
         return fail(`${at}.identity`, "unknown identity field");
       identity = { name: text4(value.name?.value, `${at}.identity.name`, 256), version: text4(value.version?.value, `${at}.identity.version`, 256) };
     }
-    const grokContract = kind === "grok" || /^grok(?:\.exe)?$/i.test(basename6(command)) || identity?.name.toLowerCase() === "grok";
+    const grokContract = kind === "grok" || /^grok(?:\.exe)?$/i.test(basename7(command)) || identity?.name.toLowerCase() === "grok";
     const noLeader = args.indexOf("--no-leader"), endOptions = args.indexOf("--");
     if (grokContract && (noLeader < 0 || endOptions >= 0 && noLeader > endOptions || args.some((arg) => arg.startsWith("--no-leader=")))) {
       return fail(`${at}.args`, "Grok requires explicit --no-leader before argv termination; valued opt-outs are unsupported");
@@ -17777,7 +18222,7 @@ var init_registry = __esm(() => {
   }));
 });
 
-// node_modules/ajv/dist/compile/codegen/code.js
+// ../../node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = undefined;
@@ -17931,7 +18376,7 @@ var require_code = __commonJS(function(exports) {
   exports.regexpCode = regexpCode;
 });
 
-// node_modules/ajv/dist/compile/codegen/scope.js
+// ../../node_modules/ajv/dist/compile/codegen/scope.js
 var require_scope = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = undefined;
@@ -18077,7 +18522,7 @@ var require_scope = __commonJS(function(exports) {
   exports.ValueScope = ValueScope;
 });
 
-// node_modules/ajv/dist/compile/codegen/index.js
+// ../../node_modules/ajv/dist/compile/codegen/index.js
 var require_codegen = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = undefined;
@@ -18787,7 +19232,7 @@ var require_codegen = __commonJS(function(exports) {
   }
 });
 
-// node_modules/ajv/dist/compile/util.js
+// ../../node_modules/ajv/dist/compile/util.js
 var require_util = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = undefined;
@@ -18951,7 +19396,7 @@ var require_util = __commonJS(function(exports) {
   exports.checkStrictMode = checkStrictMode;
 });
 
-// node_modules/ajv/dist/compile/names.js
+// ../../node_modules/ajv/dist/compile/names.js
 var require_names = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -18976,7 +19421,7 @@ var require_names = __commonJS(function(exports) {
   exports.default = names;
 });
 
-// node_modules/ajv/dist/compile/errors.js
+// ../../node_modules/ajv/dist/compile/errors.js
 var require_errors = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = undefined;
@@ -19094,7 +19539,7 @@ var require_errors = __commonJS(function(exports) {
   }
 });
 
-// node_modules/ajv/dist/compile/validate/boolSchema.js
+// ../../node_modules/ajv/dist/compile/validate/boolSchema.js
 var require_boolSchema = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = undefined;
@@ -19142,7 +19587,7 @@ var require_boolSchema = __commonJS(function(exports) {
   }
 });
 
-// node_modules/ajv/dist/compile/rules.js
+// ../../node_modules/ajv/dist/compile/rules.js
 var require_rules = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getRules = exports.isJSONType = undefined;
@@ -19170,7 +19615,7 @@ var require_rules = __commonJS(function(exports) {
   exports.getRules = getRules;
 });
 
-// node_modules/ajv/dist/compile/validate/applicability.js
+// ../../node_modules/ajv/dist/compile/validate/applicability.js
 var require_applicability = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = undefined;
@@ -19190,7 +19635,7 @@ var require_applicability = __commonJS(function(exports) {
   exports.shouldUseRule = shouldUseRule;
 });
 
-// node_modules/ajv/dist/compile/validate/dataType.js
+// ../../node_modules/ajv/dist/compile/validate/dataType.js
 var require_dataType = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = undefined;
@@ -19371,7 +19816,7 @@ var require_dataType = __commonJS(function(exports) {
   }
 });
 
-// node_modules/ajv/dist/compile/validate/defaults.js
+// ../../node_modules/ajv/dist/compile/validate/defaults.js
 var require_defaults = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.assignDefaults = undefined;
@@ -19405,7 +19850,7 @@ var require_defaults = __commonJS(function(exports) {
   }
 });
 
-// node_modules/ajv/dist/vocabularies/code.js
+// ../../node_modules/ajv/dist/vocabularies/code.js
 var require_code2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = undefined;
@@ -19534,7 +19979,7 @@ var require_code2 = __commonJS(function(exports) {
   exports.validateUnion = validateUnion;
 });
 
-// node_modules/ajv/dist/compile/validate/keyword.js
+// ../../node_modules/ajv/dist/compile/validate/keyword.js
 var require_keyword = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = undefined;
@@ -19649,7 +20094,7 @@ var require_keyword = __commonJS(function(exports) {
   exports.validateKeywordUsage = validateKeywordUsage;
 });
 
-// node_modules/ajv/dist/compile/validate/subschema.js
+// ../../node_modules/ajv/dist/compile/validate/subschema.js
 var require_subschema = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = undefined;
@@ -19729,7 +20174,7 @@ var require_subschema = __commonJS(function(exports) {
   exports.extendSubschemaMode = extendSubschemaMode;
 });
 
-// node_modules/fast-deep-equal/index.js
+// ../../node_modules/fast-deep-equal/index.js
 var require_fast_deep_equal = __commonJS(function(exports, module) {
   module.exports = function equal(a, b) {
     if (a === b)
@@ -19771,7 +20216,7 @@ var require_fast_deep_equal = __commonJS(function(exports, module) {
   };
 });
 
-// node_modules/json-schema-traverse/index.js
+// ../../node_modules/json-schema-traverse/index.js
 var require_json_schema_traverse = __commonJS(function(exports, module) {
   var traverse = module.exports = function(schema, opts, cb) {
     if (typeof opts == "function") {
@@ -19854,7 +20299,7 @@ var require_json_schema_traverse = __commonJS(function(exports, module) {
   }
 });
 
-// node_modules/ajv/dist/compile/resolve.js
+// ../../node_modules/ajv/dist/compile/resolve.js
 var require_resolve = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = undefined;
@@ -20007,7 +20452,7 @@ var require_resolve = __commonJS(function(exports) {
   exports.getSchemaRefs = getSchemaRefs;
 });
 
-// node_modules/ajv/dist/compile/validate/index.js
+// ../../node_modules/ajv/dist/compile/validate/index.js
 var require_validate = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getData = exports.KeywordCxt = exports.validateFunctionCode = undefined;
@@ -20512,7 +20957,7 @@ var require_validate = __commonJS(function(exports) {
   exports.getData = getData;
 });
 
-// node_modules/ajv/dist/runtime/validation_error.js
+// ../../node_modules/ajv/dist/runtime/validation_error.js
 var require_validation_error = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
 
@@ -20526,7 +20971,7 @@ var require_validation_error = __commonJS(function(exports) {
   exports.default = ValidationError;
 });
 
-// node_modules/ajv/dist/compile/ref_error.js
+// ../../node_modules/ajv/dist/compile/ref_error.js
 var require_ref_error = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var resolve_1 = require_resolve();
@@ -20541,7 +20986,7 @@ var require_ref_error = __commonJS(function(exports) {
   exports.default = MissingRefError;
 });
 
-// node_modules/ajv/dist/compile/index.js
+// ../../node_modules/ajv/dist/compile/index.js
 var require_compile = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = undefined;
@@ -20762,7 +21207,7 @@ var require_compile = __commonJS(function(exports) {
   }
 });
 
-// node_modules/ajv/dist/refs/data.json
+// ../../node_modules/ajv/dist/refs/data.json
 var require_data = __commonJS(function(exports, module) {
   module.exports = {
     $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
@@ -20779,7 +21224,7 @@ var require_data = __commonJS(function(exports, module) {
   };
 });
 
-// node_modules/fast-uri/lib/utils.js
+// ../../node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS(function(exports, module) {
   var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
   var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
@@ -21296,7 +21741,7 @@ var require_utils = __commonJS(function(exports, module) {
   };
 });
 
-// node_modules/fast-uri/lib/schemes.js
+// ../../node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS(function(exports, module) {
   var { isUUID } = require_utils();
   var URN_REG = /^([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-./:;=@]|%[\da-f]{2})+)$/iu;
@@ -21471,7 +21916,7 @@ var require_schemes = __commonJS(function(exports, module) {
   };
 });
 
-// node_modules/fast-uri/index.js
+// ../../node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS(function(exports, module) {
   var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
   var { SCHEMES, getSchemeHandler } = require_schemes();
@@ -21874,7 +22319,7 @@ var require_fast_uri = __commonJS(function(exports, module) {
   module.exports.fastUri = fastUri;
 });
 
-// node_modules/ajv/dist/runtime/uri.js
+// ../../node_modules/ajv/dist/runtime/uri.js
 var require_uri = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var uri = require_fast_uri();
@@ -21882,7 +22327,7 @@ var require_uri = __commonJS(function(exports) {
   exports.default = uri;
 });
 
-// node_modules/ajv/dist/core.js
+// ../../node_modules/ajv/dist/core.js
 var require_core = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = undefined;
@@ -22475,7 +22920,7 @@ var require_core = __commonJS(function(exports) {
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/id.js
+// ../../node_modules/ajv/dist/vocabularies/core/id.js
 var require_id = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var def = {
@@ -22487,7 +22932,7 @@ var require_id = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/core/ref.js
+// ../../node_modules/ajv/dist/vocabularies/core/ref.js
 var require_ref = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.callRef = exports.getValidate = undefined;
@@ -22606,7 +23051,7 @@ var require_ref = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/core/index.js
+// ../../node_modules/ajv/dist/vocabularies/core/index.js
 var require_core2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var id_1 = require_id();
@@ -22624,7 +23069,7 @@ var require_core2 = __commonJS(function(exports) {
   exports.default = core;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitNumber.js
+// ../../node_modules/ajv/dist/vocabularies/validation/limitNumber.js
 var require_limitNumber = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -22653,7 +23098,7 @@ var require_limitNumber = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/multipleOf.js
+// ../../node_modules/ajv/dist/vocabularies/validation/multipleOf.js
 var require_multipleOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -22678,7 +23123,7 @@ var require_multipleOf = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/runtime/ucs2length.js
+// ../../node_modules/ajv/dist/runtime/ucs2length.js
 var require_ucs2length = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   function ucs2length(str) {
@@ -22701,7 +23146,7 @@ var require_ucs2length = __commonJS(function(exports) {
   ucs2length.code = 'require("ajv/dist/runtime/ucs2length").default';
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitLength.js
+// ../../node_modules/ajv/dist/vocabularies/validation/limitLength.js
 var require_limitLength = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -22730,7 +23175,7 @@ var require_limitLength = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/pattern.js
+// ../../node_modules/ajv/dist/vocabularies/validation/pattern.js
 var require_pattern = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -22764,7 +23209,7 @@ var require_pattern = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitProperties.js
+// ../../node_modules/ajv/dist/vocabularies/validation/limitProperties.js
 var require_limitProperties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -22790,7 +23235,7 @@ var require_limitProperties = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/required.js
+// ../../node_modules/ajv/dist/vocabularies/validation/required.js
 var require_required = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -22869,7 +23314,7 @@ var require_required = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitItems.js
+// ../../node_modules/ajv/dist/vocabularies/validation/limitItems.js
 var require_limitItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -22895,7 +23340,7 @@ var require_limitItems = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/runtime/equal.js
+// ../../node_modules/ajv/dist/runtime/equal.js
 var require_equal = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var equal = require_fast_deep_equal();
@@ -22903,7 +23348,7 @@ var require_equal = __commonJS(function(exports) {
   exports.default = equal;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
+// ../../node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
 var require_uniqueItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var dataType_1 = require_dataType();
@@ -22967,7 +23412,7 @@ var require_uniqueItems = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/const.js
+// ../../node_modules/ajv/dist/vocabularies/validation/const.js
 var require_const = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -22993,7 +23438,7 @@ var require_const = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/enum.js
+// ../../node_modules/ajv/dist/vocabularies/validation/enum.js
 var require_enum = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23039,7 +23484,7 @@ var require_enum = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/validation/index.js
+// ../../node_modules/ajv/dist/vocabularies/validation/index.js
 var require_validation = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var limitNumber_1 = require_limitNumber();
@@ -23069,7 +23514,7 @@ var require_validation = __commonJS(function(exports) {
   exports.default = validation;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
 var require_additionalItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateAdditionalItems = undefined;
@@ -23119,7 +23564,7 @@ var require_additionalItems = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/items.js
 var require_items = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateTuple = undefined;
@@ -23173,7 +23618,7 @@ var require_items = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
 var require_prefixItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var items_1 = require_items();
@@ -23187,7 +23632,7 @@ var require_prefixItems = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items2020.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/items2020.js
 var require_items2020 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23219,7 +23664,7 @@ var require_items2020 = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/contains.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/contains.js
 var require_contains = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23310,7 +23755,7 @@ var require_contains = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/dependencies.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/dependencies.js
 var require_dependencies = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = undefined;
@@ -23395,7 +23840,7 @@ var require_dependencies = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
 var require_propertyNames = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23435,7 +23880,7 @@ var require_propertyNames = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
 var require_additionalProperties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -23538,7 +23983,7 @@ var require_additionalProperties = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/properties.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/properties.js
 var require_properties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var validate_1 = require_validate();
@@ -23593,7 +24038,7 @@ var require_properties = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
 var require_patternProperties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -23664,7 +24109,7 @@ var require_patternProperties = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/not.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/not.js
 var require_not = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var util_1 = require_util();
@@ -23692,7 +24137,7 @@ var require_not = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/anyOf.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/anyOf.js
 var require_anyOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -23706,7 +24151,7 @@ var require_anyOf = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/oneOf.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/oneOf.js
 var require_oneOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23761,7 +24206,7 @@ var require_oneOf = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/allOf.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/allOf.js
 var require_allOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var util_1 = require_util();
@@ -23785,7 +24230,7 @@ var require_allOf = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/if.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/if.js
 var require_if = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23851,7 +24296,7 @@ var require_if = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/thenElse.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/thenElse.js
 var require_thenElse = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var util_1 = require_util();
@@ -23866,7 +24311,7 @@ var require_thenElse = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/index.js
+// ../../node_modules/ajv/dist/vocabularies/applicator/index.js
 var require_applicator = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var additionalItems_1 = require_additionalItems();
@@ -23909,7 +24354,7 @@ var require_applicator = __commonJS(function(exports) {
   exports.default = getApplicator;
 });
 
-// node_modules/ajv/dist/vocabularies/format/format.js
+// ../../node_modules/ajv/dist/vocabularies/format/format.js
 var require_format = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23996,7 +24441,7 @@ var require_format = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/vocabularies/format/index.js
+// ../../node_modules/ajv/dist/vocabularies/format/index.js
 var require_format2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var format_1 = require_format();
@@ -24004,7 +24449,7 @@ var require_format2 = __commonJS(function(exports) {
   exports.default = format;
 });
 
-// node_modules/ajv/dist/vocabularies/metadata.js
+// ../../node_modules/ajv/dist/vocabularies/metadata.js
 var require_metadata = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.contentVocabulary = exports.metadataVocabulary = undefined;
@@ -24024,7 +24469,7 @@ var require_metadata = __commonJS(function(exports) {
   ];
 });
 
-// node_modules/ajv/dist/vocabularies/draft7.js
+// ../../node_modules/ajv/dist/vocabularies/draft7.js
 var require_draft7 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var core_1 = require_core2();
@@ -24043,7 +24488,7 @@ var require_draft7 = __commonJS(function(exports) {
   exports.default = draft7Vocabularies;
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/types.js
+// ../../node_modules/ajv/dist/vocabularies/discriminator/types.js
 var require_types = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.DiscrError = undefined;
@@ -24054,7 +24499,7 @@ var require_types = __commonJS(function(exports) {
   })(DiscrError || (exports.DiscrError = DiscrError = {}));
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/index.js
+// ../../node_modules/ajv/dist/vocabularies/discriminator/index.js
 var require_discriminator = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -24156,7 +24601,7 @@ var require_discriminator = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// node_modules/ajv/dist/refs/json-schema-draft-07.json
+// ../../node_modules/ajv/dist/refs/json-schema-draft-07.json
 var require_json_schema_draft_07 = __commonJS(function(exports, module) {
   module.exports = {
     $schema: "http://json-schema.org/draft-07/schema#",
@@ -24311,7 +24756,7 @@ var require_json_schema_draft_07 = __commonJS(function(exports, module) {
   };
 });
 
-// node_modules/ajv/dist/ajv.js
+// ../../node_modules/ajv/dist/ajv.js
 var require_ajv = __commonJS(function(exports, module) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = undefined;
@@ -24379,7 +24824,7 @@ var require_ajv = __commonJS(function(exports, module) {
   } });
 });
 
-// node_modules/ajv-formats/dist/formats.js
+// ../../node_modules/ajv-formats/dist/formats.js
 var require_formats = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.formatNames = exports.fastFormats = exports.fullFormats = undefined;
@@ -24556,7 +25001,7 @@ var require_formats = __commonJS(function(exports) {
   }
 });
 
-// node_modules/ajv-formats/dist/limit.js
+// ../../node_modules/ajv-formats/dist/limit.js
 var require_limit = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.formatLimitDefinition = undefined;
@@ -24625,7 +25070,7 @@ var require_limit = __commonJS(function(exports) {
   exports.default = formatLimitPlugin;
 });
 
-// node_modules/ajv-formats/dist/index.js
+// ../../node_modules/ajv-formats/dist/index.js
 var require_dist = __commonJS(function(exports, module) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var formats_1 = require_formats();
@@ -24669,8 +25114,8 @@ init_project();
 
 // src/hub/instance-config.ts
 init_registry();
-import { readFileSync as readFileSync16 } from "fs";
-import { join as join30 } from "path";
+import { readFileSync as readFileSync17 } from "fs";
+import { join as join33 } from "path";
 
 // src/adapters/external-metadata.ts
 import { types as types3 } from "util";
@@ -24783,8 +25228,8 @@ init_registry();
 // src/hub/config-trust.ts
 init_child_process();
 init_git();
-import { lstatSync as lstatSync15, statSync as statSync5 } from "fs";
-import { dirname as dirname12, join as join28 } from "path";
+import { lstatSync as lstatSync18, statSync as statSync5 } from "fs";
+import { dirname as dirname14, join as join31 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
   "permission_modes",
@@ -24823,7 +25268,7 @@ function configTracked(cwd, name) {
     return;
   let opened;
   try {
-    opened = statSync5(join28(cwd, ".agenthub", name));
+    opened = statSync5(join31(cwd, ".agenthub", name));
   } catch {}
   return r.stdout.split("\x00").filter(Boolean).some((row) => {
     const path = row.slice(row.indexOf("\t") + 1);
@@ -24832,7 +25277,7 @@ function configTracked(cwd, name) {
     if (!opened)
       return path === `.agenthub/${name}`;
     try {
-      const s = statSync5(join28(cwd, path));
+      const s = statSync5(join31(cwd, path));
       return !!opened && s.dev === opened.dev && s.ino === opened.ino;
     } catch {
       return false;
@@ -24889,12 +25334,12 @@ function readAdapterModuleDeclarations(cwd, layers) {
 
 // src/hub/control-client.ts
 init_project();
-import { readFileSync as readFileSync15 } from "fs";
-import { join as join29, resolve as resolve17 } from "path";
+import { readFileSync as readFileSync16 } from "fs";
+import { join as join32, resolve as resolve17 } from "path";
 
 // src/hub/tool-request.ts
 init_capabilities();
-import { createHash as createHash8, randomUUID as randomUUID12 } from "crypto";
+import { createHash as createHash9, randomUUID as randomUUID13 } from "crypto";
 var TOOL_WRITE_FEATURE = "tool_write_idempotency";
 var RETENTION_MS = 15 * 60 * 1000;
 var MAX_REPLY_BYTES = 64 * 1024;
@@ -24917,7 +25362,7 @@ function toolWriteOperation(msg) {
 function newToolRequestId(instanceId, now = Date.now()) {
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(instanceId) || !Number.isSafeInteger(now) || now < 1)
     throw new Error("tool request identity is unavailable");
-  return `v1/${instanceId}/${now}/${randomUUID12()}`;
+  return `v1/${instanceId}/${now}/${randomUUID13()}`;
 }
 function settlingRead(msg) {
   const args = msg.args && typeof msg.args === "object" && !Array.isArray(msg.args) ? msg.args : {};
@@ -24993,8 +25438,8 @@ function controlProtocolWindow(descriptor) {
 }
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync15(join29(stateDir, "status.json"), "utf8"));
-    const token = readFileSync15(join29(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync16(join32(stateDir, "status.json"), "utf8"));
+    const token = readFileSync16(join32(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
@@ -25374,7 +25819,7 @@ var LEARNING_DEFAULTS = { windowMs: 30 * 24 * 3600000, threshold: 3, maxGroups: 
 init_deliverables();
 
 // src/hub/deliverable-files.ts
-import { constants as constants9, lstatSync as lstatSync16 } from "fs";
+import { constants as constants10, lstatSync as lstatSync19 } from "fs";
 init_tools();
 init_deny();
 init_permission_mode();
@@ -25382,7 +25827,7 @@ init_project();
 init_path_policy();
 init_deliverables();
 var CHUNK = 1024 * 1024;
-var NOFOLLOW = constants9.O_NOFOLLOW ?? 0;
+var NOFOLLOW = constants10.O_NOFOLLOW ?? 0;
 
 // src/hub/tasks.ts
 init_src();
@@ -25451,7 +25896,7 @@ import { types as types4 } from "util";
 init_project();
 init_registry();
 init_permission_mode();
-import { dirname as dirname13, isAbsolute as isAbsolute8, sep as sep3 } from "path";
+import { dirname as dirname15, isAbsolute as isAbsolute10, sep as sep3 } from "path";
 var JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile"];
 var MAX_JCODE_INSTANCES = 8;
 var NATIVE_WORD = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
@@ -25488,7 +25933,7 @@ function roles(value, field) {
 }
 function jcodeInstanceFields(entry, path) {
   const home = entry.jcode_home?.value;
-  if (typeof home !== "string" || !isAbsolute8(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
+  if (typeof home !== "string" || !isAbsolute10(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
     return fail4(`${path}.jcode_home`, "is required: a nonempty control-free absolute path of at most 4096 UTF-8 bytes, other than the base Jcode's home");
   const out = { jcode_home: home };
   for (const key of ["provider", "model", "provider_profile"]) {
@@ -25685,7 +26130,7 @@ var INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"];
 function readInstanceConfigLayers(cwd) {
   return INSTANCE_CONFIG_FILES.flatMap((name) => {
     try {
-      return [{ name, raw: JSON.parse(readFileSync16(join30(cwd, ".agenthub", name), "utf8")) }];
+      return [{ name, raw: JSON.parse(readFileSync17(join33(cwd, ".agenthub", name), "utf8")) }];
     } catch (error) {
       if (error.code === "ENOENT")
         return [];
@@ -25792,7 +26237,7 @@ async function activeLifecycle(stateDir, peer, projectRoot, active) {
 init_profiles();
 init_roles();
 
-// node_modules/zod/v4/core/util.js
+// ../../node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
   const numericValues = Object.values(entries).filter((v) => typeof v === "number");
   const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
@@ -26335,7 +26780,7 @@ function constantCatch(value) {
   return fn;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../node_modules/zod/v4/core/core.js
 var _a;
 var _zodDesc = { value: undefined, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
@@ -26453,7 +26898,7 @@ function config(newConfig) {
     Object.assign(globalConfig, newConfig);
   return globalConfig;
 }
-// node_modules/zod/v4/core/errors.js
+// ../../node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -26568,7 +27013,7 @@ function formatError(error, mapper = (issue) => issue.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params) {
   return { callee: params?.callee ?? callee, Err: params?.Err };
 }
@@ -26716,7 +27161,7 @@ var _safeEncodeAsync = (_Err) => async (schema, value, _ctx) => {
 var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync(_Err)(schema, value, _ctx);
 };
-// node_modules/zod/v4/core/regexes.js
+// ../../node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][0-9a-z]{6,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
@@ -26768,14 +27213,14 @@ function datetime(args) {
   return new RegExp(`^${dateSource}T(?:${timeRegex})$`);
 }
 var anyString = /^[\s\S]{0,}$/;
-var integer = /^-?\d+$/;
+var integer2 = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
 var boolean = /^(?:true|false)$/i;
 var _null = /^null$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// node_modules/zod/v4/core/checks.js
+// ../../node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a;
   inst._zod ?? (inst._zod = {});
@@ -27091,7 +27536,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../node_modules/zod/v4/core/doc.js
 class Doc {
   constructor(args = [], closed = {}) {
     this.content = [];
@@ -27133,14 +27578,14 @@ ${content.join(`
   }
 }
 
-// node_modules/zod/v4/core/versions.js
+// ../../node_modules/zod/v4/core/versions.js
 var version3 = {
   major: 4,
   minor: 6,
   patch: 5
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a;
   inst ?? (inst = {});
@@ -28772,7 +29217,7 @@ function handleRefineResult(result, payload, input, inst) {
     payload.issues.push(issue(_iss));
   }
 }
-// node_modules/zod/v4/core/memoizer.js
+// ../../node_modules/zod/v4/core/memoizer.js
 class $ZodCyclicError extends Error {
   constructor() {
     super(`Cannot parse a reference cycle that closes through a transform`);
@@ -29041,7 +29486,7 @@ function isBackEdge(ctx, value) {
   const backEdges = ctx[STATE]?.backEdges;
   return backEdges !== undefined && isRef(value) && backEdges.has(value);
 }
-// node_modules/zod/v4/locales/en.js
+// ../../node_modules/zod/v4/locales/en.js
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -29163,7 +29608,7 @@ function en_default() {
     localeError: error()
   };
 }
-// node_modules/zod/v4/core/registries.js
+// ../../node_modules/zod/v4/core/registries.js
 var _a2;
 class $ZodRegistry {
   constructor() {
@@ -29210,7 +29655,7 @@ function registry() {
 }
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
-// node_modules/zod/v4/core/api.js
+// ../../node_modules/zod/v4/core/api.js
 function snapshotChecks(def) {
   if (def.checks)
     def.checks = [...def.checks];
@@ -29675,7 +30120,7 @@ function _check(fn, params) {
   ch._zod.check = fn;
   return ch;
 }
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key of Reflect.ownKeys(source)) {
@@ -30198,7 +30643,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   extractDefs(ctx, schema);
   return finalize(ctx, schema);
 };
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../node_modules/zod/v4/core/json-schema-processors.js
 var narrowMin = (agg, key, value) => {
   if (agg[key] === undefined || value > agg[key])
     agg[key] = value;
@@ -30573,7 +31018,7 @@ function stringifyKeyNames(bySchema, json, visited) {
     return rest;
   rest.type = "string";
   if (!values)
-    rest.pattern = (types.includes("number") ? number : integer).source;
+    rest.pattern = (types.includes("number") ? number : integer2).source;
   return rest;
 }
 var pendingRecords = new WeakMap;
@@ -30732,7 +31177,7 @@ var optionalProcessor = (schema, ctx, _json, params) => {
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
 };
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
 function isZ4Schema(s) {
   const schema = s;
   return !!schema._zod;
@@ -30794,7 +31239,7 @@ function getLiteralValue(schema) {
     return directValue;
   return;
 }
-// node_modules/zod/v4/classic/errors.js
+// ../../node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
@@ -30839,8 +31284,8 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, undefi
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
-var parse4 = /* @__PURE__ */ _parse(ZodRealError);
+// ../../node_modules/zod/v4/classic/parse.js
+var parse5 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse4 = /* @__PURE__ */ _safeParse(ZodRealError);
 var safeParseAsync2 = /* @__PURE__ */ _safeParseAsync(ZodRealError);
@@ -30853,7 +31298,7 @@ var safeDecode2 = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync2 = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync2 = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
     config(en_default());
@@ -30976,7 +31421,7 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
     own2(this, "~standard", value);
   },
   parse: function _parse(data, params) {
-    return parse4(this, data, params, { callee: _parse });
+    return parse5(this, data, params, { callee: _parse });
   },
   parseAsync: async function _parseAsync(data, params) {
     return await parseAsync2(this, data, params, { callee: _parseAsync });
@@ -31454,7 +31899,7 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
-function object10(shape, params) {
+function object11(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -31515,7 +31960,7 @@ var ZodRecord = /* @__PURE__ */ $constructor("ZodRecord", (inst, def) => {
   inst.keyType = def.keyType;
   inst.valueType = def.valueType;
 });
-function record4(keyType, valueType, params) {
+function record5(keyType, valueType, params) {
   if (!valueType || !valueType._zod) {
     return new ZodRecord({
       type: "record",
@@ -31783,11 +32228,11 @@ function preprocess(fn, schema) {
     out: schema
   });
 }
-// node_modules/zod/v4/classic/iso.js
+// ../../node_modules/zod/v4/classic/iso.js
 function datetime2(params) {
   return _isoDateTime(ZodISODateTime, params);
 }
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var LATEST_PROTOCOL_VERSION = "2025-11-25";
 var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
@@ -31799,31 +32244,31 @@ var TaskCreationParamsSchema = looseObject({
   ttl: number2().optional(),
   pollInterval: number2().optional()
 });
-var TaskMetadataSchema = object10({
+var TaskMetadataSchema = object11({
   ttl: number2().optional()
 });
-var RelatedTaskMetadataSchema = object10({
+var RelatedTaskMetadataSchema = object11({
   taskId: string3()
 });
 var RequestMetaSchema = looseObject({
   progressToken: ProgressTokenSchema.optional(),
   [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
 });
-var BaseRequestParamsSchema = object10({
+var BaseRequestParamsSchema = object11({
   _meta: RequestMetaSchema.optional()
 });
 var TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
   task: TaskMetadataSchema.optional()
 });
 var isTaskAugmentedRequestParams = (value) => TaskAugmentedRequestParamsSchema.safeParse(value).success;
-var RequestSchema = object10({
+var RequestSchema = object11({
   method: string3(),
   params: BaseRequestParamsSchema.loose().optional()
 });
-var NotificationsParamsSchema = object10({
+var NotificationsParamsSchema = object11({
   _meta: RequestMetaSchema.optional()
 });
-var NotificationSchema = object10({
+var NotificationSchema = object11({
   method: string3(),
   params: NotificationsParamsSchema.loose().optional()
 });
@@ -31831,18 +32276,18 @@ var ResultSchema = looseObject({
   _meta: RequestMetaSchema.optional()
 });
 var RequestIdSchema = union([string3(), number2().int()]);
-var JSONRPCRequestSchema = object10({
+var JSONRPCRequestSchema = object11({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   ...RequestSchema.shape
 }).strict();
 var isJSONRPCRequest = (value) => JSONRPCRequestSchema.safeParse(value).success;
-var JSONRPCNotificationSchema = object10({
+var JSONRPCNotificationSchema = object11({
   jsonrpc: literal(JSONRPC_VERSION),
   ...NotificationSchema.shape
 }).strict();
 var isJSONRPCNotification = (value) => JSONRPCNotificationSchema.safeParse(value).success;
-var JSONRPCResultResponseSchema = object10({
+var JSONRPCResultResponseSchema = object11({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   result: ResultSchema
@@ -31859,10 +32304,10 @@ var ErrorCode;
   ErrorCode[ErrorCode["InternalError"] = -32603] = "InternalError";
   ErrorCode[ErrorCode["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
 })(ErrorCode || (ErrorCode = {}));
-var JSONRPCErrorResponseSchema = object10({
+var JSONRPCErrorResponseSchema = object11({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema.optional(),
-  error: object10({
+  error: object11({
     code: number2().int(),
     message: string3(),
     data: unknown().optional()
@@ -31885,16 +32330,16 @@ var CancelledNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/cancelled"),
   params: CancelledNotificationParamsSchema
 });
-var IconSchema = object10({
+var IconSchema = object11({
   src: string3(),
   mimeType: string3().optional(),
   sizes: array(string3()).optional(),
   theme: _enum(["light", "dark"]).optional()
 });
-var IconsSchema = object10({
+var IconsSchema = object11({
   icons: array(IconSchema).optional()
 });
-var BaseMetadataSchema = object10({
+var BaseMetadataSchema = object11({
   name: string3(),
   title: string3().optional()
 });
@@ -31905,9 +32350,9 @@ var ImplementationSchema = BaseMetadataSchema.extend({
   websiteUrl: string3().optional(),
   description: string3().optional()
 });
-var FormElicitationCapabilitySchema = intersection(object10({
+var FormElicitationCapabilitySchema = intersection(object11({
   applyDefaults: boolean2().optional()
-}), record4(string3(), unknown()));
+}), record5(string3(), unknown()));
 var ElicitationCapabilitySchema = preprocess((value) => {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     if (Object.keys(value).length === 0) {
@@ -31915,10 +32360,10 @@ var ElicitationCapabilitySchema = preprocess((value) => {
     }
   }
   return value;
-}, intersection(object10({
+}, intersection(object11({
   form: FormElicitationCapabilitySchema.optional(),
   url: AssertObjectSchema.optional()
-}), record4(string3(), unknown()).optional()));
+}), record5(string3(), unknown()).optional()));
 var ClientTasksCapabilitySchema = looseObject({
   list: AssertObjectSchema.optional(),
   cancel: AssertObjectSchema.optional(),
@@ -31940,18 +32385,18 @@ var ServerTasksCapabilitySchema = looseObject({
     }).optional()
   }).optional()
 });
-var ClientCapabilitiesSchema = object10({
-  experimental: record4(string3(), AssertObjectSchema).optional(),
-  sampling: object10({
+var ClientCapabilitiesSchema = object11({
+  experimental: record5(string3(), AssertObjectSchema).optional(),
+  sampling: object11({
     context: AssertObjectSchema.optional(),
     tools: AssertObjectSchema.optional()
   }).optional(),
   elicitation: ElicitationCapabilitySchema.optional(),
-  roots: object10({
+  roots: object11({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ClientTasksCapabilitySchema.optional(),
-  extensions: record4(string3(), AssertObjectSchema).optional()
+  extensions: record5(string3(), AssertObjectSchema).optional()
 });
 var InitializeRequestParamsSchema = BaseRequestParamsSchema.extend({
   protocolVersion: string3(),
@@ -31962,22 +32407,22 @@ var InitializeRequestSchema = RequestSchema.extend({
   method: literal("initialize"),
   params: InitializeRequestParamsSchema
 });
-var ServerCapabilitiesSchema = object10({
-  experimental: record4(string3(), AssertObjectSchema).optional(),
+var ServerCapabilitiesSchema = object11({
+  experimental: record5(string3(), AssertObjectSchema).optional(),
   logging: AssertObjectSchema.optional(),
   completions: AssertObjectSchema.optional(),
-  prompts: object10({
+  prompts: object11({
     listChanged: boolean2().optional()
   }).optional(),
-  resources: object10({
+  resources: object11({
     subscribe: boolean2().optional(),
     listChanged: boolean2().optional()
   }).optional(),
-  tools: object10({
+  tools: object11({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ServerTasksCapabilitySchema.optional(),
-  extensions: record4(string3(), AssertObjectSchema).optional()
+  extensions: record5(string3(), AssertObjectSchema).optional()
 });
 var InitializeResultSchema = ResultSchema.extend({
   protocolVersion: string3(),
@@ -31993,12 +32438,12 @@ var PingRequestSchema = RequestSchema.extend({
   method: literal("ping"),
   params: BaseRequestParamsSchema.optional()
 });
-var ProgressSchema = object10({
+var ProgressSchema = object11({
   progress: number2(),
   total: optional(number2()),
   message: optional(string3())
 });
-var ProgressNotificationParamsSchema = object10({
+var ProgressNotificationParamsSchema = object11({
   ...NotificationsParamsSchema.shape,
   ...ProgressSchema.shape,
   progressToken: ProgressTokenSchema
@@ -32017,7 +32462,7 @@ var PaginatedResultSchema = ResultSchema.extend({
   nextCursor: CursorSchema.optional()
 });
 var TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-var TaskSchema = object10({
+var TaskSchema = object11({
   taskId: string3(),
   status: TaskStatusSchema,
   ttl: union([number2(), _null3()]),
@@ -32061,10 +32506,10 @@ var CancelTaskRequestSchema = RequestSchema.extend({
   })
 });
 var CancelTaskResultSchema = ResultSchema.merge(TaskSchema);
-var ResourceContentsSchema = object10({
+var ResourceContentsSchema = object11({
   uri: string3(),
   mimeType: optional(string3()),
-  _meta: record4(string3(), unknown()).optional()
+  _meta: record5(string3(), unknown()).optional()
 });
 var TextResourceContentsSchema = ResourceContentsSchema.extend({
   text: string3()
@@ -32081,12 +32526,12 @@ var BlobResourceContentsSchema = ResourceContentsSchema.extend({
   blob: Base64Schema
 });
 var RoleSchema = _enum(["user", "assistant"]);
-var AnnotationsSchema = object10({
+var AnnotationsSchema = object11({
   audience: array(RoleSchema).optional(),
   priority: number2().min(0).max(1).optional(),
   lastModified: datetime2({ offset: true }).optional()
 });
-var ResourceSchema = object10({
+var ResourceSchema = object11({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uri: string3(),
@@ -32096,7 +32541,7 @@ var ResourceSchema = object10({
   annotations: AnnotationsSchema.optional(),
   _meta: optional(looseObject({}))
 });
-var ResourceTemplateSchema = object10({
+var ResourceTemplateSchema = object11({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uriTemplate: string3(),
@@ -32149,12 +32594,12 @@ var ResourceUpdatedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/resources/updated"),
   params: ResourceUpdatedNotificationParamsSchema
 });
-var PromptArgumentSchema = object10({
+var PromptArgumentSchema = object11({
   name: string3(),
   description: optional(string3()),
   required: optional(boolean2())
 });
-var PromptSchema = object10({
+var PromptSchema = object11({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: optional(string3()),
@@ -32169,44 +32614,44 @@ var ListPromptsResultSchema = PaginatedResultSchema.extend({
 });
 var GetPromptRequestParamsSchema = BaseRequestParamsSchema.extend({
   name: string3(),
-  arguments: record4(string3(), string3()).optional()
+  arguments: record5(string3(), string3()).optional()
 });
 var GetPromptRequestSchema = RequestSchema.extend({
   method: literal("prompts/get"),
   params: GetPromptRequestParamsSchema
 });
-var TextContentSchema = object10({
+var TextContentSchema = object11({
   type: literal("text"),
   text: string3(),
   annotations: AnnotationsSchema.optional(),
-  _meta: record4(string3(), unknown()).optional()
+  _meta: record5(string3(), unknown()).optional()
 });
-var ImageContentSchema = object10({
+var ImageContentSchema = object11({
   type: literal("image"),
   data: Base64Schema,
   mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
-  _meta: record4(string3(), unknown()).optional()
+  _meta: record5(string3(), unknown()).optional()
 });
-var AudioContentSchema = object10({
+var AudioContentSchema = object11({
   type: literal("audio"),
   data: Base64Schema,
   mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
-  _meta: record4(string3(), unknown()).optional()
+  _meta: record5(string3(), unknown()).optional()
 });
-var ToolUseContentSchema = object10({
+var ToolUseContentSchema = object11({
   type: literal("tool_use"),
   name: string3(),
   id: string3(),
-  input: record4(string3(), unknown()),
-  _meta: record4(string3(), unknown()).optional()
+  input: record5(string3(), unknown()),
+  _meta: record5(string3(), unknown()).optional()
 });
-var EmbeddedResourceSchema = object10({
+var EmbeddedResourceSchema = object11({
   type: literal("resource"),
   resource: union([TextResourceContentsSchema, BlobResourceContentsSchema]),
   annotations: AnnotationsSchema.optional(),
-  _meta: record4(string3(), unknown()).optional()
+  _meta: record5(string3(), unknown()).optional()
 });
 var ResourceLinkSchema = ResourceSchema.extend({
   type: literal("resource_link")
@@ -32218,7 +32663,7 @@ var ContentBlockSchema = union([
   ResourceLinkSchema,
   EmbeddedResourceSchema
 ]);
-var PromptMessageSchema = object10({
+var PromptMessageSchema = object11({
   role: RoleSchema,
   content: ContentBlockSchema
 });
@@ -32230,33 +32675,33 @@ var PromptListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/prompts/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ToolAnnotationsSchema = object10({
+var ToolAnnotationsSchema = object11({
   title: string3().optional(),
   readOnlyHint: boolean2().optional(),
   destructiveHint: boolean2().optional(),
   idempotentHint: boolean2().optional(),
   openWorldHint: boolean2().optional()
 });
-var ToolExecutionSchema = object10({
+var ToolExecutionSchema = object11({
   taskSupport: _enum(["required", "optional", "forbidden"]).optional()
 });
-var ToolSchema = object10({
+var ToolSchema = object11({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: string3().optional(),
-  inputSchema: object10({
+  inputSchema: object11({
     type: literal("object"),
-    properties: record4(string3(), AssertObjectSchema).optional(),
+    properties: record5(string3(), AssertObjectSchema).optional(),
     required: array(string3()).optional()
   }).catchall(unknown()),
-  outputSchema: object10({
+  outputSchema: object11({
     type: literal("object"),
-    properties: record4(string3(), AssertObjectSchema).optional(),
+    properties: record5(string3(), AssertObjectSchema).optional(),
     required: array(string3()).optional()
   }).catchall(unknown()).optional(),
   annotations: ToolAnnotationsSchema.optional(),
   execution: ToolExecutionSchema.optional(),
-  _meta: record4(string3(), unknown()).optional()
+  _meta: record5(string3(), unknown()).optional()
 });
 var ListToolsRequestSchema = PaginatedRequestSchema.extend({
   method: literal("tools/list")
@@ -32266,7 +32711,7 @@ var ListToolsResultSchema = PaginatedResultSchema.extend({
 });
 var CallToolResultSchema = ResultSchema.extend({
   content: array(ContentBlockSchema).default([]),
-  structuredContent: record4(string3(), unknown()).optional(),
+  structuredContent: record5(string3(), unknown()).optional(),
   isError: boolean2().optional()
 });
 var CompatibilityCallToolResultSchema = CallToolResultSchema.or(ResultSchema.extend({
@@ -32274,7 +32719,7 @@ var CompatibilityCallToolResultSchema = CallToolResultSchema.or(ResultSchema.ext
 }));
 var CallToolRequestParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   name: string3(),
-  arguments: record4(string3(), unknown()).optional()
+  arguments: record5(string3(), unknown()).optional()
 });
 var CallToolRequestSchema = RequestSchema.extend({
   method: literal("tools/call"),
@@ -32284,7 +32729,7 @@ var ToolListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/tools/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ListChangedOptionsBaseSchema = object10({
+var ListChangedOptionsBaseSchema = object11({
   autoRefresh: boolean2().default(true),
   debounceMs: number2().int().nonnegative().default(300)
 });
@@ -32305,25 +32750,25 @@ var LoggingMessageNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/message"),
   params: LoggingMessageNotificationParamsSchema
 });
-var ModelHintSchema = object10({
+var ModelHintSchema = object11({
   name: string3().optional()
 });
-var ModelPreferencesSchema = object10({
+var ModelPreferencesSchema = object11({
   hints: array(ModelHintSchema).optional(),
   costPriority: number2().min(0).max(1).optional(),
   speedPriority: number2().min(0).max(1).optional(),
   intelligencePriority: number2().min(0).max(1).optional()
 });
-var ToolChoiceSchema = object10({
+var ToolChoiceSchema = object11({
   mode: _enum(["auto", "required", "none"]).optional()
 });
-var ToolResultContentSchema = object10({
+var ToolResultContentSchema = object11({
   type: literal("tool_result"),
   toolUseId: string3().describe("The unique identifier for the corresponding tool call."),
   content: array(ContentBlockSchema).default([]),
-  structuredContent: object10({}).loose().optional(),
+  structuredContent: object11({}).loose().optional(),
   isError: boolean2().optional(),
-  _meta: record4(string3(), unknown()).optional()
+  _meta: record5(string3(), unknown()).optional()
 });
 var SamplingContentSchema = discriminatedUnion("type", [TextContentSchema, ImageContentSchema, AudioContentSchema]);
 var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
@@ -32333,10 +32778,10 @@ var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
   ToolUseContentSchema,
   ToolResultContentSchema
 ]);
-var SamplingMessageSchema = object10({
+var SamplingMessageSchema = object11({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)]),
-  _meta: record4(string3(), unknown()).optional()
+  _meta: record5(string3(), unknown()).optional()
 });
 var CreateMessageRequestParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   messages: array(SamplingMessageSchema),
@@ -32366,13 +32811,13 @@ var CreateMessageResultWithToolsSchema = ResultSchema.extend({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)])
 });
-var BooleanSchemaSchema = object10({
+var BooleanSchemaSchema = object11({
   type: literal("boolean"),
   title: string3().optional(),
   description: string3().optional(),
   default: boolean2().optional()
 });
-var StringSchemaSchema = object10({
+var StringSchemaSchema = object11({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
@@ -32381,7 +32826,7 @@ var StringSchemaSchema = object10({
   format: _enum(["email", "uri", "date", "date-time"]).optional(),
   default: string3().optional()
 });
-var NumberSchemaSchema = object10({
+var NumberSchemaSchema = object11({
   type: _enum(["number", "integer"]),
   title: string3().optional(),
   description: string3().optional(),
@@ -32389,24 +32834,24 @@ var NumberSchemaSchema = object10({
   maximum: number2().optional(),
   default: number2().optional()
 });
-var UntitledSingleSelectEnumSchemaSchema = object10({
+var UntitledSingleSelectEnumSchemaSchema = object11({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
   enum: array(string3()),
   default: string3().optional()
 });
-var TitledSingleSelectEnumSchemaSchema = object10({
+var TitledSingleSelectEnumSchemaSchema = object11({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
-  oneOf: array(object10({
+  oneOf: array(object11({
     const: string3(),
     title: string3()
   })),
   default: string3().optional()
 });
-var LegacyTitledEnumSchemaSchema = object10({
+var LegacyTitledEnumSchemaSchema = object11({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
@@ -32415,26 +32860,26 @@ var LegacyTitledEnumSchemaSchema = object10({
   default: string3().optional()
 });
 var SingleSelectEnumSchemaSchema = union([UntitledSingleSelectEnumSchemaSchema, TitledSingleSelectEnumSchemaSchema]);
-var UntitledMultiSelectEnumSchemaSchema = object10({
+var UntitledMultiSelectEnumSchemaSchema = object11({
   type: literal("array"),
   title: string3().optional(),
   description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object10({
+  items: object11({
     type: literal("string"),
     enum: array(string3())
   }),
   default: array(string3()).optional()
 });
-var TitledMultiSelectEnumSchemaSchema = object10({
+var TitledMultiSelectEnumSchemaSchema = object11({
   type: literal("array"),
   title: string3().optional(),
   description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object10({
-    anyOf: array(object10({
+  items: object11({
+    anyOf: array(object11({
       const: string3(),
       title: string3()
     }))
@@ -32447,9 +32892,9 @@ var PrimitiveSchemaDefinitionSchema = union([EnumSchemaSchema, BooleanSchemaSche
 var ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   mode: literal("form").optional(),
   message: string3(),
-  requestedSchema: object10({
+  requestedSchema: object11({
     type: literal("object"),
-    properties: record4(string3(), PrimitiveSchemaDefinitionSchema),
+    properties: record5(string3(), PrimitiveSchemaDefinitionSchema),
     required: array(string3()).optional()
   })
 });
@@ -32473,24 +32918,24 @@ var ElicitationCompleteNotificationSchema = NotificationSchema.extend({
 });
 var ElicitResultSchema = ResultSchema.extend({
   action: _enum(["accept", "decline", "cancel"]),
-  content: preprocess((val) => val === null ? undefined : val, record4(string3(), union([string3(), number2(), boolean2(), array(string3())])).optional())
+  content: preprocess((val) => val === null ? undefined : val, record5(string3(), union([string3(), number2(), boolean2(), array(string3())])).optional())
 });
-var ResourceTemplateReferenceSchema = object10({
+var ResourceTemplateReferenceSchema = object11({
   type: literal("ref/resource"),
   uri: string3()
 });
-var PromptReferenceSchema = object10({
+var PromptReferenceSchema = object11({
   type: literal("ref/prompt"),
   name: string3()
 });
 var CompleteRequestParamsSchema = BaseRequestParamsSchema.extend({
   ref: union([PromptReferenceSchema, ResourceTemplateReferenceSchema]),
-  argument: object10({
+  argument: object11({
     name: string3(),
     value: string3()
   }),
-  context: object10({
-    arguments: record4(string3(), string3()).optional()
+  context: object11({
+    arguments: record5(string3(), string3()).optional()
   }).optional()
 });
 var CompleteRequestSchema = RequestSchema.extend({
@@ -32504,10 +32949,10 @@ var CompleteResultSchema = ResultSchema.extend({
     hasMore: optional(boolean2())
   })
 });
-var RootSchema = object10({
+var RootSchema = object11({
   uri: string3().startsWith("file://"),
   name: string3().optional(),
-  _meta: record4(string3(), unknown()).optional()
+  _meta: record5(string3(), unknown()).optional()
 });
 var ListRootsRequestSchema = RequestSchema.extend({
   method: literal("roots/list"),
@@ -32622,16 +33067,16 @@ class UrlElicitationRequiredError extends McpError {
   }
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
 function isTerminal(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-// node_modules/zod-to-json-schema/dist/esm/Options.js
+// ../../node_modules/zod-to-json-schema/dist/esm/Options.js
 var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use");
-// node_modules/zod-to-json-schema/dist/esm/parsers/string.js
+// ../../node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
 function getMethodLiteral(schema) {
   const shape = getObjectShape(schema);
   const methodSchema = shape?.method;
@@ -32652,7 +33097,7 @@ function parseWithCompat(schema, data) {
   return result.data;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
 var DEFAULT_REQUEST_TIMEOUT_MSEC = 60000;
 
 class Protocol {
@@ -33493,7 +33938,7 @@ function mergeCapabilities(base, additional) {
   return result;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
 var import_ajv = __toESM(require_ajv(), 1);
 var import_ajv_formats = __toESM(require_dist(), 1);
 function createDefaultAjvInstance() {
@@ -33533,7 +33978,7 @@ class AjvJsonSchemaValidator {
   }
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
 class ExperimentalServerTasks {
   constructor(_server) {
     this._server = _server;
@@ -33611,7 +34056,7 @@ class ExperimentalServerTasks {
   }
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
 function assertToolsCallTaskCapability(requests, method, entityName) {
   if (!requests) {
     throw new Error(`${entityName} does not support task creation (required for ${method})`);
@@ -33646,7 +34091,7 @@ function assertClientRequestTaskCapability(requests, method, entityName) {
   }
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 class Server extends Protocol {
   constructor(_serverInfo, options) {
     super(options);
@@ -33970,10 +34415,10 @@ class Server extends Protocol {
   }
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process2 from "process";
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 
 class ReadBuffer {
@@ -34013,7 +34458,7 @@ function serializeMessage(message) {
 `;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 class StdioServerTransport {
   constructor(_stdin = process2.stdin, _stdout = process2.stdout, options) {
     this._stdin = _stdin;
@@ -34077,8 +34522,8 @@ class StdioServerTransport {
 }
 
 // src/adapters/claude-channel.ts
-import { readFileSync as readFileSync17 } from "fs";
-import { join as join33 } from "path";
+import { readFileSync as readFileSync18 } from "fs";
+import { join as join36 } from "path";
 
 // src/hub/channel-project.ts
 init_registry();
@@ -34086,8 +34531,8 @@ init_registry();
 // src/hub/instance-execution.ts
 init_git();
 init_project();
-import { lstatSync as lstatSync17 } from "fs";
-import { join as join31, resolve as resolve19 } from "path";
+import { lstatSync as lstatSync20 } from "fs";
+import { join as join34, resolve as resolve19 } from "path";
 var refuse = (reason) => {
   throw new Error(`instance execution workspace refused: ${reason}`);
 };
@@ -34129,12 +34574,12 @@ function resolveInstanceExecutionCwd(projectRoot, id, declarations, roles, adapt
   try {
     root = realPath(projectRoot);
     cwd = realPath(resolve19(root, declaration.worktree));
-    if (!lstatSync17(root).isDirectory() || !lstatSync17(cwd).isDirectory())
+    if (!lstatSync20(root).isDirectory() || !lstatSync20(cwd).isDirectory())
       return refuse("workspace is not a directory");
   } catch {
     return refuse("workspace paths are unavailable");
   }
-  const expected = join31(root, ".worktrees", id);
+  const expected = join34(root, ".worktrees", id);
   if (cwd !== expected)
     return refuse("worktree must be the exact managed instance directory");
   const inventory = git(root, ["worktree", "list", "--porcelain", "-z"]);
@@ -34164,7 +34609,7 @@ function resolveInstanceExecutionCwd(projectRoot, id, declarations, roles, adapt
 // src/hub/channel-project.ts
 init_project();
 import { existsSync as existsSync9 } from "fs";
-import { join as join32 } from "path";
+import { join as join35 } from "path";
 function channelProject(cwd, env, policyRoles) {
   const override = env.AGENTHUB_STATE_DIR?.trim(), declared = env.AGENTHUB_PROJECT_DIR?.trim();
   if (env.AGENTHUB_MODE === "tools" && override && declared)
@@ -34194,7 +34639,7 @@ function channelProject(cwd, env, policyRoles) {
   const inherited = inheritedStateDir(own.root, env);
   if (inherited)
     return { root: own.root, stateDir: inherited, inherited: true };
-  if (override && !existsSync9(join32(own.root, ".agenthub", "config.json")))
+  if (override && !existsSync9(join35(own.root, ".agenthub", "config.json")))
     return asSession();
   return { root: own.root, stateDir: own.stateDir, inherited: false };
 }
@@ -34365,7 +34810,7 @@ function currentClaudeChannelEvidence() {
 var own3 = channelProject(process.cwd(), process.env, (root) => {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync17(join33(root, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync18(join36(root, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -34391,7 +34836,7 @@ var channel = !toolsMode && channelEvidence === "development-channel-launch";
 function roles2() {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync17(join33(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync18(join36(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -34410,7 +34855,7 @@ function sessionProfile() {
     for (const name of ["config.json", "config.local.json"]) {
       let data;
       try {
-        data = JSON.parse(readFileSync17(join33(projectRoot2, ".agenthub", name), "utf8"));
+        data = JSON.parse(readFileSync18(join36(projectRoot2, ".agenthub", name), "utf8"));
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -34437,7 +34882,7 @@ function sessionRoles() {
     const read = (name) => {
       let raw;
       try {
-        raw = JSON.parse(readFileSync17(join33(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
+        raw = JSON.parse(readFileSync18(join36(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
       } catch {
         return {};
       }
@@ -34468,14 +34913,14 @@ var HELD = `another session is attached to the hub as "${peerId}"; this one is s
 var INBOX_CAP = 200;
 function sessionSupported() {
   try {
-    return (JSON.parse(readFileSync17(join33(stateDir, "status.json"), "utf8")).features ?? []).includes("session_identity");
+    return (JSON.parse(readFileSync18(join36(stateDir, "status.json"), "utf8")).features ?? []).includes("session_identity");
   } catch {
     return false;
   }
 }
 function peerHeld() {
   try {
-    const status = JSON.parse(readFileSync17(join33(stateDir, "status.json"), "utf8"));
+    const status = JSON.parse(readFileSync18(join36(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
     if (channel && peer?.toolsOnly && !peer.claiming)
       return false;

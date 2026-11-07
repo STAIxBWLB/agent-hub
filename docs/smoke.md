@@ -98,6 +98,20 @@ operationId, console hello and initiating-peer audit (225 related tests passed).
 This is fixture/CLI proof, not an actual native Pi restoration; that live leg
 remains owed in #273.
 
+## Kimi TUI completion facts (#1282)
+
+Run this only on Kimi 2.5.2 in a disposable Git project and an isolated `KIMI_CODE_HOME`; `compat.ts` `kimi-tui` refuses every other version. The launcher must print its launch-scoped plugin notice before the TUI starts, and `plugins/installed.json` must contain only that launch's `agentHubLaunch`. Do not use the person's project or global `config.toml`.
+
+1. `ahub up --no-console --no-agents` in the disposable project, then `ahub kimi --mode tui`. `--print-command` must describe the same plugin without writing it.
+2. Send an ordinary prompt. `ahub results --json` shows one private `done` only after `turn.ended`, with the same native turn id in `native_turn_end`.
+3. Start a real background `sleep 15` through Kimi's Bash tool. The results stay empty while `agents/main/tasks/<id>.json` says `running`; after the task and notification turn finish, exactly one `done` appears even if TaskStarted/Notification hooks never arrive.
+4. Queue a hub message with `ahub say @kimi native-origin-probe`, then call `mcp__agent-hub__hub_inbox` once. The pulled message creates no second person-originated run; the person's prompt that called the tool settles once.
+5. Block the first Stop with exit 2. `agent.turn.ended` may appear, but no `turn.ended` and no completion appears until the final Stop is allowed. Check delayed final output and a replayed old Stop.
+6. Point the isolated provider at a closed loopback port. StopFailure alone creates no result until the matching `turn.ended(reason: "failed")`; then the outcome is `failed`. Interrupt yields `cancelled` and no unread result. Closing the launcher or restarting the daemon yields at most one `interrupted` for that run.
+7. Confirm forged, stale, wrong-launch, wrong-session and wrong-cwd observations create no run or receipt, and prompt, response, error, task command and task title are absent from completion rows, `events.jsonl`, `hub.log` and memory. Exit the TUI normally: the launch-scoped plugin record and files are removed and other plugins remain.
+
+The exact-version receipt is `docs/verification/2026-11-08-kimi-tui-completion-1282.md`. A version lacking any of these readbacks keeps `settle` disabled.
+
 ## Kimi usage counting (#285 AC11)
 
 The [2026-10-25 Kimi 2.3.1 receipt](verification/2026-10-25-kimi-usage-ac11.md)
