@@ -18,16 +18,40 @@ export function decodeAgyHook(event: string, value: unknown): NativeFactsInput |
   const call = record(value.toolCall) ? value.toolCall : undefined;
   if ((event === "PreToolUse" || event === "PostToolUse") && (!call || typeof call.name !== "string" || call.name.length > 128 || !record(call.args))) return;
   const native = call?.args as Record<string, unknown> | undefined;
-  // Only the observed native read is classified. Unobserved edits never receive a scoped grant or effect attribution.
-  // 1.4.2 names it view_file(AbsolutePath); 1.4.3 renamed it read_file(Path, optional StartLine/EndLine).
+  // 1.4.2 names it view_file(AbsolutePath); 1.4.3+ renamed it read_file(Path, optional StartLine/EndLine/ByteOffset).
   const readPath = call?.name === "view_file" ? native?.AbsolutePath : call?.name === "read_file" ? native?.Path : undefined;
   const observedRead = typeof readPath === "string";
-  // A line range is a partial read: carry it as offset/limit so it never counts as a whole-file view.
-  const range = observedRead && Number.isSafeInteger(native?.StartLine) && (native!.StartLine as number) > 0
-    ? { offset: native!.StartLine as number, ...(Number.isSafeInteger(native?.EndLine) && (native!.EndLine as number) >= (native!.StartLine as number) ? { limit: (native!.EndLine as number) - (native!.StartLine as number) + 1 } : {}) } : {};
+  // A line range or byte offset is a partial read: carry offset/limit so it never counts as a whole-file view.
+  const hasStart = observedRead && Number.isSafeInteger(native?.StartLine) && (native!.StartLine as number) > 0;
+  const hasEnd = observedRead && Number.isSafeInteger(native?.EndLine) && (native!.EndLine as number) > 0;
+  const hasByteOffset = observedRead && Number.isSafeInteger(native?.ByteOffset) && (native!.ByteOffset as number) >= 0;
+  const range = hasStart
+    ? { offset: native!.StartLine as number, ...(hasEnd && (native!.EndLine as number) >= (native!.StartLine as number) ? { limit: (native!.EndLine as number) - (native!.StartLine as number) + 1 } : {}) }
+    : hasEnd
+      ? { offset: 1, limit: native!.EndLine as number }
+      : hasByteOffset
+        ? { offset: (native!.ByteOffset as number) + 1 }
+        : {};
+  // 1.4.2 names writes write_to_file(TargetFile, CodeContent); 1.4.3+ names them write_file(Path, Content, optional Append).
+  const writePath = call?.name === "write_file" ? native?.Path : call?.name === "write_to_file" ? native?.TargetFile : undefined;
+  const writeContent = call?.name === "write_file" ? native?.Content : call?.name === "write_to_file" ? native?.CodeContent : undefined;
+  const observedWrite = typeof writePath === "string";
+  // 1.4.2 names edits replace_file_content(TargetFile, TargetContent, ReplacementContent); 1.4.3+ names them edit_file(Path, Target, Replacement).
+  const editPath = call?.name === "edit_file" ? native?.Path : call?.name === "replace_file_content" ? native?.TargetFile : undefined;
+  const oldStr = call?.name === "edit_file" ? native?.Target : call?.name === "replace_file_content" ? native?.TargetContent : undefined;
+  const newStr = call?.name === "edit_file" ? native?.Replacement : call?.name === "replace_file_content" ? native?.ReplacementContent : undefined;
+  const observedEdit = typeof editPath === "string";
+  const tool = observedRead ? "Read" : observedWrite ? "Write" : observedEdit ? "Edit" : typeof call?.name === "string" ? call.name : "";
+  const input = observedRead
+    ? { file_path: readPath, ...range }
+    : observedWrite
+      ? { file_path: writePath, ...(typeof writeContent === "string" && native?.Append !== true ? { content: writeContent } : {}) }
+      : observedEdit
+        ? { file_path: editPath, ...(typeof oldStr === "string" && typeof newStr === "string" ? { old_string: oldStr, new_string: newStr, replace_all: native?.AllowMultiple !== false } : {}) }
+        : native ?? {};
   const phase = ({ SessionStart: "session", PreInvocation: "start", PostInvocation: "post", PreToolUse: "pre", PostToolUse: "post", Stop: "stop" } as const)[event as typeof EVENTS[number]];
   return { event: event as NativeFactsInput["event"], phase, sessionId: value.conversationId, transcriptPath: value.transcriptPath,
-    workspacePaths: value.workspacePaths as string[], tool: observedRead ? "Read" : typeof call?.name === "string" ? call.name : "", input: observedRead ? { file_path: readPath, ...range } : native ?? {},
+    workspacePaths: value.workspacePaths as string[], tool, input,
     ...(Number.isSafeInteger(value.stepIdx) && (value.stepIdx as number) >= 0 ? { toolUseId: `${value.conversationId}:${value.stepIdx}` } : {}),
     ...(Number.isSafeInteger(value.invocationNum) && (value.invocationNum as number) >= 0 ? { invocation: value.invocationNum as number } : {}),
     ...(event === "Stop" ? { fullyIdle: value.fullyIdle as boolean, terminationReason: typeof value.terminationReason === "string" ? value.terminationReason : "" } : {}) };
@@ -76,8 +100,19 @@ export function readAgyTranscript(session: string, transcript: string, options?:
       for (const line of lines) {
         let row: unknown; try { row = JSON.parse(line); } catch { continue; }
         if (!record(row) || row.status !== "DONE") continue;
-        if (row.source === "SYSTEM_SDK" && row.type === "EPHEMERAL_MESSAGE" && typeof row.content === "string") {
+        if (row.source === "SYSTEM_SDK" && (row.type === "EPHEMERAL_MESSAGE" || row.type === "SYSTEM_MESSAGE") && typeof row.content === "string") {
           for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g)) out.factIds.push(match[1]!);
+        }
+        if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && (row.step_index as number) >= 0
+          && Number.isSafeInteger(row.input_tokens) && (row.input_tokens as number) >= 0
+          && Number.isSafeInteger(row.output_tokens) && (row.output_tokens as number) >= 0) {
+          const inputTokens = row.input_tokens as number, outputTokens = row.output_tokens as number;
+          const cacheReadTokens = Number.isSafeInteger(row.cache_read_tokens) && (row.cache_read_tokens as number) >= 0 ? (row.cache_read_tokens as number) : 0;
+          const totalTokens = inputTokens + outputTokens + cacheReadTokens;
+          if (Number.isSafeInteger(totalTokens)) {
+            const at = typeof row.created_at === "string" && Number.isFinite(Date.parse(row.created_at)) ? row.created_at : undefined;
+            (out.usage ??= []).push({ id: createHash("sha256").update(`${session}:usage:${row.step_index}`).digest("hex"), index: row.step_index as number, inputTokens, outputTokens, cacheReadTokens, totalTokens, ...(at ? { at } : {}) });
+          }
         }
         if (options?.completion !== false && row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index)
           && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0)) out.completion = { id: createHash("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index as number };

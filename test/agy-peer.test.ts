@@ -173,6 +173,35 @@ for (const [version, name, args] of [["1.4.2", "view_file", (file: string) => ({
     expect((await stopping).ok).toBe(true);
     await until(() => daemon.bus.peers.get("agy")?.state === "idle");
     expect(readEvents(join(stateDir, "events.jsonl")).some((ev: any) => ev.type === "fact_ack" && ev.peer === "agy" && ev.id === secondFactId && ev.via === "native-hook")).toBe(true);
+    // #1280 P1: native write_file and edit_file credit agy as author, advance agy's view, acknowledge 1.5.x SYSTEM_MESSAGE facts, bind nativeSession, and emit agy_transcript usage events.
+    expect((daemon.bus.peers.get("agy") as any)?.nativeSession).toBe(session);
+    const writeCall = { name: "write_file", args: { Path: file, Content: "alpha\nbeta\n" } };
+    expect((await hook("PreInvocation", { invocationNum: 3 })).text).toBeUndefined();
+    expect((await hook("PreToolUse", { invocationNum: 3, toolCall: writeCall, stepIdx: 10 })).ok).toBe(true);
+    writeFileSync(file, "alpha\nbeta\n");
+    expect((await hook("PostToolUse", { invocationNum: 3, toolCall: writeCall, stepIdx: 10 })).ok).toBe(true);
+    const editCall = { name: "edit_file", args: { Path: file, Target: "beta", Replacement: "BETA" } };
+    expect((await hook("PreToolUse", { invocationNum: 3, toolCall: editCall, stepIdx: 11 })).ok).toBe(true);
+    writeFileSync(file, "alpha\nBETA\n");
+    expect((await hook("PostToolUse", { invocationNum: 3, toolCall: editCall, stepIdx: 11 })).ok).toBe(true);
+    // agy's own credited write_file and edit_file moved its view, so its next invocation offers no self-diff.
+    expect((await hook("PreInvocation", { invocationNum: 4 })).text).toBeUndefined();
+    writeFileSync(file, "alpha\nBETA\ngamma\n");
+    const next3 = await hook("PreInvocation", { invocationNum: 5 });
+    expect(next3.text).toContain("+gamma");
+    const thirdFactId = /^agent-hub facts \[([^\]]+)\]:/.exec(next3.text)![1]!;
+    appendFileSync(transcript, [
+      JSON.stringify({ step_index: 12, source: "SYSTEM_SDK", type: "SYSTEM_MESSAGE", status: "DONE", content: next3.text }),
+      JSON.stringify({ step_index: 13, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-07T12:05:00Z", input_tokens: 400, output_tokens: 50, cache_read_tokens: 1000, content: "complete 3" }),
+    ].join("\n") + "\n");
+    expect((await hook("Stop", { invocationNum: 5, fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
+    await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    const eventsAfter = readEvents(join(stateDir, "events.jsonl"));
+    expect(eventsAfter.some((ev: any) => ev.type === "fact_ack" && ev.peer === "agy" && ev.id === thirdFactId && ev.via === "native-hook")).toBe(true);
+    expect(eventsAfter.filter((ev: any) => ev.type === "usage" && ev.peer === "agy" && ev.source === "agy_transcript")).toMatchObject([
+      { type: "usage", peer: "agy", source: "agy_transcript", inputTokens: 400, outputTokens: 50, cacheReadTokens: 1000, totalTokens: 1450, measuredAt: "2026-11-07T12:05:00Z" },
+    ]);
+    expect(eventsAfter.some((ev: any) => ev.type === "tokens" && ev.peer === "agy" && ev.n === 1450)).toBe(true);
   } finally {
     for (const close of cleanup) close();
     peer?.close(); tools.close(); person.close(); await daemon.stop();

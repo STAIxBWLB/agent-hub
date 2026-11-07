@@ -5898,6 +5898,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Optional native usage: only the instance-fenced explicit Claude session is read.
   // IDs persist in telemetry, so a restart/resume never counts the same native message twice.
   const claudeNativeUsageSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).filter(e => e.type === "usage" && e.source === "claude_transcript").map(e => (e as { id: string }).id));
+  const agyNativeUsageSeen = new Set(startupEvents.filter(e => e.type === "usage" && e.source === "agy_transcript").map(e => (e as { id: string }).id));
   const collectClaudeUsage = () => { for (const peer of channelPeers) {
     const session = claudeSession(peer);
     if (!session.sessionId || !session.transcriptPath) continue;
@@ -10423,9 +10424,16 @@ export async function startDaemon(opts: DaemonOptions) {
             : { factIds: [] };
         // ponytail: an unacknowledged fact row followed by >4 MiB of output before the next readback hits the 4 MiB lookback cap in readAgyTranscript.
         const acknowledge = (read: ReturnType<typeof port.read>) => {
-          if (!factsOn()) return;
-          factSession(peer, native.sessionId);
-          for (const id of read.factIds) acked(peer, id, "native-hook");
+          for (const u of read.usage ?? []) {
+            if (agyNativeUsageSeen.has(u.id)) continue;
+            agyNativeUsageSeen.add(u.id);
+            if (u.totalTokens > 0) addTokens(peer, u.totalTokens);
+            event({ type: "usage", peer, source: "agy_transcript", id: u.id, inputTokens: u.inputTokens, outputTokens: u.outputTokens, cacheReadTokens: u.cacheReadTokens, totalTokens: u.totalTokens, ...taskAttribution(peer), ...(u.at ? { measuredAt: u.at } : {}) });
+          }
+          if (factsOn()) {
+            factSession(peer, native.sessionId);
+            for (const id of read.factIds) acked(peer, id, "native-hook");
+          }
           if (read.size !== undefined && read.scannedFrom !== undefined) {
             const prev = launch.transcriptPath === native.transcriptPath ? (launch.transcriptOffset ?? 0) : 0;
             if (read.scannedFrom <= prev) {
@@ -10436,6 +10444,7 @@ export async function startDaemon(opts: DaemonOptions) {
         };
         const apply = () => {
           if (!current()) return void reply({ ok: false });
+          owner.bindNativeSession(native.sessionId);
           acknowledge(readback);
           if (native.event === "PreInvocation" || native.event === "PreToolUse") {
             if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
@@ -10445,6 +10454,7 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!launch.active || !native.fullyIdle) return void reply({ ok: false });
             const terminalReason = ({ USER_CANCELED: "user_canceled", ERROR: "error", MAX_INVOCATIONS: "max_invocations", MAX_FORCED_INVOCATIONS: "max_forced_invocations", MAX_TOKEN_BUDGET_EXCEEDED: "max_token_budget_exceeded", TERMINAL_STEP_TYPE: "terminal_step_type", TERMINAL_CUSTOM_HOOK: "terminal_custom_hook" } as const)[native.terminationReason ?? ""];
             if (terminalReason) {
+              acknowledge(port.read(native.sessionId, native.transcriptPath, { completion: false, ...since }));
               launch.active = false; turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
               tally(); emitHookStats(peer);
               event({ type: "native_turn_end", peer, reason: terminalReason }); owner.nativeStopped(native.sessionId);
@@ -10469,7 +10479,7 @@ export async function startDaemon(opts: DaemonOptions) {
               let delay = 5;
               let lastStat: { size: number; mtimeMs: number } | undefined;
               while (current() && launch.active && launch.turn === turn) {
-                const pollSince = factsOn() && launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
+                const pollSince = launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
                 const polled = port.read(native.sessionId, native.transcriptPath, { ...(lastStat ? { unchanged: lastStat } : {}), ...pollSince });
                 if (polled.size !== undefined && polled.mtimeMs !== undefined) lastStat = { size: polled.size, mtimeMs: polled.mtimeMs };
                 acknowledge(polled);
