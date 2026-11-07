@@ -4,10 +4,10 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, run, spaces, machines, focused, window, props, closeOverlay, theme } from "herdr";
+import { exec, run, hc, spaces, machines, focused, terminals, window, props, closeOverlay, theme } from "herdr";
 import { createHerdrEntry } from "./core.js";
 
-const host = { exec, run, spaces, machines, focused, platform: () => window().platform };
+const host = { exec, run, hc, spaces, machines, focused, terminals, now: () => Date.now(), platform: () => window().platform };
 
 export default class AhubEntry extends View {
   init(_props, cx) {
@@ -29,6 +29,23 @@ export default class AhubEntry extends View {
     });
   }
 
+  card(cx) {
+    this.note = "Reading status...";
+    cx.notify();
+    cx.spawn(async (cx) => { const r = await this.entry.refreshCard(); this.note = r.ok === false && r.message ? r.message : ""; cx.notify(); });
+  }
+
+  focus(kind, cx) {
+    this.note = "Looking for the console...";
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const r = kind === "peek" ? await this.entry.peekConsole() : await this.entry.focusConsole();
+      this.note = r.ok ? (kind === "peek" ? "Asked Herdr to peek at the console." : "Focused the console.") + (r.observed ? ` Herdr shows it as ${r.observed}.` : "") : r.message;
+      if (r.ok && kind === "focus") closeOverlay(props().overlay);
+      cx.notify();
+    });
+  }
+
   copy(cx) {
     const r = this.entry.copyCommand();
     if (r.ok) { cx.write_to_clipboard(r.command); this.note = `Copied. Run it on ${r.machineLabel}.`; } else this.note = r.message;
@@ -46,6 +63,8 @@ export default class AhubEntry extends View {
       .child(div().flex_1().min_w(0).text_size(12).text_color(t.foreground).child(r.root))
       .child(div().text_size(11).text_color(r.state === "running" ? t.done : t.dim).child(r.state)));
     const sel = v.selection;
+    const card = this.entry.card();
+    const cardLine = !sel ? null : !card ? "Status: not read. Click Status." : card.ok ? `Status (${card.state}): ${Object.entries(card.tasks ?? {}).map(([k, n]) => `${k} ${n}`).join(", ") || "no task counts"}; ${(card.peers ?? []).map((p) => `${p.id} ${p.state}`).join(", ") || "no peers"}${card.missing.length ? `; missing ${card.missing.join(", ")}` : ""}` : `Status (${card.state}): ${this.entry.cardSentence(card.state)}`;
     return v_flex().id("ahub-entry").track_focus(this.handle).size_full().min_h(0).p(16).gap(10).bg(t.popover).text_size(13)
       .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(props().overlay); cx.stop_propagation(); } })
       .child(div().text_size(15).font_semibold().text_color(t.foreground).child("agent-hub"))
@@ -53,9 +72,13 @@ export default class AhubEntry extends View {
       .child(v.status === "refused" ? div().text_color(t.blocked).child(v.message) : v.status === "loading" ? div().text_color(t.dim).child("Reading registered projects...") : div().text_color(t.dim).child(
         v.rows.length === 0 ? "No ahub project is registered on this machine." : v.candidate === "ambiguous" ? "More than one registered project contains this folder. Pick one." : v.candidate === "single" ? "One registered project contains this folder. Select it to confirm." : "No registered project contains this folder. Pick one."))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(2).children(rows))
+      .child(cardLine ? div().text_size(12).text_color(t.muted).child(cardLine) : div())
       .child(h_flex().gap(8)
         .child(button("console", "Open console", !!sel, (_e, cx) => this.act("console", cx)))
         .child(button("dashboard", "Open dashboard", !!sel && sel.machine === null, (_e, cx) => this.act("dashboard", cx)))
+        .child(button("status", "Status", !!sel, (_e, cx) => this.card(cx)))
+        .child(button("focus", "Focus console", !!sel && sel.machine === null, (_e, cx) => this.focus("focus", cx)))
+        .child(button("peek", "Peek console", !!sel && sel.machine === null, (_e, cx) => this.focus("peek", cx)))
         .child(button("copy", "Copy command", !!sel, (_e, cx) => this.copy(cx)))
         .child(button("refresh", "Refresh", true, (_e, cx) => { this.note = ""; cx.spawn(async (cx) => { await this.entry.refresh(); cx.notify(); }); cx.notify(); })))
       .child(div().text_size(12).text_color(t.muted).child(this.note || (sel ? `Selected: ${sel.root} on ${sel.machineLabel}` : "")));

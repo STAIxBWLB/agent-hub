@@ -7,6 +7,9 @@
 // ticket (the output of `ahub ui` is dropped), start/stop/restart/upgrade anything, touch a task, review, approval, role, budget or memory, kill/park/close a terminal, retry,
 // poll, or persist anything. The pane's folder is a hint: authority is a registration read on the same machine.
 
+import { CARD_SENTENCES, classifyRun, projectStatus, ageCard } from "./card.js";
+import { MAX_TERMINALS, matchConsole, terminalRow } from "./focus.js";
+
 export const EXEC = Object.freeze({ timeoutMs: 30_000, maxOutputBytes: 8 * 1024 * 1024 });
 export const MAX_PROJECTS = 500;
 /** The only programs and arguments this entry ever passes to exec or run. Anything else is a bug. */
@@ -47,6 +50,12 @@ export const REFUSALS = Object.freeze({
   unconfirmed: "Herdr did not show a new tab after the request. It was not retried, so check the space before trying again.",
   link_printed: "ahub printed a link instead of opening one. It was not kept or shown. Run `ahub ui` in a terminal on this computer.",
   bad_root: "That folder name has a character that cannot be copied safely into a shell. Open a terminal there yourself.",
+  no_console: "No running console for this project was found in Herdr. Use Open console to start one; nothing was replaced or created.",
+  ambiguous_console: "More than one running console matches this project, so none was chosen. Focus the one you want yourself.",
+  remote_focus: "Focusing an existing terminal on another machine is not supported here. Use Open console in that machine's space.",
+  unconfirmed_focus: "Herdr did not show that terminal as focused after the request. It was not retried, and nothing was started or closed.",
+  too_many_terminals: "Herdr lists more terminals than this entry looks through, so none was chosen. Focus the console yourself.",
+  hc_unavailable: "Herdr did not let this entry read a terminal, so none was chosen. Focus the console yourself.",
 });
 
 // The mod runtime has no structuredClone (herdr-app check rejected it). Everything copied here is plain JSON data.
@@ -90,8 +99,8 @@ function candidateKind(cwd, rows) {
 }
 
 export function createHerdrEntry({ host }) {
-  let generation = 0, busy = false;
-  let view = { status: "idle", machine: null, machineLabel: "this computer", cwd: null, rows: [], candidate: "none", highlighted: null, selection: null, refusal: null, message: "" };
+  let generation = 0, busy = false, cardBusy = false;
+  let view = { status: "idle", machine: null, machineLabel: "this computer", cwd: null, rows: [], candidate: "none", highlighted: null, selection: null, refusal: null, message: "", card: null };
 
   const label = machine => (machine === null ? "this computer" : machine);
   const platform = () => { try { return host.platform ? host.platform() : null; } catch { return null; } };
@@ -133,6 +142,26 @@ export function createHerdrEntry({ host }) {
     return typeof status.cwd === "string" && status.cwd === binding.root ? { ok: true } : { refusal: status.cwd === undefined ? "bad_output" : "changed" };
   }
 
+  /** Read `ahub --project <root> status --json` ON the selected machine, from the project folder, within the host's own caps. Returns a card whose state is always one of the closed ones. */
+  async function readCard(sel) {
+    const options = sel.machine === null ? { cwd: sel.root } : { cwd: sel.root, on: sel.machine };
+    const started = typeof host.now === "function" ? host.now() : Date.now();
+    let result = null, rejected = false;
+    try { result = await host.exec(PROGRAM, projectArgs(sel.id, FIXED.status), options); } catch { rejected = true; }
+    const done = typeof host.now === "function" ? host.now() : Date.now();
+    const kind = classifyRun({ rejected, elapsedMs: done - started, timeoutMs: EXEC.timeoutMs, result,
+      stderrSaysNoHub: !rejected && result && typeof result.stderr === "string" && result.stderr.startsWith("ahub: no hub running for ") });
+    if (kind.kind !== "ok") return { ok: false, state: kind.kind, fetchedAt: done };
+    let raw;
+    try { raw = JSON.parse(result.stdout); } catch { return { ok: false, state: "bad_output", fetchedAt: done }; }
+    const card = projectStatus(raw, done, done);
+    if (!card.ok) return { ok: false, state: card.state, fetchedAt: done };
+    if (card.projectId !== sel.id) return { ok: false, state: "changed", fetchedAt: done };
+    // Selected by id, `projectId` equals the id by construction, so the proof is the folder the hub reports for itself: the same rule as the open actions (checkProject).
+    if (typeof raw.cwd !== "string" || raw.cwd !== sel.root) return { ok: false, state: raw.cwd === undefined ? "bad_output" : "changed", fetchedAt: done };
+    return card;
+  }
+
   function setView(patch) { view = { ...view, ...patch }; return view; }
 
   return {
@@ -165,9 +194,44 @@ export function createHerdrEntry({ host }) {
       if (!row) return fail("changed");
       generation++;
       const selection = { id: row.id, root: row.root, machine: view.machine, machineLabel: view.machineLabel, spaceId: view.spaceId, state: row.state };
-      setView({ selection, refusal: null, message: "" });
+      setView({ selection, refusal: null, message: "", card: null });
       return { ok: true, selection: copy(selection) };
     },
+
+    /**
+     * Explicit refresh of the card for the selected project. Never started by a timer: the caller is a click, or a project-context change (select). A second call while one is reading is refused, and a
+     * reading that finishes after the selection changed is dropped, so a card is never shown under another project's name.
+     */
+    async refreshCard() {
+      const sel = view.selection;
+      if (!sel) return fail("no_selection");
+      if (cardBusy) return fail("busy");
+      let spaces, machines;
+      try { spaces = host.spaces(); machines = host.machines(); } catch { return fail("host_unavailable"); }
+      const space = Array.isArray(spaces) ? spaces.find(s => s && s.id === sel.spaceId) : null;
+      if (!space || (space.machine ?? null) !== sel.machine) return fail("changed");
+      const state = Array.isArray(machines) ? ready(machines, sel.machine) : "machine_unavailable";
+      if (state) { setView({ card: { ok: false, state: "machine_unavailable", fetchedAt: null } }); return { ok: false, state: "machine_unavailable" }; }
+      cardBusy = true;
+      const gen = generation, id = sel.id;
+      try {
+        const card = await readCard(sel);
+        if (gen !== generation || view.selection?.id !== id) return fail("stale");
+        setView({ card });
+        return { ok: card.ok === true, state: card.state };
+      } finally { cardBusy = false; }
+    },
+
+    /** The fixed sentence for a card state that is not a reading. */
+    cardSentence(state) { return CARD_SENTENCES[state] ?? ""; },
+
+    /** The card as of `now`: a running reading older than the stale bound is reported as stale, without asking the hub again. */
+    card(now) { return view.card ? copy(ageCard(view.card, typeof now === "number" ? now : (typeof host.now === "function" ? host.now() : Date.now()))) : null; },
+
+    /** Focus an existing console for the selected project, or refuse. Never starts, replaces, closes or types into a terminal. */
+    async focusConsole() { return focusEffect("focus"); },
+    /** The same verification, then `terminal.peek`, which Herdr opens over the tab with its own keep and close controls. */
+    async peekConsole() { return focusEffect("peek"); },
 
     /** Open the existing `ahub console` in a new tab of the selected space, so Herdr puts it on that space's machine. The folder is the project root; no path is in a command line. */
     async openConsole() { return effect("console"); },
@@ -194,6 +258,46 @@ export function createHerdrEntry({ host }) {
     if (!space || (space.machine ?? null) !== sel.machine) return { refusal: "changed" };
     const state = ready(machines, sel.machine);
     return state ? { refusal: state } : { space };
+  }
+
+  async function focusEffect(kind) {
+    const sel = view.selection;
+    if (!sel) return fail("no_selection");
+    if (busy) return fail("busy");
+    if (sel.machine !== null) return fail("remote_focus");
+    if (platform() === "windows") return fail("unsupported_platform");
+    if (typeof host.hc !== "function") return fail("hc_unavailable");
+    busy = true;
+    const gen = generation;
+    try {
+      const early = recheckSpace(sel); // a precondition only: refused before any read; it is read again right before the effect
+      if (early.refusal) return fail(early.refusal);
+      // The binding: the selected id must still own the selected root, here, before any terminal is looked at.
+      const read = await readProjects(sel.machine);
+      if (gen !== generation) return fail("stale");
+      if (read.refusal) return fail(read.refusal);
+      const row = read.rows.find(r => r.root === sel.root);
+      if (!row || row.id !== sel.id) return fail("changed");
+      const found = await findConsole(host, sel);
+      if (gen !== generation) return fail("stale");
+      if (found.refusal) return fail(found.refusal);
+      // Recheck immediately before the one effect: the same terminal must still be the single related console.
+      const again = await findConsole(host, sel);
+      if (gen !== generation) return fail("stale");
+      if (again.refusal || again.address !== found.address) return fail(again.refusal ?? "changed");
+      // The reads above were awaited, and only refresh and select move the generation, so the space and its machine are read again here with nothing awaited before the effect (the same rule as
+      // the open actions). A space that moved, or a machine that went away, while ahub and Herdr were answering refuses and nothing is focused.
+      const live = recheckSpace(sel);
+      if (live.refusal) return fail(live.refusal);
+      try { host.run(kind === "peek" ? "terminal.peek" : "pane.focus", { terminal: found.address }); }
+      catch { return fail("host_refused"); }
+      // `run` returns null whatever happened, so a focus is believed only when `focused()` shows it. A peek has no such read: it is reported as requested, never as confirmed.
+      // `observed` is Herdr's own working/blocked/done/idle word for that terminal. It is shown to the person and nothing else: it is never sent to ahub.
+      if (kind === "peek") return { ok: true, requested: "peek", terminal: found.address, confirmed: false, observed: found.herdr };
+      let now;
+      try { now = host.focused(); } catch { return fail("unconfirmed_focus"); }
+      return now && now.terminal === found.address ? { ok: true, focused: found.address, confirmed: true, observed: found.herdr } : fail("unconfirmed_focus");
+    } finally { busy = false; }
   }
 
   async function effect(kind) {
@@ -244,6 +348,29 @@ export function createHerdrEntry({ host }) {
       return added ? { ok: true, opened: "console", tab: added.id, machineLabel: sel.machineLabel } : fail("unconfirmed");
     } finally { busy = false; }
   }
+}
+
+/** Find the one running `ahub console` for the selection among Herdr's terminals, from facts `hc get` reports. Returns the address, or a refusal. */
+async function findConsole(host, sel) {
+  let rows;
+  try { rows = host.terminals(); } catch { return { refusal: "host_unavailable" }; }
+  if (!Array.isArray(rows)) return { refusal: "host_unavailable" };
+  if (rows.length > MAX_TERMINALS) return { refusal: "too_many_terminals" };
+  const live = rows.map(terminalRow).filter(r => r && r.live);
+  // A remote terminal's address has a machine prefix. Remote `hc get` was not observed, so none is examined and none can match.
+  const local = live.filter(r => !r.address.includes("/"));
+  const hits = [];
+  for (const row of local) {
+    let got;
+    try { got = await host.hc(["get", row.address, "--json"]); } catch { return { refusal: "hc_unavailable" }; }
+    if (!got || got.code !== 0) continue; // finished, gone or unreadable: not a related console
+    let info;
+    try { info = JSON.parse(got.stdout); } catch { continue; }
+    if (info && info.state === "live" && matchConsole(info.foreground, sel)) hits.push(row.address);
+  }
+  if (hits.length === 0) return { refusal: "no_console" };
+  if (hits.length > 1) return { refusal: "ambiguous_console" };
+  return { address: hits[0], herdr: local.find(r => r.address === hits[0]).herdr };
 }
 
 /** A tab's name is display text, never code, but keep it short and free of control characters. */

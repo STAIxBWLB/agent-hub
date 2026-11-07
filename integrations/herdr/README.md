@@ -1,6 +1,6 @@
 # agent-hub entry for Herdr (optional)
 
-Task H1 of [#1199](https://github.com/STAIxBWLB/agent-hub/issues/1199), on the frozen
+Tasks H1 and H2 of [#1199](https://github.com/STAIxBWLB/agent-hub/issues/1199), on the frozen
 [H0 contract](host-contract-v1.md). **Optional and removable.** Herdr and ahub keep working exactly as they do
 today with this folder absent. It is not an ahub dependency and ahub is not its dependency: nothing in `src/`,
 `scripts/` or `package.json` mentions it.
@@ -20,6 +20,19 @@ For the selected project:
   a printed link or one-time ticket is never kept, shown or rewritten. If ahub printed one, the entry says so.
 - **Copy command** puts `ahub --project '<root>' console` on the clipboard, quoted as one shell word, for you to run
   on the machine named in the dialog. It runs nothing. This is the route for a remote project's dashboard too.
+- **Status** (H2) reads `ahub --project <id> status --json` from the project folder on that machine, on your click only,
+  and shows a small card: task counts per state and each peer's state and queue length, plus the hub version. Nothing
+  else from ahub's output is read, so no task title, note or private-task text can reach it, and the hub's reported
+  folder must equal the selected root, as for the open actions. Missing CLI, timeout, exit error, no hub running,
+  too-large output, unrecognized output, an old hub, a partial reading and a stale one (older than 60 s, judged on the
+  entry's own clock) are each a different state with a fixed sentence. Nothing refreshes it for you.
+- **Focus console** and **Peek console** (H2, this computer only) look through Herdr's live terminals with
+  `hc get <address> --json` and accept a terminal only when its foreground process is `ahub [--project <root|id>]
+  console` for the selected project, exactly one matches, and it still matches on a second read. The space and its
+  machine are then read once more with nothing awaited before the one `pane.focus` or `terminal.peek`, so a space that
+  moved in the meantime refuses. A focus is believed only after Herdr's `focused()` shows it. If no console is found
+  you are told so and **nothing is started, replaced or closed**: use Open console. Herdr's working, blocked, done and
+  idle word for that terminal is shown to you as Herdr's observation and is never sent to ahub.
 
 Every command that acts on the project names it by registration id (`--project <id>`, before the command), so a project
 with a custom state directory is read from the state directory it registered, not assumed to use the default. Before
@@ -38,6 +51,11 @@ Open or convert a remote loopback link. Focus, replace, restart or close an exis
 focus is unbuilt until a Herdr terminal can be mapped to an ahub console, see the contract). Raise the `exec`
 limits (30 s, 8 MiB). Edit your layout, settings, keys or other mods.
 
+Native focus rests on one observed fact: real herdr-core 0.1.18 reports a console typed into a Herdr shell with the
+foreground argv `bun <path>/ahub [--project X] console`. A console started another way (a wrapper script, a different
+runtime, an alias that renames the program) is not recognized and falls back to Open console. That is a safe miss, not a
+claim that no console exists.
+
 ## Install (additive, by you)
 
 Herdr has no install command: a mod is a folder. Use a scratch home first.
@@ -52,7 +70,7 @@ Herdr has no install command: a mod is a folder. Use a scratch home first.
 
 ## Disable and remove
 
-Delete `mods/ahub`. Nothing else was written: no layout, settings, program or other-mod file was changed, and
+Delete `mods/ahub` (five files: `main.js`, `core.js`, `card.js`, `focus.js`, `mod.json`). Nothing else was written: no layout, settings, program or other-mod file was changed, and
 `installed.json`, `seen.json` and `shared.json` are Herdr's own bookkeeping. If you added a key, remove that line
 from `keys.json`. Terminals, tabs opened earlier, ahub agents and hub state are not affected, because the mod owns
 none of them. What removal does to a copy that is already shown was **not observed** and is part of the
@@ -69,7 +87,7 @@ Herdr lists as ready and a native receipt (H3). Mobile is not claimed and is nev
 Proven by tests against the H0 fake host (`test/herdr-companion-entry.test.ts`): the selection and refusal rules,
 fixed argv only, the special-character and remote cases, output handling, rapid switches, no retry, no link kept, no
 runtime mention. Proven with the real host: `herdr-app check` accepts the files in a scratch home (it caught a
-`structuredClone` the host runtime lacks). **Not proven:** that the dialog opens and looks right in a window, that
+`structuredClone` the host runtime lacks). **Not proven:** that the dialog opens and looks right in a window, that the card renders legibly, that Focus really moves keyboard focus to the console's pane in a window (the fixture proves the decision and the re-read, not Herdr's behaviour), that
 `mod.open` opens it, that `tab.new` with `argv` starts `ahub console` as intended, any remote machine, and what
 disabling does to a shown copy. Those are the person-run receipt, and the action count below is a procedure count.
 
@@ -78,3 +96,4 @@ disabling does to a shown copy. Those are the person-run receipt, and the action
 | Local console, after the project is chosen | 2: new tab, submit `ahub console` | 1 click on Open console (plus 1 to open the dialog and 1 to select, counted separately) | not run |
 | Local dashboard | 2: new tab, submit `ahub ui` | 1 click on Open dashboard (same separate steps) | not run |
 | Remote console | 2 on that machine's space | 1 click, or Copy command and paste | not run, no machine configured |
+| Go to an existing local console | find it among tabs, then click: not countable, depends on how many tabs | 1 click on Focus console (plus the separate open and select steps) | not run |

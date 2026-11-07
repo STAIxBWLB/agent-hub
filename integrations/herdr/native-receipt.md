@@ -24,6 +24,20 @@ Each of the three claims is recorded **separately**. A passing `ahub console` do
 | 8 | Stop the hub (`ahub down` in that project), then **Open console** | refused with the `ahub up` instruction (yes / no); nothing started (yes / no) |
 | 9 | Make the project folder name contain a space, a quote and a `$` | console opened that folder (yes / no); no extra file or command ran (yes / no) |
 
+## Claim 1b (H2): the card and existing-terminal focus
+
+| # | Step | Record |
+| --- | --- | --- |
+| 18 | Select a project with a running hub, click **Status** | the card shows task counts and peer states (yes / no); it is readable at the dialog size (yes / no); actions: ___ |
+| 19 | Wait over a minute without clicking | the card still shows its numbers and then says the reading is old, and nothing refreshed it (yes / no) |
+| 20 | Stop the hub (`ahub down`), click **Status** | the card names that no hub is running and the `ahub up` step (yes / no); nothing started (yes / no) |
+| 21 | Open a console in a Herdr tab yourself (`ahub console`), switch to another tab, click **Focus console** | focus moved to that console's pane (yes / no); actions: ___ ; it was recognized (yes / no) |
+| 22 | Do the same with a console started through a wrapper or alias | recognized (yes / no). A no is expected and acceptable: it should say no console was found and start nothing (yes / no) |
+| 23 | Start two consoles for the same project, click **Focus console** | refused as ambiguous and neither was focused (yes / no) |
+| 24 | Close the console, click **Focus console** | told no console was found (yes / no); a new terminal was NOT created (yes / no) |
+| 25 | Click **Peek console** with one console running | Herdr showed its peek over the tab (yes / no) |
+| 26 | Note the working or blocked word the dialog showed for the console | it matched what Herdr shows for that terminal (yes / no); no task, review or approval changed in ahub (yes / no) |
+
 ## Claim 2: remote (only if you have a machine; otherwise write "no remote machine")
 
 | # | Step | Record |
