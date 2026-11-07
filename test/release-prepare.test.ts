@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { renderFacts } from "../scripts/lib/readme-facts.ts";
 import { AGENT_TODO, bumpFor, ensureUpgradeNote, fileReader, globalUpdateStep, hasGlobalUpdateStep, moveUnreleased, nextVersion, prepareRelease, realRun, reportSkeleton, restampDocuments, setPackageVersion, setReadmeStatus, upgradeSection, type Run } from "../scripts/lib/release-plan.ts";
 
 // #787 P3b: release preparation, with every git operation in a scratch repository whose only remote is a bare directory on this disk.
@@ -223,3 +224,89 @@ test("#1004 release preparation retains native version receipts and excludes onl
   expect(reportSkeleton(result.plan, r.git("rev-parse", "HEAD"))).toContain(receipt);
   expect(result.plan.receipts).not.toContain(report);
 });
+
+// #1273: a release PR prepared by release-prepare passes scripts/readme-facts.ts with no manual `--write`. The generated blocks live in a scratch checkout, and the real scripts run with AHUB_RELEASE_ROOT.
+const factBlock = (name: string, body: string) => `<!-- facts:${name} -->${body}<!-- /facts:${name} -->`;
+const installTag = (version: string) => `\n\`\`\`bash\nbun add -g github:STAIxBWLB/agent-hub#v${version}\nahub setup\n\`\`\`\n`;
+function factsRepo() {
+  const r = repo();
+  r.git("checkout", "-q", "main");
+  r.write("package.json", JSON.stringify({ name: "fixture", version: "0.1.0", engines: { bun: ">=1.4.2" }, dependencies: { "@staix/agent-mem": "0.22.1" } }, null, 2) + "\n");
+  r.write(".bun-version", "1.4.2\n");
+  r.write("README.md", `Status: 0.1.0, control protocol 13.\nBun ${factBlock("bun-floor", "1.4.2")}, pinned ${factBlock("bun-pinned", "1.4.2")}\n`);
+  r.write("CONTRIBUTING.md", "Fixture\n");
+  r.write("docs/quickstart.md", `Fixture\n\n${factBlock("install-tag", installTag("0.1.0"))}\n## Upgrading to 0.1.0\n\nFirst.\n`);
+  r.write("docs/operations.md", `pin ${factBlock("agent-mem-pin", "0.22.1")}\n`);
+  r.write("docs/verification/2026-10-31-0.1.0.md", "Earlier release report\n");   // the directory release-prepare writes its report into; a dated release report is never listed as a receipt (#1004)
+  r.git("add", "."); r.git("commit", "-qm", "docs: generated facts blocks"); r.git("push", "-q", "origin", "main");
+  r.git("checkout", "-qb", "release/0.2.0");
+  return r;
+}
+const gateFacts = (root: string) => { const files = ["README.md", "CONTRIBUTING.md", "docs/quickstart.md", "docs/operations.md"]; const read = fileReader(root); return renderFacts(path => files.includes(path) ? read(path) : undefined, { packageJson: read("package.json"), bunVersion: read(".bun-version") }); };
+
+test("#1273 preparation renders the generated facts blocks, so the release checkout passes the facts gate with no manual step", () => {
+  const r = factsRepo();
+  expect(gateFacts(r.work).drift).toEqual([]);                                    // the fixture starts consistent at 0.1.0
+  const run: Run = (argv, opts) => argv[0] === "bun" ? { code: 0, stdout: "", stderr: "" } : realRun(argv, opts);
+  const result = prepareRelease(r.work, { dryRun: false, today: "2026-11-07", write: (path, data) => writeFileSync(join(r.work, path), data), read: r.read, run });
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  expect(result.facts).toEqual(["docs/quickstart.md facts:install-tag"]);         // only the block the bump changed
+  expect(r.read("docs/quickstart.md")).toContain("#v0.2.0");
+  expect(r.read("docs/quickstart.md")).not.toContain("bun add -g github:STAIxBWLB/agent-hub#v0.1.0");
+  expect(r.read("docs/quickstart.md")).toContain("## Upgrading to 0.2.0");        // the upgrade note and the block both landed in the same file
+  const after = gateFacts(r.work);
+  expect(after.drift).toEqual([]);                                                // what scripts/readme-facts.ts checks
+  expect(after.errors).toEqual([]);
+});
+
+test("#1273 a dry run lists the blocks it would change and writes nothing", () => {
+  const r = factsRepo();
+  const before = r.git("status", "--porcelain");
+  const result = prepareRelease(r.work, { dryRun: true, today: "2026-11-07", write: () => { throw new Error("dry run wrote"); }, read: r.read, run: realRun });
+  expect(result.ok && !result.wrote && result.facts).toEqual(["docs/quickstart.md facts:install-tag"]);
+  expect(r.git("status", "--porcelain")).toBe(before);
+  expect(gateFacts(r.work).drift.map(d => d.name)).toEqual([]);                    // nothing was rendered
+});
+
+test("#1273 a checkout with no generated blocks is prepared as before, and a broken block refuses before anything is written", () => {
+  const plain = repo(); plain.git("checkout", "-qb", "release/0.2.0");
+  const none = prepareRelease(plain.work, { dryRun: true, today: "2026-11-07", write: () => { throw new Error("dry run wrote"); }, read: plain.read, run: realRun });
+  expect(none.ok && none.facts).toEqual([]);
+  const r = factsRepo();
+  writeFileSync(join(r.work, "docs/operations.md"), "<!-- facts:made-up -->x<!-- /facts:made-up -->\n"); r.git("add", "."); r.git("commit", "-qm", "docs: broken block");
+  const written: string[] = [];
+  const refused = prepareRelease(r.work, { dryRun: false, today: "2026-11-07", write: (path) => { written.push(path); }, read: r.read, run: realRun });
+  expect(refused.ok).toBe(false);
+  expect(!refused.ok && refused.refusals.join("\n")).toContain("the generated doc facts cannot be rendered: docs/operations.md: block made-up is unknown");
+  expect(written).toEqual([]);
+});
+
+test("#1273 a refusal from an earlier step stands alone: no second, misleading facts error is added", () => {
+  const r = factsRepo();
+  r.write("package.json", JSON.stringify({ name: "fixture", engines: { bun: ">=1.4.2" }, dependencies: { "@staix/agent-mem": "0.22.1" } }));   // a package.json with no version
+  r.git("add", "."); r.git("commit", "-qm", "chore: no version");
+  const result = prepareRelease(r.work, { dryRun: true, today: "2026-11-07", write: () => {}, read: r.read, run: realRun });
+  expect(result.ok).toBe(false);
+  expect(!result.ok && result.refusals).toEqual(["package.json version is not a version: undefined"]);
+});
+
+test("#1273 the real release-prepare script, pointed at a scratch release checkout, leaves the real readme-facts check passing", () => {
+  const r = factsRepo();
+  for (const file of ["scripts/release-prepare.ts", "scripts/readme-facts.ts", "scripts/lib/release-plan.ts", "scripts/lib/readme-facts.ts"]) { mkdirSync(join(r.work, file, ".."), { recursive: true }); copyFileSync(join(ROOT, file), join(r.work, file)); }
+  r.git("add", "."); r.git("commit", "-qm", "chore: release scripts");
+  const env = { ...process.env, AHUB_RELEASE_ROOT: r.work, NO_COLOR: "1" };
+  const dry = spawnSync(process.execPath, [join(r.work, "scripts/release-prepare.ts"), "--version", "0.2.0", "--dry-run"], { cwd: r.work, env, encoding: "utf8" });
+  expect(dry.status, dry.stderr).toBe(0);
+  expect(dry.stdout).toContain("generated doc facts that would change (1): docs/quickstart.md facts:install-tag");
+  expect(dry.stdout).toContain("dry run, nothing written");
+  const before = spawnSync(process.execPath, [join(r.work, "scripts/readme-facts.ts")], { cwd: r.work, env, encoding: "utf8" });
+  expect(before.status, before.stderr).toBe(0);                                  // consistent at 0.1.0
+  // A fake bun for the build step: the point under test is the facts, not the bundle.
+  const bin = join(r.dir, "bin"); mkdirSync(bin); writeFileSync(join(bin, "bun"), "#!/bin/sh\nif [ \"$1\" = run ]; then exit 0; fi\nexec " + JSON.stringify(process.execPath) + " \"$@\"\n", { mode: 0o755 });
+  const prepared = spawnSync(process.execPath, [join(r.work, "scripts/release-prepare.ts"), "--version", "0.2.0"], { cwd: r.work, env: { ...env, PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
+  expect(prepared.status, prepared.stderr).toBe(0);
+  expect(prepared.stdout).toContain("generated doc facts rendered (1): docs/quickstart.md facts:install-tag");
+  const after = spawnSync(process.execPath, [join(r.work, "scripts/readme-facts.ts")], { cwd: r.work, env, encoding: "utf8" });
+  expect({ code: after.status, err: after.stderr, out: after.stdout.trim() }).toEqual({ code: 0, err: "", out: "facts: OK" });   // no manual --write in between
+}, 20_000);
