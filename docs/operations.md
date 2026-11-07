@@ -3587,7 +3587,7 @@ used as an execution-time proof.
 | Claude implementer | Committed Write/Bash/rewrite and host-wrapper producer groups | Human upstream-impact review; unsupported launcher forms |
 | Pi | Artifact acquisition only in this core | Historical top-level producer needs import-safe/candidate-version extraction |
 | Qwen ACP | Promoted ACP identity/session/mapped-mode and actual published permission-handler producers, preload controls and group cleanup | Human lifecycle/source review; Linux does not replace required macOS arm64 |
-| Jcode | Artifact acquisition only | The 0.99.1 producer was not retained; reconstruction is a separate task |
+| Jcode | Reconstructed isolated serve/ACP/MCP, fixed-stream steering, telemetry and owned-group checks | Human source comparison; native macOS qualification remains unverified. The 0.99.1 Linux control is not qualified: telemetry identity and strict persisted-context binding fail; see the [reconstruction receipt](verification/2026-11-07-jcode-receipt-reconstruction-1248.md) |
 | agy and qwen-dual | Policy and unavailable/manual-leg reporting | No public agy installer; account/model/TUI or unspecified-platform legs |
 
 Every manifest leg appears as pass, fail or not-run with a cause and next step.
@@ -3617,7 +3617,7 @@ the containment boundary, not fresh HOME or process-group emptiness.
 The output directory is held open before installation. Exclusive, no-follow
 writes are relative to that handle, so replacing an ancestor cannot redirect the
 receipt. The receipt excludes raw native stdout/stderr and private prefix paths.
-No PR is created by T1. The [T1b producer report](verification/2026-11-07-compat-receipt-producers-1248.md) maps the promoted Kimi and Qwen modules to their original receipts. Publisher integration and the missing Jcode producer remain follow-ups.
+No PR is created by T1. The [T1b producer report](verification/2026-11-07-compat-receipt-producers-1248.md) maps the promoted Kimi and Qwen modules to their original receipts. Publisher integration is T2. The [Jcode reconstruction](verification/2026-11-07-jcode-receipt-reconstruction-1248.md) retains its failed native control legs and unverified Mac qualification.
 
 
 ## Upgrade and crash recovery

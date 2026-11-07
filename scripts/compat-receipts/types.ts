@@ -9,7 +9,7 @@ export interface ManifestEntry {
   runnerOS: string[];
   nativePlatform: string;
   autoAdmit: boolean;
-  install: { method: string; package?: string; repository?: string; tagTemplate?: string; asset?: string; checksumAsset?: string };
+  install: { method: string; package?: string; repository?: string; tagTemplate?: string; asset?: string; checksumAsset?: string; executable?: string };
   legs: ManifestLeg[];
 }
 export interface ReceiptLimits { totalMs: number; installMs: number; legMs: number; outputBytes: number; artifactBytes: number; expandedBytes: number; archiveEntries: number }

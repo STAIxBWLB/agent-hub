@@ -46,7 +46,7 @@ export const runBoundedReceiptCommand: ReceiptCommand = async (argv, options) =>
             // Observed identities or a private-run path are sufficient to report a
             // survivor, never authority to signal an otherwise unowned process.
             survivorDetected = !!after?.some(row => known.some(owned => owned.pid === row.pid && owned.started === row.started) ||
-              runRoot?.includes("/ahub-compat-receipt-") && row.command.includes(`${runRoot}/`));
+              row.pid !== process.pid && runRoot?.includes("/ahub-compat-receipt-") && row.command.includes(`${runRoot}/`));
             return !!before && !!after && !survivorDetected;
           } catch { return false; }
         })(),
