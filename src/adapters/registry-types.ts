@@ -143,9 +143,19 @@ export interface NativeFactsReadOptions {
   sinceOffset?: number;
   unchanged?: { size: number; mtimeMs: number };
 }
+export interface NativeFactsUsage {
+  id: string;
+  index: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  at?: string;
+}
 export interface NativeFactsTranscript {
   completion?: { id: string; index: number };
   factIds: string[];
+  usage?: NativeFactsUsage[];
   size?: number;
   mtimeMs?: number;
   scannedFrom?: number;

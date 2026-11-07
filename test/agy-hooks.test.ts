@@ -24,9 +24,18 @@ test("agy hook codec requires a known explicit event and pinned native envelope"
   const read = decodeAgyHook("PreToolUse", { ...payload, stepIdx: 4, toolCall: { name: "view_file", args: { AbsolutePath: "/tmp/work/file.ts" } } });
   expect(read?.tool).toBe("Read"); expect(read?.toolUseId).toBe(`${session}:4`);
   expect(decodeAgyHook("PreToolUse", { ...payload, toolCall: { name: "view_file", args: "bad" } })).toBeUndefined();
-  // agy 1.4.3: read_file with Path, and a line range is a partial read.
+  // agy 1.4.3+: read_file with Path, and a line range or byte offset is a partial read.
   expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 5, toolCall: { name: "read_file", args: { Path: "/tmp/work/file.ts" } } })).toMatchObject({ tool: "Read", input: { file_path: "/tmp/work/file.ts" } });
   expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 5, toolCall: { name: "read_file", args: { Path: "/tmp/work/file.ts", StartLine: 3, EndLine: 7 } } })).toMatchObject({ tool: "Read", input: { file_path: "/tmp/work/file.ts", offset: 3, limit: 5 } });
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 5, toolCall: { name: "read_file", args: { Path: "/tmp/work/file.ts", EndLine: 10 } } })).toMatchObject({ tool: "Read", input: { file_path: "/tmp/work/file.ts", offset: 1, limit: 10 } });
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 5, toolCall: { name: "read_file", args: { Path: "/tmp/work/file.ts", ByteOffset: 120 } } })).toMatchObject({ tool: "Read", input: { file_path: "/tmp/work/file.ts", offset: 121 } });
+  // agy Write and Edit normalization (#1280 P1).
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 6, toolCall: { name: "write_file", args: { Path: "/tmp/work/file.ts", Content: "next\n" } } })).toMatchObject({ tool: "Write", input: { file_path: "/tmp/work/file.ts", content: "next\n" } });
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 6, toolCall: { name: "write_file", args: { Path: "/tmp/work/file.ts", Content: "tail\n", Append: true } } })).toMatchObject({ tool: "Write", input: { file_path: "/tmp/work/file.ts" } });
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 6, toolCall: { name: "write_to_file", args: { TargetFile: "/tmp/work/file.ts", CodeContent: "legacy\n" } } })).toMatchObject({ tool: "Write", input: { file_path: "/tmp/work/file.ts", content: "legacy\n" } });
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 7, toolCall: { name: "edit_file", args: { Path: "/tmp/work/file.ts", Target: "old", Replacement: "new" } } })).toMatchObject({ tool: "Edit", input: { file_path: "/tmp/work/file.ts", old_string: "old", new_string: "new", replace_all: false } });
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 7, toolCall: { name: "replace_file_content", args: { TargetFile: "/tmp/work/file.ts", TargetContent: "old", ReplacementContent: "new", AllowMultiple: true } } })).toMatchObject({ tool: "Edit", input: { replace_all: true } });
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 7, toolCall: { name: "replace_file_content", args: { TargetFile: "/tmp/work/file.ts", TargetContent: "old", ReplacementContent: "new", AllowMultiple: false } } })).toMatchObject({ tool: "Edit", input: { file_path: "/tmp/work/file.ts", old_string: "old", new_string: "new", replace_all: false } });
 });
 
 test("agy facts inject only at observed model boundaries and never set native permissions", () => {
@@ -125,5 +134,25 @@ test("agy transcript readback supports incremental sinceOffset ack scans and unc
     writeFileSync(file, first + second + third);
     const largeInc = readAgyTranscript(session, file, { completion: false, sinceOffset: inc.size });
     expect(largeInc.factIds).toEqual(["third-fact"]);
+    // agy 1.5.x records injected ephemeralMessage steps as SYSTEM_MESSAGE under SYSTEM_SDK, and PLANNER_RESPONSE carries token counters (#1280 P1).
+    const fourth = JSON.stringify({ step_index: 7, source: "SYSTEM_SDK", type: "SYSTEM_MESSAGE", status: "DONE", content: "agent-hub facts [system-msg-fact]" }) + "\n"
+      + JSON.stringify({ step_index: 8, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-07T12:00:00Z", input_tokens: 1200, output_tokens: 80, cache_read_tokens: 5000, content: "final answer" }) + "\n";
+    writeFileSync(file, first + second + third + fourth);
+    const v15 = readAgyTranscript(session, file, { sinceOffset: largeInc.size });
+    expect(v15.factIds).toEqual(["system-msg-fact"]);
+    expect(v15.usage).toHaveLength(1);
+    expect(v15.usage![0]).toMatchObject({ index: 8, inputTokens: 1200, outputTokens: 80, cacheReadTokens: 5000, totalTokens: 6280, at: "2026-11-07T12:00:00Z" });
+    expect(v15.usage![0]!.id).not.toContain(session);
+    // An unfinished trailing JSONL row does not advance size past the last complete row, so the next incremental scan recovers it once finished.
+    const fifthFull = JSON.stringify({ step_index: 9, source: "SYSTEM_SDK", type: "SYSTEM_MESSAGE", status: "DONE", content: "agent-hub facts [partial-recovered-fact]" }) + "\n";
+    const fifthPartial = fifthFull.slice(0, 48);
+    writeFileSync(file, first + second + third + fourth + fifthPartial);
+    const partialScan = readAgyTranscript(session, file, { completion: false, sinceOffset: v15.size });
+    expect(partialScan.factIds).toEqual([]);
+    expect(partialScan.size).toBe(v15.size);
+    writeFileSync(file, first + second + third + fourth + fifthFull);
+    const recoveredScan = readAgyTranscript(session, file, { completion: false, sinceOffset: partialScan.size });
+    expect(recoveredScan.factIds).toEqual(["partial-recovered-fact"]);
+    expect(recoveredScan.size).toBe(Buffer.byteLength(first + second + third + fourth + fifthFull));
   } finally { if (old === undefined) delete process.env.HOME; else process.env.HOME = old; rmSync(root, { recursive: true, force: true }); }
 });

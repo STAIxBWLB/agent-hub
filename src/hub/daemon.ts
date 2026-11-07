@@ -5972,6 +5972,8 @@ export async function startDaemon(opts: DaemonOptions) {
   startupTimings.mark("services");
   const claudeNativeUsageSeen = startupSeeds.claudeNativeUsageSeen;
   startupTimings.mark("transcript_usage_seed");
+  const agyNativeUsageSeen = new Set(startupEvents.filter(e => e.type === "usage" && e.source === "agy_transcript").map(e => (e as { id: string }).id));
+  const agyTurnContext = new WeakMap<object, { hubTurnId?: string; baseline: number; attribution: TaskAttribution }>();
   const collectClaudeUsage = () => { for (const peer of channelPeers) {
     const session = claudeSession(peer);
     if (!session.sessionId || !session.transcriptPath) continue;
@@ -10496,10 +10498,30 @@ export async function startDaemon(opts: DaemonOptions) {
             ? port.read(native.sessionId, native.transcriptPath, { completion: false, ...since })
             : { factIds: [] };
         // ponytail: an unacknowledged fact row followed by >4 MiB of output before the next readback hits the 4 MiB lookback cap in readAgyTranscript.
-        const acknowledge = (read: ReturnType<typeof port.read>) => {
-          if (!factsOn()) return;
-          factSession(peer, native.sessionId);
-          for (const id of read.factIds) acked(peer, id, "native-hook");
+        const acknowledge = (read: ReturnType<typeof port.read>, turnCtx?: { hubTurnId?: string; baseline: number; attribution: TaskAttribution }) => {
+          for (const u of read.usage ?? []) {
+            if (agyNativeUsageSeen.has(u.id)) continue;
+            agyNativeUsageSeen.add(u.id);
+            const producedByTurn = !!turnCtx && u.index > turnCtx.baseline;
+            const attr: TaskAttribution = producedByTurn ? turnCtx.attribution : { attribution: "unattributed" };
+            if (u.totalTokens > 0) {
+              if (noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(u.totalTokens));
+              const supervisionTurn = supervisionTurns.get(peer);
+              if (producedByTurn && supervisionTurn && turnCtx.hubTurnId && supervisionTurn.id === turnCtx.hubTurnId) {
+                supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + u.totalTokens;
+              }
+              event({ type: "tokens", peer, n: u.totalTokens, ...attr });
+              const openTurn = turns.get(peer);
+              if (producedByTurn && openTurn && turnCtx.hubTurnId && openTurn.id === turnCtx.hubTurnId) {
+                openTurn.tokens += u.totalTokens;
+              }
+            }
+            event({ type: "usage", peer, source: "agy_transcript", id: u.id, inputTokens: u.inputTokens, outputTokens: u.outputTokens, cacheReadTokens: u.cacheReadTokens, totalTokens: u.totalTokens, ...attr, ...(u.at ? { measuredAt: u.at } : {}) });
+          }
+          if (factsOn()) {
+            factSession(peer, native.sessionId);
+            for (const id of read.factIds) acked(peer, id, "native-hook");
+          }
           if (read.size !== undefined && read.scannedFrom !== undefined) {
             const prev = launch.transcriptPath === native.transcriptPath ? (launch.transcriptOffset ?? 0) : 0;
             if (read.scannedFrom <= prev) {
@@ -10510,15 +10532,33 @@ export async function startDaemon(opts: DaemonOptions) {
         };
         const apply = () => {
           if (!current()) return void reply({ ok: false });
-          acknowledge(readback);
+          owner.bindNativeSession(native.sessionId);
+          const startsTurn = (native.event === "PreInvocation" || native.event === "PreToolUse") && (!launch.active || native.event === "PreInvocation" && native.invocation === 0);
           if (native.event === "PreInvocation" || native.event === "PreToolUse") {
-            if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
-            activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+            if (startsTurn) {
+              // Credit any leftover rows read at turn start to the preceding turn that produced them, never the new turn.
+              acknowledge(readback, agyTurnContext.get(launch));
+              launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1;
+              activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+              agyTurnContext.set(launch, { hubTurnId: turns.get(peer)?.id, baseline: launch.baseline, attribution: taskAttribution(peer) });
+            } else {
+              activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+              const activeCtx = { hubTurnId: turns.get(peer)?.id ?? agyTurnContext.get(launch)?.hubTurnId, baseline: launch.baseline ?? -1, attribution: taskAttribution(peer) };
+              agyTurnContext.set(launch, activeCtx);
+              acknowledge(readback, activeCtx);
+            }
+          } else if (native.event !== "Stop") {
+            const activeCtx = launch.active ? { hubTurnId: turns.get(peer)?.id ?? agyTurnContext.get(launch)?.hubTurnId, baseline: launch.baseline ?? -1, attribution: taskAttribution(peer) } : agyTurnContext.get(launch);
+            if (launch.active && activeCtx) agyTurnContext.set(launch, activeCtx);
+            acknowledge(readback, activeCtx);
           }
           if (native.event === "Stop") {
             if (!launch.active || !native.fullyIdle) return void reply({ ok: false });
+            const stopCtx = { hubTurnId: turns.get(peer)?.id ?? agyTurnContext.get(launch)?.hubTurnId, baseline: launch.baseline ?? -1, attribution: taskAttribution(peer) };
+            agyTurnContext.set(launch, stopCtx);
             const terminalReason = ({ USER_CANCELED: "user_canceled", ERROR: "error", MAX_INVOCATIONS: "max_invocations", MAX_FORCED_INVOCATIONS: "max_forced_invocations", MAX_TOKEN_BUDGET_EXCEEDED: "max_token_budget_exceeded", TERMINAL_STEP_TYPE: "terminal_step_type", TERMINAL_CUSTOM_HOOK: "terminal_custom_hook" } as const)[native.terminationReason ?? ""];
             if (terminalReason) {
+              acknowledge(port.read(native.sessionId, native.transcriptPath, { completion: false, ...since }), stopCtx);
               launch.active = false; turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
               tally(); emitHookStats(peer);
               event({ type: "native_turn_end", peer, reason: terminalReason }); owner.nativeStopped(native.sessionId);
@@ -10543,10 +10583,10 @@ export async function startDaemon(opts: DaemonOptions) {
               let delay = 5;
               let lastStat: { size: number; mtimeMs: number } | undefined;
               while (current() && launch.active && launch.turn === turn) {
-                const pollSince = factsOn() && launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
+                const pollSince = launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
                 const polled = port.read(native.sessionId, native.transcriptPath, { ...(lastStat ? { unchanged: lastStat } : {}), ...pollSince });
                 if (polled.size !== undefined && polled.mtimeMs !== undefined) lastStat = { size: polled.size, mtimeMs: polled.mtimeMs };
-                acknowledge(polled);
+                acknowledge(polled, stopCtx);
                 const completion = polled.completion;
                 if (completion && completion.index > baseline && completion.id !== launch.completed) {
                   launch.completed = completion.id; launch.active = false;
