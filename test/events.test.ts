@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eventLog, parseSince, readEvents, tokenDeltas, type StampedEvent } from "../src/hub/events.ts";
+import { eventLog, parseSince, readEvents, tokenDeltas, type HubEvent, type StampedEvent } from "../src/hub/events.ts";
+import { KimiEventWriter } from "../src/hub/kimi-events.ts";
 import { formatReport, summarize } from "../src/hub/report.ts";
 
 // issue #40: the report is computed from events.jsonl alone.
@@ -139,13 +140,18 @@ test("#199 review: decisions without a session key still count model changes, wi
   expect(formatReport(r).join("\n")).toContain("route pi hub/auto: 3 decisions, sessions unknown (3 decisions without a session key); 1 model change, 1 inside tool loops");
 });
 
-test("#1281 a batch appends tokens and usage together and reports a failed append", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ahub-kimi-batch-"));
-  try {
-    const log = eventLog(join(dir, "events.jsonl"));
-    expect(log.batch([{ type: "tokens", peer: "kimi", n: 10, attribution: "unattributed" }, { type: "usage", peer: "kimi", source: "kimi_wire", id: "row-1" }])).toBe(true);
-    expect(readEvents(join(dir, "events.jsonl")).map(event => event.type)).toEqual(["tokens", "usage"]);
-    const failed = eventLog(join(dir, "missing", "events.jsonl"));
-    expect(failed.batch([{ type: "tokens", peer: "kimi", n: 11 }, { type: "usage", peer: "kimi", source: "kimi_wire", id: "row-2" }])).toBe(false);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+test("#1281 a retry after a partial event write does not duplicate tokens or usage", () => {
+  const written: HubEvent[] = [];
+  const row = { id: "row-1", at: 1_790_000_000_000, inputOther: 7, inputCacheCreation: 2, inputCacheRead: 100, output: 1, model: "kimi-code/k3" } as const;
+  const writer = new KimiEventWriter({
+    append: event => { written.push(event); return event.type !== "usage"; },
+    read: () => written,
+  });
+  const attributed = { attribution: { task: 1281, attribution: "delivery" as const }, turn: "turn-a" };
+  expect(() => writer.write("kimi", row, 10, attributed)).toThrow("Kimi usage event commit failed");
+  expect(written.map(event => event.type)).toEqual(["tokens", "usage"]);
+  writer.write("kimi", row, 10, attributed);
+  expect(written.map(event => event.type)).toEqual(["tokens", "usage"]);
+  expect(written[0]).toMatchObject({ type: "tokens", source: "kimi_wire", id: row.id, n: 10, task: 1281 });
+  expect(written[1]).toMatchObject({ type: "usage", source: "kimi_wire", id: row.id, totalTokens: 110, task: 1281 });
 });

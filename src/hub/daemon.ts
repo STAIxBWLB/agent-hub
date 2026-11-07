@@ -119,6 +119,7 @@ import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
 import { SpecTaskInspector } from "./specs-task.ts";
 import { KimiUsage, kimiSeedRows, type KimiRowAttribution, type KimiUsageScheduler } from "./kimi-usage.ts";
+import { KimiEventWriter } from "./kimi-events.ts";
 import { TokenWindow } from "./token-window.ts";
 import { budgetNotes, type BudgetPeerNote } from "./budget-notes.ts";
 import { kimiRowTotal } from "../adapters/kimi-wire-usage.ts";
@@ -3408,6 +3409,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const startupEvents = readEvents(join(opts.stateDir, "events.jsonl"));
   budget.seedResets(startupEvents.flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
   // #285 phase 2: Kimi's consumption is the hub's own count of its session wire log (`src/adapters/kimi-wire-usage.ts`), not an ACP total.
+  const kimiEvents = new KimiEventWriter({ append: event, read: () => readEvents(join(opts.stateDir, "events.jsonl")) }, startupEvents);
   const kimiUsage = new KimiUsage({
     home: opts.kimiHome ?? process.env.KIMI_CODE_HOME ?? join(homedir(), ".kimi-code"),
     now: () => Date.now(),
@@ -3418,13 +3420,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return () => clearTimeout(timer);
     }),
     record: (peer, row, counted, attributed) => {
-      const committed = event.batch([
-        { type: "tokens", peer, n: counted, ...attributed.attribution },
-        { type: "usage", peer, source: "kimi_wire", id: row.id, measuredAt: new Date(row.at).toISOString(), inputTokens: row.inputOther, outputTokens: row.output,
-          cacheReadTokens: row.inputCacheRead, cacheWriteTokens: row.inputCacheCreation, totalTokens: kimiRowTotal(row),
-          ...attributed.attribution, ...(row.model ? { servedModel: row.model } : {}) },
-      ]);
-      if (!committed) throw new Error("Kimi usage event commit failed");
+      kimiEvents.write(peer, row, counted, attributed);
       applyKimiTokens(peer, counted, attributed);
     },
     report: (peer, window) => budget.report(peer, [{ id: "tokens", kind: "count", used: window.used, resetsAt: window.resetsAt, source: `hub count, kimi wire log, of kimi_tokens_5h ${window.ceiling}` }]),
