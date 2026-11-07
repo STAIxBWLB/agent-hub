@@ -1730,13 +1730,15 @@ redistributed (rules: [events](events.md#per-task-usage-reports)).
 ## Research records
 
 With `"research": { "enabled": true }` in `.agenthub/config.json` (off by default), the hub keeps one record per
-approved task in `~/.agenthub/research/`, shared by every project that opts in: outcome, review rounds, rework, failed
-checks, tokens and time per peer and model, never task or message text ([schema](research.md)).
+task that reaches a terminal state (approved or cancelled) in `~/.agenthub/research/`, shared by every project that opts in:
+outcome, review rounds and findings, delivery and merge figures, rework, failed checks, tokens and time per peer and model,
+never task or message text ([schema](research.md)). Unknown values are null and counted, never zero.
 
 ```bash
 ahub research --since 30d          # success, first-pass, rework and check-failure rates; tokens and wall time per task
 ahub research --all --json         # every opted-in project on this machine
 ahub research export --format csv  # the records, for your own analysis
+ahub research export --dataset ~/research-out [--all]  # per-project tasks.jsonl, manifest.json, quality.json: family names only, to a directory in your home outside every project
 ahub research backfill             # build this project's records once from events.jsonl
 ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, incomplete, wrong, abandoned)
 ```
@@ -3112,6 +3114,8 @@ During one hub run, an early override followed by the same window's refusal keep
 Unread quota resume notices are coalesced without losing their public task moves; the next notice lists moves accumulated across those pauses. An older notice without structured move metadata is kept as public text inside that notice.
 
 A refused prompt with no acceptance or activity is requeued without a review hold. At the estimated reset it is tried again; another quota refusal pauses it again without consuming the poison-envelope retry count. Work that already started remains held for review even while its open tasks move to other peers. After the quota reset its queue stays held: inspect `ahub queue show <delivery-id>` and the associated task, then choose `ahub queue resolve <delivery-id> --action completed|retry|discard --reason "<text>"`. Do not retry work that another owner already took over without inspecting it. If the hub cannot confirm the pause, the refusal is also held instead of spending retries. Other errors keep their ordinary review behavior. Only the observed Kimi 5-hour text is recognised; weekly/monthly limits and other ACP vendors, including Qwen, remain unverified. The recognised text and its provenance live in `src/adapters/acp-quota.ts`.
+
+The gate is `budget.gate`, 0.99 by default (#1292; 0.9 before). A peer whose fresh quota window reaches the gate is asked to checkpoint, then paused and its work handed over. It resumes when every fresh window is under the gate minus 0.1, or at the reset. A release cut is also held while any window has no more headroom than 1 minus the gate. At 0.99 a soft pause leaves about 1% of the window for the checkpoint turn; a provider's hard refusal still pauses at once. `budget.gate` is a registered setting (a number from 0 to 1): set it with `ahub settings set budget.gate <value>` in a terminal or in an `ahub ui --settings` session. An ordinary dashboard session and the conductor cannot set it. The value goes to `config.local.json`; the running hub uses it from the next quota reading, with no restart. A project created before #1292 has `"gate": 0.9` in its tracked `.agenthub/config.json` (the init template wrote it), and that value overrides the default: remove the key there to follow the default, or set the machine-local value.
 
 Quota also shapes routing and handoffs:
 
@@ -4779,7 +4783,7 @@ makes `scripts/check.sh` run slice `i` of the full suite through `bun test --sha
 every test file in exactly one shard and balances them by the recorded per-file times; shard 1 also runs the docs check, typecheck, role check, bundle freshness and
 package contents, so each of those runs once per gate, and the others install and test. Each shard runs under the same 1500 s backstop as Linux inside a 25-minute job
 limit, and its last line is `check: OK (shard i/n)`. The required check `check (macos-latest)` is an aggregator job that passes only when every shard passed (or an
-identical-tree full proof was reused), so branch protection and the reuse proof read the same names as before. `AHUB_CHECK_SHARD` is the full suite only: it cannot be
+identical-tree full proof was reused), so branch protection and the reuse proof read the same names as before. A stacked pull request (base not `main`) runs no macOS shard, and its `check (macos-latest)` fails with "macOS shards deferred", naming the base (#1307): GitHub allows 5 macOS jobs at once on this account, and such a PR is rebased and rerun once it targets `main`. A PR retargeted to `main` without a new commit gets its macOS run by a push, or by `gh pr close <n> && gh pr reopen <n>`; `gh run rerun` replays the old base and defers again. `AHUB_CHECK_SHARD` is the full suite only: it cannot be
 combined with `--changed`. A shard execs the system git once before its tests (`AHUB_CHECK_WARM_GIT`, default `/usr/bin/git`; a failure of it is ignored), because the first execs of `/usr/bin/git` on a fresh hosted macOS runner outlast the 1000 ms some tests give it. `scripts/test-timings.json` is advice for balance, never a list of tests: a file missing from it still runs (Bun gives it the median time).
 Regenerate it from a green macOS leg when the shards drift apart: `gh api --allow-escape-sequences repos/<owner>/<repo>/actions/jobs/<macOS shard job id>/logs`
 for each shard, or from one unsharded leg's log, then `bun scripts/make-test-timings.ts <log>...`, or `bun scripts/refresh-test-timings.ts` for the newest green run (#1257).
@@ -6589,3 +6593,14 @@ loopback URL is opened locally. Native local, remote, Windows and mobile results
 are recorded separately; declarations and fake results do not qualify them.
 The three baseline journeys count procedure actions only, with observed native
 counts still unknown. O1 must record actual open/disable/standalone UI proof.
+
+## Herdr companion host contract (#1199 H0)
+
+[`integrations/herdr/host-contract-v1.md`](../integrations/herdr/host-contract-v1.md) freezes what an optional Herdr mod may
+rely on, taken from the installed app's own declarations (Herdr 0.1.13, herdr-core 0.1.18, hashes recorded), and records
+what was not observed. It changes no ahub runtime and installs nothing. `exec` is bounded (30 s, 8 MiB) and used for
+reads only. The pane's machine and cwd are a navigation hint: the project root comes from `ahub projects --json` read on
+that same machine, and a remote cwd is never resolved on this Mac. Herdr has no install or disable command, so a mod is
+a folder the person adds and removes, and what removal does to a shown copy is for the H1 native receipt. Existing
+terminal focus is unbuilt until a Herdr terminal can be mapped to an ahub console. The three baseline journeys are
+procedure counts that have not been run in a native window.

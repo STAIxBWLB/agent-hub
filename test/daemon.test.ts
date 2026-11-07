@@ -292,7 +292,7 @@ test("a paused tools-only claude reads nothing through hub_inbox: the budget pau
   const unread = () => daemon.bus.queueList("claude").every((row) => row.state === "queued");
 
   // Nothing queued and no open work: the budget coordinator pauses without asking for a checkpoint.
-  expect((await console_.request({ t: "budget", set: { peer: "claude", used: 0.95, resetsInMs: 3_600_000 } })).ok).toBe(true);
+  expect((await console_.request({ t: "budget", set: { peer: "claude", used: 0.99, resetsInMs: 3_600_000 } })).ok).toBe(true);
   await until(() => daemon.bus.stateOf("claude") === "paused", "budget pause");
   await console_.request({ t: "send", body: "while over budget", to: ["claude"] });
   expect(await inbox()).toStartWith("not read: paused by the budget coordinator");
@@ -1114,7 +1114,7 @@ test("budget relay end to end: checkpoint, pause, task to local with the summary
 
   const before = events.length;
   expect((await console_.request({ t: "budget", set: { peer: "ghost", used: 0.5 } })).ok).toBe(false);
-  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.95, resetsInMs: 3_600_000 } });
+  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.99, resetsInMs: 3_600_000 } });
   await until(() => events.slice(before).some((e) => e.t === "envelope" && e.env.kind === "budget" && e.env.to?.[0] === "kimi"), "checkpoint request");
   expect(daemon.bus.stateOf("kimi")).not.toBe("paused"); // checkpoint first, pause second
   expect((await kimiTools.request({ t: "task", op: "hub_checkpoint", args: { summary: "tokenizer done, grammar half done" } })).text).toContain("checkpoint received");
@@ -1124,18 +1124,18 @@ test("budget relay end to end: checkpoint, pause, task to local with the summary
   const notices = () => pushes.filter((p) => p.t === "notice").map((p) => p.line as string);
   expect(notices().some((l) => l.includes("moved from kimi: #1 owner -> local"))).toBe(true);
 
-  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.97, resetsInMs: 3_600_000 } }); // again: nothing happens
+  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.995, resetsInMs: 3_600_000 } }); // again: nothing happens
   await Bun.sleep(50);
   expect(notices().filter((l) => l.includes("kimi paused"))).toHaveLength(1);
   const shown = await console_.request({ t: "budget" });
-  expect(shown.budget.kimi.paused.reason).toContain("95%");
-  expect((await console_.request({ t: "status" })).status.peers.kimi.paused).toContain("budget: 5h window at 95%");
+  expect(shown.budget.kimi.paused.reason).toContain("99%");
+  expect((await console_.request({ t: "status" })).status.peers.kimi.paused).toContain("budget: 5h window at 99%");
   const refused = await console_.request({ t: "resume", peer: "kimi" }); // ahub resume does not override the coordinator
   expect(refused).toMatchObject({ ok: false });
   expect(refused.error).toContain("ahub budget resume kimi");
   const ui = await dashboardClient(console_);
   expect(await ui.post("action", { action: "resume", peer: "kimi" })).toMatchObject({ ok: false });
-  expect((await ui.post("snapshot")).budget.kimi.paused.reason).toContain("95%");
+  expect((await ui.post("snapshot")).budget.kimi.paused.reason).toContain("99%");
 
   await console_.request({ t: "pause", peer: "kimi" }); // the user also pauses it by hand
   await console_.request({ t: "budget", set: { peer: "kimi", used: 0.2 } }); // the mocked reset

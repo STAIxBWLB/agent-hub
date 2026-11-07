@@ -8,6 +8,8 @@ import { readEvents, type StampedEvent } from "../src/hub/events.ts";
 import type { LabelRecord } from "../src/hub/research.ts";
 import { appendRecords, CSV_COLUMNS, formatResearch, labelTarget, projectKey, readStore, readStores, RESEARCH_SCHEMA, researchFile, researchReport, taskRecords, toCsv, type TaskRecord } from "../src/hub/research.ts";
 import { newEnvelope, USER } from "../src/hub/envelope.ts";
+import { readEvidence } from "../src/hub/research-record.ts";
+import { familyOf as builtinFamilyOf } from "../src/adapters/registry.ts";
 import { classifyPeerCommand as cliClass } from "../src/cli/identity.ts";
 
 // #247: opt-in research records of each approved task, built only from events.jsonl.
@@ -68,7 +70,7 @@ test("one record per approved task: review rounds, rework, checks, owner chain, 
     tokens: { total: 1000, byPeer: { codex: 700, claude: 300 }, byAttribution: { delivery: 1000 } },
     usage: { codex: { input: 500, output: 200, cacheRead: null, total: 700 }, claude: { input: null, output: null, cacheRead: null, total: 900 } },
     usageByModel: { "gpt-x": 700, "claude-x": 900 }, turns: 2, activeMs: 6000, filesChanged: 3, models: ["claude-x", "gpt-x"] });
-  expect(first!.wallMs).toBe(Date.parse(first!.approvedAt) - Date.parse(first!.startedAt!));
+  expect(first!.wallMs).toBe(Date.parse(first!.approvedAt!) - Date.parse(first!.startedAt!));
   expect(second).toMatchObject({ task: 2, class: "plan", pii: true, reviewRounds: 0, firstPass: true, turns: 1, tokens: { total: 50, byAttribution: { single_open: 50 } } });
 });
 
@@ -225,8 +227,8 @@ test("the live writer records each approved task, holds no text, and backfill re
   for (const out of outputs) for (const marker of MARKERS) expect(out).not.toContain(marker);
   expect(raw).not.toContain(f.stateDir); // no path
   expect((readFileSync(file).length > 0) && (Bun.file(file).size > 0)).toBe(true);
-  // Backfill from the same events: the same records, only the writer differs.
-  const rebuilt = taskRecords(readEvents(join(f.stateDir, "events.jsonl")), "p-research", { version: "x", source: "backfill" });
+  // Backfill from the same events and the same board: the same records, only the writer differs (#1277: without the board the v2 blocks are null, which the v2 tests cover).
+  const rebuilt = taskRecords(readEvents(join(f.stateDir, "events.jsonl")), "p-research", { version: "x", source: "backfill" }, { ...readEvidence(f.stateDir, "p-research"), familyOf: peer => builtinFamilyOf(peer) });
   const strip = (r: TaskRecord) => ({ ...r, writer: undefined });
   expect(rebuilt.map(strip)).toEqual(stored.map(strip));
   expect(appendRecords("p-research", rebuilt, home)).toBe(0);

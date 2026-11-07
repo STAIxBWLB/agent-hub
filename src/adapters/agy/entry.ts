@@ -1,7 +1,8 @@
 import { publicArg } from "../definitions/native-cli-preview-common.ts";
 import { assessVersion, COMPAT } from "../compat.ts";
+import { existsSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { NativeCliEntryContext } from "../definitions/native-cli-entry-types.ts";
 import { bundleInStatus, rosterInStatus } from "../../hub/status-roster.ts";
 import { ensureAgyMcp, cleanupAgyMcp, type AgyMcpOptions } from "../../cli/agy-mcp.ts";
@@ -56,7 +57,7 @@ export async function runAgyEntry(ctx: NativeCliEntryContext): Promise<void> {
   if (unattended) fail("agy P1 native permissions are unmanaged; unattended mode has no verified prompt mapping");
   const argv = nativeArgs;
   if (preview) { console.log(JSON.stringify({ command: "agy", args: argv.map(publicArg), mode: "tui", permission: "unmanaged", mcp: ".agents/plugins/agent-hub/", writes: false })); return; }
-  const version = spawnSync("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: peerChildEnv("agy") });
+  const version = spawnSync("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: { ...peerChildEnv("agy"), AGY_CLI_DISABLE_AUTO_UPDATE: "1" } });
   const gate = agyVersionGate(version.status === 0 ? version.stdout : "");
   if (!gate.ok) fail(gate.message);
   if (gate.message) console.error(gate.message);
@@ -69,13 +70,15 @@ export async function runAgyEntry(ctx: NativeCliEntryContext): Promise<void> {
     if (rosterInStatus(status, "agy") !== true) fail("agy is off roster; add it with ahub roster add agy");
     const admitted = await hub.request({ t: "native_hook_launch", op: "begin", peer: "agy" });
     if (!admitted.ok || typeof admitted.launchId !== "string" || typeof admitted.instanceId !== "string") fail(admitted.error ?? "native hook launch was not admitted");
-    options = { projectRoot: cwd, stateDir, serverJs: bundleInStatus(status) ?? resolve(cliDir, "../../plugins/agent-hub/server.js"),
-      hookScript: resolve(cliDir, "facts-hook.ts"), peer: "agy", launchId: admitted.launchId, instanceId: admitted.instanceId };
+    const serverJs = bundleInStatus(status) ?? resolve(cliDir, "../../plugins/agent-hub/server.js");
+    const bundledHook = resolve(dirname(serverJs), "../../src/cli/facts-hook.ts");
+    const hookScript = existsSync(bundledHook) ? bundledHook : resolve(cliDir, "facts-hook.ts");
+    options = { projectRoot: cwd, stateDir, serverJs, hookScript, peer: "agy", launchId: admitted.launchId, instanceId: admitted.instanceId };
     const written = ensureAgyMcp(options);
     pluginWritten = written.changed;
     if (written.tracked) console.error("The managed agy plugin is tracked; review its local machine paths before committing");
     console.error(AGY_LAUNCH_NOTICE);
-    const env: NodeJS.ProcessEnv = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+    const env: NodeJS.ProcessEnv = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd, AGY_CLI_DISABLE_AUTO_UPDATE: "1" };
     delete env.AGENTHUB_CHANNEL;
     const code = await runAgyTui(argv, cwd, env);
     if (code !== 0) process.exitCode = code;

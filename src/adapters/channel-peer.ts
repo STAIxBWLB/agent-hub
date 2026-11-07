@@ -130,6 +130,7 @@ export class WsPeer extends BasePeer {
     this.generation = crypto.randomUUID();
     this.delivered.clear();
     this.nativeTurnSession = undefined;
+    delete (this as { nativeSession?: string }).nativeSession;
     this.nativeActive = false;
     this.pullOnly = this.claimedPullOnly; // before idle: the idle transition drains
     this.attachMode = this.pullOnly ? "tools-only" : "channel";
@@ -154,6 +155,7 @@ export class WsPeer extends BasePeer {
     if (this.sock !== sock) return;
     this.sock = undefined;
     this.steer = undefined;
+    delete (this as { nativeSession?: string }).nativeSession;
     this.nativeActive = false;
     this.pullOnly = false;
     this.setState("offline");
@@ -167,6 +169,7 @@ export class WsPeer extends BasePeer {
     this.claimed = undefined;
     this.sock = undefined;
     this.steer = undefined;
+    delete (this as { nativeSession?: string }).nativeSession;
     this.nativeActive = false;
     this.pullOnly = false;
     this.setState("offline");
@@ -183,6 +186,10 @@ export class WsPeer extends BasePeer {
   }
   owns(sock: ChannelSocket): boolean { return this.sock === sock; }
   ownsSocket(socket: object): boolean { return this.sock === socket; }
+  bindNativeSession(session: string): void {
+    if (!this.sock || !session) return;
+    Object.defineProperty(this, "nativeSession", { value: session, writable: true, configurable: true, enumerable: true });
+  }
   nativeStarted(session: string): void {
     if (!this.sock) return;
     this.nativeTurnSession = session;
