@@ -133,6 +133,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       const worktreeAction = ["worktree_override_set", "worktree_override_clear", "worktrees_refresh_prs"].includes(String(input.action));
       // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
       if (!["snapshot", "send", "pause", "resume", "permit", "propose", "intake", "assign", "backlog_pull", "backlog_return", "planning", "planning_undo", "planner_pull", "backlog_split", "release_new", "release_change", "setting", "setting_undo", "setting_preview", "setting_reload", "config_edit_preview", "config_edit_apply", "start_peer", "sdlc_queue", "sdlc_release", "result_seen", "results_read_all", "results_unread_last"].includes(String(input.action)) && !worktreeAction) return { ok: false, error: "invalid dashboard action" };
+      const visualSelector = input.action === "snapshot" ? visualSnapshotSelector(input) : {};
       client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
       const deliveryRead = input.action === "sdlc_queue" || input.action === "sdlc_release";
       let nominalMs = 10_000;
@@ -143,7 +144,7 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
       else if (input.action === "worktrees_refresh_prs") nominalMs = 40_000; // up to 25 s of bounded gh reads plus two git passes
       const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
       const result = await client.request(input.action === "snapshot"
-        ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.reviewRefresh === true && input.reviewTask !== undefined ? { reviewTask: input.reviewTask, reviewRefresh: true } : {}), ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
+        ? { t: "ui_snapshot", after: input.after ?? 0, ...visualSelector, ...(input.reviewRefresh === true && input.reviewTask !== undefined ? { reviewTask: input.reviewTask, reviewRefresh: true } : {}), ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
         : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
       // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
       if (input.action === "intake" && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
@@ -378,4 +379,16 @@ export async function stopManager(options: ManagerOptions = {}): Promise<void> {
     await Bun.sleep(25);
   }
   throw new Error("manager shutdown is still pending; project hubs were not changed");
+}
+
+/** Closed read selectors only; no caller path, policy or arbitrary control fields are forwarded. */
+export function visualSnapshotSelector(input: Record<string, unknown>): Record<string, string | number> {
+  const keys = ["visual", "visualTask", "visualAsset"].filter(key => Object.hasOwn(input, key));
+  if (!keys.length) return {};
+  if (keys.length !== 1) throw new Error("visual selector is ambiguous; select one visual or task and retry");
+  const key = keys[0]!, value = input[key];
+  const id = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
+  if (key === "visualTask" ? Number.isSafeInteger(value) && Number(value) > 0
+    : typeof value === "string" && new RegExp(key === "visualAsset" ? `^${id}:(before|after)$` : `^${id}$`).test(value)) return { [key]: value as string | number };
+  throw new Error("visual selector is invalid; select a current visual or task and retry");
 }
