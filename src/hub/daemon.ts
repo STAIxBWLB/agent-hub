@@ -417,7 +417,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "worktrees", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet", "questions"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "worktrees", "visuals", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet", "questions"];
 
 /** Older targets parse raw keys before placement/trust checks, so even an empty or refused declaration needs the floor. */
 function rawResearchRunnersPresent(cwd: string): boolean {
@@ -432,6 +432,18 @@ function rawResearchRunnersPresent(cwd: string): boolean {
     present ||= research !== undefined && Object.hasOwn(research, "runners");
   }
   return present;
+}
+
+/** Raw declaration presence is the floor: defaults in the in-memory config are not an opt-in. */
+function rawVisualsPresent(cwd: string): boolean {
+  const texts = configSourceTexts(cwd);
+  for (const name of CONFIG_FILES) {
+    if (texts[name] === null) continue;
+    const raw: unknown = JSON.parse(texts[name]!);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid configuration");
+    if (Object.hasOwn(raw, "visuals")) return true;
+  }
+  return false;
 }
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
@@ -6137,7 +6149,10 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchRunners = board.runnerReceiptIntegrity();
     const researchEvidence = board.researchEvidenceIntegrity();
     const reviewComments = board.reviewCommentsIntegrity();
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const visualIntegrity = visuals.integrity();
+    if (!Number.isSafeInteger(visualIntegrity.count) || visualIntegrity.count < 0 || !/^[a-f0-9]{64}$/.test(visualIntegrity.digest))
+      throw new Error("visual recovery integrity unavailable; inspect the retained store before recovery");
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -9521,6 +9536,12 @@ export async function startDaemon(opts: DaemonOptions) {
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
     const incompatibleRecoveryTarget = () => {
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("visuals")) {
+        try {
+          if (visuals.hasRecords()) return "target lacks visuals; retained visual records require a supporting daemon; choose a target with visuals";
+          if (rawVisualsPresent(opts.cwd)) return "target lacks visuals; explicit visuals configuration requires a supporting daemon; choose a target with visuals or remove the explicit configuration";
+        } catch { return "visuals compatibility is unknown; the store or configuration could not be read; inspect them or choose a target with visuals"; }
+      }
       if (config.specs.enabled && config.specs.review === "require" && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("design_specs"))) return "target lacks design_specs; specs.enabled is on and specs.review is require; use a supporting release or explicitly change specs.enabled/specs.review";
       if (board.hasConductorManualState() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("conductor_recovery"))) return "target lacks conductor_recovery; open conductor manual-assignment intent cannot be preserved";
       if (allExternalInstanceIds().length && (!Array.isArray(msg.targetFeatures) || !["external_adapter_instances", "external_adapter_modules", "peer_instances"].every(feature => msg.targetFeatures.includes(feature)))) return "target lacks external_adapter_instances or its module/instance prerequisites";
