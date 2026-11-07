@@ -441,6 +441,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
       try { return await runAction(input, meta); } finally { inboxGeneration++; }
     },
     async asset(input) {
+      let readingAsset = false;
       try {
         const identity = parseVisualAssetId(input.id); if (!identity) return null;
         const { projectId, instanceId, asset } = identity;
@@ -463,11 +464,16 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         if (!sameProject()) return null;
         const read = options.visualRead ?? (await import("../hub/visual-assets.ts")).readVisualAsset;
         if (!sameProject()) return null;
+        readingAsset = true;
         const bytes = await read(before.file, initialPolicy);
+        readingAsset = false;
         const after = await metadata(), currentPolicy = await policy(project.root);
         if (!after || !sameProject() || currentPolicy.private(before.file.path) || JSON.stringify(currentPolicy.deny) !== JSON.stringify(initialPolicy.deny) || JSON.stringify(after) !== JSON.stringify(before)) return null;
         return bytes;
-      } catch { return null; }
+      } catch {
+        if (readingAsset) throw new Error("visual asset changed since posted or no longer allowed; post the visual again using a current public file");
+        return null;
+      }
     },
     async close() { if (owned) registry.close(); },
   };

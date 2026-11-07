@@ -53,7 +53,7 @@ test("asset provider serves freshly guarded original bytes and refuses a changed
   const f=fixture(),id=visualAssetId("p1","i1",`${ID}:before`);
   expect((await f.provider.asset!({id}))?.bytes).toEqual(f.data);
   writeFileSync(join(f.projects[0]!.root,"image.png"),new Uint8Array([...f.data,1]));
-  expect(await f.provider.asset!({id})).toBeNull();
+  await expect(f.provider.asset!({id})).rejects.toThrow("visual asset changed since posted or no longer allowed; post the visual again using a current public file");
   expect(await f.provider.asset!({id:`${ID}:before`})).toBeNull();
 });
 for(const fault of ["privacy","metadata","instance","project"] as const)test(`asset ${fault} changed during guarded read cannot publish bytes`,async()=>{
@@ -67,4 +67,14 @@ for(const fault of ["privacy","metadata","instance","project"] as const)test(`as
 test("new local private-file policy refuses asset bytes after a read",async()=>{
   const f=fixture(),provider=createProvider({...f.options,visualRead:async()=>{f.private();return{bytes:f.data,mime:"image/png" as const,name:"image.png"};}});
   expect(await provider.asset!({id:visualAssetId("p1","i1",`${ID}:before`)})).toBeNull();
+});
+
+
+test("recognized asset read failure exposes only a fixed cause and next step",async()=>{
+  const f=fixture(),canary="/private/canary-source.png contains private fixture text";
+  const provider=createProvider({...f.options,visualRead:async()=>{throw new Error(canary);}});
+  const failure=await provider.asset!({id:visualAssetId("p1","i1",`${ID}:before`)}).then(()=>null,error=>error as Error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure?.message).toBe("visual asset changed since posted or no longer allowed; post the visual again using a current public file");
+  expect(failure?.message).not.toContain(canary);
 });
