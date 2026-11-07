@@ -1,0 +1,1982 @@
+{
+  "schemaVersion": 1,
+  "audit": {
+    "date": "2026-11-07",
+    "sourceHead": "3440e7b10dc6b4537d56541774436aa4f7d49a92",
+    "issue": 1248,
+    "scope": "T0 data-only receipt audit; no harness, workflow, installation or version admission is performed."
+  },
+  "categories": {
+    "linux-ci": "Portable host fixtures, public artifact/source checks, or explicitly recorded Linux work; feasibility is not native Linux admission proof.",
+    "macos-runner": "Repeat native qualification on macOS arm64, retaining current receipt isolation and positive/negative controls.",
+    "account-or-model": "Person-authorized real account/model leg; never run by the model-free harness.",
+    "tui-desktop": "Interactive TUI/desktop leg outside unattended model-free admission."
+  },
+  "autoAdmitSemantics": "Policy eligibility only. Every required leg and artifact binding must pass on its required platform; missing/manual/unknown work is not-run and cannot open an admission PR. Unverified follow-ups are not retroactively made mandatory. Native Mac-only receipts do not admit a Linux-only rerun.",
+  "entries": {
+    "pi": {
+      "receipt": "docs/verification/2026-11-03-pi-150-compat.md",
+      "runnerOS": [
+        "macos"
+      ],
+      "nativePlatform": "macos-arm64",
+      "install": {
+        "method": "npm-exact",
+        "package": "@earendil-works/pi-coding-agent",
+        "versionPolicy": "exact requested version, never latest or a range",
+        "integrityPolicy": "verify the exact-version npm dist.integrity before use",
+        "referenceVersion": "1.5.0",
+        "referenceIntegrity": "sha512-xNDZ5kqowO6Z03FS2gwAkPEGk1ssxVcYKQ6qZId84mFEvwACvvyc2l0vAMOS+c5zvxLRMLBE9r4y44IGYkMJaQ==",
+        "metadataUrl": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/1.5.0",
+        "observedAt": "2026-11-07",
+        "receiptEvidence": {
+          "path": "docs/verification/2026-11-03-pi-150-compat.md",
+          "section": "## Identity and isolation",
+          "quote": "installed from the registry into a private npm prefix"
+        }
+      },
+      "autoAdmit": true,
+      "autoAdmitReason": "The admitted procedure is model-free; real inference and interactive coexistence are explicitly unverified follow-ups.",
+      "legs": [
+        {
+          "id": "native-identity",
+          "label": "Native identity",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Results",
+            "quote": "Native identity"
+          }
+        },
+        {
+          "id": "cli-rpc-session",
+          "label": "Real CLI extension load and RPC session identity",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Results",
+            "quote": "Real CLI extension load and RPC session identity"
+          }
+        },
+        {
+          "id": "sdk-registration",
+          "label": "Installed SDK extension registration",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Results",
+            "quote": "Installed SDK extension registration"
+          }
+        },
+        {
+          "id": "tool-replay",
+          "label": "Managed tool callback and receipt replay",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Results",
+            "quote": "Managed tool callback and receipt replay"
+          }
+        },
+        {
+          "id": "failed-tool",
+          "label": "Failed tool result",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Results",
+            "quote": "Failed tool result"
+          }
+        },
+        {
+          "id": "zero-provider-requests",
+          "label": "Zero requests reached the loopback provider",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Results",
+            "quote": "Zero requests reached the loopback provider"
+          }
+        },
+        {
+          "id": "host-permission-modes",
+          "label": "Host permission modes",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux",
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Results",
+            "quote": "Host permission modes"
+          },
+          "note": "Portable host fixture proposal; receipt execution was macOS, not a claimed native Linux receipt."
+        },
+        {
+          "id": "version-admission",
+          "label": "Version admission",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux",
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Results",
+            "quote": "Version admission"
+          },
+          "note": "Portable host fixture proposal; receipt execution was macOS, not a claimed native Linux receipt."
+        },
+        {
+          "id": "isolated-home-cleanup",
+          "label": "Isolation and before/after configuration stability",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Identity and isolation",
+            "quote": "9551 entries, identical."
+          }
+        }
+      ],
+      "unverifiedFollowups": [
+        {
+          "id": "real-inference-tools-quota",
+          "label": "Real inference, generated tools and provider quota",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Not verified",
+            "quote": "Account-backed inference, a model-generated tool request"
+          },
+          "note": "Explicitly unverified follow-up; not required to extend the version set."
+        },
+        {
+          "id": "interactive-coexistence",
+          "label": "Interactive TUI coexistence",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Not verified",
+            "quote": "interactive TUI coexistence."
+          },
+          "note": "Explicitly unverified follow-up."
+        },
+        {
+          "id": "native-linux-intel",
+          "label": "Linux and Intel macOS qualification",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-pi-150-compat.md",
+            "section": "## Not verified",
+            "quote": "Linux and Intel macOS."
+          },
+          "note": "Platform coverage unknown, not evidence Linux alone can replace the native Mac leg."
+        }
+      ]
+    },
+    "claude-implementer": {
+      "receipt": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+      "runnerOS": [
+        "macos"
+      ],
+      "nativePlatform": "macos-arm64",
+      "install": {
+        "method": "npm-exact",
+        "package": "@anthropic-ai/claude-code",
+        "versionPolicy": "exact requested version, never latest or a range",
+        "integrityPolicy": "verify the exact-version npm dist.integrity before use",
+        "referenceVersion": "2.1.319",
+        "referenceIntegrity": "sha512-XoyAxGXBmNsb9ahz0xLAtyz/I6b1j+4lyLpucyTQIq4FcKUxrMDM2AzA2sHipHoN1DdMJINQQrLZxRZRq7FqBA==",
+        "metadataUrl": "https://registry.npmjs.org/@anthropic-ai/claude-code/2.1.319",
+        "observedAt": "2026-11-07",
+        "receiptEvidence": {
+          "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+          "section": "## Upstream changes since 2.1.318",
+          "quote": "2.1.319 reached this machine through the native installer."
+        },
+        "distributionBoundary": "The reference receipt used the native installer when npm lagged. npm metadata is independently available now; its SRI is not the native binary SHA and this audit does not claim that npm artifact was executed."
+      },
+      "autoAdmit": true,
+      "autoAdmitReason": "Permission transport and wrapper controls use a synthetic provider, with no real account or model required.",
+      "legs": [
+        {
+          "id": "write-allow",
+          "label": "Write permission transport: allow",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Write transport (allow, deny, missing tool, hook deny/allow, MCP error, disconnect, pending, deadline)"
+          }
+        },
+        {
+          "id": "write-deny",
+          "label": "Write permission transport: deny",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Write transport (allow, deny, missing tool, hook deny/allow, MCP error, disconnect, pending, deadline)"
+          }
+        },
+        {
+          "id": "write-missing-tool",
+          "label": "Write permission transport: missing-tool",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Write transport (allow, deny, missing tool, hook deny/allow, MCP error, disconnect, pending, deadline)"
+          }
+        },
+        {
+          "id": "write-hook-deny",
+          "label": "Write permission transport: hook-deny",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Write transport (allow, deny, missing tool, hook deny/allow, MCP error, disconnect, pending, deadline)"
+          }
+        },
+        {
+          "id": "write-hook-allow",
+          "label": "Write permission transport: hook-allow",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Write transport (allow, deny, missing tool, hook deny/allow, MCP error, disconnect, pending, deadline)"
+          }
+        },
+        {
+          "id": "write-mcp-error",
+          "label": "Write permission transport: mcp-error",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Write transport (allow, deny, missing tool, hook deny/allow, MCP error, disconnect, pending, deadline)"
+          }
+        },
+        {
+          "id": "write-disconnect",
+          "label": "Write permission transport: disconnect",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Write transport (allow, deny, missing tool, hook deny/allow, MCP error, disconnect, pending, deadline)"
+          }
+        },
+        {
+          "id": "write-pending",
+          "label": "Write permission transport: pending",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Write transport (allow, deny, missing tool, hook deny/allow, MCP error, disconnect, pending, deadline)"
+          }
+        },
+        {
+          "id": "write-deadline",
+          "label": "Write permission transport: deadline",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Write transport (allow, deny, missing tool, hook deny/allow, MCP error, disconnect, pending, deadline)"
+          }
+        },
+        {
+          "id": "bash-allow",
+          "label": "Bash permission transport: allow",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash transport, production server and tool names, `tool_use_id` required"
+          }
+        },
+        {
+          "id": "bash-deny",
+          "label": "Bash permission transport: deny",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash transport, production server and tool names, `tool_use_id` required"
+          }
+        },
+        {
+          "id": "bash-missing-tool",
+          "label": "Bash permission transport: missing-tool",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash transport, production server and tool names, `tool_use_id` required"
+          }
+        },
+        {
+          "id": "bash-hook-deny",
+          "label": "Bash permission transport: hook-deny",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash transport, production server and tool names, `tool_use_id` required"
+          }
+        },
+        {
+          "id": "bash-hook-allow",
+          "label": "Bash permission transport: hook-allow",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash transport, production server and tool names, `tool_use_id` required"
+          }
+        },
+        {
+          "id": "bash-mcp-error",
+          "label": "Bash permission transport: mcp-error",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash transport, production server and tool names, `tool_use_id` required"
+          }
+        },
+        {
+          "id": "bash-disconnect",
+          "label": "Bash permission transport: disconnect",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash transport, production server and tool names, `tool_use_id` required"
+          }
+        },
+        {
+          "id": "bash-pending",
+          "label": "Bash permission transport: pending",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash transport, production server and tool names, `tool_use_id` required"
+          }
+        },
+        {
+          "id": "bash-deadline",
+          "label": "Bash permission transport: deadline",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash transport, production server and tool names, `tool_use_id` required"
+          }
+        },
+        {
+          "id": "bash-rewrite-allow",
+          "label": "Bash updatedInput replacement: allow",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash `updatedInput` command replacement (allow, deny)"
+          }
+        },
+        {
+          "id": "bash-rewrite-deny",
+          "label": "Bash updatedInput replacement: deny",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Runs",
+            "quote": "Bash `updatedInput` command replacement (allow, deny)"
+          }
+        },
+        {
+          "id": "wrapper-cwd",
+          "label": "Persistent-shell control reports `sub` twice",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Persistent-shell control reports `sub` twice"
+          }
+        },
+        {
+          "id": "wrapper-root",
+          "label": "Fresh rewritten input executes the fixed root",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Fresh rewritten input executes the fixed root"
+          }
+        },
+        {
+          "id": "wrapper-executable",
+          "label": "Target identity equals the absolute host-selected executable",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Target identity equals the absolute host-selected executable"
+          }
+        },
+        {
+          "id": "wrapper-poison-env",
+          "label": "Injected native GIT_DIR and RIPGREP_CONFIG_PATH are absent",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Injected native GIT_DIR and RIPGREP_CONFIG_PATH are absent"
+          }
+        },
+        {
+          "id": "wrapper-host-env",
+          "label": "Target HOME/PATH/TERM and peer identity equal the host fixture values",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Target HOME/PATH/TERM and peer identity equal the host fixture values"
+          }
+        },
+        {
+          "id": "wrapper-tmp",
+          "label": "Owned TMPDIR replaces native state",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Owned TMPDIR replaces native state"
+          }
+        },
+        {
+          "id": "wrapper-replay",
+          "label": "Same ticket's second execution returns the fixed refusal",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Same ticket's second execution returns the fixed refusal"
+          }
+        },
+        {
+          "id": "wrapper-effect-once",
+          "label": "Effect counter remains exactly 1 after replay",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Effect counter remains exactly 1 after replay"
+          }
+        },
+        {
+          "id": "wrapper-quoted-paths",
+          "label": "Spaces and apostrophes in root/executable paths",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Spaces and apostrophes in root/executable paths"
+          }
+        },
+        {
+          "id": "wrapper-cleanup",
+          "label": "Native exit 0, host stopped, no remaining live native group members",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Native exit 0, host stopped, no remaining live native group members"
+          }
+        },
+        {
+          "id": "wrapper-binary-fence",
+          "label": "Binary unchanged across the case",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Native observations",
+            "quote": "Binary unchanged across the case"
+          }
+        },
+        {
+          "id": "upstream-impact-review",
+          "label": "Scoped permission/MCP/hooks/lifetime changelog review",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux",
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Upstream changes since 2.1.318",
+            "quote": "This receipt therefore rests on observed behavior only"
+          },
+          "note": "Fetch/read evidence, not inference. Receipt explicitly allows missing 2.1.319 changelog; normal PR review must retain that limit."
+        }
+      ],
+      "unverifiedFollowups": [
+        {
+          "id": "real-provider-model",
+          "label": "Real auth and model-selected tools",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Evidence boundaries",
+            "quote": "no real provider authentication, model tool selection"
+          },
+          "note": "Explicitly unverified follow-up, not a prerequisite of this native model-free version receipt."
+        },
+        {
+          "id": "person-approval",
+          "label": "Person approval interaction",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Evidence boundaries",
+            "quote": "person approval interaction"
+          },
+          "note": "Explicitly unverified follow-up."
+        },
+        {
+          "id": "native-task-resume-binding",
+          "label": "Task-session resume / production daemon task binding",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
+            "section": "## Evidence boundaries",
+            "quote": "task-session resume or production-daemon task binding is proved"
+          },
+          "note": "Explicitly unverified follow-up."
+        },
+        {
+          "id": "host-seatbelt-policy",
+          "label": "Separate host code-grant Seatbelt authorization fixtures",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-headless-claude-shell-context.md",
+            "section": "## Host fixtures and ceilings",
+            "quote": "The executable task-code profile is host policy verified separately by Darwin fixtures."
+          },
+          "note": "Separate host-policy proof, not exercised by generic native transport producer; do not label the native transport a whole-process sandbox proof."
+        },
+        {
+          "id": "native-internal-timeout",
+          "label": "Native internal permission timeout",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-10-23-headless-claude-permissions.md",
+            "section": "## Observations",
+            "quote": "native internal timeout not established"
+          },
+          "note": "Explicit ceiling; pending case is stopped externally, not proof of the native internal timeout."
+        }
+      ]
+    },
+    "codex-review": {
+      "receipt": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+      "runnerOS": [
+        "macos"
+      ],
+      "nativePlatform": "macos-arm64",
+      "install": {
+        "method": "npm-exact",
+        "package": "@openai/codex",
+        "versionPolicy": "exact requested version, never latest or a range",
+        "integrityPolicy": "verify the exact-version npm dist.integrity before use",
+        "referenceVersion": "0.167.0",
+        "referenceIntegrity": "sha512-1FSQgbTIKAdTub5Ln6z36NT4eXDmBRkinfigzycbgn9yLZdJ3UdkQZqr0N7jnl8/D1xxT/Pz3Fl2l7S2dmRaFA==",
+        "metadataUrl": "https://registry.npmjs.org/@openai/codex/0.167.0",
+        "observedAt": "2026-11-07",
+        "receiptEvidence": {
+          "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+          "section": "## Native production preparation",
+          "quote": "Both Codex versions were installed with `npm install --prefix`"
+        },
+        "distributionBoundary": "The receipt records native binary hashes, not npm SRI. The registry SRI here is independently read metadata, not a native-run result."
+      },
+      "autoAdmit": false,
+      "autoAdmitReason": "Admission requires a successful separately authorized model-backed hub tool call, even when every model-free preparation leg passes.",
+      "legs": [
+        {
+          "id": "source-impact",
+          "label": "Each of the seven files read for 0.166.0",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux",
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Source identity and re-read regions",
+            "quote": "Each of the seven files read for 0.166.0"
+          },
+          "note": "Read-only source/tag evidence; cannot replace native canaries or required model proof.",
+          "automation": "mechanical source/tag/hash comparison; source changes require scoped human review",
+          "onChangedSource": "not-run until the changed security/contract regions have been reviewed; never infer a pass from diff availability"
+        },
+        {
+          "id": "tag-binding",
+          "label": "annotated tag object",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux",
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Source identity and re-read regions",
+            "quote": "annotated tag object"
+          },
+          "note": "Read-only source/tag evidence; cannot replace native canaries or required model proof."
+        },
+        {
+          "id": "version-negative",
+          "label": "version-negative",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "Refused only at version admission"
+          }
+        },
+        {
+          "id": "empty-home-prepare",
+          "label": "empty-home-prepare",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "empty homes | All production preparation legs pass"
+          }
+        },
+        {
+          "id": "ambient-prepare",
+          "label": "ambient-prepare",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "synthetic ambient config | All production preparation legs pass"
+          }
+        },
+        {
+          "id": "control",
+          "label": "control",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "Control 0.166.0, empty homes"
+          }
+        },
+        {
+          "id": "model-free-mcp-inventory-disabled-ambient",
+          "label": "model-free-mcp-inventory-disabled-ambient",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "model-free-mcp-inventory-disabled-ambient"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "hub-tools-exact-allowlist",
+          "label": "hub-tools-exact-allowlist",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "hub-tools-exact-allowlist"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "plugins-and-hooks-disabled",
+          "label": "plugins-and-hooks-disabled",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "plugins-and-hooks-disabled"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "legacy-notify-disabled",
+          "label": "legacy-notify-disabled",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "legacy-notify-disabled"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "apps-disabled-effective-feature-readback",
+          "label": "apps-disabled-effective-feature-readback",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "apps-disabled-effective-feature-readback"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "web-search-disabled",
+          "label": "web-search-disabled",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "web-search-disabled"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "project-untrusted",
+          "label": "project-untrusted",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "project-untrusted"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "native-public-read-private-deny-write-deny",
+          "label": "native-public-read-private-deny-write-deny",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "native-public-read-private-deny-write-deny"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "native-glob-and-symlink-private-deny",
+          "label": "native-glob-and-symlink-private-deny",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "native-glob-and-symlink-private-deny"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "portable-core-name-and-state-deny",
+          "label": "portable-core-name-and-state-deny",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "portable-core-name-and-state-deny"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "standard-host-credential-roots-denied",
+          "label": "standard-host-credential-roots-denied",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "standard-host-credential-roots-denied"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "binary-config-stable",
+          "label": "binary-config-stable",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "binary-config-stable"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "binary-hash-once-metadata-fence",
+          "label": "binary-hash-once-metadata-fence",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "binary-hash-once-metadata-fence"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "session-ephemeral",
+          "label": "session-ephemeral",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Native production preparation",
+            "quote": "session-ephemeral"
+          },
+          "note": "Native Mac preparation; web search marker is configured-only, not effective turn readback."
+        },
+        {
+          "id": "model-backed-hub-call",
+          "label": "Actual hub_task_show/hub_review plus exact head, persisted verdict, required marker and cleanup",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/agent-notes/adapters.md",
+            "section": "## Reviewers",
+            "quote": "before marking a reviewer backend/version verified, record a successful model-backed hub tool call"
+          }
+        }
+      ],
+      "unverifiedFollowups": [
+        {
+          "id": "effective-network-web",
+          "label": "Effective model-turn network/web-search measurement",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Compatibility and evidence boundaries",
+            "quote": "The network setting is configured disabled without a separate probe."
+          },
+          "note": "Explicitly unverified ceiling, not an extra admission requirement beyond required tool-call receipt."
+        },
+        {
+          "id": "default-profile-selection",
+          "label": "Exec selecting named default profile",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Compatibility and evidence boundaries",
+            "quote": "exec selecting the named default profile"
+          },
+          "note": "Explicitly unverified; do not silently upgrade configured isolation into measured turn behavior."
+        },
+        {
+          "id": "native-linux",
+          "label": "Native Linux qualification",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
+            "section": "## Compatibility and evidence boundaries",
+            "quote": "No native Linux result is claimed."
+          },
+          "note": "Linux receipt not established; native sandbox qualification remains macOS in current evidence."
+        }
+      ]
+    },
+    "kimi-review": {
+      "receipt": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+      "runnerOS": [
+        "macos"
+      ],
+      "nativePlatform": "macos-arm64",
+      "install": {
+        "method": "github-release-asset-checksum",
+        "repository": "MoonshotAI/kimi-code",
+        "tagTemplate": "@moonshot-ai/kimi-code@{version}",
+        "asset": "kimi-code-darwin-arm64.tar.gz",
+        "checksumAsset": "kimi-code-darwin-arm64.tar.gz.sha256",
+        "integrityPolicy": "verify SHA-256 against the versioned checksum asset and GitHub asset digest before bounded extraction",
+        "referenceTag": "@moonshot-ai/kimi-code@2.5.1",
+        "referenceDigest": "sha256:fb0dc25033f2545c5cf820d01898fdc6e2a13a5d83529091fedee1dfef078632",
+        "metadataUrl": "https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai/kimi-code%402.5.1",
+        "observedAt": "2026-11-07",
+        "receiptEvidence": {
+          "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+          "section": "## Artifact and installation",
+          "quote": "Its SHA-256 matched both the GitHub asset digest and sibling checksum"
+        }
+      },
+      "autoAdmit": true,
+      "autoAdmitReason": "The required native allowlist/broker controls use fixed loopback replies and synthetic credentials, without real inference.",
+      "legs": [
+        {
+          "id": "prepare",
+          "label": "Production preparation, exact version/current/config, replace environment",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "Production preparation, exact version/current/config, replace environment"
+          }
+        },
+        {
+          "id": "inventory",
+          "label": "Exactly two MCP tools, empty subagents and skills, config mode 0600",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "Exactly two MCP tools, empty subagents and skills, config mode 0600"
+          }
+        },
+        {
+          "id": "broker-refusals",
+          "label": "Wrong task, third tool, missing authorization and revoked broker refusals",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "Wrong task, third tool, missing authorization and revoked broker refusals"
+          }
+        },
+        {
+          "id": "native-tool-loop",
+          "label": "Actual native two-tool loop, fixed loopback responses",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "Actual native two-tool loop, fixed loopback responses"
+          }
+        },
+        {
+          "id": "write-absent",
+          "label": "Injected Write absent from inventory and native tool-not-found result",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "Injected Write absent from inventory and native tool-not-found result"
+          }
+        },
+        {
+          "id": "write-positive-control",
+          "label": "Explicit Write positive control",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "Explicit Write positive control"
+          }
+        },
+        {
+          "id": "environment-decoy",
+          "label": "Trust-workspace environment decoy removed from launch environment",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "Trust-workspace environment decoy removed from launch environment"
+          }
+        },
+        {
+          "id": "cleanup",
+          "label": "Original synthetic config/credential bytes, owned-group and temporary cleanup",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "Original synthetic config/credential bytes, owned-group and temporary cleanup"
+          }
+        },
+        {
+          "id": "network-guard-control",
+          "label": "Application-level non-loopback guard positive control",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "A separate preload positive control blocked a"
+          },
+          "note": "Application-level evidence only; no kernel isolation claim."
+        },
+        {
+          "id": "source-review",
+          "label": "Trust, MCP, allowlist and OAuth source impact review",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux",
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Source review",
+            "quote": "Model-free native exact-two-tool inventories across all fixed-response requests are still required"
+          },
+          "note": "Linux fetch/diff analysis proposal plus normal human PR review. Source reading alone cannot qualify version.",
+          "automation": "mechanical source/tag/hash comparison; source changes require scoped human review",
+          "onChangedSource": "not-run until the changed security/contract regions have been reviewed; never infer a pass from diff availability"
+        }
+      ],
+      "unverifiedFollowups": [
+        {
+          "id": "real-oauth-provider",
+          "label": "Real account/login/OAuth/provider readiness",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "login/provider readiness, real OAuth refresh"
+          },
+          "note": "Explicitly unverified follow-up."
+        },
+        {
+          "id": "model-quota",
+          "label": "Model behavior/quality and quota",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "model\nbehavior/quality and quota remain unverified."
+          },
+          "note": "Explicitly unverified follow-up; fixed loopback responses are not model inference."
+        },
+        {
+          "id": "tui-coexistence",
+          "label": "Attached TUI coexistence",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Isolated production and native controls",
+            "quote": "attached-TUI coexistence"
+          },
+          "note": "Explicitly unverified follow-up."
+        },
+        {
+          "id": "other-platforms",
+          "label": "Other-platform native qualification",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
+            "section": "## Evidence and decision",
+            "quote": "Other platforms, future versions and model-backed\nbehavior are not inferred."
+          },
+          "note": "Not qualified by this Mac artifact; Linux native admission remains unknown."
+        }
+      ]
+    },
+    "jcode": {
+      "receipt": "docs/verification/2026-10-26-jcode-0.99.1.md",
+      "runnerOS": [
+        "macos"
+      ],
+      "nativePlatform": "macos-arm64",
+      "install": {
+        "method": "github-release-asset-checksum",
+        "repository": "1jehuang/jcode",
+        "tagTemplate": "v{version}",
+        "asset": "jcode-macos-aarch64.tar.gz",
+        "checksumAsset": "SHA256SUMS",
+        "integrityPolicy": "verify SHA-256 against the versioned checksum asset and GitHub asset digest before bounded extraction",
+        "referenceTag": "v0.99.1",
+        "referenceDigest": "sha256:3623164d518b0c9d443ab07052084244b379e8a3377037db67d2382220f4ed14",
+        "metadataUrl": "https://github.com/1jehuang/jcode/releases/tag/v0.99.1",
+        "observedAt": "2026-11-07",
+        "receiptEvidence": {
+          "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+          "section": "# Jcode 0.99.1 receipt (#843 AC5)",
+          "quote": "Installed release build, read through `--quiet version --json`"
+        },
+        "distributionBoundary": "The receipt identifies an installed release build, not its archive. The public asset/checksum recipe was independently read from release metadata; it is not retrospective proof that this archive was executed."
+      },
+      "autoAdmit": true,
+      "autoAdmitReason": "ACP, serve, MCP and running-turn steering use an isolated fixed-stream loopback provider; the real TUI/model follow-ups are not current admission legs.",
+      "legs": [
+        {
+          "id": "isolation",
+          "label": "isolation",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Isolation",
+            "quote": "Every process ran under an isolated `HOME` and `JCODE_HOME`"
+          }
+        },
+        {
+          "id": "serve-cleanup",
+          "label": "serve cleanup",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Contract legs (idle server, no model)",
+            "quote": "The process group is gone after SIGTERM."
+          }
+        },
+        {
+          "id": "acp-initialize-new-load-mode-ceilings",
+          "label": "acp initialize new load mode ceilings",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Contract legs (idle server, no model)",
+            "quote": "`session/load` returns `configOptions` and `models` only, with no `sessionId`."
+          }
+        },
+        {
+          "id": "mcp-owned-environment",
+          "label": "mcp owned environment",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Contract legs (idle server, no model)",
+            "quote": "its environment held exactly `AGENTHUB_PEER_ID` and `AGENTHUB_LAUNCH_ID`"
+          }
+        },
+        {
+          "id": "telemetry",
+          "label": "telemetry",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Contract legs (idle server, no model)",
+            "quote": "no telemetry file appeared in the isolated home."
+          }
+        },
+        {
+          "id": "active-turn-soft-interrupt",
+          "label": "active turn soft interrupt",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Steering leg (the 0.99.0 check, now on a running turn)",
+            "quote": "No real provider, key or model was involved."
+          }
+        },
+        {
+          "id": "source-comparison",
+          "label": "source comparison",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux",
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Source comparison v0.99.0..v0.99.1",
+            "quote": "232 commits, 300 files, read only through the GitHub compare API (nothing built)."
+          },
+          "note": "review context; no native Linux proof",
+          "automation": "mechanical source/tag/hash comparison; source changes require scoped human review",
+          "onChangedSource": "not-run until the changed security/contract regions have been reviewed; never infer a pass from diff availability"
+        }
+      ],
+      "unverifiedFollowups": [
+        {
+          "id": "real-provider-model-tool-call",
+          "label": "real provider model tool call",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Not verified",
+            "quote": "A real account, provider or model, and a model turn that calls a hub tool"
+          },
+          "note": "explicit Not verified follow-up"
+        },
+        {
+          "id": "tui-repeat",
+          "label": "tui repeat",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Not verified",
+            "quote": "The TUI form (`jcode --resume`)"
+          },
+          "note": "explicit Not verified follow-up"
+        },
+        {
+          "id": "linux-intel-second-instance",
+          "label": "linux intel second instance",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux",
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-10-26-jcode-0.99.1.md",
+            "section": "## Not verified",
+            "quote": "A second instance running beside the base peer, and Linux or Intel macOS builds."
+          },
+          "note": "explicit Not verified follow-up"
+        }
+      ]
+    },
+    "agy": {
+      "receipt": "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md",
+      "runnerOS": [
+        "macos"
+      ],
+      "nativePlatform": "macos-arm64",
+      "install": {
+        "method": "unavailable",
+        "reason": "No public source; the receipt used an already-installed private executable. No npm/GitHub install recipe is invented.",
+        "receiptEvidence": {
+          "path": "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md",
+          "section": "## Environment and isolation",
+          "quote": "the installed `~/.local/bin/agy`"
+        }
+      },
+      "autoAdmit": false,
+      "autoAdmitReason": "No public installation source is available to the watcher; the current procedure also requires interactive TUI/launcher controls.",
+      "legs": [
+        {
+          "id": "isolation-seatbelt-cleanup",
+          "label": "isolation seatbelt cleanup",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md",
+            "section": "## Environment and isolation",
+            "quote": "No account and no cloud model call."
+          }
+        },
+        {
+          "id": "cli-contract",
+          "label": "cli contract",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md",
+            "section": "# Antigravity 1.4.12 actual-hub nonce leg through the `ahub agy` launcher (#888)",
+            "quote": "passed the CLI surface, the synthetic plugin MCP and hook contract and the normal TUI close"
+          }
+        },
+        {
+          "id": "synthetic-plugin-mcp-hooks",
+          "label": "synthetic plugin mcp hooks",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-agy-1.4.12.md",
+            "section": "## Synthetic plugin MCP and hook contract: passed",
+            "quote": "## Synthetic plugin MCP and hook contract: passed"
+          }
+        },
+        {
+          "id": "normal-tui-close",
+          "label": "normal tui close",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md",
+            "section": "## Result",
+            "quote": "0, after `/exit` and Enter; agy closed by itself and printed its resume line"
+          }
+        },
+        {
+          "id": "launcher-actual-hub-nonce",
+          "label": "launcher actual hub nonce",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md",
+            "section": "## Result",
+            "quote": "the nonce from the scratch bus preface appeared in a provider request after the tool call"
+          }
+        }
+      ],
+      "unverifiedFollowups": [
+        {
+          "id": "real-account-model-permission",
+          "label": "real account model permission",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md",
+            "section": "## Not verified",
+            "quote": "A real account, a real model's tool choices and agy's own permission prompts"
+          },
+          "note": "explicit Not verified follow-up"
+        },
+        {
+          "id": "ide-linux-other-tui-tools",
+          "label": "ide linux other tui tools",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "linux"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md",
+            "section": "## Not verified",
+            "quote": "`hub_send` and board calls through the TUI, the IDE form and Linux."
+          },
+          "note": "explicit Not verified follow-up"
+        }
+      ]
+    },
+    "qwen": {
+      "receipt": "docs/verification/2026-11-06-qwen-0268-acp.md",
+      "runnerOS": [
+        "macos"
+      ],
+      "nativePlatform": "macos-arm64",
+      "install": {
+        "method": "npm-exact",
+        "package": "@qwen-code/qwen-code",
+        "versionPolicy": "exact requested version, never latest or a range",
+        "integrityPolicy": "verify the exact-version npm dist.integrity before use",
+        "referenceVersion": "0.26.8",
+        "referenceIntegrity": "sha512-/BD+zs+VmOqInnYed3sxj7OKpBjAyZ7qoMw7Y9vLAur7QS66hsoiNAjUaON0yw6fS7WPTzN8mFZYvn3jdA3c/Q==",
+        "metadataUrl": "https://registry.npmjs.org/@qwen-code/qwen-code/0.26.8",
+        "observedAt": "2026-11-07",
+        "receiptEvidence": {
+          "path": "docs/verification/2026-11-06-qwen-0268-acp.md",
+          "section": "## Artifact and isolation",
+          "quote": "The installed lock's integrity matches the registry SRI."
+        }
+      },
+      "autoAdmit": true,
+      "autoAdmitReason": "The admitted ACP/permission procedure uses no prompts or real model; macOS arm64 repetition remains required.",
+      "legs": [
+        {
+          "id": "artifact-private-install-integrity",
+          "label": "artifact private install integrity",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-qwen-0268-acp.md",
+            "section": "## Artifact and isolation",
+            "quote": "npm installed into a new private prefix with scratch HOME, cache and tmp, empty user/global npm configs"
+          }
+        },
+        {
+          "id": "reviewed-optional-lifecycle-replay",
+          "label": "reviewed optional lifecycle replay",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-qwen-0268-acp.md",
+            "section": "## Artifact and isolation",
+            "quote": "Fresh ACP and permission probes after the replay passed again."
+          }
+        },
+        {
+          "id": "native-acp-auth-session-modes",
+          "label": "native acp auth session modes",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-qwen-0268-acp.md",
+            "section": "## Native ACP, no prompts",
+            "quote": "ACP prompts sent: 0."
+          }
+        },
+        {
+          "id": "actual-published-permission-handler",
+          "label": "actual published permission handler",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-qwen-0268-acp.md",
+            "section": "## Actual published permission handler",
+            "quote": "without a model-generated tool turn."
+          }
+        },
+        {
+          "id": "preload-network-cleanup",
+          "label": "preload network cleanup",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-qwen-0268-acp.md",
+            "section": "## Artifact and isolation",
+            "quote": "This is preload evidence, not kernel network isolation."
+          }
+        },
+        {
+          "id": "native-macos-repetition",
+          "label": "native macos repetition",
+          "category": "macos-runner",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-qwen-0268-acp.md",
+            "section": "## Actual macOS arm64 repetition",
+            "quote": "The Linux-only receipt did not prove admission on this Mac."
+          }
+        },
+        {
+          "id": "additional-linux",
+          "label": "additional linux",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-qwen-0268-acp.md",
+            "section": "# Qwen Code 0.26.8 ACP receipt",
+            "quote": "The earlier Linux x86_64 run is additional evidence."
+          },
+          "note": "Additional recorded passing Linux evidence; it does not replace the required Mac arm64 repetition."
+        }
+      ],
+      "unverifiedFollowups": [
+        {
+          "id": "real-model-microphone-tui-intel",
+          "label": "real model microphone tui intel",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-06-qwen-0268-acp.md",
+            "section": "## Not verified",
+            "quote": "Microphone functionality, Intel macOS, a real login/provider, model-generated permission turns, model behavior, token/quota behavior and TUI qualification."
+          },
+          "note": "explicit Not verified follow-up"
+        }
+      ]
+    },
+    "qwen-dual": {
+      "receipt": "docs/verification/2026-10-25-qwen-dual-output-t0.md",
+      "runnerOS": [
+        "unspecified"
+      ],
+      "nativePlatform": "unspecified in current receipt",
+      "install": {
+        "method": "npm-exact",
+        "package": "@qwen-code/qwen-code",
+        "versionPolicy": "exact requested version, never latest or a range",
+        "integrityPolicy": "verify the exact-version npm dist.integrity before use",
+        "referenceVersion": "0.26.1",
+        "referenceIntegrity": "sha512-4kpIzrlrgmawivim0yCZjr1AP5cfHTanyL7eL1g2R8WYU6QDBq7j9fiAye7REXL4EEXkRIq45D7+ngTw5n3GqQ==",
+        "metadataUrl": "https://registry.npmjs.org/@qwen-code/qwen-code/0.26.1",
+        "observedAt": "2026-11-07",
+        "receiptEvidence": {
+          "path": "docs/verification/2026-10-25-qwen-dual-output-t0.md",
+          "section": "# Qwen dual-output TUI verification, 2026-10-25",
+          "quote": "Qwen Code 0.26.1 (fnm global install; the same command reported 0.25.0 earlier the same day, so the install changed underneath)."
+        },
+        "distributionBoundary": "The receipt used a changing fnm global installation and recorded no npm SRI. This independently resolved exact npm recipe does not repair its historical artifact or platform evidence."
+      },
+      "autoAdmit": false,
+      "autoAdmitReason": "The current receipt uses a real gateway model and an interactive PTY; model-free automation cannot admit a version.",
+      "legs": [
+        {
+          "id": "real-model",
+          "label": "real model",
+          "category": "account-or-model",
+          "runnerOS": [
+            "unspecified"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-25-qwen-dual-output-t0.md",
+            "section": "# Qwen dual-output TUI verification, 2026-10-25",
+            "quote": "`flashnext/qwen3.8-flash-next` through the campus gateway"
+          }
+        },
+        {
+          "id": "pty-harness",
+          "label": "pty harness",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "unspecified"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-25-qwen-dual-output-t0.md",
+            "section": "# Qwen dual-output TUI verification, 2026-10-25",
+            "quote": "the TUI ran on a pseudo-terminal (120x40)."
+          }
+        },
+        {
+          "id": "Q2-submit-stream-queue",
+          "label": "Q2 submit stream queue",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "unspecified"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-25-qwen-dual-output-t0.md",
+            "section": "# Qwen dual-output TUI verification, 2026-10-25",
+            "quote": "queued, not interleaved"
+          }
+        },
+        {
+          "id": "Q3-permissions-native-enter-deny-ceiling",
+          "label": "Q3 permissions native enter deny ceiling",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "unspecified"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-25-qwen-dual-output-t0.md",
+            "section": "# Qwen dual-output TUI verification, 2026-10-25",
+            "quote": "A tool that needs approval emits `control_request` `can_use_tool`"
+          }
+        },
+        {
+          "id": "Q4-known-watchdog-ceiling",
+          "label": "Q4 known watchdog ceiling",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "unspecified"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/specs/2026-09-19-agent-hub-design.md",
+            "section": "# Qwen dual-output TUI amendment, 2026-10-25 (#286 Part 3)",
+            "quote": "Q2, Q3, Q5 and Q6 pass; Q4's limit is stated"
+          },
+          "note": "Recorded accepted watchdog limitation, not a passing cancellation capability; preserve it in future receipts."
+        },
+        {
+          "id": "Q5-unread-fifo",
+          "label": "Q5 unread fifo",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "unspecified"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-25-qwen-dual-output-t0.md",
+            "section": "# Qwen dual-output TUI verification, 2026-10-25",
+            "quote": "With `--json-file` a FIFO that nobody opened for reading"
+          }
+        },
+        {
+          "id": "Q6-resume-no-replay",
+          "label": "Q6 resume no replay",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "unspecified"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-25-qwen-dual-output-t0.md",
+            "section": "# Qwen dual-output TUI verification, 2026-10-25",
+            "quote": "did not replay any earlier `submit`, and appended to the event file."
+          }
+        },
+        {
+          "id": "Q7-version-identity",
+          "label": "Q7 version identity",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "unspecified"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-10-25-qwen-dual-output-t0.md",
+            "section": "# Qwen dual-output TUI verification, 2026-10-25",
+            "quote": "`qwen --version` under the isolated environment: 0.26.1."
+          }
+        }
+      ],
+      "unverifiedFollowups": []
+    }
+  }
+}
