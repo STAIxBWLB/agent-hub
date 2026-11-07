@@ -1,9 +1,10 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abandonedSizes, backupStartupDatabase, benchmarkFailureStage, BENCHMARK_STAGES, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, privateStartupSandboxProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, startupSeedCounter, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { abandonedSizes, backupStartupDatabase, benchmarkFailureStage, BENCHMARK_STAGES, copyEventPrefix, databaseProfile, installStartupReadObserver, installStartupRollupReadObserver, isolatedStartupEnvironment, numericProfile, privateStartupSandboxProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, startupSeedCounter, startupReadBreakdown, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { UsageRollup, DEFAULT_MAX_BYTES } from "../src/hub/usage-rollup.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { STARTUP_PHASES } from "../src/hub/startup-timing.ts";
 
@@ -103,6 +104,35 @@ test("normal Bun script observes production readers and named/default effect den
   expect(row.networkDenials).toBe(4);
   expect(row.restored).toBe(1);
 }, 20_000);
+
+test("rollup IO wrapper delegates real poll results, counts all actual reads and restores its descriptor", async () => {
+  const root = directory(), file = join(root, "events.jsonl"), line = JSON.stringify({ at: "2026-01-01T00:00:00Z", type: "state", peer: "claude", state: "offline" }) + "\n";
+  writeFileSync(file, line);
+  const descriptor = Object.getOwnPropertyDescriptor(UsageRollup.prototype, "poll");
+  const observer = await installStartupReadObserver(root);
+  const rollupObserver = await installStartupRollupReadObserver(() => observer.counts.eventReadBytes);
+  const rollup = new UsageRollup(join(root, "hub.db"), file);
+  try {
+    // A zero-time slice consumes no records but really reads the file. poll.bytes cannot stand in for IO.
+    expect(rollup.poll(0).bytes).toBe(0);
+    expect(rollupObserver.counts).toEqual({ usageRollupCalls: 1, usageRollupReadBytes: Buffer.byteLength(line) });
+    expect(rollup.poll().bytes).toBe(Buffer.byteLength(line));
+    expect(rollup.poll().bytes).toBe(0);
+    expect(rollupObserver.counts.usageRollupCalls).toBe(3);
+    expect(rollupObserver.counts.usageRollupReadBytes).toBe(observer.counts.eventReadBytes);
+    const before = rollupObserver.counts.usageRollupReadBytes;
+    const fd = openSync(file, "r");
+    try { expect(readSync(fd, Buffer.alloc(Buffer.byteLength(line)), 0, Buffer.byteLength(line), 0)).toBe(Buffer.byteLength(line)); } finally { closeSync(fd); }
+    expect(rollupObserver.counts.usageRollupReadBytes).toBe(before);
+    expect(observer.counts.eventReadBytes).toBe(before + Buffer.byteLength(line));
+    rollupObserver.restore();
+    expect(Object.getOwnPropertyDescriptor(UsageRollup.prototype, "poll")).toEqual(descriptor);
+    appendFileSync(file, line);
+    expect(rollup.poll().bytes).toBe(Buffer.byteLength(line));
+    expect(rollupObserver.counts.usageRollupCalls).toBe(3);
+    expect(rollupObserver.counts.usageRollupReadBytes).toBe(before);
+  } finally { rollup.close(); rollupObserver.restore(); observer.restore(); }
+});
 
 test("private attempts are reserved durably before work, including attempts that never start a child", () => {
   const ledger = join(directory(), "attempts.sqlite");
@@ -217,7 +247,7 @@ for (const deliveryRows of [0, 32]) test(`small public synthetic database handle
   expect(events.filter(byte => byte === 10).length).toBe(profile.eventLines);
 });
 
-function fakePorts(observed: { roots: string[]; sources: (string | undefined)[] }, changes: { stopped?: boolean; eventReadBytes?: number; abandonedReadBytes?: number; seedPasses?: number; seedReadBytes?: number; eventReadFileCalls?: number } = {}): BenchmarkPorts {
+function fakePorts(observed: { roots: string[]; sources: (string | undefined)[] }, changes: { stopped?: boolean; eventReadBytes?: number; abandonedReadBytes?: number; seedPasses?: number; seedReadBytes?: number; eventReadFileCalls?: number; usageRollupReadBytes?: number; usageRollupCalls?: number } = {}): BenchmarkPorts {
   return {
     project: () => {},
     prepare: async (source, state, profile) => {
@@ -229,7 +259,7 @@ function fakePorts(observed: { roots: string[]; sources: (string | undefined)[] 
       observed.roots.push(root);
       expect(statSync(root).mode & 0o777).toBe(0o700);
       return { timing: TIMING, wallMs: 4, stopped: changes.stopped ?? true, effects: 0, eventReadBytes: changes.eventReadBytes ?? PROFILE.eventBytes, abandonedReadBytes: changes.abandonedReadBytes ?? 0,
-        seedPasses: changes.seedPasses ?? 1, seedReadBytes: changes.seedReadBytes ?? PROFILE.eventBytes, eventReadFileCalls: changes.eventReadFileCalls ?? 0 };
+        seedPasses: changes.seedPasses ?? 1, seedReadBytes: changes.seedReadBytes ?? PROFILE.eventBytes, eventReadFileCalls: changes.eventReadFileCalls ?? 0, usageRollupReadBytes: changes.usageRollupReadBytes ?? 0, usageRollupCalls: changes.usageRollupCalls ?? 0 };
     },
   };
 }
@@ -256,11 +286,13 @@ test("unconfirmed fake child retains its copy instead of deleting state under an
 
 test("acceptance allows exactly one streaming seed pass and reports independent cold rollup IO", async () => {
   const observed = { roots: [] as string[], sources: [] as (string | undefined)[] };
-  const results = await runStartupBenchmark({ mode: "synthetic", samples: 1, profile: PROFILE, acceptance: true }, fakePorts(observed, { eventReadBytes: PROFILE.eventBytes + 8 * 1024 * 1024 }));
+  const results = await runStartupBenchmark({ mode: "synthetic", samples: 1, profile: PROFILE, acceptance: true }, fakePorts(observed, { eventReadBytes: PROFILE.eventBytes + 8 * 1024 * 1024, usageRollupReadBytes: 8 * 1024 * 1024, usageRollupCalls: 1 }));
   expect(results[0]!.seedPasses).toBe(1);
   expect(results[0]!.seedReadBytes).toBe(PROFILE.eventBytes);
   expect(results[0]!.eventReadFileCalls).toBe(0);
   expect(results[0]!.auxiliaryReadBytes).toBe(8 * 1024 * 1024);
+  expect(results[0]!.usageRollupReadBytes).toBe(8 * 1024 * 1024);
+  expect(results[0]!.residualExtraReadBytes).toBe(0);
 });
 
 test("seed observation sums every invocation so a second pass is never hidden by overwrite", async () => {
@@ -276,4 +308,30 @@ for (const reads of [{ seedPasses: 2 }, { eventReadFileCalls: 1 }, { abandonedRe
   const observed = { roots: [] as string[], sources: [] as (string | undefined)[] };
   await expect(runStartupBenchmark({ mode: "synthetic", samples: 1, profile: PROFILE, acceptance: true }, fakePorts(observed, reads))).rejects.toThrow();
   expect(observed.roots.every(root => !existsSync(root))).toBe(true);
+});
+
+test("acceptance rejects an extra full descriptor scan outside the real bounded rollup scope", async () => {
+  const observed = { roots: [] as string[], sources: [] as (string | undefined)[] };
+  const profile = { ...PROFILE, eventBytes: 130_000_000, eventLines: 500_000 };
+  await expect(runStartupBenchmark({ mode: "synthetic", samples: 1, profile, acceptance: true }, fakePorts(observed, {
+    seedPasses: 1, seedReadBytes: profile.eventBytes, eventReadFileCalls: 0,
+    usageRollupReadBytes: DEFAULT_MAX_BYTES, usageRollupCalls: 1, eventReadBytes: 2 * profile.eventBytes + DEFAULT_MAX_BYTES,
+  }))).rejects.toThrow();
+  expect(observed.roots.every(root => !existsSync(root))).toBe(true);
+});
+
+test("acceptance rejects a full log read inside rollup scope rather than trusting consumed poll bytes", async () => {
+  const observed = { roots: [] as string[], sources: [] as (string | undefined)[] };
+  const profile = { ...PROFILE, eventBytes: 130_000_000, eventLines: 500_000 };
+  await expect(runStartupBenchmark({ mode: "synthetic", samples: 1, profile, acceptance: true }, fakePorts(observed, {
+    seedReadBytes: profile.eventBytes, usageRollupReadBytes: profile.eventBytes, usageRollupCalls: 1, eventReadBytes: 2 * profile.eventBytes,
+  }))).rejects.toThrow();
+});
+
+test("IO breakdown rejects negative and inconsistent attribution instead of hiding residual reads", () => {
+  const base = { seedPasses: 1, seedReadBytes: 100, eventReadBytes: 121, usageRollupReadBytes: 20, usageRollupCalls: 1, abandonedReadBytes: 0, eventReadFileCalls: 0 };
+  expect(startupReadBreakdown(base)).toEqual({ auxiliaryReadBytes: 21, residualExtraReadBytes: 1 });
+  for (const changes of [{ seedReadBytes: -1 }, { eventReadBytes: 119 }, { usageRollupReadBytes: -1 }, { usageRollupCalls: 0 }, { seedPasses: 0 }, { eventReadBytes: Number.NaN }]) {
+    expect(() => startupReadBreakdown({ ...base, ...changes })).toThrow();
+  }
 });

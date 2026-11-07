@@ -8,6 +8,7 @@ import { realPath } from "../../src/hub/project.ts";
 import { sbplString } from "../../src/local/deny.ts";
 import { hubGitSync } from "../../src/hub/git.ts";
 import { stopOwnedProcess, trackGroup } from "../../src/hub/child-process.ts";
+import { DEFAULT_MAX_BYTES } from "../../src/hub/usage-rollup.ts";
 import { STARTUP_PHASES } from "../../src/hub/startup-timing.ts";
 
 const MAX_PRIVATE_SAMPLES = 3;
@@ -22,7 +23,7 @@ export type StartupProfile = Record<typeof PROFILE_KEYS[number], number>;
 export const REPRESENTATIVE_PROFILE: StartupProfile = { dbBytes: 37_000_000, taskRows: 770, taskHistoryEntries: 7700, taskTextBytes: 2_000_000,
   deliveryRows: 1000, deliveryPayloadBytes: 2_000_000, eventBytes: 130_000_000, eventLines: 500_000, abandonedFiles: 1, abandonedBytes: 17_000_000, abandonedMaxBytes: 17_000_000 };
 export interface BenchmarkOptions { mode: "synthetic" | "private"; samples: number; profile?: StartupProfile; privateState?: string; acceptance?: boolean }
-export interface ChildObservation { timing: string; wallMs: number; stopped: boolean; effects: number; eventReadBytes: number; abandonedReadBytes: number; seedPasses: number; seedReadBytes: number; eventReadFileCalls: number; importAndStartupMs?: number }
+export interface ChildObservation { timing: string; wallMs: number; stopped: boolean; effects: number; eventReadBytes: number; abandonedReadBytes: number; seedPasses: number; seedReadBytes: number; eventReadFileCalls: number; usageRollupReadBytes: number; usageRollupCalls: number; importAndStartupMs?: number }
 export interface BenchmarkPorts {
   prepare?: (state: string | undefined, destination: string, profile: StartupProfile, env: NodeJS.ProcessEnv) => Promise<StartupProfile>;
   child?: (root: string, env: NodeJS.ProcessEnv) => Promise<ChildObservation>;
@@ -273,15 +274,15 @@ export async function probePrivateStartupGuard(typedState: string): Promise<{ pr
 }
 
 async function child(root: string, env: NodeJS.ProcessEnv, sandboxProfile?: string): Promise<ChildObservation> {
-  const started = performance.now(); let ready: { timing: string; importAndStartupMs: number; eventReadBytes: number; abandonedReadBytes: number; seedPasses: number; seedReadBytes: number; eventReadFileCalls: number } | undefined, wallMs = 0;
+  const started = performance.now(); let ready: { timing: string; importAndStartupMs: number; eventReadBytes: number; abandonedReadBytes: number; seedPasses: number; seedReadBytes: number; eventReadFileCalls: number; usageRollupReadBytes: number; usageRollupCalls: number } | undefined, wallMs = 0;
   const argv = sandboxProfile ? ["/usr/bin/sandbox-exec", "-p", sandboxProfile, process.execPath, SCRIPT, "--child", root] : [process.execPath, SCRIPT, "--child", root];
   const raw = await ownedCommand(argv, root, env, undefined, line => {
     try {
       const value = JSON.parse(line);
       if (value.ready === 1 && !ready && value.effects === 0 && Number.isFinite(value.importAndStartupMs) && value.importAndStartupMs >= 0) {
-        if (![value.eventReadBytes, value.abandonedReadBytes, value.seedPasses, value.seedReadBytes, value.eventReadFileCalls].every(n => Number.isSafeInteger(n) && n >= 0)) return;
+        if (![value.eventReadBytes, value.abandonedReadBytes, value.seedPasses, value.seedReadBytes, value.eventReadFileCalls, value.usageRollupReadBytes, value.usageRollupCalls].every(n => Number.isSafeInteger(n) && n >= 0)) return;
         if (value.seedReadBytes > value.eventReadBytes) return;
-        ready = { timing: timingLine(value.timing), importAndStartupMs: value.importAndStartupMs, eventReadBytes: value.eventReadBytes, abandonedReadBytes: value.abandonedReadBytes, seedPasses: value.seedPasses, seedReadBytes: value.seedReadBytes, eventReadFileCalls: value.eventReadFileCalls }; wallMs = performance.now() - started;
+        ready = { timing: timingLine(value.timing), importAndStartupMs: value.importAndStartupMs, eventReadBytes: value.eventReadBytes, abandonedReadBytes: value.abandonedReadBytes, seedPasses: value.seedPasses, seedReadBytes: value.seedReadBytes, eventReadFileCalls: value.eventReadFileCalls, usageRollupReadBytes: value.usageRollupReadBytes, usageRollupCalls: value.usageRollupCalls }; wallMs = performance.now() - started;
       }
     } catch { /* Non-protocol output is discarded, never forwarded. */ }
   });
@@ -323,10 +324,11 @@ export async function runStartupBenchmark(options: BenchmarkOptions, ports: Benc
         if (privateGuard && realPath(options.privateState!) !== privateGuard.canonicalState) return refuse();
         const observation = await (ports.child ?? ((sampleRoot: string, sampleEnv: NodeJS.ProcessEnv) => child(sampleRoot, sampleEnv, privateGuard?.profile)))(root, env); stopped = observation.stopped;
         if (!stopped || observation.effects !== 0) return refuse();
-        if (options.acceptance && (observation.wallMs >= 5000 || observation.abandonedReadBytes > 0 || observation.seedPasses !== 1 || observation.eventReadFileCalls !== 0)) return refuse();
+        const breakdown = startupReadBreakdown(observation);
+        if (options.acceptance && (observation.wallMs >= 5000 || observation.abandonedReadBytes > 0 || observation.seedPasses !== 1 || observation.eventReadFileCalls !== 0 || observation.usageRollupReadBytes > DEFAULT_MAX_BYTES || breakdown.residualExtraReadBytes > 1)) return refuse();
         results.push({ synthetic: Number(options.mode === "synthetic"), macGuard: privateGuard?.macGuard ?? 0, sample: attempt, ...sizes, wallMs: Math.round(observation.wallMs),
           ...(observation.importAndStartupMs === undefined ? {} : { importAndStartupMs: Math.round(observation.importAndStartupMs) }), timing: timingLine(observation.timing), effects: observation.effects, seedPasses: observation.seedPasses, seedReadBytes: observation.seedReadBytes, eventReadFileCalls: observation.eventReadFileCalls, eventReadBytes: observation.eventReadBytes,
-          auxiliaryReadBytes: observation.eventReadBytes - observation.seedReadBytes, abandonedReadBytes: observation.abandonedReadBytes });
+          ...breakdown, usageRollupReadBytes: observation.usageRollupReadBytes, usageRollupCalls: observation.usageRollupCalls, abandonedReadBytes: observation.abandonedReadBytes });
       } finally {
         // An unconfirmed child retains its private fixture; never delete state beneath an owner.
         if (stopped) rmSync(root, { recursive: true, force: true });
@@ -565,6 +567,30 @@ async function publicProbeChild(root: string): Promise<void> {
   process.stdout.write(JSON.stringify(metrics) + "\n");
 }
 
+/** Attribute actual observer bytes around the real synchronous method, including failed or zero-consumption polls. */
+export async function installStartupRollupReadObserver(eventReadBytes: () => number): Promise<{ counts: { usageRollupReadBytes: number; usageRollupCalls: number }; restore(): void }> {
+  const { UsageRollup } = await import("../../src/hub/usage-rollup.ts");
+  const prototype = UsageRollup.prototype, descriptor = Object.getOwnPropertyDescriptor(prototype, "poll");
+  if (!descriptor || typeof descriptor.value !== "function") return refuse();
+  const original = descriptor.value as typeof UsageRollup.prototype.poll;
+  const counts = { usageRollupReadBytes: 0, usageRollupCalls: 0 };
+  const poll: typeof original = function(this: InstanceType<typeof UsageRollup>, ...args: Parameters<typeof original>) {
+    const before = eventReadBytes(); counts.usageRollupCalls++;
+    try { return Reflect.apply(original, this, args) as ReturnType<typeof original>; }
+    finally { counts.usageRollupReadBytes += eventReadBytes() - before; }
+  };
+  Object.defineProperty(prototype, "poll", { ...descriptor, value: poll });
+  return { counts, restore: () => { Object.defineProperty(prototype, "poll", descriptor); } };
+}
+
+export function startupReadBreakdown(observation: Pick<ChildObservation, "eventReadBytes" | "seedPasses" | "seedReadBytes" | "eventReadFileCalls" | "abandonedReadBytes" | "usageRollupReadBytes" | "usageRollupCalls">): { auxiliaryReadBytes: number; residualExtraReadBytes: number } {
+  const counts = [observation.eventReadBytes, observation.seedPasses, observation.seedReadBytes, observation.eventReadFileCalls, observation.abandonedReadBytes, observation.usageRollupReadBytes, observation.usageRollupCalls];
+  if (counts.some(value => !Number.isSafeInteger(value) || value < 0)) return refuse();
+  const auxiliaryReadBytes = observation.eventReadBytes - observation.seedReadBytes, residualExtraReadBytes = auxiliaryReadBytes - observation.usageRollupReadBytes;
+  if (!Number.isSafeInteger(residualExtraReadBytes) || residualExtraReadBytes < 0 || observation.seedPasses === 0 && observation.seedReadBytes !== 0 || observation.usageRollupCalls === 0 && observation.usageRollupReadBytes !== 0) return refuse();
+  return { auxiliaryReadBytes, residualExtraReadBytes };
+}
+
 /** Sum every invocation; overwriting the last observation would hide a second seed pass. */
 export function startupSeedCounter(): { metrics: { seedPasses: number; seedReadBytes: number }; observed(value: { readPasses: number; readBytes: number }): void } {
   const metrics = { seedPasses: 0, seedReadBytes: 0 };
@@ -578,41 +604,46 @@ async function measure(root: string): Promise<void> {
   publicStage = "effect-guards";
   const guards = await installStartupEffectDenials(), deny = guards.deny;
   const observer = await installStartupReadObserver(stateDir), io = observer.counts, seedCounter = startupSeedCounter();
-  publicStage = "daemon-import";
-  const { startDaemon, DEFAULT_CONFIG } = await import("../../src/hub/daemon.ts");
-  const { ADAPTERS } = await import("../../src/adapters/registry.ts");
-  publicStage = "copy-rebind";
-  const db = new Database(join(stateDir, "hub.db")); db.run(`PRAGMA busy_timeout = ${LEDGER_BUSY_TIMEOUT_MS}`);
-  const rows = db.query("SELECT project_id FROM delivery_meta LIMIT 2").all() as { project_id: string }[];
-  if (rows.length > 1) { db.close(); return refuse(); }
-  const row = rows[0];
-  // Rebind only the disposable copy's project path; no live descriptor/leadership file is copied or read.
-  db.query("UPDATE delivery_meta SET project_root=?").run(cwd); db.close();
-  publicStage = "daemon-start";
-  const daemon = await startDaemon({ cwd, stateDir, startupSeedObserved: seedCounter.observed, projectId: row?.project_id ?? "synthetic-startup", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
-    agentDrift: async () => [], terminal: () => ({ available: () => ({ ok: false, why: "benchmark effects are refused" }), open: deny }), notifier: deny,
-    memorySync: deny, memorySyncTrigger: () => {}, piiScreen: async () => deny(), webFetchTransport: deny,
-    config: { ...DEFAULT_CONFIG, roster: Object.fromEntries(ADAPTERS.map(definition => [definition.kind, false])),
-      memory: { ...DEFAULT_CONFIG.memory, native: true, enabled: true, sync_interval_min: 0 },
-      pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
-      inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true },
-      recovery: { ...DEFAULT_CONFIG.recovery, auto_resume_after_crash: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
-      specs: { ...DEFAULT_CONFIG.specs, enabled: false }, schedules: [], folder_triggers: [], start: { agents: [] },
-    } });
-  const importAndStartupMs = performance.now() - importedAt;
+  const rollupObserver = await installStartupRollupReadObserver(() => io.eventReadBytes);
+  let daemon: Awaited<ReturnType<typeof import("../../src/hub/daemon.ts").startDaemon>> | undefined;
   try {
+    publicStage = "daemon-import";
+    const { startDaemon, DEFAULT_CONFIG } = await import("../../src/hub/daemon.ts");
+    const { ADAPTERS } = await import("../../src/adapters/registry.ts");
+    publicStage = "copy-rebind";
+    const db = new Database(join(stateDir, "hub.db")); db.run(`PRAGMA busy_timeout = ${LEDGER_BUSY_TIMEOUT_MS}`);
+    const rows = db.query("SELECT project_id FROM delivery_meta LIMIT 2").all() as { project_id: string }[];
+    if (rows.length > 1) { db.close(); return refuse(); }
+    const row = rows[0];
+    // Rebind only the disposable copy's project path; no live descriptor/leadership file is copied or read.
+    db.query("UPDATE delivery_meta SET project_root=?").run(cwd); db.close();
+    publicStage = "daemon-start";
+    daemon = await startDaemon({ cwd, stateDir, startupSeedObserved: seedCounter.observed, projectId: row?.project_id ?? "synthetic-startup", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
+      agentDrift: async () => [], terminal: () => ({ available: () => ({ ok: false, why: "benchmark effects are refused" }), open: deny }), notifier: deny,
+      memorySync: deny, memorySyncTrigger: () => {}, piiScreen: async () => deny(), webFetchTransport: deny,
+      config: { ...DEFAULT_CONFIG, roster: Object.fromEntries(ADAPTERS.map(definition => [definition.kind, false])),
+        memory: { ...DEFAULT_CONFIG.memory, native: true, enabled: true, sync_interval_min: 0 },
+        pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
+        inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true },
+        recovery: { ...DEFAULT_CONFIG.recovery, auto_resume_after_crash: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
+        specs: { ...DEFAULT_CONFIG.specs, enabled: false }, schedules: [], folder_triggers: [], start: { agents: [] },
+      } });
+    const importAndStartupMs = performance.now() - importedAt;
     publicStage = "ready-check";
     if (daemon.bus.peers.size !== 0 || guards.effects() !== 0) return refuse();
     publicStage = "timing-read";
     const lines = readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter(line => line.includes("startup timings ms: "));
     if (lines.length !== 1) return refuse();
     const timing = timingLine(lines[0]!.slice(lines[0]!.indexOf("startup timings ms: ")));
-    await new Promise<void>(done => process.stdout.write(JSON.stringify({ timing, importAndStartupMs, ready: 1, effects: guards.effects(), ...seedCounter.metrics, ...io }) + "\n", () => done()));
+    await new Promise<void>(done => process.stdout.write(JSON.stringify({ timing, importAndStartupMs, ready: 1, effects: guards.effects(), ...seedCounter.metrics, ...io, ...rollupObserver.counts }) + "\n", () => done()));
     publicStage = "daemon-stop";
     await daemon.stop();
     if (guards.effects() !== 0) return refuse();
     process.stdout.write(JSON.stringify({ stopped: 1, effects: guards.effects() }) + "\n");
-  } finally { await daemon.stop(); observer.restore(); guards.restore(); }
+  } finally {
+    try { await daemon?.stop(); } finally { rollupObserver.restore(); }
+    observer.restore(); guards.restore();
+  }
 }
 
 if (import.meta.main) {
