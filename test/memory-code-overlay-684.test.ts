@@ -88,7 +88,7 @@ test("#367 CodeFacts refuses ambiguous or name-only seeds, including empty relat
   const git = (...args: string[]) => { const r = hubGitSync(["-C", repo, ...args], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "fixture", GIT_AUTHOR_EMAIL: "fixture@example.test", GIT_COMMITTER_NAME: "fixture", GIT_COMMITTER_EMAIL: "fixture@example.test" } }); expect(r.status).toBe(0); return r.stdout.trim(); };
   git("init", "-q"); writeFileSync(join(repo, "a.ts"), "export function target() {}\n"); git("add", "."); git("commit", "-qm", "fixture"); const head = git("rev-parse", "HEAD");
   const probe = installFakeRipwire(root, bin, `if(process.argv.includes("--version")){console.log("ripwire 0.6.7");process.exit(0);}const arg=process.argv.find(a=>a.startsWith("--callers=")||a.startsWith("--callees="));const at=arg.indexOf("="),kind=arg.slice(2,at),name=arg.slice(at+1);console.log(JSON.stringify({of:name,defs:name.includes("duplicate")?2:1,...(name.includes("nameOnly")?{via:"name"}:{}),count:0,root:process.cwd(),hop_tested:0,hop_untested:0,graph_ambiguous:0,graph_unresolved:0,counts_floor:true,[kind]:[]}));`);
-  const facts = new CodeFacts({ env: { ...process.env, PATH: `${probe.bin}:${process.env.PATH}` } });
+  const facts = new CodeFacts({ env: { ...process.env, PATH: `${probe.bin}:${process.env.PATH}` }, trace: probe.trace });
   const disarm = probe.watch(15000, "#723 overlay-684");   // names the stall on stderr before the 20 s test timeout would hide it
   probe.markCall();
   try {

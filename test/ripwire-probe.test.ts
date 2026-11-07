@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { foldCalls, freshShimReading, installFakeRipwire, withProbe } from "./helpers/ripwire-probe.ts";
+import { foldCalls, freshShimReading, installFakeRipwire, stepLines, withProbe } from "./helpers/ripwire-probe.ts";
+import { CodeFacts } from "../src/hub/code-facts.ts";
+import { hubGitSync } from "../src/hub/git.ts";
+import { writeFileSync } from "node:fs";
 
 // #723: the diagnostic helper for the two fake-ripwire CodeFacts tests. It must be invisible when nothing goes wrong, leave the fake's output and exit code exactly as written, and, when
 // something does go wrong, name which of the three explanations the evidence supports.
@@ -105,4 +108,36 @@ test("the watchdog is silent when disarmed in time and prints the report once wh
     expect(lines[0]).toContain("late: still running 50 ms in, before the test's own timeout.");
     expect(lines[0]).toContain("[#723 ripwire diagnostics]");
   } finally { console.error = real; }
+}, 30_000);
+
+test("#1261 stepLines names each product-side step in order, its time and outcome, the first call it finished after, and the slowest step; no steps says so", () => {
+  const lines = stepLines([
+    { step: "git ls-tree -rz", ms: 12.4, outcome: "status 0", at: 1100 },
+    { step: "ripwire --version", ms: 4999.6, outcome: "failed, capped or cancelled", at: 6200 },
+    { step: "git worktree remove", ms: 31, outcome: "status 0", at: 6300 },
+  ], 1000);
+  expect(lines[0]).toContain("3 in order of completion");
+  expect(lines[1]).toBe("    #1 git ls-tree -rz: 12 ms, status 0, finished 100 ms after the test's first call");
+  expect(lines[2]).toContain("#2 ripwire --version: 5000 ms, failed, capped or cancelled, finished 5200 ms");
+  expect(lines.at(-1)).toBe("  slowest product-side step: ripwire --version at 5000 ms");
+  expect(stepLines([], 0)[0]).toContain("none recorded");
+  expect(stepLines([{ step: "x", ms: 1, outcome: "y", at: 5 }])[1]).toBe("    #1 x: 1 ms, y");   // no first-call mark: no "after" clause
+});
+
+test("#1261 a real CodeFacts run feeds the probe every git step of tree() and every ripwire launch, the report shows them, and the answers are unchanged by the tap", async () => {
+  const f = rig(`if(process.argv.includes("--version")){console.log("ripwire 0.6.7");process.exit(0);}const arg=process.argv.find(a=>a.startsWith("--callers=")||a.startsWith("--callees="));const at=arg.indexOf("="),kind=arg.slice(2,at),name=arg.slice(at+1);console.log(JSON.stringify({of:name,defs:1,count:0,root:process.cwd(),hop_tested:0,hop_untested:0,graph_ambiguous:0,graph_unresolved:0,counts_floor:true,[kind]:[]}));`);
+  const repo = join(f.root, "repo"); mkdirSync(repo);
+  const git = (...args: string[]) => { const r = hubGitSync(["-C", repo, ...args], { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "f", GIT_AUTHOR_EMAIL: "f@e.test", GIT_COMMITTER_NAME: "f", GIT_COMMITTER_EMAIL: "f@e.test" } }); expect(r.status).toBe(0); return r.stdout.trim(); };
+  git("init", "-q"); writeFileSync(join(repo, "a.ts"), "export function target() {}\n"); git("add", "."); git("commit", "-qm", "f"); const head = git("rev-parse", "HEAD");
+  const env = { ...process.env, PATH: `${f.bin}:${process.env.PATH}` };
+  const traced = new CodeFacts({ env, trace: f.probe.trace }), plain = new CodeFacts({ env });
+  f.probe.markCall();
+  const withTap = await traced.neighbours(repo, head, "a.ts:target"), without = await plain.neighbours(repo, head, "a.ts:target");
+  await traced.close(); await plain.close();
+  expect(withTap).toEqual(without);                                                         // the tap changes no answer
+  expect(withTap).toMatchObject({ state: "known" });
+  const text = await f.probe.diagnose();
+  for (const step of ["git ls-tree", "git worktree add", "git read-tree", "git cat-file --batch", "ripwire --version", "ripwire --callers", "ripwire --callees", "git worktree remove"]) expect(text).toContain(step);
+  expect(text).toContain("slowest product-side step:");
+  expect(text).not.toContain("none recorded");
 }, 30_000);

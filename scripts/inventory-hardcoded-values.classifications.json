@@ -864,6 +864,7 @@
   "src/hub/code-facts.ts:changed:inline:a.base_sha.length<9=9#0": "contract",
   "src/hub/code-facts.ts:end:inline:bytes.indexOf=10#0": "contract",
   "src/hub/code-facts.ts:finish:inline:Bun.sleep=500#0": "operational",
+  "src/hub/code-facts.ts:git:inline:args.slice=2#0": "contract",
   "src/hub/code-facts.ts:killMs:inline:killMs=500#0": "operational",
   "src/hub/code-facts.ts:killMs:inline:killMs=500#1": "operational",
   "src/hub/code-facts.ts:nativeEnv:inline:keys.length>128=128#0": "safety floor",

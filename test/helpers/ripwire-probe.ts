@@ -26,6 +26,11 @@ export interface FixtureProbe {
   bin: string;
   /** Call right before the product call under test: the first call's lead time is measured from here. */
   markCall(): void;
+  /**
+   * #1261: pass as `new CodeFacts({ trace: probe.trace })`. Records every git step of `tree()` and every ripwire launch as the product itself saw it (wall time and outcome), which the
+   * shim and fake marks cannot show: a git call stalled inside the product's own 5 s cap, or a launch the product gave up on. Read-only; it changes no answer, bound or cap.
+   */
+  trace: (step: string, ms: number, outcome: string) => void;
   /** The text to append to a failure message. Measures the fresh-shim pair only now. */
   diagnose(): Promise<string>;
   /** Arms a timer that prints `diagnose()` to stderr at `afterMs`, before the test's own timeout; returns the disarm function (call it in `finally`). Silent when disarmed in time. */
@@ -38,6 +43,19 @@ export function freshShimReading(first: number, second: number): string {
   if (first > 3000 && second >= 1500) return "both runs are slow: runner load or a stalled host";
   if (first < 1500 && second < 1500) return "both runs are fast now: the stall was not in launching a fresh executable; read the recorded calls above (a long shim-to-script gap is Bun's start-up, script-to-output is the fake, a long gap before the shim is the product's own work or the launcher)";
   return "inconclusive: one run between 1.5 s and 3 s";
+}
+
+/**
+ * #1261: the product-side steps, one line each in the order they finished: what ran (a `git` step of `tree()` or a `ripwire` launch), how long the product waited for it and how it ended.
+ * The slowest step is named last, so a stall reads at a glance. Pure, so the report is unit-tested.
+ */
+export function stepLines(steps: readonly { step: string; ms: number; outcome: string; at: number }[], calledAt?: number): string[] {
+  if (!steps.length) return ["  product-side steps (CodeFacts trace): none recorded, so the product never reached a git step or a launch"];
+  const lines = [`  product-side steps (CodeFacts trace), ${steps.length} in order of completion; a git step is capped at 5000 ms and a ripwire launch at 5000 ms by the product:`];
+  for (const [index, entry] of steps.entries()) lines.push(`    #${index + 1} ${entry.step}: ${ms(entry.ms)}, ${entry.outcome}${calledAt !== undefined ? `, finished ${ms(Math.max(0, entry.at - calledAt))} after the test's first call` : ""}`);
+  const slowest = steps.reduce((a, b) => (b.ms > a.ms ? b : a));
+  lines.push(`  slowest product-side step: ${slowest.step} at ${ms(slowest.ms)}`);
+  return lines;
 }
 
 export interface CallMarks { argv: string; shim?: number; script?: number; output?: number; exit?: number }
@@ -87,6 +105,8 @@ ${fakeSource}
   // The warm-up is not a call of the test: delete its marks now, by name, instead of cutting by time (a file mtime is a coarse kernel clock that can lag Date.now() by several ms on Linux, so a time cutoff drops real marks).
   rmSync(log, { force: true }); rmSync(stampDir, { recursive: true, force: true }); mkdirSync(stampDir, { recursive: true });
   let calledAt: number | undefined, diagnosed: string | undefined;
+  const steps: { step: string; ms: number; outcome: string; at: number }[] = [];
+  const trace = (step: string, ms: number, outcome: string) => { if (steps.length < 200) steps.push({ step, ms, outcome, at: Date.now() }); };
 
   const events = async (): Promise<{ event: string; at: number; pid: number | string; argv?: string }[]> => {
     const out: { event: string; at: number; pid: number | string; argv?: string }[] = [];
@@ -106,6 +126,7 @@ ${fakeSource}
       lines.push(`  #${index + 1} ${call.argv || "(unknown args)"}: before-shim ${gap(previousExit, call.shim)} | shim->script (Bun start-up) ${gap(call.shim, call.script)} | script->first output ${gap(call.script, call.output)} | output->exit ${gap(call.output, call.exit)}${call.exit === undefined ? " (no exit mark: it never finished)" : ""}`);
       if (call.exit !== undefined) previousExit = call.exit;
     }
+    lines.push(...stepLines(steps, calledAt));
     lines.push(`  the shim was run once by path ${ms(firstExecAt - wroteAt)} after it was written, before the test measured anything`);
     try {
       const probeDir = join(root, "probe-exec");
@@ -128,7 +149,7 @@ ${fakeSource}
     timer.unref?.();
     return () => clearTimeout(timer);
   };
-  return { bin, markCall: () => { calledAt = Date.now(); }, diagnose, watch };
+  return { bin, trace, markCall: () => { calledAt = Date.now(); }, diagnose, watch };
 }
 
 /**
