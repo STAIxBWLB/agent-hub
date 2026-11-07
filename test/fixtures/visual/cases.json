@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "provenance": {
+    "ownership": "hub-owned candidate, not an upstream shared visual fixture",
+    "package": "@staix/agent-console",
+    "version": "0.1.3",
+    "upstreamRef": "018ad1a8d23cffb961602bb5c5be4b63d9dc6ced",
+    "sources": {
+      "src/contract.ts": "e1d636a73a365009a9aef39fbcff741c15aff381",
+      "src/conformance.ts": "9c997a77c5915cc2adec1d68ac2fbc49bd5be7d2",
+      "shell/shell.js": "c538e51a82ca461334a548558a818dacb6764ef5",
+      "test/shell.test.ts": "fbdd4dc8c34ac09236bd4f1db6b0045f52d08882"
+    },
+    "scope": "Mermaid/table/beforeAfter examples reproduce the upstream shell test payloads. Comparison adapts its over-bound clipping example to ten points. Additional hub cases test stricter admission only. Published conformance provides tableColumnProblems, not a VisualPayload validator or shared visual fixture. No renderer/native qualification is claimed."
+  },
+  "valid": [
+    { "id": "acon-mermaid", "payload": { "kind": "mermaid", "source": "flowchart LR\n  A[Start] --> B{Ok?}\n  B -->|yes| C[Ship]", "title": "Release flow" } },
+    { "id": "acon-comparison-adapted", "payload": { "kind": "comparison", "title": "Pick a store", "options": [ { "title": "SQLite <b>", "summary": "One file", "pros": ["simple"], "cons": ["one writer"], "recommended": true }, { "title": "Postgres", "pros": ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"] } ] } },
+    { "id": "acon-table", "payload": { "kind": "table", "caption": "Costs", "columns": [ { "key": "a", "label": "A" } ], "rows": [ { "a": "<i>x</i>" } ] } },
+    { "id": "acon-before-after", "payload": { "kind": "beforeAfter", "caption": "Logo", "before": { "text": "<svg onload=alert(1)>" }, "after": { "asset": "figure.png", "alt": "New logo" } } },
+    { "id": "hub-extra-row-keys-preserved", "payload": { "kind": "table", "columns": [ { "key": "a", "label": "A", "align": "end", "format": "percent" } ], "rows": [ { "a": 38.5, "notDisplayed": "still screened and preserved", "__proto__": "ordinary data" }, {} ] } }
+  ],
+  "invalid": [
+    { "id": "unknown-kind", "payload": { "kind": "chart", "source": "graph TD" } },
+    { "id": "mermaid-bad-header", "payload": { "kind": "mermaid", "source": "graphical fiction" } },
+    { "id": "comparison-one-option", "payload": { "kind": "comparison", "options": [ { "title": "only" } ] } },
+    { "id": "column-bad-enum", "payload": { "kind": "table", "columns": [ { "key": "a", "label": "A", "align": "center" } ], "rows": [] } },
+    { "id": "column-duplicate", "payload": { "kind": "table", "columns": [ { "key": "a", "label": "A" }, { "key": "a", "label": "Again" } ], "rows": [] } },
+    { "id": "asset-empty", "payload": { "kind": "beforeAfter", "before": { "text": "a" }, "after": { "asset": "", "alt": "x" } } }
+  ]
+}
