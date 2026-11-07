@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abandonedSizes, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, privateStartupSandboxProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { abandonedSizes, backupStartupDatabase, benchmarkFailureStage, BENCHMARK_STAGES, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, privateStartupSandboxProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { STARTUP_PHASES } from "../src/hub/startup-timing.ts";
 
@@ -120,6 +120,35 @@ test("numeric profile and timing projection reject content or missing fields", (
   expect(timingLine(TIMING)).toBe(TIMING);
   expect(() => timingLine(TIMING + " private=1")).toThrow();
   expect(() => timingLine(TIMING.replace("schema=0", "schema=private"))).toThrow();
+});
+
+test("online read-only WAL source backup is immediately readable by Bun without destination sidecars", async () => {
+  const root = directory(), env = isolatedStartupEnvironment(root), source = join(root, "source.sqlite"), destination = join(root, "copy.sqlite");
+  const writer = new Database(source);
+  try {
+    writer.run("PRAGMA journal_mode=WAL");
+    writer.run("CREATE TABLE tasks(title TEXT,detail TEXT,history TEXT)");
+    writer.run("INSERT INTO tasks VALUES ('fixture','public','[{}]')");
+    expect(existsSync(source + "-wal")).toBe(true);
+    await backupStartupDatabase(source, destination, env, 10_000);
+    expect(existsSync(destination + "-wal")).toBe(false);
+    expect(existsSync(destination + "-shm")).toBe(false);
+    // First destination open is the actual Bun readonly profile reader, not a Python repair/read.
+    expect(databaseProfile(destination)).toMatchObject({ taskRows: 1, taskHistoryEntries: 1, taskTextBytes: 13 });
+    const reader = new Database(destination, { readonly: true });
+    try { expect(reader.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "delete" }); } finally { reader.close(); }
+    expect(writer.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
+    expect(writer.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 1 });
+  } finally { writer.close(); }
+}, 20_000);
+
+test("failure diagnostics accept only closed numeric stages and no child prose or path", () => {
+  const stage = BENCHMARK_STAGES.indexOf("profile");
+  expect(benchmarkFailureStage({ failed: 1, stage })).toBe(stage);
+  expect(benchmarkFailureStage({ failed: 1, stage, error: "private body" })).toBeUndefined();
+  expect(benchmarkFailureStage({ failed: 1, stage: "profile" })).toBeUndefined();
+  expect(benchmarkFailureStage({ failed: 1, stage: -1 })).toBeUndefined();
+  expect(benchmarkFailureStage({ failed: 1, stage: BENCHMARK_STAGES.length })).toBeUndefined();
 });
 
 test("database aggregates count every non-NULL field independently and empty tables as zero", () => {

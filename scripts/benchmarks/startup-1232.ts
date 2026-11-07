@@ -29,7 +29,16 @@ export interface BenchmarkPorts {
   project?: (root: string, env: NodeJS.ProcessEnv) => void;
 }
 
-let publicStage = "input";
+export const BENCHMARK_STAGES = ["input", "mac-guard", "attempt-reserved", "project", "backup", "event-copy", "abandoned-copy", "profile", "child", "effect-guards", "daemon-import", "copy-rebind", "daemon-start", "ready-check", "timing-read", "daemon-stop", "seed", "seed-imports", "seed-board", "seed-journal", "seed-payload", "seed-events", "seed-abandoned", "copy"] as const;
+let publicStage: typeof BENCHMARK_STAGES[number] = "input";
+export function benchmarkFailureStage(value: unknown): number | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).sort().join() === "failed,stage" && row.failed === 1 && Number.isInteger(row.stage) && Number(row.stage) >= 0 && Number(row.stage) < BENCHMARK_STAGES.length ? Number(row.stage) : undefined;
+}
+class BenchmarkStageFailure extends Error {
+  constructor(readonly stage: number) { super("startup benchmark did not complete; inspect the numeric failure stage before another authorized attempt"); }
+}
 function publicDebug(enabled: boolean, details: Record<string, unknown>): void {
   if (enabled) process.stderr.write(JSON.stringify({ publicSyntheticDebug: 1, stage: publicStage, ...details }) + "\n");
 }
@@ -114,11 +123,15 @@ async function ownedCommand(argv: string[], cwd: string, env: NodeJS.ProcessEnv,
   const child = spawn(argv[0]!, argv.slice(1), { cwd, env, detached: true, stdio: ["pipe", "pipe", debug ? "pipe" : "ignore"] }); trackGroup(child);
   let stderr = "";
   child.stderr?.on("data", chunk => { if (Buffer.byteLength(stderr) + chunk.length <= OUTPUT_BYTES) stderr += String(chunk); });
-  let output = "", pending = "", overflow = false;
+  let output = "", pending = "", overflow = false, childFailureStage: number | undefined;
   child.stdout!.on("data", chunk => {
     if (Buffer.byteLength(output) + chunk.length > OUTPUT_BYTES) { overflow = true; return; }
     output += String(chunk); pending += String(chunk);
-    while (pending.includes("\n")) { const cut = pending.indexOf("\n"); onLine?.(pending.slice(0, cut)); pending = pending.slice(cut + 1); }
+    while (pending.includes("\n")) {
+      const cut = pending.indexOf("\n"), line = pending.slice(0, cut);
+      try { childFailureStage = benchmarkFailureStage(JSON.parse(line)) ?? childFailureStage; } catch { /* No unclassified child output becomes a diagnostic. */ }
+      onLine?.(line); pending = pending.slice(cut + 1);
+    }
   });
   const drained = Promise.all([new Promise<void>(done => child.stdout!.once("end", done)),
     child.stderr ? new Promise<void>(done => child.stderr!.once("end", done)) : Promise.resolve()]);
@@ -134,7 +147,7 @@ async function ownedCommand(argv: string[], cwd: string, env: NodeJS.ProcessEnv,
     const code = await Promise.race([exited, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("bounded benchmark child did not finish; inspect its numeric stage before retrying")), timeoutMs); })]);
     clearTimeout(timer);
     await Promise.race([drained, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("benchmark output did not settle; retain the fixture and inspect process ownership")), timeoutMs); })]);
-    if (code !== 0 || overflow) { publicDebug(debug, { boundary: "command-exit", executable: basename(argv[0]!), exitCode: code, overflow: Number(overflow), stderr }); return refuse(); }
+    if (code !== 0 || overflow) { publicDebug(debug, { boundary: "command-exit", executable: basename(argv[0]!), exitCode: code, overflow: Number(overflow), stderr }); throw new BenchmarkStageFailure(childFailureStage ?? BENCHMARK_STAGES.indexOf(publicStage)); }
     return output;
   } catch (error) { publicDebug(debug, { boundary: "command-failed", executable: basename(argv[0]!), stderr, ...publicError(error) }); throw error; } finally {
     clearTimeout(timer);
@@ -146,12 +159,17 @@ const BACKUP = `import pathlib,sqlite3,sys
 source,dest=sys.argv[1:]
 a=sqlite3.connect(pathlib.Path(source).resolve().as_uri()+'?mode=ro',uri=True,timeout=3)
 b=sqlite3.connect(dest,timeout=3)
-try:a.backup(b)
+try:
+ a.backup(b)
+ b.commit()
+ assert b.execute('PRAGMA journal_mode=DELETE').fetchone()[0]=='delete'
+ b.commit()
 finally:b.close();a.close()
 `;
-async function backup(source: string, destination: string, env: NodeJS.ProcessEnv): Promise<void> {
+export async function backupStartupDatabase(source: string, destination: string, env: NodeJS.ProcessEnv, timeoutMs = SAMPLE_TIMEOUT_MS): Promise<void> {
+  publicStage = "backup";
   const python = Bun.which("python3", { PATH: env.PATH }); if (!python) return refuse();
-  await ownedCommand([python, "-I", "-c", BACKUP, source, destination], dirname(destination), env);
+  await ownedCommand([python, "-I", "-c", BACKUP, source, destination], dirname(destination), env, undefined, undefined, timeoutMs);
   chmodSync(destination, 0o600);
 }
 export function databaseProfile(file: string): Pick<StartupProfile, "dbBytes" | "taskRows" | "taskHistoryEntries" | "taskTextBytes" | "deliveryRows" | "deliveryPayloadBytes"> {
@@ -173,8 +191,11 @@ async function prepareState(source: string | undefined, destination: string, pro
     await ownedCommand([process.execPath, SCRIPT, "--seed", request], dirname(destination), env);
   } else {
     const sourceDb = join(source, "hub.db"); if (!lstatSync(sourceDb).isFile()) return refuse();
-    await backup(sourceDb, join(destination, "hub.db"), env);
+    publicStage = "backup";
+    await backupStartupDatabase(sourceDb, join(destination, "hub.db"), env);
+    publicStage = "event-copy";
     copyEventPrefix(join(source, "events.jsonl"), join(destination, "events.jsonl"));
+    publicStage = "abandoned-copy";
     for (const name of readdirSync(source)) {
       if (!/^restart\.abandoned\.[a-zA-Z0-9_.-]+\.json$/.test(name)) continue;
       const original = join(source, name), before = lstatSync(original);
@@ -193,6 +214,7 @@ async function prepareState(source: string | undefined, destination: string, pro
       chmodSync(join(destination, name), 0o600);
     }
   }
+  publicStage = "profile";
   const events = readFileSync(join(destination, "events.jsonl"));
   const abandoned = readdirSync(destination).filter(name => /^restart\.abandoned\./.test(name)).map(name => statSync(join(destination, name)).size);
   return { ...databaseProfile(join(destination, "hub.db")), eventBytes: events.length, eventLines: events.reduce((n, byte) => n + Number(byte === 10), 0),
@@ -212,6 +234,7 @@ export function privateStartupSandboxProfile(typedState: string, canonicalState:
     ...[...new Set([typedState, canonicalState])].map(value => `(deny file-read* file-write* (subpath ${sbplString(value)}))`), ""].join("\n");
 }
 export async function probePrivateStartupGuard(typedState: string): Promise<{ profile: string; canonicalState: string; macGuard: 1 }> {
+  publicStage = "mac-guard";
   if (process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec")) return refuse();
   const canonicalState = realPath(typedState), profile = privateStartupSandboxProfile(typedState, canonicalState);
   const root = mkdtempSync(join(tmpdir(), "ahub-startup-1232-mac-guard-")); chmodSync(root, 0o700);
@@ -241,10 +264,12 @@ async function child(root: string, env: NodeJS.ProcessEnv, sandboxProfile?: stri
   return { ...ready, wallMs, stopped: true, effects: 0 };
 }
 export async function runStartupBenchmark(options: BenchmarkOptions, ports: BenchmarkPorts = {}): Promise<Record<string, string | number>[]> {
+  publicStage = "input";
   if (!Number.isInteger(options.samples) || options.samples < 1 || options.samples > MAX_PRIVATE_SAMPLES || options.mode === "private" && process.platform !== "darwin") return refuse();
   if (options.mode === "private" && Object.keys(ports).length !== 0) return refuse();
   const profile = numericProfile(options.profile ?? REPRESENTATIVE_PROFILE), results: Record<string, string | number>[] = [];
   if (options.mode === "private" && (!options.privateState || !lstatSync(options.privateState).isDirectory())) return refuse();
+  publicStage = "mac-guard";
   const privateGuard = options.mode === "private" ? await probePrivateStartupGuard(options.privateState!) : undefined;
   const baseline = options.mode === "synthetic" ? mkdtempSync(join(tmpdir(), "ahub-startup-1232-baseline-")) : undefined;
   let baselineStopped = false;
@@ -255,6 +280,7 @@ export async function runStartupBenchmark(options: BenchmarkOptions, ports: Benc
       await (ports.prepare ?? prepareState)(undefined, state, profile, env); baselineStopped = true;
     }
     for (let sample = 0; sample < options.samples; sample++) {
+      publicStage = "attempt-reserved";
       const attempt = options.mode === "private" ? reservePrivateAttempt(join(tmpdir(), "ahub-startup-1232-attempts.sqlite")) : sample + 1;
       const root = mkdtempSync(join(tmpdir(), "ahub-startup-1232-")); chmodSync(root, 0o700);
       let stopped = true;
@@ -582,5 +608,6 @@ if (import.meta.main) {
   } catch (error) {
     const publicOnly = args.includes("--synthetic") && !args.includes("--private-state") || ["--seed", "--child", "--probe-child"].includes(args[0] ?? "") && process.env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1";
     publicDebug(publicOnly, publicError(error));
+    process.stdout.write(JSON.stringify({ failed: 1, stage: error instanceof BenchmarkStageFailure ? error.stage : BENCHMARK_STAGES.indexOf(publicStage) }) + "\n");
     process.stderr.write("startup benchmark did not complete; inspect its isolated configuration and numeric profile before another authorized attempt\n"); process.exitCode = 1; }
 }
