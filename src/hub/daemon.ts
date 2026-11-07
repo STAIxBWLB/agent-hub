@@ -208,6 +208,7 @@ import { ClaudeTodoSource, DoingTracker, readAiTitle, DOING_STUB, SESSION_TITLE_
 import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
+import { readEvidence } from "./research-record.ts";
 import { parseResearchRunners, type RegisteredRunnerV1 } from "./research-runner.ts";
 import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
 import { projectChain } from "@staix/agent-mem";
@@ -1255,7 +1256,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (pending) clearTimeout(pending.timer);
     researchPending.delete(taskId);
     try {
-      appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }).filter((r) => r.task === taskId));
+      // #1277: the board and journal are read through a read-only handle, so the record carries its v2 blocks; the family lookup is the project's own (instances resolve there).
+      const evidence = { ...readEvidence(opts.stateDir, projectId), familyOf: (peer: string) => adapterCatalog.familyOf(peer, declarations) };
+      appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }, evidence).filter((r) => r.task === taskId));
     } catch (error) {
       if (!researchLogged) log(`research record not written: ${(error as Error).message}`);
       researchLogged = true;
@@ -3187,7 +3190,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if ((h.event === "proposed" || h.event === "backlog pulled" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(t.planningRevision ? { release: t.release ?? null, priority: t.priority ?? null, plannedStart: t.plannedStart ?? null, due: t.due ?? null } : {}), ...(h.reason ? { reason: h.reason } : {}) });
-    if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
+    // #1277 AC6: a cancelled task is a terminal task too, and the guarded merge writes its receipt after the approval, so its result completes the record's merge block.
+    if (config.research.enabled && ((t.state === "approved" && (h.event === "approved" || h.event === "done" || h.event === "merge result")) || (t.state === "cancelled" && h.event === "cancelled"))) recordResearch(t.id);
     if (memoryStore && (t.state === "in_progress" || h.event === "done") && !tasks.isPii(t)) renewLeases(t);
     if ((h.event === "proposed" || h.event === "backlog pulled") && projections.enabled && turnLog) {
       const created = taskProposalAt(t);

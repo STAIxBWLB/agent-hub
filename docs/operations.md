@@ -1730,13 +1730,15 @@ redistributed (rules: [events](events.md#per-task-usage-reports)).
 ## Research records
 
 With `"research": { "enabled": true }` in `.agenthub/config.json` (off by default), the hub keeps one record per
-approved task in `~/.agenthub/research/`, shared by every project that opts in: outcome, review rounds, rework, failed
-checks, tokens and time per peer and model, never task or message text ([schema](research.md)).
+task that reaches a terminal state (approved or cancelled) in `~/.agenthub/research/`, shared by every project that opts in:
+outcome, review rounds and findings, delivery and merge figures, rework, failed checks, tokens and time per peer and model,
+never task or message text ([schema](research.md)). Unknown values are null and counted, never zero.
 
 ```bash
 ahub research --since 30d          # success, first-pass, rework and check-failure rates; tokens and wall time per task
 ahub research --all --json         # every opted-in project on this machine
 ahub research export --format csv  # the records, for your own analysis
+ahub research export --dataset ~/research-out [--all]  # per-project tasks.jsonl, manifest.json, quality.json: family names only, to a directory in your home outside every project
 ahub research backfill             # build this project's records once from events.jsonl
 ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, incomplete, wrong, abandoned)
 ```
