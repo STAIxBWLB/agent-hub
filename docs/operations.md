@@ -3617,7 +3617,7 @@ the containment boundary, not fresh HOME or process-group emptiness.
 The output directory is held open before installation. Exclusive, no-follow
 writes are relative to that handle, so replacing an ancestor cannot redirect the
 receipt. The receipt excludes raw native stdout/stderr and private prefix paths.
-No PR is created by T1. The [T1b producer report](verification/2026-11-07-compat-receipt-producers-1248.md) maps the promoted Kimi and Qwen modules to their original receipts. Publisher integration and the missing Jcode producer remain follow-ups.
+No PR is created by T1. The [T1b producer report](verification/2026-11-07-compat-receipt-producers-1248.md) maps the promoted Kimi and Qwen modules to their original receipts. Publisher integration is T2. The [Jcode reconstruction](verification/2026-11-07-jcode-receipt-reconstruction-1248.md) retains its failed native control legs and unverified Mac qualification.
 
 
 ## Upgrade and crash recovery
