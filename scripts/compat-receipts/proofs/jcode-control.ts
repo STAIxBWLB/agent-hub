@@ -1,7 +1,37 @@
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCompatReceipt } from "../../compat-receipt.ts";
-import { ReceiptError, type ManifestEntry, type ReceiptSummary } from "../types.ts";
+import { runManifestProofs } from "../proofs.ts";
+import { ReceiptError, type ManifestEntry, type ProofContext, type ProofResults, type ReceiptSummary } from "../types.ts";
+
+/** Diagnostics are closed observations, never admission evidence or native output. */
+async function controlProofs(context: ProofContext): Promise<ProofResults> {
+  const result = await runManifestProofs(context);
+  let fd: number | undefined;
+  try {
+    fd = openSync(join(context.root, "jcode-proof-observations.jsonl"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.nlink !== 1 || before.uid !== process.getuid?.() || before.size > Math.min(context.limits.outputBytes, 16 * 1024)) throw new Error("diagnostic refused");
+    const text = readFileSync(fd, "utf8"), after = fstatSync(fd);
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error("diagnostic changed");
+    const lines = text.trim().split("\n");
+    if (lines.length > 64) throw new Error("diagnostic bound");
+    const steps = new Set(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "telemetry-walk"]);
+    const causes = new Set(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io"]);
+    const roots = new Set(["none", "home", "jcode-home"]);
+    const records = lines.map(line => JSON.parse(line));
+    for (const value of records) {
+      if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "cause,count,passed,rootClass,step"
+        || !steps.has(value.step) || !causes.has(value.cause) || !roots.has(value.rootClass) || typeof value.passed !== "boolean"
+        || !Number.isSafeInteger(value.count) || value.count < 0 || value.count > context.limits.archiveEntries + 1) throw new Error("diagnostic shape");
+    }
+    process.stderr.write(JSON.stringify({ jcodeControlObservations: records }) + "\n");
+  } catch {
+    process.stderr.write("Jcode control diagnostics unavailable; next: inspect the closed checkpoint producer before another control.\n");
+  } finally { if (fd !== undefined) closeSync(fd); }
+  return result;
+}
 
 /** Portable reconstruction control only; the admission manifest still requires macOS arm64. */
 export async function runJcodeControl(out: string): Promise<ReceiptSummary> {
@@ -18,7 +48,7 @@ export async function runJcodeControl(out: string): Promise<ReceiptSummary> {
       ? { ...leg, category: "linux-ci", runnerOS: ["linux"] }
       : leg),
   };
-  return runCompatReceipt({ id: "jcode", version: "0.99.1", out, disposableRunner: true }, { entry });
+  return runCompatReceipt({ id: "jcode", version: "0.99.1", out, disposableRunner: true }, { entry, proofs: controlProofs });
 }
 
 if (import.meta.main) {
