@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, openSync, readFileSync, readSync, readdirSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { planCompatPublish, type CompatPublishAction, type CompatPublishPlan, type CompatPullRequest, type PublishManifestEntry } from "./compat-publish.ts";
 import { patchCompatSource, renderPublishedReceipt } from "./compat-publish-files.ts";
@@ -54,9 +54,11 @@ function read(file: string, cap: number): Buffer {
   try {
     const before = fstatSync(fd);
     if (!before.isFile() || before.nlink !== 1 || before.size > cap || process.getuid && before.uid !== process.getuid()) fail("artifact-file");
-    const bytes = readFileSync(fd), after = fstatSync(fd);
-    if (bytes.length !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail("artifact-race");
-    return bytes;
+    const bytes = Buffer.alloc(before.size + 1); let size = 0;
+    while (size < bytes.length) { const count = readSync(fd, bytes, size, bytes.length - size, size); if (!count) break; size += count; }
+    const after = fstatSync(fd);
+    if (size !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) fail("artifact-race");
+    return bytes.subarray(0, size);
   } finally { closeSync(fd); }
 }
 function parse(bytes: Buffer): unknown { try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { return fail("json"); } }
@@ -324,6 +326,7 @@ export async function runCompatPublisher(input: CompatPublisherInput, api: Githu
 export function ghRestAPI(): GithubAPI {
   return { request(method, route, body) {
     if (!/^\/repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/|$)/.test(route) || /[\p{Cc}\p{Cf}]/u.test(route)) return Promise.reject(new CompatPublisherError("route"));
+    if (!process.env.GITHUB_TOKEN) return Promise.reject(new CompatPublisherError("workflow-token-required"));
     return new Promise((accept, reject) => {
       const args = ["api", "--include", "--method", method, route, ...(body === undefined ? [] : ["--input", "-"])];
       const child = spawn("gh", args, { env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, GH_HOST: "github.com", GH_TOKEN: process.env.GITHUB_TOKEN, LANG: "C", LC_ALL: "C" }, stdio: ["pipe", "pipe", "ignore"] });
@@ -362,7 +365,12 @@ if (import.meta.main) {
       if (dryRun) console.log(merged);
       else {
         const fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        try { const info = fstatSync(fd); if (!info.isFile() || info.nlink !== 1 || readFileSync(fd).toString("utf8") !== original) fail("report-moved"); ftruncateSync(fd, 0); writeFileSync(fd, merged); } finally { closeSync(fd); }
+        try {
+          const info = fstatSync(fd); if (!info.isFile() || info.nlink !== 1 || info.size > JSON_CAP || readFileSync(fd).toString("utf8") !== original) fail("report-moved");
+          const bytes = Buffer.from(merged); let offset = 0;
+          while (offset < bytes.length) { const count = writeSync(fd, bytes, offset, bytes.length - offset, offset); if (!count) fail("report-write"); offset += count; }
+          ftruncateSync(fd, bytes.length);
+        } finally { closeSync(fd); }
       }
     } else {
       if (!fields["--prepared"] || !fields["--source-base"]) fail("arguments");
