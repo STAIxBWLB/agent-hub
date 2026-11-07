@@ -3583,10 +3583,11 @@ used as an execution-time proof.
 | Proof family | T1 can run | Explicit not-run work |
 | --- | --- | --- |
 | Codex reviewer | Committed production prepare, actual metadata/native-canary checks and launch configuration assertions | Model-backed hub call, separate control artifact and human source review |
-| Kimi reviewer | Committed prepare, generated private config/inventory, environment decoy and host broker refusals | Native loop, Write positive/negative controls, network guard and native-child cleanup producer |
+| Kimi reviewer | Committed prepare/inventory/broker plus promoted native two-tool loop, Write positive/negative controls, preload guard and producer group cleanup | Human source review; unsupported native platform |
 | Claude implementer | Committed Write/Bash/rewrite and host-wrapper producer groups | Human upstream-impact review; unsupported launcher forms |
 | Pi | Artifact acquisition only in this core | Historical top-level producer needs import-safe/candidate-version extraction |
-| Qwen ACP and Jcode | Artifact acquisition only in this core | Producer not committed; see follow-up task |
+| Qwen ACP | Promoted ACP identity/session/mapped-mode and actual published permission-handler producers, preload controls and group cleanup | Human lifecycle/source review; Linux does not replace required macOS arm64 |
+| Jcode | Artifact acquisition only | The 0.99.1 producer was not retained; reconstruction is a separate task |
 | agy and qwen-dual | Policy and unavailable/manual-leg reporting | No public agy installer; account/model/TUI or unspecified-platform legs |
 
 Every manifest leg appears as pass, fail or not-run with a cause and next step.
@@ -3616,8 +3617,7 @@ the containment boundary, not fresh HOME or process-group emptiness.
 The output directory is held open before installation. Exclusive, no-follow
 writes are relative to that handle, so replacing an ancestor cannot redirect the
 receipt. The receipt excludes raw native stdout/stderr and private prefix paths.
-No PR is created by T1. Publisher integration and producer promotions are
-follow-ups.
+No PR is created by T1. The [T1b producer report](verification/2026-11-07-compat-receipt-producers-1248.md) maps the promoted Kimi and Qwen modules to their original receipts. Publisher integration and the missing Jcode producer remain follow-ups.
 
 
 ## Upgrade and crash recovery
