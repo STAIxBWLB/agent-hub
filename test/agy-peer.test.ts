@@ -81,6 +81,15 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
     writeFileSync(transcript, JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "complete" }) + "\n");
     expect((await facts("Stop", { fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
     await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    // #1280: terminal non-normal Stop reasons (USER_CANCELED, ERROR, MAX_INVOCATIONS) with fullyIdle=true return agy to idle without a new completion row.
+    for (const reason of ["USER_CANCELED", "ERROR", "MAX_INVOCATIONS"] as const) {
+      expect((await facts("PreInvocation", { invocationNum: 0 })).ok).toBe(true);
+      expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
+      expect((await facts("Stop", { fullyIdle: false, terminationReason: reason })).ok).toBe(false);
+      expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
+      expect((await facts("Stop", { fullyIdle: true, terminationReason: reason })).ok).toBe(true);
+      expect(daemon.bus.peers.get("agy")?.state).toBe("idle");
+    }
     const removed = await person.request({ t: "settings_set", key: "roster.agy", value: false, confirm: "agy" });
     expect(removed).toMatchObject({ ok: true });
     expect((await person.request({ t: "native_hook_launch", op: "end", peer: "agy", launchId: admission.launchId })).ok).toBe(true);

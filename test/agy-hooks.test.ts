@@ -91,3 +91,33 @@ test("agy transcript readback recovers a complete final row beyond the initial 6
     expect(readAgyTranscript(session, file).completion).toBeUndefined();
   } finally { if (old === undefined) delete process.env.HOME; else process.env.HOME = old; rmSync(root, { recursive: true, force: true }); }
 });
+
+test("agy transcript readback supports incremental sinceOffset ack scans and unchanged stat short-circuit (#1280)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-agy-inc-")), old = process.env.HOME;
+  process.env.HOME = root;
+  const directory = join(root, ".gemini/antigravity-cli/brain", session, ".system_generated/logs"), file = join(directory, "transcript_full.jsonl");
+  mkdirSync(directory, { recursive: true });
+  try {
+    const first = JSON.stringify({ step_index: 1, source: "SYSTEM_SDK", type: "EPHEMERAL_MESSAGE", status: "DONE", content: "agent-hub facts [first-fact]" }) + "\n"
+      + JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "done" }) + "\n";
+    writeFileSync(file, first);
+    const base = readAgyTranscript(session, file);
+    expect(base.factIds).toEqual(["first-fact"]);
+    expect(base.completion?.index).toBe(2);
+    expect(typeof base.size).toBe("number");
+    expect(typeof base.mtimeMs).toBe("number");
+    // Unchanged stat returns immediately without re-reading rows or completion.
+    const cached = readAgyTranscript(session, file, { unchanged: { size: base.size!, mtimeMs: base.mtimeMs! } });
+    expect(cached).toEqual({ factIds: [], size: base.size, mtimeMs: base.mtimeMs, unchanged: true });
+    // Incremental ack scan at EOF reads nothing.
+    expect(readAgyTranscript(session, file, { completion: false, sinceOffset: base.size })).toEqual({ factIds: [], size: base.size, mtimeMs: base.mtimeMs });
+    // Appending a new ephemeral message after sinceOffset scans only the appended slice and skips completion hashing.
+    const second = JSON.stringify({ step_index: 3, source: "SYSTEM_SDK", type: "EPHEMERAL_MESSAGE", status: "DONE", content: "agent-hub facts [second-fact]" }) + "\n"
+      + JSON.stringify({ step_index: 4, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "done again" }) + "\n";
+    writeFileSync(file, first + second);
+    const inc = readAgyTranscript(session, file, { completion: false, sinceOffset: base.size });
+    expect(inc.factIds).toEqual(["second-fact"]);
+    expect(inc.completion).toBeUndefined();
+    expect(inc.size).toBe(Buffer.byteLength(first + second));
+  } finally { if (old === undefined) delete process.env.HOME; else process.env.HOME = old; rmSync(root, { recursive: true, force: true }); }
+});

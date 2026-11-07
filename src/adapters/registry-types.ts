@@ -138,15 +138,23 @@ export interface NativeFactsInput {
   fullyIdle?: boolean;
   terminationReason?: string;
 }
+export interface NativeFactsReadOptions {
+  completion?: boolean;
+  sinceOffset?: number;
+  unchanged?: { size: number; mtimeMs: number };
+}
 export interface NativeFactsTranscript {
   completion?: { id: string; index: number };
   factIds: string[];
+  size?: number;
+  mtimeMs?: number;
+  unchanged?: boolean;
 }
 /** Fixed native codec and bounded readback, never supplied by project configuration. */
 export interface NativeFactsPort {
   decode(event: string, input: unknown): NativeFactsInput | undefined;
   encode(event: string, text?: string): Record<string, unknown> | undefined;
-  read(session: string, transcript: string): NativeFactsTranscript;
+  read(session: string, transcript: string, options?: NativeFactsReadOptions): NativeFactsTranscript;
 }
 
 /** Only the frozen native seams are extensible; a definition cannot add an arbitrary daemon callback. */

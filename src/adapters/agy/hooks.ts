@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "
 import { homedir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { createHash } from "node:crypto";
-import type { NativeFactsInput, NativeFactsPort, NativeFactsTranscript } from "../registry-types.ts";
+import type { NativeFactsInput, NativeFactsPort, NativeFactsReadOptions, NativeFactsTranscript } from "../registry-types.ts";
 
 const EVENTS = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"] as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -40,7 +40,7 @@ export function encodeAgyHook(event: string, text?: string): Record<string, unkn
 }
 
 /** Only native-generated rows under the exact session cache path count as readback/completion evidence. */
-export function readAgyTranscript(session: string, transcript: string): NativeFactsTranscript {
+export function readAgyTranscript(session: string, transcript: string, options?: NativeFactsReadOptions): NativeFactsTranscript {
   const empty: NativeFactsTranscript = { factIds: [] };
   if (!UUID.test(session)) return empty;
   const home = process.env.HOME ?? homedir();
@@ -53,11 +53,14 @@ export function readAgyTranscript(session: string, transcript: string): NativeFa
     fd = openSync(transcript, constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1) return empty;
+    if (options?.unchanged && stat.size === options.unchanged.size && stat.mtimeMs === options.unchanged.mtimeMs) return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, unchanged: true };
+    const resumeAt = options?.completion === false && options.sinceOffset !== undefined && options.sinceOffset >= 0 && options.sinceOffset <= stat.size ? options.sinceOffset : 0;
+    if (options?.completion === false && resumeAt === stat.size) return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs };
     // ponytail: completion lookback is capped at 4 MiB (as for Claude). A larger final row is unverified;
     // upgrade to a native completion cursor if that ceiling becomes insufficient.
     const cap = 4 * 1024 * 1024;
     for (let window = 64 * 1024; ; window = Math.min(cap, window * 2)) {
-      const start = Math.max(0, stat.size - window), from = start > 0 ? start - 1 : 0;
+      const start = Math.max(resumeAt, stat.size - window), from = start > 0 ? start - 1 : 0;
       const buffer = Buffer.alloc(stat.size - from);
       let bytes = 0;
       while (bytes < buffer.length) {
@@ -68,17 +71,17 @@ export function readAgyTranscript(session: string, transcript: string): NativeFa
       const lines = buffer.subarray(0, bytes).toString("utf8").split("\n");
       // The preceding byte distinguishes a cut inside a row from a row beginning exactly at the window.
       if (start) lines.shift();
-      const out: NativeFactsTranscript = { factIds: [] };
+      const out: NativeFactsTranscript = { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs };
       for (const line of lines) {
         let row: unknown; try { row = JSON.parse(line); } catch { continue; }
         if (!record(row) || row.status !== "DONE") continue;
         if (row.source === "SYSTEM_SDK" && row.type === "EPHEMERAL_MESSAGE" && typeof row.content === "string") {
           for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g)) out.factIds.push(match[1]!);
         }
-        if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index)
+        if (options?.completion !== false && row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index)
           && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0)) out.completion = { id: createHash("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index as number };
       }
-      if (out.completion || start === 0 || window === cap) return out;
+      if (options?.completion === false || out.completion || start === resumeAt || window === cap) return out;
     }
   } catch { return empty; } finally { if (fd !== undefined) closeSync(fd); }
 }
