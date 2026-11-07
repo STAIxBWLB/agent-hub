@@ -6,7 +6,7 @@ import { withoutOrcaEnv } from "../hub/orca-env.ts";
 /** #691: what `ahub agents` and `ahub doctor` show for each gated native CLI. */
 export interface AgentVersionRow { id: CompatId; executable?: string; verdict: CompatVerdict; policy: string }
 
-const PROBE_ENV = { JCODE_NO_TELEMETRY: "1", JCODE_DISABLE_CLAUDE_MCP: "1" };
+const PROBE_ENV = { JCODE_NO_TELEMETRY: "1", JCODE_DISABLE_CLAUDE_MCP: "1", AGY_CLI_DISABLE_AUTO_UPDATE: "1" };
 
 /** The one place that decides what is run for an id: the configured argv (including pi.cmd) plus the probe words. */
 function probeTarget(id: CompatId, commands: Partial<Record<CompatId, readonly string[]>>): { executable: string; args: string[] } | undefined {

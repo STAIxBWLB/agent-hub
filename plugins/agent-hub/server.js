@@ -1093,8 +1093,9 @@ var init_child_process = __esm(() => {
 });
 
 // src/adapters/agy/entry.ts
+import { existsSync as existsSync2 } from "fs";
 import { spawn, spawnSync } from "child_process";
-import { resolve as resolve4 } from "path";
+import { dirname as dirname4, resolve as resolve4 } from "path";
 function agyTuiSpawnOptions(cwd, env) {
   return { cwd, env, stdio: "inherit" };
 }
@@ -1151,7 +1152,7 @@ async function runAgyEntry(ctx) {
     console.log(JSON.stringify({ command: "agy", args: argv.map(publicArg), mode: "tui", permission: "unmanaged", mcp: ".agents/plugins/agent-hub/", writes: false }));
     return;
   }
-  const version = spawnSync("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: peerChildEnv("agy") });
+  const version = spawnSync("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: { ...peerChildEnv("agy"), AGY_CLI_DISABLE_AUTO_UPDATE: "1" } });
   const gate = agyVersionGate(version.status === 0 ? version.stdout : "");
   if (!gate.ok)
     fail(gate.message);
@@ -1169,21 +1170,16 @@ async function runAgyEntry(ctx) {
     const admitted = await hub.request({ t: "native_hook_launch", op: "begin", peer: "agy" });
     if (!admitted.ok || typeof admitted.launchId !== "string" || typeof admitted.instanceId !== "string")
       fail(admitted.error ?? "native hook launch was not admitted");
-    options = {
-      projectRoot: cwd,
-      stateDir,
-      serverJs: bundleInStatus(status) ?? resolve4(cliDir, "../../plugins/agent-hub/server.js"),
-      hookScript: resolve4(cliDir, "facts-hook.ts"),
-      peer: "agy",
-      launchId: admitted.launchId,
-      instanceId: admitted.instanceId
-    };
+    const serverJs = bundleInStatus(status) ?? resolve4(cliDir, "../../plugins/agent-hub/server.js");
+    const bundledHook = resolve4(dirname4(serverJs), "../../src/cli/facts-hook.ts");
+    const hookScript = existsSync2(bundledHook) ? bundledHook : resolve4(cliDir, "facts-hook.ts");
+    options = { projectRoot: cwd, stateDir, serverJs, hookScript, peer: "agy", launchId: admitted.launchId, instanceId: admitted.instanceId };
     const written = ensureAgyMcp(options);
     pluginWritten = written.changed;
     if (written.tracked)
       console.error("The managed agy plugin is tracked; review its local machine paths before committing");
     console.error(AGY_LAUNCH_NOTICE);
-    const env = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+    const env = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd, AGY_CLI_DISABLE_AUTO_UPDATE: "1" };
     delete env.AGENTHUB_CHANNEL;
     const code = await runAgyTui(argv, cwd, env);
     if (code !== 0)
@@ -2014,10 +2010,10 @@ var init_claude_print = __esm(() => {
 // src/adapters/codex-review-isolation.ts
 import { createHash as createHash2 } from "crypto";
 import { spawn as spawn3 } from "child_process";
-import { existsSync as existsSync2, lstatSync as lstatSync4, mkdirSync as mkdirSync3, mkdtempSync, readFileSync as readFileSync3, rmSync, statSync, symlinkSync, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync3, lstatSync as lstatSync4, mkdirSync as mkdirSync3, mkdtempSync, readFileSync as readFileSync3, rmSync, statSync, symlinkSync, writeFileSync as writeFileSync3 } from "fs";
 import { createRequire as createRequire2 } from "module";
 import { homedir as homedir2, tmpdir } from "os";
-import { basename as basename2, delimiter, dirname as dirname4, isAbsolute as isAbsolute3, join as join5, relative, resolve as resolve5 } from "path";
+import { basename as basename2, delimiter, dirname as dirname5, isAbsolute as isAbsolute3, join as join5, relative, resolve as resolve5 } from "path";
 function codexCoreDenyGlobs(names = DENY_NAMES, segments = DENY_SEGMENTS) {
   if (names.length > 64 || segments.length > 64)
     throw new Error("core deny policy bound exceeded");
@@ -2078,9 +2074,9 @@ function metadata(file) {
 function configFiles(cwd, env) {
   const home = resolve5(env.CODEX_HOME ?? join5(homedir2(), ".codex"));
   const files = [join5(home, "config.toml"), join5(home, "cloud-config-bundle-cache.json"), "/etc/codex/config.toml", "/etc/codex/requirements.toml", "/etc/codex/managed_config.toml"];
-  for (let dir = cwd;; dir = dirname4(dir)) {
+  for (let dir = cwd;; dir = dirname5(dir)) {
     files.push(join5(dir, ".codex", "config.toml"));
-    if (dirname4(dir) === dir)
+    if (dirname5(dir) === dir)
       break;
   }
   return files;
@@ -2116,9 +2112,9 @@ function credentialCanonicalPath(lexical) {
       lstatSync4(ancestor);
       break;
     } catch (error) {
-      if (error.code !== "ENOENT" || dirname4(ancestor) === ancestor)
+      if (error.code !== "ENOENT" || dirname5(ancestor) === ancestor)
         throw error;
-      ancestor = dirname4(ancestor);
+      ancestor = dirname5(ancestor);
     }
   }
   return join5(realPath(ancestor), relative(ancestor, lexical));
@@ -2148,13 +2144,13 @@ function resolveCommand(ctx, cwd) {
       throw new Error("unverified native platform");
     const suffix = `${process.platform}-${process.arch === "x64" ? "x64" : "arm64"}`;
     const manifest = createRequire2(binary).resolve(`@openai/codex-${suffix}/package.json`);
-    binary = realPath(join5(dirname4(manifest), "vendor", target, "bin", "codex"));
+    binary = realPath(join5(dirname5(manifest), "vendor", target, "bin", "codex"));
   }
   const files = [binary];
   if (inside(binary, cwd))
     throw new Error("project executable refused");
   for (const [index, arg] of prefix.entries()) {
-    if (isAbsolute3(arg) && (index === 0 || /\.(?:js|ts|mjs|cjs|sh)$/.test(arg)) && existsSync2(arg) && statSync(arg).isFile()) {
+    if (isAbsolute3(arg) && (index === 0 || /\.(?:js|ts|mjs|cjs|sh)$/.test(arg)) && existsSync3(arg) && statSync(arg).isFile()) {
       const file = realPath(arg);
       if (inside(file, cwd))
         throw new Error("project command prefix refused");
@@ -2324,7 +2320,7 @@ async function prepare(ctx) {
     const coreName = join5(root, ".env"), coreStateDir = join5(root, ".agenthub", "state"), coreState = join5(coreStateDir, "private.txt");
     const fixtureHome = join5(root, "host-home"), hostConfig = join5(fixtureHome, ".config", "gh", "hosts.yml"), hostKube = join5(fixtureHome, ".kube", "config"), hostDocker = join5(fixtureHome, ".docker", "config.json"), hostAlias = join5(root, "host-alias.yml");
     for (const file of [hostConfig, hostKube, hostDocker]) {
-      mkdirSync3(dirname4(file), { recursive: true });
+      mkdirSync3(dirname5(file), { recursive: true });
       writeFileSync3(file, "synthetic host credential fixture");
     }
     symlinkSync(hostConfig, hostAlias);
@@ -2352,7 +2348,7 @@ async function prepare(ctx) {
       const homePath = entry === "~" || entry.startsWith("~/");
       const absolute = homePath ? resolve5(homedir2(), entry.slice(2)) : isAbsolute3(entry) ? entry : resolve5(cwd, entry);
       const patterns = new Set([absolute]);
-      if (!/[?*\[\]]/.test(absolute) && existsSync2(absolute))
+      if (!/[?*\[\]]/.test(absolute) && existsSync3(absolute))
         patterns.add(realPath(absolute));
       if (!isAbsolute3(entry) && !homePath && entry !== "." && entry !== "..") {
         patterns.add(join5(cwd, "**", entry));
@@ -2378,7 +2374,7 @@ AHUB_CODEX_CORE_STATE_DENIED
 AHUB_CODEX_HOST_CONFIG_DENIED
 AHUB_CODEX_HOST_KUBE_DENIED
 AHUB_CODEX_HOST_DOCKER_DENIED
-AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync2(writeFile))
+AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync3(writeFile))
       throw new Error("native sandbox isolation unverified");
     leg = "binary";
     if (!current())
@@ -2474,9 +2470,9 @@ var init_codex_review_isolation = __esm(() => {
 // src/adapters/kimi-review.ts
 import { spawn as spawn4 } from "child_process";
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync5, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync4, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync4 } from "fs";
+import { existsSync as existsSync4, lstatSync as lstatSync5, mkdirSync as mkdirSync4, mkdtempSync as mkdtempSync2, readFileSync as readFileSync4, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync4 } from "fs";
 import { homedir as homedir3, tmpdir as tmpdir2 } from "os";
-import { basename as basename3, dirname as dirname5, join as join6, resolve as resolve6 } from "path";
+import { basename as basename3, dirname as dirname6, join as join6, resolve as resolve6 } from "path";
 function assertCleanCwdAncestors(...candidates) {
   const seen = new Set;
   for (const candidate of candidates) {
@@ -2490,7 +2486,7 @@ function assertCleanCwdAncestors(...candidates) {
           }
         }
       }
-      const parent = dirname5(ancestor);
+      const parent = dirname6(ancestor);
       if (parent === ancestor)
         break;
       ancestor = parent;
@@ -2604,7 +2600,7 @@ async function version(command, cwd, env, signal) {
   });
 }
 async function stopKimiReview(child, locks, graceMs = 1e4) {
-  const locked = () => locks.some((file) => existsSync3(file));
+  const locked = () => locks.some((file) => existsSync4(file));
   if (child.exitCode === null && child.signalCode === null && locked()) {
     child.kill("SIGTERM");
     const end = Date.now() + graceMs;
@@ -4867,7 +4863,7 @@ ${renderDigest(envs, false)}`;
 // src/adapters/jcode.ts
 import { spawn as spawn7, spawnSync as spawnSync2 } from "child_process";
 import { createConnection } from "net";
-import { closeSync as closeSync3, constants as constants2, existsSync as existsSync4, fstatSync as fstatSync3, lstatSync as lstatSync6, mkdtempSync as mkdtempSync3, openSync as openSync3, readSync as readSync2, rmSync as rmSync3 } from "fs";
+import { closeSync as closeSync3, constants as constants2, existsSync as existsSync5, fstatSync as fstatSync3, lstatSync as lstatSync6, mkdtempSync as mkdtempSync3, openSync as openSync3, readSync as readSync2, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { isAbsolute as isAbsolute4, join as join7 } from "path";
 function jcodeCommand(command, kind, socket, cwd, model, profile, provider, peer = "jcode") {
@@ -5092,9 +5088,9 @@ var init_jcode = __esm(() => {
       return typeof this.jcode.resumeSessionId === "string" && this.jcode.resumeSessionId.length > 0;
     }
     async start() {
-      if (!existsSync4(join7(this.jcode.home, "mcp.json")))
+      if (!existsSync5(join7(this.jcode.home, "mcp.json")))
         throw new Error("initialize Jcode's global MCP store with its native client before enabling this peer; the hub never initializes or copies it");
-      if (existsSync4(this.socket)) {
+      if (existsSync5(this.socket)) {
         this.preserveRoot = true;
         throw new Error("Jcode private socket is occupied; no daemon was adopted or removed");
       }
@@ -6004,7 +6000,7 @@ var init_recovery_error = __esm(() => {
 });
 
 // src/hub/recovery-store.ts
-import { chmodSync, existsSync as existsSync5, linkSync, lstatSync as lstatSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
+import { chmodSync, existsSync as existsSync6, linkSync, lstatSync as lstatSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
 import { randomUUID as randomUUID4 } from "crypto";
 function atomicPrivateJSON(file, value) {
   const temporary = `${file}.${randomUUID4()}.tmp`;
@@ -6025,7 +6021,7 @@ var init_recovery_store = __esm(() => {
 
 // src/pi/session.ts
 import { readFileSync as readFileSync6, openSync as openSync5, closeSync as closeSync5, fsyncSync, mkdirSync as mkdirSync7 } from "fs";
-import { join as join10, relative as relative2, resolve as resolve7, dirname as dirname6 } from "path";
+import { join as join10, relative as relative2, resolve as resolve7, dirname as dirname7 } from "path";
 function sessionReadFailure(error) {
   if (error.code === "ENOENT")
     throw new PiSessionUnresumable("missing", error.message, { cause: error });
@@ -6094,7 +6090,7 @@ var init_permission_mode = __esm(() => {
 
 // src/hub/path-policy.ts
 import { accessSync, constants as constants4, lstatSync as lstatSync9, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
-import { dirname as dirname7, isAbsolute as isAbsolute5, join as join11, relative as relative3, resolve as resolve8, sep as sep2 } from "path";
+import { dirname as dirname8, isAbsolute as isAbsolute5, join as join11, relative as relative3, resolve as resolve8, sep as sep2 } from "path";
 function existing(path) {
   try {
     lstatSync9(path);
@@ -6108,7 +6104,7 @@ function existing(path) {
 function policyRealPath(path) {
   let ancestor = path;
   while (!existing(ancestor)) {
-    const parent = dirname7(ancestor);
+    const parent = dirname8(ancestor);
     if (parent === ancestor)
       throw new Error("path cannot be resolved");
     ancestor = parent;
@@ -6141,14 +6137,14 @@ function directAliasTarget(path) {
     }
     let ancestor = target;
     while (!existing(ancestor)) {
-      const parent = dirname7(ancestor);
+      const parent = dirname8(ancestor);
       if (parent === ancestor)
         return;
       ancestor = parent;
     }
     if (!lstatSync9(ancestor).isSymbolicLink())
       return;
-    target = resolve8(dirname7(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
+    target = resolve8(dirname8(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
   }
   return;
 }
@@ -6312,7 +6308,7 @@ var init_path_policy = __esm(() => {
 });
 
 // src/local/deny.ts
-import { basename as basename4, dirname as dirname8 } from "path";
+import { basename as basename4, dirname as dirname9 } from "path";
 function gitRefRules(gitDirs, subDirs = []) {
   const git = hfsFoldedName(".git");
   const re = (s) => `(regex ${sbplString(s)})`;
@@ -6366,13 +6362,13 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
     return [
       `(require-all ${re(`^${root}/.`)} ${inside})`,
       ...anchored,
-      ...tree.entries.map((d) => `(require-all ${re(`^${sbplEscape(dirname8(d))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(d))}$`)})`)
+      ...tree.entries.map((d) => `(require-all ${re(`^${sbplEscape(dirname9(d))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(d))}$`)})`)
     ];
   });
   const siblings = worktreesRoot ? (() => {
     const w = sbplEscape(worktreesRoot);
     return [
-      `(require-all ${re(`^${sbplEscape(dirname8(worktreesRoot))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(worktreesRoot))}$`)})`,
+      `(require-all ${re(`^${sbplEscape(dirname9(worktreesRoot))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(worktreesRoot))}$`)})`,
       re(`^${w}/[^/]+$`),
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
@@ -6431,9 +6427,9 @@ var init_deny = __esm(() => {
 
 // src/local/sandbox.ts
 import { spawn as spawn8, spawnSync as spawnSync3 } from "child_process";
-import { existsSync as existsSync6, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync5 } from "fs";
+import { existsSync as existsSync7, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync5 } from "fs";
 import { homedir as homedir4, tmpdir as tmpdir4 } from "os";
-import { dirname as dirname9, join as join12, resolve as resolve9 } from "path";
+import { dirname as dirname10, join as join12, resolve as resolve9 } from "path";
 function developerDir() {
   const out = spawnSync3("xcode-select", ["-p"], { encoding: "utf8" });
   let dir = out.status === 0 ? out.stdout.trim() : "";
@@ -6469,7 +6465,7 @@ function moduleGitDirs(root) {
       if (!e.isDirectory())
         continue;
       const modules = join12(common, "worktrees", e.name, "modules");
-      if (existsSync6(modules))
+      if (existsSync7(modules))
         roots.add(modules);
     }
   } catch {}
@@ -6498,14 +6494,14 @@ function moduleGitDirs(root) {
     const found = nesting >= MODULE_DEPTH ? [] : dirs;
     const entries = new Set([modulesRoot]);
     for (const d of found)
-      for (let p = d;p.length > modulesRoot.length; p = dirname9(p))
+      for (let p = d;p.length > modulesRoot.length; p = dirname10(p))
         entries.add(p);
     trees.push({ root: modulesRoot, entries: [...entries], dirs: found });
     for (const d of found) {
       tree(join12(d, "modules"), nesting + 1);
       try {
         for (const e of readdirSync(join12(d, "worktrees"), { withFileTypes: true })) {
-          if (e.isDirectory() && existsSync6(join12(d, "worktrees", e.name, "modules")))
+          if (e.isDirectory() && existsSync7(join12(d, "worktrees", e.name, "modules")))
             tree(join12(d, "worktrees", e.name, "modules"), nesting + 1);
         }
       } catch {}
@@ -6549,7 +6545,7 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     "(deny file-write*)",
     ...readOnly.length ? ['(allow file-write* (literal "/dev/null"))'] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`],
     `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit, worktrees).join(" ")})`,
-    ...worktrees ? objectStoreRules(dirname9(worktrees)) : [],
+    ...worktrees ? objectStoreRules(dirname10(worktrees)) : [],
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join12(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     ...network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []
@@ -6624,7 +6620,7 @@ function proxyEnv(network) {
   const url = `http://127.0.0.1:${network.proxyPort}`;
   return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, ALL_PROXY: url, all_proxy: url, NO_PROXY: "", no_proxy: "" };
 }
-var SANDBOX_EXEC = "/usr/bin/sandbox-exec", OUTPUT_CAP = 20000, sandboxAvailable = () => process.platform === "darwin" && existsSync6(SANDBOX_EXEC), q, HOME_READABLE, CA_BUNDLES, MODULE_DEPTH = 8, SYSTEM_READABLE, MACH_SERVICES, NETWORK_MACH_SERVICES, PROXY_MACH_SERVICES;
+var SANDBOX_EXEC = "/usr/bin/sandbox-exec", OUTPUT_CAP = 20000, sandboxAvailable = () => process.platform === "darwin" && existsSync7(SANDBOX_EXEC), q, HOME_READABLE, CA_BUNDLES, MODULE_DEPTH = 8, SYSTEM_READABLE, MACH_SERVICES, NETWORK_MACH_SERVICES, PROXY_MACH_SERVICES;
 var init_sandbox = __esm(() => {
   init_project();
   init_git();
@@ -6983,13 +6979,13 @@ var init_web_fetch = __esm(() => {
 
 // src/local/tools.ts
 import { lstatSync as lstatSync11, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname10, join as join13, relative as relative4, resolve as resolve10 } from "path";
+import { dirname as dirname11, join as join13, relative as relative4, resolve as resolve10 } from "path";
 function guardPath(ctx, path, mode) {
   const root = realPath(ctx.cwd);
   const abs = resolve10(root, path);
   let existing = abs;
   while (!lexists(existing))
-    existing = dirname10(existing);
+    existing = dirname11(existing);
   let realExisting;
   try {
     realExisting = realPath(existing);
@@ -7076,7 +7072,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
           return "error: path target changed during approval; inspect before retrying";
-        mkdirSync8(dirname10(file), { recursive: true });
+        mkdirSync8(dirname11(file), { recursive: true });
         writeFileSync7(file, content);
         return `wrote ${a.path}`;
       }
@@ -7250,7 +7246,7 @@ var init_question_detach = __esm(() => {
 
 // src/adapters/pi.ts
 import { randomUUID as randomUUID5 } from "crypto";
-import { existsSync as existsSync7, mkdirSync as mkdirSync9 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync9 } from "fs";
 import { join as join14, resolve as resolve11 } from "path";
 import { spawn as spawn9 } from "child_process";
 function piVersionAsync(command, cwd, timeoutMs = 1e4) {
@@ -7522,7 +7518,7 @@ var init_pi = __esm(() => {
     get recoveryReady() {
       if (this.state === "busy" || this.starting || this.activeTools)
         return false;
-      if (this.sessionFile && !existsSync7(this.sessionFile) && (this.activityObserved || this.persistedOnce))
+      if (this.sessionFile && !existsSync8(this.sessionFile) && (this.activityObserved || this.persistedOnce))
         return false;
       if (this.opts.mode === "headless")
         return this.state === "idle" || !this.proc || this.proc.exitCode !== null || this.proc.signalCode !== null;
@@ -7542,7 +7538,7 @@ var init_pi = __esm(() => {
     }
     checkpointUsesSessionGeneration = false;
     recoveryMetadata() {
-      const exists = !!this.sessionFile && existsSync7(this.sessionFile);
+      const exists = !!this.sessionFile && existsSync8(this.sessionFile);
       if (exists) {
         this.persistedOnce = true;
         this.verifiedEmptyResume = undefined;
@@ -7559,14 +7555,14 @@ var init_pi = __esm(() => {
       if (this.state === "offline") {
         if (this.canReuseVerifiedEmptyResume())
           return this.recoveryMetadata();
-        if (this.recoveryReady && this.sessionFile && existsSync7(this.sessionFile))
+        if (this.recoveryReady && this.sessionFile && existsSync8(this.sessionFile))
           return this.recoveryMetadata();
         throw new Error("Pi source session is offline and has no verified persisted resume state; inspect preserved history, then a person may run ahub pi --replace-session --session-file <managed-file>");
       }
       this.emptyResumeVerified = false;
       if (this.state !== "idle" || this.stopping || this.activeTools)
         throw new Error("Pi must settle before session capture");
-      if (this.sessionFile && existsSync7(this.sessionFile))
+      if (this.sessionFile && existsSync8(this.sessionFile))
         return this.recoveryMetadata();
       const titleRevisionBefore = this.titleRevision, titleEpochBefore = this.titleEpoch;
       const snapshot = this.opts.mode === "headless" ? (await this.waitRpc("get_state", 15000)).data : await this.sendTui({ type: "get_session_state" });
@@ -7584,7 +7580,7 @@ var init_pi = __esm(() => {
       return captured;
     }
     canReuseVerifiedEmptyResume() {
-      return !!this.verifiedEmptyResume && this.recoveryReady && !this.activityObserved && !this.persistedOnce && this.sessionId === this.verifiedEmptyResume.sessionId && (!this.sessionFile || !existsSync7(this.sessionFile));
+      return !!this.verifiedEmptyResume && this.recoveryReady && !this.activityObserved && !this.persistedOnce && this.sessionId === this.verifiedEmptyResume.sessionId && (!this.sessionFile || !existsSync8(this.sessionFile));
     }
     noteActivity() {
       this.activityObserved = true;
@@ -7941,7 +7937,7 @@ var init_pi = __esm(() => {
         this.ownerToken = String(this._tuiLaunch?.env.AGENTHUB_PI_OWNER_TOKEN ?? "");
         this.ownerClaimed = true;
       }
-      this.persistedOnce = existsSync7(this.sessionFile);
+      this.persistedOnce = existsSync8(this.sessionFile);
       if (this.opts.sessionId && this.sessionId !== this.opts.sessionId || this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)
         throw new Error("Pi startup session identity mismatch");
       this.observeSnapshotTitle(state.data, titleRevisionBefore, titleEpochBefore);
@@ -14665,7 +14661,7 @@ var init_launch2 = __esm(() => {
 // src/adapters/claude-task-sessions.ts
 import { randomUUID as randomUUID8 } from "crypto";
 import { mkdirSync as mkdirSync10, readFileSync as readFileSync9 } from "fs";
-import { dirname as dirname11 } from "path";
+import { dirname as dirname12 } from "path";
 function readState(file) {
   let text;
   try {
@@ -14702,7 +14698,7 @@ class ClaudeTaskSessions {
   }
   write(sessions) {
     const next = { version: 1, sessions };
-    mkdirSync10(dirname11(this.file), { recursive: true, mode: 448 });
+    mkdirSync10(dirname12(this.file), { recursive: true, mode: 448 });
     atomicPrivateJSON(this.file, next);
     this.state = next;
   }
@@ -15454,7 +15450,7 @@ function encodeAgyHook(event, text) {
     return { injectSteps: [{ ephemeralMessage: text }] };
   return;
 }
-function readAgyTranscript(session, transcript) {
+function readAgyTranscript(session, transcript, options) {
   const empty = { factIds: [] };
   if (!UUID2.test(session))
     return empty;
@@ -15474,9 +15470,15 @@ function readAgyTranscript(session, transcript) {
     const stat = fstatSync7(fd);
     if (!stat.isFile() || stat.nlink !== 1)
       return empty;
+    if (options?.unchanged && stat.size === options.unchanged.size && stat.mtimeMs === options.unchanged.mtimeMs)
+      return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, unchanged: true };
+    const hasSince = options?.sinceOffset !== undefined && options.sinceOffset >= 0 && options.sinceOffset <= stat.size;
+    const resumeAt = options?.completion === false && hasSince ? options.sinceOffset : 0;
+    if (options?.completion === false && resumeAt === stat.size)
+      return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, scannedFrom: stat.size };
     const cap = 4 * 1024 * 1024;
     for (let window = 64 * 1024;; window = Math.min(cap, window * 2)) {
-      const start = Math.max(0, stat.size - window), from = start > 0 ? start - 1 : 0;
+      const start = Math.max(resumeAt, stat.size - window), from = start > 0 ? start - 1 : 0;
       const buffer = Buffer.alloc(stat.size - from);
       let bytes = 0;
       while (bytes < buffer.length) {
@@ -15489,7 +15491,7 @@ function readAgyTranscript(session, transcript) {
 `);
       if (start)
         lines.shift();
-      const out = { factIds: [] };
+      const out = { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, scannedFrom: window === cap && hasSince ? Math.min(start, options.sinceOffset) : start };
       for (const line of lines) {
         let row;
         try {
@@ -15503,10 +15505,10 @@ function readAgyTranscript(session, transcript) {
           for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g))
             out.factIds.push(match[1]);
         }
-        if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
+        if (options?.completion !== false && row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
           out.completion = { id: createHash7("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
       }
-      if (out.completion || start === 0 || window === cap)
+      if (out.completion && (!hasSince || start <= options.sinceOffset) || start === resumeAt || window === cap)
         return out;
     }
   } catch {
@@ -16674,9 +16676,9 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync10, existsSync as existsSync8, fstatSync as fstatSync9, openSync as openSync10, readFileSync as readFileSync14, readSync as readSync7 } from "fs";
+import { appendFileSync, closeSync as closeSync10, existsSync as existsSync9, fstatSync as fstatSync9, openSync as openSync10, readFileSync as readFileSync14, readSync as readSync7 } from "fs";
 function readEvents(file, since = 0) {
-  if (!existsSync8(file))
+  if (!existsSync9(file))
     return [];
   return readFileSync14(file, "utf8").split(`
 `).flatMap((line) => {
@@ -24780,7 +24782,7 @@ init_registry();
 init_child_process();
 init_git();
 import { lstatSync as lstatSync15, statSync as statSync5 } from "fs";
-import { dirname as dirname12, join as join28 } from "path";
+import { dirname as dirname13, join as join28 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
   "permission_modes",
@@ -25447,7 +25449,7 @@ import { types as types4 } from "util";
 init_project();
 init_registry();
 init_permission_mode();
-import { dirname as dirname13, isAbsolute as isAbsolute8, sep as sep3 } from "path";
+import { dirname as dirname14, isAbsolute as isAbsolute8, sep as sep3 } from "path";
 var JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile"];
 var MAX_JCODE_INSTANCES = 8;
 var NATIVE_WORD = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
@@ -34159,7 +34161,7 @@ function resolveInstanceExecutionCwd(projectRoot, id, declarations, roles, adapt
 
 // src/hub/channel-project.ts
 init_project();
-import { existsSync as existsSync9 } from "fs";
+import { existsSync as existsSync10 } from "fs";
 import { join as join32 } from "path";
 function channelProject(cwd, env, policyRoles) {
   const override = env.AGENTHUB_STATE_DIR?.trim(), declared = env.AGENTHUB_PROJECT_DIR?.trim();
@@ -34190,7 +34192,7 @@ function channelProject(cwd, env, policyRoles) {
   const inherited = inheritedStateDir(own.root, env);
   if (inherited)
     return { root: own.root, stateDir: inherited, inherited: true };
-  if (override && !existsSync9(join32(own.root, ".agenthub", "config.json")))
+  if (override && !existsSync10(join32(own.root, ".agenthub", "config.json")))
     return asSession();
   return { root: own.root, stateDir: own.stateDir, inherited: false };
 }

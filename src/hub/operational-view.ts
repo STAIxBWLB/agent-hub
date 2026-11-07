@@ -12,7 +12,7 @@ export interface OperationalViewPorts {
 }
 /** Closed metadata receipts only. Unsupported nested records are withheld until given their own projection. */
 const EVENT_FIELDS: Record<string,readonly string[]>={
-  state:["peer","state"],hub_start:["instance"],native_thread:["peer","thread","fresh"],turn_start:["peer","turn"],native_turn_end:["peer","id"],
+  state:["peer","state"],hub_start:["instance"],native_thread:["peer","thread","fresh"],turn_start:["peer","turn"],native_turn_end:["peer","id","reason"],
   task:["id","event","by","state","owner","reviewer","class","profile","profileClass","role","pii","reason","release","priority","plannedStart","due"],
   tokens:["peer","n","task","attribution","pii"],
   usage:["peer","source","id","task","attribution","pii","reasoningTokens","measuredAt","inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens"],
