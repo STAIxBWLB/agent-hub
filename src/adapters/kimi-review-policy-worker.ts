@@ -19,10 +19,11 @@ export function startKimiReviewPolicyWatch(binding: KimiReviewPolicyBinding, opt
   let failed = false, stopping = false, exited = false, sequence = 0;
   let pending: { id: number; resolve: (current: boolean) => void } | undefined;
   let stopWork: Promise<void> | undefined;
-  let resolveExit!: () => void;
+  let resolveExit!: () => void, resolveFailure!: () => void;
   const exit = new Promise<void>(resolve => { resolveExit = resolve; });
+  const failure = new Promise<void>(resolve => { resolveFailure = resolve; });
   const settle = (current: boolean) => { const request = pending; pending = undefined; request?.resolve(current); };
-  const fail = () => { failed = true; settle(false); };
+  const fail = () => { failed = true; resolveFailure(); settle(false); };
   worker.on("error", fail);
   worker.on("exit", () => { exited = true; fail(); resolveExit(); });
   try {
@@ -33,11 +34,12 @@ export function startKimiReviewPolicyWatch(binding: KimiReviewPolicyBinding, opt
       if (!message || typeof message !== "object" || Array.isArray(message)) return fail();
       const reply = message as Record<string, unknown>;
       if (Object.keys(reply).sort().join() !== "current,id" || !pending || reply.id !== pending.id || typeof reply.current !== "boolean") return fail();
-      if (!reply.current) failed = true;
-      settle(reply.current);
+      if (!reply.current) return fail();
+      settle(true);
     });
   } catch { fail(); } // Return ownership even if runtime stream setup failed.
   return {
+    failure,
     check() {
       if (failed || stopping || exited) return Promise.resolve(false);
       if (pending || sequence >= Number.MAX_SAFE_INTEGER) { fail(); return Promise.resolve(false); }

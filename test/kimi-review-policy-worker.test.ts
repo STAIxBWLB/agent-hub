@@ -126,8 +126,9 @@ test("native OAuth atomic refresh within the bound directory does not invalidate
 test("one in-flight worker check is bounded and overlap fails closed", async () => {
   const f = fixture(), shared = new SharedArrayBuffer(8), gate = new Int32Array(shared), worker = f.watch(f.binding, shared);
   const pending = worker.check(); await entered(gate);
+  const failure = worker.failure; expect(failure).toBeDefined();
   expect(await worker.check()).toBe(false); expect(await pending).toBe(false);
-  expect(await worker.check()).toBe(false);
+  await failure; expect(await worker.check()).toBe(false);
   await worker.stop(); expect(Atomics.load(gate, 0)).toBe(1);
 });
 
@@ -196,4 +197,15 @@ test("a failed policy worker join preserves the profile and supports explicit cl
 test("cleanup without a started policy probe remains synchronous", async () => {
   const { launch } = await preparedFixture(() => { throw new Error("unused factory must not start"); });
   expect(launch.cleanup!()).toBeUndefined(); expect(existsSync(launch.cwd!)).toBe(false);
+});
+
+
+test("the default factory forwards a real worker's immediate policy failure signal", async () => {
+  const { launch } = await preparedFixture();
+  const probe = launch.startPolicyWatch!(), failure = probe.failure;
+  expect(failure).toBeDefined(); expect(await probe.check()).toBe(true);
+  writeFileSync(launch.args[launch.args.indexOf("--agent-file") + 1]!, "synthetic-policy-tamper");
+  expect(await probe.check()).toBe(false);
+  await failure;
+  await probe.stop();
 });

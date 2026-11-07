@@ -138,6 +138,7 @@ export async function prepareKimiReviewer(context: ReviewerPrepareContext, polic
           if (!policyProbe) {
             const probe = policyFactory(projectKimiReviewPolicyBinding(binding));
             policyProbe = {
+              failure: probe.failure,
               async check() {
                 if (cleaned || context.signal.aborted) return false;
                 const current = await probe.check();
