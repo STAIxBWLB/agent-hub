@@ -7,6 +7,9 @@ useEnvironmentScope();
 
 // #1262. Bun starts the next test (and the next file) while a timed-out test's body still runs. A fixture that replaces process.env must therefore be undone at the timeout, and a second fixture
 // that starts meanwhile must not snapshot the first one's isolated environment as if it were the real one. Each test below fails without the helper's half of that contract.
+// The child runs print their own test output, which the assertions read. Under GitHub Actions Bun switches to annotation output ("::group::a-first.test.ts:", "::error ..."), so the runner's markers are
+// removed from the child's environment: the parsing then holds on every runner and on a developer's machine alike (CI run 42358240689 failed here with GITHUB_ACTIONS=true).
+const childEnv = (): NodeJS.ProcessEnv => { const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" }; for (const key of ["GITHUB_ACTIONS", "CI", "GITHUB_STEP_SUMMARY", "BUN_CONFIG_NO_CLEAR_TERMINAL_ON_RELOAD"]) delete env[key]; return env; };
 const marker = "ahub-env-scope-leak";
 const poisoned = () => String(process.env.PATH).includes(marker);
 const poison = () => { const bin = join(mkdtempSync(join(tmpdir(), `${marker}-`)), "bin"); mkdirSync(bin); process.env.PATH = bin; process.env.AGENTHUB_HOME = bin; };
@@ -77,7 +80,7 @@ test("next: sees the clean PATH at once", () => {
 });
 `);
   // A temp dir has no bunfig.toml, so no preload applies to the child run.
-  const run = Bun.spawnSync([process.execPath, "test", join(dir, "child.test.ts")], { cwd: dir, env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+  const run = Bun.spawnSync([process.execPath, "test", join(dir, "child.test.ts")], { cwd: dir, env: childEnv(), stdout: "pipe", stderr: "pipe" });
   const out = run.stdout.toString() + run.stderr.toString();
   expect(out).toMatch(/\(fail\) holder/);                                // the holder really times out
   expect(out).toMatch(/\(pass\) next/);                                  // and the next test is clean
@@ -109,7 +112,7 @@ test("c: the next file sees the clean PATH and can spawn git", () => {
 });
 `);
   // A temp dir has no bunfig.toml, so no preload applies. The three paths are given in order; Bun runs them in the order of the paths it is given.
-  const run = Bun.spawnSync([process.execPath, "test", join(dir, "a-first.test.ts"), join(dir, "b-holder.test.ts"), join(dir, "c-victim.test.ts")], { cwd: dir, env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+  const run = Bun.spawnSync([process.execPath, "test", join(dir, "a-first.test.ts"), join(dir, "b-holder.test.ts"), join(dir, "c-victim.test.ts")], { cwd: dir, env: childEnv(), stdout: "pipe", stderr: "pipe" });
   const out = run.stdout.toString() + run.stderr.toString();
   const order = [...out.matchAll(/^(a-first|b-holder|c-victim)\.test\.ts:/gm)].map(match => match[1]);
   expect(order).toEqual(["a-first", "b-holder", "c-victim"]);              // the three files ran in the intended order
@@ -130,7 +133,7 @@ test("a: imports the helper first", () => { void cleanEnvironment(); });
 import { restoreOnTestEnd } from ${helper};
 test("b: forgot useEnvironmentScope", () => { restoreOnTestEnd(() => {}); });
 `);
-  const run = Bun.spawnSync([process.execPath, "test", join(dir, "a-first.test.ts"), join(dir, "b-forgot.test.ts")], { cwd: dir, env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+  const run = Bun.spawnSync([process.execPath, "test", join(dir, "a-first.test.ts"), join(dir, "b-forgot.test.ts")], { cwd: dir, env: childEnv(), stdout: "pipe", stderr: "pipe" });
   const out = run.stdout.toString() + run.stderr.toString();
   expect(out).toMatch(/\(fail\) b: forgot useEnvironmentScope/);
   expect(out).toContain("restoreOnTestEnd needs useEnvironmentScope() at the top level of this test file");
