@@ -12,7 +12,7 @@ import { RoomCommands, RoomRotationHoldError } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
 import { RoomStore } from "../src/rooms/store.ts";
 import { encodeRoomMessage, type RoomMessage } from "../src/rooms/application.ts";
-import { decodeFrame, openFrame, roomMembers, sealFrame } from "../src/rooms/wire.ts";
+import { decodeFrame, decodeRoster, openFrame, roomMembers, sealFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, sha256 } from "../src/rooms/crypto.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -91,7 +91,29 @@ async function fixture(live = false) {
     };
     return gate;
   };
-  return { root, a, b, add, block, ...event };
+  const hold = () => { const gate = deferred(); gates.push(gate); return gate; };
+  return { root, a, b, add, block, hold, ...event };
+}
+/** Force the old manual join to commit only after the real link has adopted its roster. */
+function holdLiveRosterAdoption(f: Awaited<ReturnType<typeof fixture>>) {
+  const gate = f.hold(), before = f.b.store.get("work")!.current;
+  const install = f.b.store.install.bind(f.b.store);
+  let manualCommitHeld = false;
+  f.b.store.install = async input => {
+    if (input.name === "work" && BigInt(decodeRoster(input.wire).epoch) > BigInt(before.epoch)) {
+      if (input.reactivate === true) {
+        manualCommitHeld = true;
+        expect(f.b.store.get("work")!.current.digest).toBe(before.digest);
+        gate.release();
+        await f.wait(() => f.b.store.get("work")!.current.digest === f.a.store.get("work")!.current.digest,
+          "real broker roster adopted while the manual join commit is held");
+      } else {
+        await gate.promise;
+      }
+    }
+    return install(input);
+  };
+  return { release: gate.release, manualCommitHeld: () => manualCommitHeld };
 }
 async function sealed(sender: Side, recipient: Side, message: RoomMessage) {
   return sealFrame({ identity: sender.store.identity, epoch: sender.store.get("work")!.current,
@@ -246,6 +268,7 @@ for (const kind of ["expose", "revoke", "invite"] as const) {
 
 test("an empty live rotation fences every room peer before a Bus-only message can dispatch", async () => {
   const f = await fixture(true);
+  const adoption = holdLiveRosterAdoption(f);
   await f.wait(() => f.a.bus.peers.get("codex@beta")?.state === "idle", "fresh peer ready before empty rotation");
   const fresh = newEnvelope("user", "Bus-only work at the epoch boundary", { to: ["codex@beta"] });
   f.a.bus.pause("codex@beta");
@@ -267,7 +290,10 @@ test("an empty live rotation fences every room peer before a Bus-only message ca
   expect(inspected).toBe(true);
   expect(f.a.store.get("work")!.current.digest).not.toBe(previous);
   expect(f.a.bus.queueIds("codex@beta")).toEqual([fresh.id]);
-  await command(f.b, "join", { name: "work", roster: encodeBase64url(f.a.store.get("work")!.wire) });
+  const target = f.a.store.get("work")!.current.digest;
+  adoption.release();
+  await f.wait(() => f.b.store.get("work")!.current.digest === target, "beta live link adopted the target roster digest");
+  expect(adoption.manualCommitHeld()).toBe(false);
   f.a.bus.resume("codex@beta");
   await f.wait(() => f.b.peer.got.some(row => row.id === fresh.id), "Bus-only work delivered under the new epoch");
   expect(f.b.peer.got.filter(row => row.id === fresh.id)).toHaveLength(1);
