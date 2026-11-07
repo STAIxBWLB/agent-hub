@@ -3587,7 +3587,7 @@ used as an execution-time proof.
 | Claude implementer | Committed Write/Bash/rewrite and host-wrapper producer groups | Human upstream-impact review; unsupported launcher forms |
 | Pi | Artifact acquisition only in this core | Historical top-level producer needs import-safe/candidate-version extraction |
 | Qwen ACP | Promoted ACP identity/session/mapped-mode and actual published permission-handler producers, preload controls and group cleanup | Human lifecycle/source review; Linux does not replace required macOS arm64 |
-| Jcode | Reconstructed isolated serve/ACP/MCP, fixed-stream steering, telemetry and owned-group checks | Human source comparison; native macOS qualification remains unverified. The 0.99.1 Linux control is not qualified: telemetry identity and strict persisted-context binding fail; see the reconstruction receipt |
+| Jcode | Reconstructed isolated serve/ACP/MCP, fixed-stream steering, telemetry and owned-group checks | Human source comparison; native macOS qualification remains unverified. The 0.99.1 Linux control is not qualified: telemetry identity and strict persisted-context binding fail; see the [reconstruction receipt](verification/2026-11-07-jcode-receipt-reconstruction-1248.md) |
 | agy and qwen-dual | Policy and unavailable/manual-leg reporting | No public agy installer; account/model/TUI or unspecified-platform legs |
 
 Every manifest leg appears as pass, fail or not-run with a cause and next step.
