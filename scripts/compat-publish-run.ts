@@ -238,6 +238,10 @@ export async function runCompatPublisher(input: CompatPublisherInput, api: Githu
   const assertBase = async () => { if (!input.dryRun && await ref(api, base, "main") !== input.sourceBaseSha) fail("main-moved"); };
   await assertBase();
   const main = await snapshot(api, base, input.sourceBaseSha), sourceBytes = await blob(api, base, main, SOURCE), source = sourceBytes.toString("utf8");
+  for (const file of [SOURCE, SERVER, PLUGIN]) {
+    const leaf = main.leaves.get(file);
+    if (!leaf || leaf.type !== "blob" || !["100644", "100755"].includes(leaf.mode)) fail("source-mode");
+  }
   const manifestValue = object(parse(await blob(api, base, main, "scripts/compat-receipts/manifest.json")));
   const manifest = object(manifestValue.entries) as unknown as Record<string, PublishManifestEntry>;
   const rows = await inventory(api, `${base}/pulls?state=all`), pulls = rows.map(row => botPull(row, input.repository, manifest)).filter((p): p is BotPull => !!p);
@@ -246,6 +250,7 @@ export async function runCompatPublisher(input: CompatPublisherInput, api: Githu
   const baselinePrs = baseline.actions.filter(action => action.kind === "create-pr" || action.kind === "update-pr");
   if (baselinePrs.length !== data.bundles.size) fail("bundle-plan");
   const packageJson = object(parse(await blob(api, base, main, "package.json")));
+  identity("package", packageJson.version);
   // Validate every prepared candidate, even if a live newer PR will suppress publication.
   for (const action of baselinePrs) {
     const bundle = data.bundles.get(`${action.id}-${action.version}`); if (!bundle) fail("bundle-plan");
