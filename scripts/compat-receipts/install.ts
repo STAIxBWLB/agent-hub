@@ -10,9 +10,11 @@ function inside(root: string, target: string): boolean {
   const rel = relative(root, target);
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
-function publicURL(value: unknown, hosts: readonly string[]): string {
+function publicURL(value: unknown, hosts: readonly string[], base?: string): string {
   if (typeof value !== "string") throw new ReceiptError("integrity");
-  const url = new URL(value);
+  let url: URL;
+  try { url = new URL(value, base); }
+  catch { throw new ReceiptError("integrity"); }
   if (url.protocol !== "https:" || url.username || url.password || url.port || !hosts.includes(url.hostname)) throw new ReceiptError("integrity");
   return url.href;
 }
@@ -25,7 +27,7 @@ async function bytes(fetcher: ReceiptFetch, url: string, signal: AbortSignal, ca
     const location = response.headers.get("location");
     await response.body?.cancel();
     if (!location || redirects === 4) throw new ReceiptError("integrity");
-    url = publicURL(new URL(location, url).href, ["registry.npmjs.org", "api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"]);
+    url = publicURL(location, ["registry.npmjs.org", "api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"], url);
   }
   if (!response) throw new ReceiptError("install-unavailable");
   if (!response.ok || !response.body) throw new ReceiptError("install-unavailable");
@@ -48,9 +50,16 @@ async function bytes(fetcher: ReceiptFetch, url: string, signal: AbortSignal, ca
 interface NpmMetadata { name: string; version: string; dist?: { tarball?: string; integrity?: string } }
 interface ReleaseAsset { name: string; url: string; digest?: string }
 interface ReleaseMetadata { tag_name: string; assets: ReleaseAsset[] }
+function parseMetadata<T>(text: string): T {
+  try {
+    const value: unknown = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new ReceiptError("integrity");
+    return value as T;
+  } catch { throw new ReceiptError("integrity"); }
+}
 // These are public JSON documents; critical identity/URL/digest fields are checked before effects.
 async function json<T>(fetcher: ReceiptFetch, url: string, signal: AbortSignal, cap: number): Promise<T> {
-  try { return JSON.parse((await bytes(fetcher, url, signal, cap)).toString("utf8")); }
+  try { return parseMetadata<T>((await bytes(fetcher, url, signal, cap)).toString("utf8")); }
   catch (error) { if (error instanceof ReceiptError) throw error; throw new ReceiptError("integrity"); }
 }
 function verifySRI(data: Buffer, integrity: unknown): string {
@@ -104,7 +113,7 @@ async function npmArtifact(context: ReceiptContext, entry: ManifestEntry, fetche
   if (!inside(realPath(context.prefix), packageRoot)) throw new ReceiptError("integrity");
   const packageJSON = join(packageRoot, "package.json");
   if (!(await lstat(packageJSON)).isFile()) throw new ReceiptError("integrity");
-  const installed = JSON.parse(await readFile(packageJSON, "utf8"));
+  const installed = parseMetadata<{ name?: unknown; version?: unknown; bin?: string | Record<string, string> }>(await readFile(packageJSON, "utf8"));
   if (installed.name !== name || installed.version !== context.version) throw new ReceiptError("integrity");
   const cli = COMPAT[context.id].probe[0]!;
   const bin = typeof installed.bin === "string" ? installed.bin : installed.bin?.[cli];
@@ -118,7 +127,7 @@ async function releaseArtifact(context: ReceiptContext, entry: ManifestEntry, fe
   if (!repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || !tagTemplate?.includes("{version}") || !asset || !checksumAsset || basename(asset) !== asset || basename(checksumAsset) !== checksumAsset) throw new ReceiptError("input");
   const tag = tagTemplate.replace("{version}", context.version);
   const release = await json<ReleaseMetadata>(fetcher, `https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, signal, context.limits.outputBytes);
-  if (release.tag_name !== tag || !Array.isArray(release.assets)) throw new ReceiptError("integrity");
+  if (release.tag_name !== tag || !Array.isArray(release.assets) || release.assets.some(item => !item || typeof item !== "object")) throw new ReceiptError("integrity");
   const select = (name: string) => {
     const matches = release.assets.filter((item: ReleaseAsset) => item.name === name);
     if (matches.length !== 1) throw new ReceiptError("integrity");

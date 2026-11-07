@@ -167,3 +167,23 @@ test("detected survivor cannot produce an installed artifact", async () => {
   const context = await fixture(async () => ({ ...ok, survivorDetected: true }));
   await expect(installCompatArtifact(context, entry, npmFetch(Buffer.from("package")))).rejects.toMatchObject({ causeCode: "cleanup" });
 });
+
+test("malformed artifact URL is integrity failure before effects", async () => {
+  let effects = 0;
+  const context = await fixture(async () => { effects++; return ok; });
+  const fetcher = npmFetch(Buffer.from("package"), { dist: { tarball: "malformed URL", integrity: "unused" } });
+  await expect(installCompatArtifact(context, entry, fetcher)).rejects.toMatchObject({ causeCode: "integrity" });
+  expect(effects).toBe(0);
+  expect((await readdir(context.root)).sort()).toEqual(["cwd", "home", "prefix"]);
+});
+for (const method of ["npm-exact", "github-release-asset-checksum"]) {
+  test(`null ${method} metadata is integrity failure before effects`, async () => {
+    let effects = 0;
+    const context = await fixture(async () => { effects++; return ok; });
+    const metadataEntry = method === "npm-exact" ? entry : { ...entry, install: { method, repository: "owner/project", tagTemplate: "v{version}", asset: "cli.tar.gz", checksumAsset: "SHA256SUMS" } };
+    const fetcher = (async () => Response.json(null)) as ReceiptFetch;
+    await expect(installCompatArtifact(context, metadataEntry, fetcher)).rejects.toMatchObject({ causeCode: "integrity" });
+    expect(effects).toBe(0);
+    expect((await readdir(context.root)).sort()).toEqual(["cwd", "home", "prefix"]);
+  });
+}
