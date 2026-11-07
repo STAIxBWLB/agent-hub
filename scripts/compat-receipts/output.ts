@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import { realPath } from "../../src/hub/project.ts";
 import { ReceiptError, type ReceiptSummary } from "./types.ts";
 
-const HELPER_MS = 2_000;
+// GHA 42361191648: 12 fresh jobs, cold maximum 2032.190 ms. Prior complete
+// CI extraction took 3835.40 ms (42355168440); 8 s is above twice that tail.
+// Measurement and actual flags: docs/verification/2026-11-07-compat-python-startup-1248.md.
+const HELPER_MS = 8_000;
 export const RECEIPT_OUTPUT_MS = HELPER_MS * 2;
 const PAYLOAD_BYTES = 4 * 1024 * 1024;
 const DIAGNOSTIC_BYTES = 4096;
