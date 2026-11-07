@@ -27,7 +27,7 @@ Every native row time fell inside its captured turn interval. Every row was coll
 
 ## AC8 verdict
 
-**The delayed native leg is UNVERIFIED.** Zero of the eight ordinary turns produced a row after `turn_end`, so this version did not provide the delayed native evidence AC8 asks for. The immediate rows above must not be presented as delayed evidence.
+**AC8 is VERIFIED as amended on 2026-11-08.** The amended criterion accepts current native row-time and attribution evidence plus the production-timer delayed fixture when no delayed native row occurs. Zero of the eight ordinary turns produced a row after `turn_end`, so the immediate rows above are not presented as delayed evidence. The original delayed-native-only leg remains unobserved on Kimi 2.5.2.
 
 The production delayed path is covered separately by `test/daemon-kimi-delayed-usage.test.ts`: its real unreferenced 250 ms timer collects a post-result row without another turn, updates `usage`, `tokens`, the budget and roll-up, and leaves `turn_end` unchanged. The A/B test fires the injected scheduler while task B is open and proves that A's delayed row keeps A's attribution, increments no turn total, and that an ambiguous timestamp is `unattributed`. These fixtures establish the #1281 behavior, not a current native delay.
 
