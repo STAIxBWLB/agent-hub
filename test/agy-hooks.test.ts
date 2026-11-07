@@ -110,7 +110,7 @@ test("agy transcript readback supports incremental sinceOffset ack scans and unc
     const cached = readAgyTranscript(session, file, { unchanged: { size: base.size!, mtimeMs: base.mtimeMs! } });
     expect(cached).toEqual({ factIds: [], size: base.size, mtimeMs: base.mtimeMs, unchanged: true });
     // Incremental ack scan at EOF reads nothing.
-    expect(readAgyTranscript(session, file, { completion: false, sinceOffset: base.size })).toEqual({ factIds: [], size: base.size, mtimeMs: base.mtimeMs });
+    expect(readAgyTranscript(session, file, { completion: false, sinceOffset: base.size })).toEqual({ factIds: [], size: base.size, mtimeMs: base.mtimeMs, scannedFrom: base.size });
     // Appending a new ephemeral message after sinceOffset scans only the appended slice and skips completion hashing.
     const second = JSON.stringify({ step_index: 3, source: "SYSTEM_SDK", type: "EPHEMERAL_MESSAGE", status: "DONE", content: "agent-hub facts [second-fact]" }) + "\n"
       + JSON.stringify({ step_index: 4, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "done again" }) + "\n";
@@ -119,5 +119,11 @@ test("agy transcript readback supports incremental sinceOffset ack scans and unc
     expect(inc.factIds).toEqual(["second-fact"]);
     expect(inc.completion).toBeUndefined();
     expect(inc.size).toBe(Buffer.byteLength(first + second));
+    // Appending an injected fact followed by >64 KiB of tool-call rows still expands to sinceOffset so the fact is not skipped.
+    const third = JSON.stringify({ step_index: 5, source: "SYSTEM_SDK", type: "EPHEMERAL_MESSAGE", status: "DONE", content: "agent-hub facts [third-fact]" }) + "\n"
+      + JSON.stringify({ step_index: 6, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "x".repeat(70 * 1024), tool_calls: [{ name: "read_file" }] }) + "\n";
+    writeFileSync(file, first + second + third);
+    const largeInc = readAgyTranscript(session, file, { completion: false, sinceOffset: inc.size });
+    expect(largeInc.factIds).toEqual(["third-fact"]);
   } finally { if (old === undefined) delete process.env.HOME; else process.env.HOME = old; rmSync(root, { recursive: true, force: true }); }
 });

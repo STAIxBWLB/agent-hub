@@ -148,6 +148,7 @@ export interface NativeFactsTranscript {
   factIds: string[];
   size?: number;
   mtimeMs?: number;
+  scannedFrom?: number;
   unchanged?: boolean;
 }
 /** Fixed native codec and bounded readback, never supplied by project configuration. */

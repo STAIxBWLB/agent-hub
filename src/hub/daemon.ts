@@ -10415,24 +10415,47 @@ export async function startDaemon(opts: DaemonOptions) {
         // Skip transcript I/O on PostToolUse, PostInvocation, Stop, and active-turn PreToolUse with no pending fact offers (#1280).
         const needsBaseline = (native.event === "PreInvocation" || native.event === "PreToolUse") && (!launch.active || native.event === "PreInvocation" && native.invocation === 0);
         const needsAck = factsOn() && (native.event === "SessionStart" || native.event === "PreInvocation" || native.event === "PreToolUse" && factsFor(peer).pending(peer).length > 0);
+        const since = launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
         const readback: ReturnType<typeof port.read> = needsBaseline
-          ? port.read(native.sessionId, native.transcriptPath)
+          ? port.read(native.sessionId, native.transcriptPath, since)
           : needsAck
-            ? port.read(native.sessionId, native.transcriptPath, { completion: false, ...(launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {}) })
+            ? port.read(native.sessionId, native.transcriptPath, { completion: false, ...since })
             : { factIds: [] };
+        // ponytail: an unacknowledged fact row followed by >4 MiB of output before the next readback hits the 4 MiB lookback cap in readAgyTranscript.
+        const acknowledge = (read: ReturnType<typeof port.read>) => {
+          if (!factsOn()) return;
+          factSession(peer, native.sessionId);
+          for (const id of read.factIds) acked(peer, id, "native-hook");
+          if (read.size !== undefined && read.scannedFrom !== undefined) {
+            const prev = launch.transcriptPath === native.transcriptPath ? (launch.transcriptOffset ?? 0) : 0;
+            if (read.scannedFrom <= prev) {
+              launch.transcriptPath = native.transcriptPath;
+              launch.transcriptOffset = read.size;
+            }
+          }
+        };
         const apply = () => {
           if (!current()) return void reply({ ok: false });
-          if (readback.size !== undefined) { launch.transcriptPath = native.transcriptPath; launch.transcriptOffset = readback.size; }
-          if (factsOn()) { factSession(peer, native.sessionId); for (const id of readback.factIds) acked(peer, id, "native-hook"); }
+          acknowledge(readback);
           if (native.event === "PreInvocation" || native.event === "PreToolUse") {
             if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
             activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
           }
           if (native.event === "Stop") {
             if (!launch.active || !native.fullyIdle) return void reply({ ok: false });
-            if (["USER_CANCELED", "ERROR", "MAX_INVOCATIONS", "MAX_FORCED_INVOCATIONS", "MAX_TOKEN_BUDGET_EXCEEDED", "TERMINAL_STEP_TYPE", "TERMINAL_CUSTOM_HOOK"].includes(native.terminationReason ?? "")) {
-              launch.active = false; turnEnded.set(peer, Date.now()); owner.nativeStopped(native.sessionId);
+            const terminalReason = ({ USER_CANCELED: "user_canceled", ERROR: "error", MAX_INVOCATIONS: "max_invocations", MAX_FORCED_INVOCATIONS: "max_forced_invocations", MAX_TOKEN_BUDGET_EXCEEDED: "max_token_budget_exceeded", TERMINAL_STEP_TYPE: "terminal_step_type", TERMINAL_CUSTOM_HOOK: "terminal_custom_hook" } as const)[native.terminationReason ?? ""];
+            if (terminalReason) {
+              launch.active = false; turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
               tally(); emitHookStats(peer);
+              event({ type: "native_turn_end", peer, reason: terminalReason }); owner.nativeStopped(native.sessionId);
+              // #1054: pull-only agy opens no run (`settles(peer)` is false); if a future native-hook peer does, settle an open run by its closed reason.
+              try {
+                const run = runs.get(peer);
+                if (run) {
+                  if (terminalReason === "user_canceled") { completionDone(peer, run, "interrupted"); runs.close(peer); }
+                  else { runs.note(peer, terminalReason === "error" || terminalReason === "terminal_step_type" || terminalReason === "terminal_custom_hook" ? { failed: true } : { limit: true }); runs.signalled(peer); settleCheck(peer); }
+                }
+              } catch { log(`completion settle for ${peer} failed`); }
               return void reply({ ok: true });
             }
             if (native.terminationReason !== "NO_TOOL_CALL") return void reply({ ok: false });
@@ -10446,12 +10469,10 @@ export async function startDaemon(opts: DaemonOptions) {
               let delay = 5;
               let lastStat: { size: number; mtimeMs: number } | undefined;
               while (current() && launch.active && launch.turn === turn) {
-                const polled = port.read(native.sessionId, native.transcriptPath, lastStat ? { unchanged: lastStat } : undefined);
-                if (polled.size !== undefined && polled.mtimeMs !== undefined) {
-                  lastStat = { size: polled.size, mtimeMs: polled.mtimeMs };
-                  launch.transcriptPath = native.transcriptPath;
-                  launch.transcriptOffset = polled.size;
-                }
+                const pollSince = factsOn() && launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
+                const polled = port.read(native.sessionId, native.transcriptPath, { ...(lastStat ? { unchanged: lastStat } : {}), ...pollSince });
+                if (polled.size !== undefined && polled.mtimeMs !== undefined) lastStat = { size: polled.size, mtimeMs: polled.mtimeMs };
+                acknowledge(polled);
                 const completion = polled.completion;
                 if (completion && completion.index > baseline && completion.id !== launch.completed) {
                   launch.completed = completion.id; launch.active = false;

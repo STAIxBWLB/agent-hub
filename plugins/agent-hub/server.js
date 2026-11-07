@@ -15472,9 +15472,10 @@ function readAgyTranscript(session, transcript, options) {
       return empty;
     if (options?.unchanged && stat.size === options.unchanged.size && stat.mtimeMs === options.unchanged.mtimeMs)
       return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, unchanged: true };
-    const resumeAt = options?.completion === false && options.sinceOffset !== undefined && options.sinceOffset >= 0 && options.sinceOffset <= stat.size ? options.sinceOffset : 0;
+    const hasSince = options?.sinceOffset !== undefined && options.sinceOffset >= 0 && options.sinceOffset <= stat.size;
+    const resumeAt = options?.completion === false && hasSince ? options.sinceOffset : 0;
     if (options?.completion === false && resumeAt === stat.size)
-      return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs };
+      return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, scannedFrom: stat.size };
     const cap = 4 * 1024 * 1024;
     for (let window = 64 * 1024;; window = Math.min(cap, window * 2)) {
       const start = Math.max(resumeAt, stat.size - window), from = start > 0 ? start - 1 : 0;
@@ -15490,7 +15491,7 @@ function readAgyTranscript(session, transcript, options) {
 `);
       if (start)
         lines.shift();
-      const out = { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs };
+      const out = { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, scannedFrom: window === cap && hasSince ? Math.min(start, options.sinceOffset) : start };
       for (const line of lines) {
         let row;
         try {
@@ -15507,7 +15508,7 @@ function readAgyTranscript(session, transcript, options) {
         if (options?.completion !== false && row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
           out.completion = { id: createHash7("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
       }
-      if (options?.completion === false || out.completion || start === resumeAt || window === cap)
+      if (out.completion && (!hasSince || start <= options.sinceOffset) || start === resumeAt || window === cap)
         return out;
     }
   } catch {

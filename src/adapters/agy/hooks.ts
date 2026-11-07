@@ -54,10 +54,11 @@ export function readAgyTranscript(session: string, transcript: string, options?:
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1) return empty;
     if (options?.unchanged && stat.size === options.unchanged.size && stat.mtimeMs === options.unchanged.mtimeMs) return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, unchanged: true };
-    const resumeAt = options?.completion === false && options.sinceOffset !== undefined && options.sinceOffset >= 0 && options.sinceOffset <= stat.size ? options.sinceOffset : 0;
-    if (options?.completion === false && resumeAt === stat.size) return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs };
-    // ponytail: completion lookback is capped at 4 MiB (as for Claude). A larger final row is unverified;
-    // upgrade to a native completion cursor if that ceiling becomes insufficient.
+    const hasSince = options?.sinceOffset !== undefined && options.sinceOffset >= 0 && options.sinceOffset <= stat.size;
+    const resumeAt = options?.completion === false && hasSince ? options.sinceOffset! : 0;
+    if (options?.completion === false && resumeAt === stat.size) return { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, scannedFrom: stat.size };
+    // ponytail: completion and incremental ack lookback are capped at 4 MiB (as for Claude). A larger final row is unverified,
+    // and >4 MiB appended between two readbacks advances the ack cursor to EOF; upgrade to a native forward cursor if needed.
     const cap = 4 * 1024 * 1024;
     for (let window = 64 * 1024; ; window = Math.min(cap, window * 2)) {
       const start = Math.max(resumeAt, stat.size - window), from = start > 0 ? start - 1 : 0;
@@ -71,7 +72,7 @@ export function readAgyTranscript(session: string, transcript: string, options?:
       const lines = buffer.subarray(0, bytes).toString("utf8").split("\n");
       // The preceding byte distinguishes a cut inside a row from a row beginning exactly at the window.
       if (start) lines.shift();
-      const out: NativeFactsTranscript = { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs };
+      const out: NativeFactsTranscript = { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, scannedFrom: window === cap && hasSince ? Math.min(start, options!.sinceOffset!) : start };
       for (const line of lines) {
         let row: unknown; try { row = JSON.parse(line); } catch { continue; }
         if (!record(row) || row.status !== "DONE") continue;
@@ -81,7 +82,7 @@ export function readAgyTranscript(session: string, transcript: string, options?:
         if (options?.completion !== false && row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index)
           && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0)) out.completion = { id: createHash("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index as number };
       }
-      if (options?.completion === false || out.completion || start === resumeAt || window === cap) return out;
+      if ((out.completion && (!hasSince || start <= options!.sinceOffset!)) || start === resumeAt || window === cap) return out;
     }
   } catch { return empty; } finally { if (fd !== undefined) closeSync(fd); }
 }
