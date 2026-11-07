@@ -23,7 +23,7 @@ class FakeVisualPeer extends BasePeer {
   async deliver(envs: Envelope[]) { this.received.push(...envs); }
 }
 const payload = { kind: "mermaid", title: "Flow", source: "flowchart LR\nA-->BODY-ONLY-MARKER" };
-async function rig(screen?: Parameters<typeof startDaemon>[0]["piiScreen"], runningPii?: string[]) {
+async function rig(screen?: Parameters<typeof startDaemon>[0]["piiScreen"], runningPii?: string[], initialPolicy?: { shared: Record<string, unknown>; local: Record<string, unknown> }) {
   const root = mkdtempSync(join(tmpdir(), "ahub-visual-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, ".agenthub"));
@@ -31,11 +31,16 @@ async function rig(screen?: Parameters<typeof startDaemon>[0]["piiScreen"], runn
     .replace(/^pii_patterns = .*$/m, 'pii_patterns = ["PRIVATE-VISUAL"]')
     .replace(/^pii_screen = .*$/m, `pii_screen = "${screen ? "local" : "off"}"`);
   writeFileSync(join(root, ".agenthub/routing.toml"), routing);
+  if (initialPolicy) {
+    writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify(initialPolicy.shared));
+    writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify(initialPolicy.local));
+  }
+  const accepted = initialPolicy ? loadConfig(root) : DEFAULT_CONFIG;
   const stateDir = join(root, "state");
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
-    ...(screen ? { piiScreen: screen } : {}), config: { ...DEFAULT_CONFIG, ...(runningPii ? { pii: { paths: runningPii } } : {}), batch_ms: 0, specs: { ...DEFAULT_CONFIG.specs, enabled: false },
+    ...(screen ? { piiScreen: screen } : {}), config: { ...accepted, ...(runningPii ? { pii: { paths: runningPii } } : {}), batch_ms: 0, specs: { ...DEFAULT_CONFIG.specs, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false },
-      snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, local: { ...DEFAULT_CONFIG.local, deny: ["secret"] } } });
+      snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, local: { ...DEFAULT_CONFIG.local, deny: initialPolicy ? accepted.local.deny : ["secret"] } } });
   cleanup.push(() => daemon.stop());
   const sender = new FakeVisualPeer("codex"); daemon.bus.add(sender); await sender.start();
   const receiver = new FakeVisualPeer("kimi"); daemon.bus.add(receiver); await receiver.start();
@@ -160,6 +165,18 @@ test("pending weaker raw file policy cannot release an accepted runtime restrict
   expect((await r.op("hub_visual_show", { id })).ok).toBe(false);
   expect((await r.op("hub_visual", { payload: { kind: "beforeAfter", before: { path: "image.png", alt: "before" }, after: { text: "new" } } })).ok).toBe(false);
   expect(r.store.list()).toHaveLength(1);
+});
+
+test("adopted effective local override does not resurrect a shadowed shared file restriction", async () => {
+  const r = await rig(undefined, undefined, {
+    shared: { pii: { paths: ["image.png"] }, local: { deny: ["image.png"] } },
+    local: { pii: { paths: [] }, local: { deny: [] } },
+  });
+  expect(loadConfig(r.root)).toMatchObject({ pii: { paths: [] }, local: { deny: [] } });
+  writeFileSync(join(r.root, "image.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const id = await r.post({ kind: "beforeAfter", before: { path: "image.png", alt: "before" }, after: { text: "new" } });
+  expect((await r.snapshot({ visualAsset: `${id}:before` })).visualAsset).toMatchObject({ id, file: { path: "image.png" } });
+  expect((await r.op("hub_visual_show", { id })).ok).toBe(true);
 });
 
 test("new raw deny policy and malformed file policy close visual metadata and new file reads", async () => {
