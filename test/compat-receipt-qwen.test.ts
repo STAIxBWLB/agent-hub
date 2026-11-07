@@ -71,9 +71,20 @@ test("canonical Qwen helpers load the actual network preload from a path contain
   // Relocate canonical files byte-for-byte; keep the production path helper single-sourced.
   for (const name of ["qwen.ts", "qwen-acp.py", "qwen-permission.mjs", "qwen-network.cjs"]) copyFileSync(join(original, name), join(helpers, name));
   writeFileSync(join(project, "project.ts"), `export { realPath } from ${JSON.stringify(new URL("../src/hub/project.ts", import.meta.url).href)};\n`);
+  const nativeRun = context.run, positiveLog = join(context.root, "permission-positive.log"); let permissionControlPassed = false;
+  context.run = async (argv, options) => {
+    if (argv[1] === join(helpers, "qwen-permission.mjs")) {
+      const control = await nativeRun([argv[0]!, "-e", "try{require('node:net').connect(9,'203.0.113.1');process.exit(4)}catch(error){if(error.message!=='model-free receipt refuses network')throw error;process.stdout.write('NETWORK_BLOCKED')}"],
+        { ...options, env: { ...options.env, PROBE_NETWORK_LOG: positiveLog } });
+      expect(control.exitCode).toBe(0); expect(control.stdout).toBe("NETWORK_BLOCKED"); expect(control.ownedStopConfirmed).toBe(true); expect(control.timedOut).toBe(false);
+      permissionControlPassed = true;
+    }
+    return nativeRun(argv, options);
+  };
   const relocatedProducer = await import(pathToFileURL(join(helpers, "qwen.ts")).href) as { runQwenProofs(context: ProofContext): ReturnType<typeof runQwenProofs> };
   const result = await relocatedProducer.runQwenProofs(context);
   expect(result[ACP]).toEqual({ status: "pass", cause: "ok" }); expect(result[PERMISSION]).toEqual({ status: "pass", cause: "ok" }); expect(result[NETWORK]).toEqual({ status: "pass", cause: "ok" });
+  expect(permissionControlPassed).toBe(true); expect(readFileSync(positiveLog, "utf8")).toContain("blocked network attempt");
   const native = JSON.parse(readFileSync(join(context.root, "qwen-producer/acp-result.json"), "utf8"));
   expect(native.guardPositiveControl).toBe(true); expect(native.groupGone).toBe(true);
   expect(readFileSync(join(context.root, "qwen-producer/acp/network-positive.log"), "utf8")).toContain("blocked network attempt");
