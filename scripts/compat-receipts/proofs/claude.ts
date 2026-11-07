@@ -45,9 +45,9 @@ export async function runClaudeProofs(context: ProofContext): Promise<ProofResul
       cwd: context.cwd, env: context.env, signal: context.signal, timeoutMs: context.limits.legMs, maxBytes: context.limits.outputBytes,
     });
     const rows = receiptCases(join(destination, "receipt.json"), context.limits.outputBytes);
-    const cause = !run.cleanup ? "cleanup" : run.timedOut ? "timeout" : context.signal.aborted ? "cancelled" : "proof-failed";
+    const cause = !run.ownedStopConfirmed ? "cleanup" : run.timedOut ? "timeout" : context.signal.aborted ? "cancelled" : "proof-failed";
     for (const id of group.ids) output[id] = result("fail", cause);
-    if (run.exitCode !== 0 || !run.cleanup || run.timedOut || context.signal.aborted || !rows || rows.length !== group.cases.length) continue;
+    if (run.exitCode !== 0 || !run.ownedStopConfirmed || run.timedOut || context.signal.aborted || !rows || rows.length !== group.cases.length) continue;
     const byCase = new Map(rows.map(row => [row.case, row]));
     if (byCase.size !== group.cases.length || !group.cases.every(name => byCase.has(name))) continue;
     if (!rows.every(row => row.nativeGroupEmpty === true && (group.name !== "wrapper" || row.hostStopped === true))) {

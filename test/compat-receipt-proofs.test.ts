@@ -38,7 +38,7 @@ function fixture(): ProofContext & { marker: string } {
     limits: { totalMs: 10_000, installMs: 5_000, legMs: 5_000, outputBytes: 64 * 1024, artifactBytes: 1024, expandedBytes: 1024, archiveEntries: 10 },
     run: async () => { throw Error("unexpected command port"); } };
 }
-type Fault = "exit" | "command-cleanup" | "missing-native-cleanup" | "native-cleanup" | "wrapper-cleanup";
+type Fault = "exit" | "command-cleanup" | "missing-native-cleanup" | "native-cleanup" | "wrapper-cleanup" | "lifetime-unproven";
 function claudePort(f: ProofContext, calls: string[][], fault?: Fault): ReceiptCommand {
   return async argv => {
     calls.push([...argv]);
@@ -52,7 +52,9 @@ function claudePort(f: ProofContext, calls: string[][], fault?: Fault): ReceiptC
       ...(wrapper ? { hostStopped: fault !== "wrapper-cleanup", persistentCwd: true, rewrite: true, priorCd: true,
         environmentIsolation: true, replayRefused: true, effects: 1, quotedPaths: true } : {}) }));
     writeFileSync(join(output, "receipt.json"), JSON.stringify({ account: false, inference: false, certified: true, cases: rows }), { mode: 0o600 });
-    return { exitCode: fault === "exit" ? 1 : 0, stdout: "fixture output", stderr: "", timedOut: false, cleanup: fault !== "command-cleanup" };
+    return { exitCode: fault === "exit" ? 1 : 0, stdout: "fixture output", stderr: "", timedOut: false, ownedStopConfirmed: fault !== "command-cleanup",
+      processCleanup: fault === "lifetime-unproven" ? "unproven" : "proven",
+      processCleanupReason: fault === "lifetime-unproven" ? "fixture lifetime is unproven" : "fixture runner attests lifetime cleanup" };
   };
 }
 
@@ -69,6 +71,7 @@ test("Claude module maps all transport/rewrite/wrapper legs through the actual c
   const wrapper = calls.find(args => args.includes("--bun"))!;
   expect(wrapper[wrapper.indexOf("--bun") + 1]).toBe(process.execPath);
   expect(calls.every(args => args[args.indexOf("--expected-version") + 1] === f.version)).toBe(true);
+  expect(calls.every(args => args[args.indexOf("--runtime-path") + 1] === f.env.PATH)).toBe(true);
   expect(existsSync(f.marker)).toBe(false);
 });
 
@@ -87,6 +90,23 @@ test("Claude wrapper host cleanup is required independently of native group clea
   const f = fixture(), results = await runClaudeProofs({ ...f, run: claudePort(f, [], "wrapper-cleanup") });
   expect(WRAPPER.every(id => results[id]?.status === "fail" && results[id]?.cause === "cleanup")).toBe(true);
   expect(results["write-allow"]).toEqual({ status: "pass", cause: "ok" });
+});
+
+test("native group flags do not promote an unproven command lifetime into cleanup proof", async () => {
+  const f = fixture();
+  const cleanupEntry = entry("wrapper-cleanup");
+  const result = await runCompatReceipt({ id: "claude-implementer", version: f.version, out: join(f.root, "lifetime-output"), disposableRunner: true }, {
+    disposable: true, entry: cleanupEntry,
+    install: async context => artifact(context.prefix, f.marker),
+    proofs: runClaudeProofs,
+    run: claudePort(f, [], "lifetime-unproven"),
+    limits: { totalMs: 10_000, installMs: 5_000, legMs: 5_000 },
+  });
+  expect(result.ownedStopConfirmed).toBe(true);
+  expect(result.processCleanup).toBe("unproven");
+  expect(result.legs).toMatchObject([{ id: "wrapper-cleanup", status: "not-run", cause: "process-cleanup-unproven" }]);
+  expect(result.eligible).toBe(false);
+  expect(existsSync(f.marker)).toBe(false);
 });
 
 test("reviewer module rejects the caller HOME before importing preparation or executing a candidate", async () => {
@@ -108,7 +128,8 @@ test("manifest dispatcher runs the actual isolated worker for unsupported qwen a
 
 test("default qwen receipt wiring records not-run after the real worker, with only fake installation", async () => {
   const f = fixture(), calls: { argv: readonly string[]; env: NodeJS.ProcessEnv; cwd: string }[] = [];
-  const result = await runCompatReceipt({ id: "qwen", version: "9.9.9", out: join(f.root, "output") }, {
+  const result = await runCompatReceipt({ id: "qwen", version: "9.9.9", out: join(f.root, "output"), disposableRunner: true }, {
+    disposable: true,
     entry: entry("native-acp-auth-session-modes"),
     install: async context => artifact(context.prefix, f.marker),
     run: async (argv, options): Promise<CommandResult> => {
@@ -124,6 +145,8 @@ test("default qwen receipt wiring records not-run after the real worker, with on
   expect(calls[0]!.env.NODE_OPTIONS).toBeUndefined();
   expect(result.legs).toMatchObject([{ id: "native-acp-auth-session-modes", status: "not-run", cause: "producer-not-committed" }]);
   expect(result.outcome).toBe("not-run"); expect(result.eligible).toBe(false);
-  expect(result.cleanupConfirmed).toBe(true);
+  expect(result.ownedStopConfirmed).toBe(true);
+  expect(result.processCleanup).toBe("unproven");
+  expect(result.processCleanupReason).toBeTruthy();
   expect(existsSync(f.marker)).toBe(false);
 }, 20_000);

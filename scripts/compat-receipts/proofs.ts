@@ -16,7 +16,7 @@ export async function runManifestProofs(context: ProofContext): Promise<ProofRes
     const result = await context.run([process.execPath, fileURLToPath(new URL("./proof-worker.ts", import.meta.url)), request], {
       cwd: context.cwd, env: context.env, signal: context.signal, timeoutMs: context.limits.legMs, maxBytes: context.limits.outputBytes,
     });
-    if (!result.cleanup) throw new ReceiptError("cleanup");
+    if (!result.ownedStopConfirmed) throw new ReceiptError("cleanup");
     if (result.timedOut || context.signal.aborted) throw new ReceiptError("timeout");
     const parsed: unknown = JSON.parse(result.stdout);
     if (result.exitCode !== 0) {
