@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abandonedSizes, backupStartupDatabase, benchmarkFailureStage, BENCHMARK_STAGES, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, privateStartupSandboxProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { abandonedSizes, backupStartupDatabase, benchmarkFailureStage, BENCHMARK_STAGES, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, privateStartupSandboxProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, startupSeedCounter, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { STARTUP_PHASES } from "../src/hub/startup-timing.ts";
 
@@ -217,7 +217,7 @@ for (const deliveryRows of [0, 32]) test(`small public synthetic database handle
   expect(events.filter(byte => byte === 10).length).toBe(profile.eventLines);
 });
 
-function fakePorts(observed: { roots: string[]; sources: (string | undefined)[] }, changes: { stopped?: boolean; eventReadBytes?: number; abandonedReadBytes?: number } = {}): BenchmarkPorts {
+function fakePorts(observed: { roots: string[]; sources: (string | undefined)[] }, changes: { stopped?: boolean; eventReadBytes?: number; abandonedReadBytes?: number; seedPasses?: number; seedReadBytes?: number; eventReadFileCalls?: number } = {}): BenchmarkPorts {
   return {
     project: () => {},
     prepare: async (source, state, profile) => {
@@ -228,7 +228,8 @@ function fakePorts(observed: { roots: string[]; sources: (string | undefined)[] 
     child: async root => {
       observed.roots.push(root);
       expect(statSync(root).mode & 0o777).toBe(0o700);
-      return { timing: TIMING, wallMs: 4, stopped: changes.stopped ?? true, effects: 0, eventReadBytes: changes.eventReadBytes ?? 0, abandonedReadBytes: changes.abandonedReadBytes ?? 0 };
+      return { timing: TIMING, wallMs: 4, stopped: changes.stopped ?? true, effects: 0, eventReadBytes: changes.eventReadBytes ?? PROFILE.eventBytes, abandonedReadBytes: changes.abandonedReadBytes ?? 0,
+        seedPasses: changes.seedPasses ?? 1, seedReadBytes: changes.seedReadBytes ?? PROFILE.eventBytes, eventReadFileCalls: changes.eventReadFileCalls ?? 0 };
     },
   };
 }
@@ -253,7 +254,25 @@ test("unconfirmed fake child retains its copy instead of deleting state under an
   cleanup.push(observed.roots[0]!); // This fixture used no process; only the test can establish that fact.
 });
 
-for (const reads of [{ eventReadBytes: PROFILE.eventBytes }, { abandonedReadBytes: 1 }]) test("acceptance rejects full event or abandoned-snapshot reads even with a fast fake child", async () => {
+test("acceptance allows exactly one streaming seed pass and reports independent cold rollup IO", async () => {
+  const observed = { roots: [] as string[], sources: [] as (string | undefined)[] };
+  const results = await runStartupBenchmark({ mode: "synthetic", samples: 1, profile: PROFILE, acceptance: true }, fakePorts(observed, { eventReadBytes: PROFILE.eventBytes + 8 * 1024 * 1024 }));
+  expect(results[0]!.seedPasses).toBe(1);
+  expect(results[0]!.seedReadBytes).toBe(PROFILE.eventBytes);
+  expect(results[0]!.eventReadFileCalls).toBe(0);
+  expect(results[0]!.auxiliaryReadBytes).toBe(8 * 1024 * 1024);
+});
+
+test("seed observation sums every invocation so a second pass is never hidden by overwrite", async () => {
+  const counter = startupSeedCounter();
+  counter.observed({ readPasses: 1, readBytes: PROFILE.eventBytes });
+  counter.observed({ readPasses: 1, readBytes: PROFILE.eventBytes });
+  expect(counter.metrics).toEqual({ seedPasses: 2, seedReadBytes: 2 * PROFILE.eventBytes });
+  const observed = { roots: [] as string[], sources: [] as (string | undefined)[] };
+  await expect(runStartupBenchmark({ mode: "synthetic", samples: 1, profile: PROFILE, acceptance: true }, fakePorts(observed, { ...counter.metrics, eventReadBytes: counter.metrics.seedReadBytes }))).rejects.toThrow();
+});
+
+for (const reads of [{ seedPasses: 2 }, { eventReadFileCalls: 1 }, { abandonedReadBytes: 1 }]) test("acceptance rejects extra seed passes, whole-file reads and abandoned-snapshot bodies", async () => {
   const observed = { roots: [] as string[], sources: [] as (string | undefined)[] };
   await expect(runStartupBenchmark({ mode: "synthetic", samples: 1, profile: PROFILE, acceptance: true }, fakePorts(observed, reads))).rejects.toThrow();
   expect(observed.roots.every(root => !existsSync(root))).toBe(true);

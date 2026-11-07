@@ -22,7 +22,7 @@ export type StartupProfile = Record<typeof PROFILE_KEYS[number], number>;
 export const REPRESENTATIVE_PROFILE: StartupProfile = { dbBytes: 37_000_000, taskRows: 770, taskHistoryEntries: 7700, taskTextBytes: 2_000_000,
   deliveryRows: 1000, deliveryPayloadBytes: 2_000_000, eventBytes: 130_000_000, eventLines: 500_000, abandonedFiles: 1, abandonedBytes: 17_000_000, abandonedMaxBytes: 17_000_000 };
 export interface BenchmarkOptions { mode: "synthetic" | "private"; samples: number; profile?: StartupProfile; privateState?: string; acceptance?: boolean }
-export interface ChildObservation { timing: string; wallMs: number; stopped: boolean; effects: number; eventReadBytes: number; abandonedReadBytes: number; importAndStartupMs?: number }
+export interface ChildObservation { timing: string; wallMs: number; stopped: boolean; effects: number; eventReadBytes: number; abandonedReadBytes: number; seedPasses: number; seedReadBytes: number; eventReadFileCalls: number; importAndStartupMs?: number }
 export interface BenchmarkPorts {
   prepare?: (state: string | undefined, destination: string, profile: StartupProfile, env: NodeJS.ProcessEnv) => Promise<StartupProfile>;
   child?: (root: string, env: NodeJS.ProcessEnv) => Promise<ChildObservation>;
@@ -273,14 +273,15 @@ export async function probePrivateStartupGuard(typedState: string): Promise<{ pr
 }
 
 async function child(root: string, env: NodeJS.ProcessEnv, sandboxProfile?: string): Promise<ChildObservation> {
-  const started = performance.now(); let ready: { timing: string; importAndStartupMs: number; eventReadBytes: number; abandonedReadBytes: number } | undefined, wallMs = 0;
+  const started = performance.now(); let ready: { timing: string; importAndStartupMs: number; eventReadBytes: number; abandonedReadBytes: number; seedPasses: number; seedReadBytes: number; eventReadFileCalls: number } | undefined, wallMs = 0;
   const argv = sandboxProfile ? ["/usr/bin/sandbox-exec", "-p", sandboxProfile, process.execPath, SCRIPT, "--child", root] : [process.execPath, SCRIPT, "--child", root];
   const raw = await ownedCommand(argv, root, env, undefined, line => {
     try {
       const value = JSON.parse(line);
       if (value.ready === 1 && !ready && value.effects === 0 && Number.isFinite(value.importAndStartupMs) && value.importAndStartupMs >= 0) {
-        if (![value.eventReadBytes, value.abandonedReadBytes].every(n => Number.isSafeInteger(n) && n >= 0)) return;
-        ready = { timing: timingLine(value.timing), importAndStartupMs: value.importAndStartupMs, eventReadBytes: value.eventReadBytes, abandonedReadBytes: value.abandonedReadBytes }; wallMs = performance.now() - started;
+        if (![value.eventReadBytes, value.abandonedReadBytes, value.seedPasses, value.seedReadBytes, value.eventReadFileCalls].every(n => Number.isSafeInteger(n) && n >= 0)) return;
+        if (value.seedReadBytes > value.eventReadBytes) return;
+        ready = { timing: timingLine(value.timing), importAndStartupMs: value.importAndStartupMs, eventReadBytes: value.eventReadBytes, abandonedReadBytes: value.abandonedReadBytes, seedPasses: value.seedPasses, seedReadBytes: value.seedReadBytes, eventReadFileCalls: value.eventReadFileCalls }; wallMs = performance.now() - started;
       }
     } catch { /* Non-protocol output is discarded, never forwarded. */ }
   });
@@ -322,9 +323,10 @@ export async function runStartupBenchmark(options: BenchmarkOptions, ports: Benc
         if (privateGuard && realPath(options.privateState!) !== privateGuard.canonicalState) return refuse();
         const observation = await (ports.child ?? ((sampleRoot: string, sampleEnv: NodeJS.ProcessEnv) => child(sampleRoot, sampleEnv, privateGuard?.profile)))(root, env); stopped = observation.stopped;
         if (!stopped || observation.effects !== 0) return refuse();
-        if (options.acceptance && (observation.wallMs >= 5000 || observation.abandonedReadBytes > 0 || sizes.eventBytes > 0 && observation.eventReadBytes >= sizes.eventBytes)) return refuse();
+        if (options.acceptance && (observation.wallMs >= 5000 || observation.abandonedReadBytes > 0 || observation.seedPasses !== 1 || observation.eventReadFileCalls !== 0)) return refuse();
         results.push({ synthetic: Number(options.mode === "synthetic"), macGuard: privateGuard?.macGuard ?? 0, sample: attempt, ...sizes, wallMs: Math.round(observation.wallMs),
-          ...(observation.importAndStartupMs === undefined ? {} : { importAndStartupMs: Math.round(observation.importAndStartupMs) }), timing: timingLine(observation.timing), effects: observation.effects, eventReadBytes: observation.eventReadBytes, abandonedReadBytes: observation.abandonedReadBytes });
+          ...(observation.importAndStartupMs === undefined ? {} : { importAndStartupMs: Math.round(observation.importAndStartupMs) }), timing: timingLine(observation.timing), effects: observation.effects, seedPasses: observation.seedPasses, seedReadBytes: observation.seedReadBytes, eventReadFileCalls: observation.eventReadFileCalls, eventReadBytes: observation.eventReadBytes,
+          auxiliaryReadBytes: observation.eventReadBytes - observation.seedReadBytes, abandonedReadBytes: observation.abandonedReadBytes });
       } finally {
         // An unconfirmed child retains its private fixture; never delete state beneath an owner.
         if (stopped) rmSync(root, { recursive: true, force: true });
@@ -425,9 +427,9 @@ async function interceptBuiltins(specifiers: string[], overrides: (real: Record<
   return () => { for (const { specifier, real } of captured) mock.module(specifier, () => real); };
 }
 
-export async function installStartupReadObserver(stateDir: string): Promise<{ counts: { eventReadBytes: number; abandonedReadBytes: number; restartReadBytes: number }; restore(): void }> {
+export async function installStartupReadObserver(stateDir: string): Promise<{ counts: { eventReadBytes: number; abandonedReadBytes: number; restartReadBytes: number; eventReadFileCalls: number }; restore(): void }> {
   const descriptors = new Map<number, string>();
-  const counts = { eventReadBytes: 0, abandonedReadBytes: 0, restartReadBytes: 0 };
+  const counts = { eventReadBytes: 0, abandonedReadBytes: 0, restartReadBytes: 0, eventReadFileCalls: 0 };
   const sourceName = (value: unknown): string | undefined => typeof value === "number" ? descriptors.get(value) : typeof value === "string" ? resolve(value) : undefined;
   const noteRead = (name: string | undefined, bytes: number) => {
     if (name === join(stateDir, "events.jsonl")) counts.eventReadBytes += bytes;
@@ -440,6 +442,7 @@ export async function installStartupReadObserver(stateDir: string): Promise<{ co
     readSync: (...args: any[]) => { const n = real.readSync(...args); noteRead(sourceName(args[0]), n); return n; },
     readFileSync: (...args: any[]) => {
       const name = sourceName(args[0]), data = real.readFileSync(...args);
+      if (name === join(stateDir, "events.jsonl")) counts.eventReadFileCalls++;
       noteRead(name, typeof data === "string" ? Buffer.byteLength(data) : data.byteLength); return data;
     },
   }));
@@ -562,13 +565,19 @@ async function publicProbeChild(root: string): Promise<void> {
   process.stdout.write(JSON.stringify(metrics) + "\n");
 }
 
+/** Sum every invocation; overwriting the last observation would hide a second seed pass. */
+export function startupSeedCounter(): { metrics: { seedPasses: number; seedReadBytes: number }; observed(value: { readPasses: number; readBytes: number }): void } {
+  const metrics = { seedPasses: 0, seedReadBytes: 0 };
+  return { metrics, observed: value => { metrics.seedPasses += value.readPasses; metrics.seedReadBytes += value.readBytes; } };
+}
+
 /** Isolated child only: deny effects before importing the composition root. */
 async function measure(root: string): Promise<void> {
   const importedAt = performance.now(), cwd = join(root, "project"), stateDir = join(root, "state");
   if (process.env.AHUB_STARTUP_BENCHMARK_CHILD !== "1" || process.env.HOME !== join(root, "home") || process.env.AGENTHUB_HOME !== join(root, "agenthub_home")) return refuse();
   publicStage = "effect-guards";
   const guards = await installStartupEffectDenials(), deny = guards.deny;
-  const observer = await installStartupReadObserver(stateDir), io = observer.counts;
+  const observer = await installStartupReadObserver(stateDir), io = observer.counts, seedCounter = startupSeedCounter();
   publicStage = "daemon-import";
   const { startDaemon, DEFAULT_CONFIG } = await import("../../src/hub/daemon.ts");
   const { ADAPTERS } = await import("../../src/adapters/registry.ts");
@@ -580,7 +589,7 @@ async function measure(root: string): Promise<void> {
   // Rebind only the disposable copy's project path; no live descriptor/leadership file is copied or read.
   db.query("UPDATE delivery_meta SET project_root=?").run(cwd); db.close();
   publicStage = "daemon-start";
-  const daemon = await startDaemon({ cwd, stateDir, projectId: row?.project_id ?? "synthetic-startup", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
+  const daemon = await startDaemon({ cwd, stateDir, startupSeedObserved: seedCounter.observed, projectId: row?.project_id ?? "synthetic-startup", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
     agentDrift: async () => [], terminal: () => ({ available: () => ({ ok: false, why: "benchmark effects are refused" }), open: deny }), notifier: deny,
     memorySync: deny, memorySyncTrigger: () => {}, piiScreen: async () => deny(), webFetchTransport: deny,
     config: { ...DEFAULT_CONFIG, roster: Object.fromEntries(ADAPTERS.map(definition => [definition.kind, false])),
@@ -598,7 +607,7 @@ async function measure(root: string): Promise<void> {
     const lines = readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter(line => line.includes("startup timings ms: "));
     if (lines.length !== 1) return refuse();
     const timing = timingLine(lines[0]!.slice(lines[0]!.indexOf("startup timings ms: ")));
-    await new Promise<void>(done => process.stdout.write(JSON.stringify({ timing, importAndStartupMs, ready: 1, effects: guards.effects(), ...io }) + "\n", () => done()));
+    await new Promise<void>(done => process.stdout.write(JSON.stringify({ timing, importAndStartupMs, ready: 1, effects: guards.effects(), ...seedCounter.metrics, ...io }) + "\n", () => done()));
     publicStage = "daemon-stop";
     await daemon.stop();
     if (guards.effects() !== 0) return refuse();

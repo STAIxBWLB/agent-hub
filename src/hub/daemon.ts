@@ -1,3 +1,4 @@
+import { readStartupEventSeeds } from "./startup-event-seeds.ts";
 import { StartupTimings } from "./startup-timing.ts";
 import { repoGitArgs, repoGitEnv } from "./snapshots.ts";
 import { createReviewMaterialReader, type ReviewReadRequest, type ReviewMaterialBatch } from "./review-material.ts";
@@ -687,6 +688,8 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 }
 
 export interface DaemonOptions {
+  /** Host-only numeric startup reader observation; never read from config or control input. Observer failure changes no replay state. */
+  startupSeedObserved?: (observation: { readPasses: number; readBytes: number }) => void;
   /** Host-only test/embedding port; never read from project configuration or a tool. */
   memoryClient?: MemoryClient;
   /** Host-only remote-default evidence seam; never read from config or control messages. */
@@ -3147,7 +3150,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const turnEnded = new Map<PeerId, number>();
   const nativeCompletedAt = new Map<PeerId, number>();
   startupTimings.mark("task_runtime");
-  const nativeStopsSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(event => event.type === "native_turn_end" && event.id ? [event.id] : []));
+  const startupSeeds = readStartupEventSeeds(join(opts.stateDir, "events.jsonl"));
+  try { opts.startupSeedObserved?.({ readPasses: startupSeeds.readPasses, readBytes: startupSeeds.readBytes }); } catch { /* Diagnostic observers cannot change replay or readiness. */ }
+  const nativeStopsSeen = startupSeeds.nativeStopsSeen;
   startupTimings.mark("native_stop_seed");
   const activeAt = new Map<PeerId, number>();
   interface NativeTurnStart { at: number; baseline?: string; generation: string; session: string; launch: string }
@@ -3414,11 +3419,9 @@ export async function startDaemon(opts: DaemonOptions) {
     notify: (line) => { notify(line); feedBudgetPauses(); },
   }, accountMembers, accountOf));
   budget.setRecoveryHold(recoveryActive());
-  // ponytail: a third full read of events.jsonl at startup (after nativeStopsSeen and claudeNativeUsageSeen). Measured at about 70 ms on the real
-  // 46 MB, 238k-line log, so it is not folded into one pass across startup. Ceiling: the log is never rotated, so the cost grows with it; when a
-  // read passes a few hundred ms, make one `readEvents` pass feed all three sets (or keep the resets in hub.db, the #683 U2 roll-up).
+  // Share the single streaming startup pass; quota, Kimi and token-window replay keep their existing predicates.
   startupTimings.mark("budget");
-  const startupEvents = readEvents(join(opts.stateDir, "events.jsonl"));
+  const startupEvents = startupSeeds.events;
   budget.seedResets(startupEvents.flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
   // #285 phase 2: Kimi's consumption is the hub's own count of its session wire log (`src/adapters/kimi-wire-usage.ts`), not an ACP total.
   const kimiUsage = new KimiUsage({
@@ -5906,7 +5909,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Optional native usage: only the instance-fenced explicit Claude session is read.
   // IDs persist in telemetry, so a restart/resume never counts the same native message twice.
   startupTimings.mark("services");
-  const claudeNativeUsageSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).filter(e => e.type === "usage" && e.source === "claude_transcript").map(e => (e as { id: string }).id));
+  const claudeNativeUsageSeen = startupSeeds.claudeNativeUsageSeen;
   startupTimings.mark("transcript_usage_seed");
   const collectClaudeUsage = () => { for (const peer of channelPeers) {
     const session = claudeSession(peer);

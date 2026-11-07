@@ -139,16 +139,22 @@ export function tokenDeltas(): (peer: string, total: number, session: string) =>
  */
 export function readEvents(file: string, since = 0): StampedEvent[] {
   if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8").split("\n").flatMap((line) => {
-    if (!line.trim()) return [];
-    try {
-      const e = JSON.parse(line) as StampedEvent;
-      const measuredAt = e.type === "usage" && typeof e.measuredAt === "string" ? e.measuredAt : e.at;
-      return Date.parse(measuredAt) >= since ? [e] : [];
-    } catch {
-      return [];
-    }
+  return readFileSync(file, "utf8").split("\n").flatMap(line => {
+    const event = parseEventLine(line, since);
+    return event === undefined ? [] : [event];
   });
+}
+
+/** The historical event-reader predicate, shared without adding shape or line-size restrictions. */
+export function parseEventLine(line: string, since = 0): StampedEvent | undefined {
+  if (!line.trim()) return undefined;
+  try {
+    const e = JSON.parse(line) as StampedEvent;
+    const measuredAt = e.type === "usage" && typeof e.measuredAt === "string" ? e.measuredAt : e.at;
+    return Date.parse(measuredAt) >= since ? e : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** `7d`, `24h`, `90m` or an ISO date, as epoch ms; undefined when it is neither. */
