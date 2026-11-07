@@ -1,6 +1,6 @@
 import { definitionOf } from "../adapters/registry.ts";
 import type { StampedEvent } from "./events.ts";
-import { addPersonEvent, emptyPersonCounts, isPersonEvent, personFigures, personTask, startsAttribution, UNKNOWN_PERSON_FIGURES, type PersonCounts, type PersonFigures } from "./person-figures.ts";
+import { addPersonEvent, emptyPersonCounts, isPersonEvent, personCoverage, personFigures, personTask, startsAttribution, UNKNOWN_PERSON_FIGURES, type PersonCounts, type PersonFigures } from "./person-figures.ts";
 
 export interface Report {
   from?: string;
@@ -298,7 +298,7 @@ export function summarizeByTask(events: StampedEvent[]): TaskReport {
   const counts = new Map<number, PersonCounts>();
   // #1278: a task is covered when it began at or after the first hub run that attributes person events (the research record's rule too); earlier ones are unknown, never 0.
   let reportingSince: number | null = null;
-  const began = new Map<number, number>();
+  const proposedAt = new Map<number, number>();
   const task = (id: number) => r.tasks[String(id)] ??= { ...taskTotals(), class: null, outcome: null, wallMs: null, person: { ...UNKNOWN_PERSON_FIGURES } };
   const starts = new Map<number, number>(), approvals = new Map<number, number>();
   const seenUsage = new Set<string>();
@@ -312,7 +312,8 @@ export function summarizeByTask(events: StampedEvent[]): TaskReport {
     if (e.pii) t.pii = true;
     const at = Date.parse(e.at);
     if (!Number.isFinite(at)) continue;
-    if (!began.has(e.id)) began.set(e.id, at);
+    // The record's rule for when a task began: its proposal (or the pull from the backlog), else its first start. A backlog card's earlier `backlogged` event does not count.
+    if ((e.event === "proposed" || e.event === "backlog pulled") && !proposedAt.has(e.id)) proposedAt.set(e.id, at);
     if (e.state === "in_progress" && !starts.has(e.id)) starts.set(e.id, at);
     if (e.state === "approved" && !approvals.has(e.id)) approvals.set(e.id, at);
   }
@@ -360,7 +361,7 @@ export function summarizeByTask(events: StampedEvent[]): TaskReport {
       else addTaskUsage(p, e);
     }
   }
-  for (const [id, t] of Object.entries(r.tasks)) { const first = began.get(Number(id)); t.person = personFigures(counts.get(Number(id)), reportingSince !== null && first !== undefined && first >= reportingSince); }
+  for (const [id, t] of Object.entries(r.tasks)) t.person = personFigures(counts.get(Number(id)), personCoverage(reportingSince, proposedAt.get(Number(id)) ?? starts.get(Number(id))));
   r.unattributed.tokenShare = r.totals.tokens ? r.unattributed.tokens / r.totals.tokens : null;
   r.unattributed.usageShare = r.totals.usageRecords ? r.unattributed.usageRecords / r.totals.usageRecords : null;
   return r;

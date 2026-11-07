@@ -59,9 +59,22 @@ function minutes(into: PersonCounts, latencyMs: unknown): void {
   if (recorded(latencyMs)) into.latencyMs.sum += latencyMs; else into.latencyMs.unknown++;
 }
 
-/** The figures of one task from its counts; null throughout when the log never reported attribution on a person event. */
-export const personFigures = (counts: PersonCounts | undefined, reporting: boolean): PersonFigures =>
-  reporting && counts ? { permissions: counts.permissions, questions: counts.questions, completions: counts.completions, cliRefusals: counts.cliRefusals, consoleConfirmations: null, latencyMs: counts.latencyMs } : { ...UNKNOWN_PERSON_FIGURES };
+/**
+ * The figures of one task, the ONE place that decides unknown against zero, for the research record and `ahub report --by task` alike (#1298 review: the two must not disagree).
+ * `covered`: the log is known to attribute person events for this task (see `personCoverage`). A covered task with no event of its own is a known zero, which is the real and best answer for a
+ * task nobody was asked about, so `counts` missing reads as empty; an uncovered task is unknown whatever its counts say, because the log cannot say what happened before attribution.
+ */
+export const personFigures = (counts: PersonCounts | undefined, covered: boolean): PersonFigures => {
+  if (!covered) return { ...UNKNOWN_PERSON_FIGURES };
+  const c = counts ?? emptyPersonCounts();
+  return { permissions: c.permissions, questions: c.questions, completions: c.completions, cliRefusals: c.cliRefusals, consoleConfirmations: null, latencyMs: c.latencyMs };
+};
+
+/**
+ * Whether a task is covered: it began (its proposal, else its first start) at or after the first `hub_start` that attributes person events. `since` is that start's time, or null when no
+ * such start is in the log; `began` is the task's own first time, or undefined/NaN when the log does not say.
+ */
+export const personCoverage = (since: number | null, began: number | undefined): boolean => since !== null && began !== undefined && Number.isFinite(began) && began >= since;
 
 /**
  * Whether a `hub_start` says the run attributes person events (#1278). A task is covered by the log when it began at or after the first such start: from then on every person interaction of

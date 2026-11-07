@@ -6,7 +6,7 @@ import { hubHome } from "./project.ts";
 import { ADDONS, addonState, type Addon, type AddonName } from "./tooling.ts";
 import { MIN_ATTEMPTS, mulberry32 } from "./bench.ts";
 import { UNKNOWN_MEMORY_FIGURES } from "./research-memory.ts";
-import { addPersonEvent, emptyPersonCounts, isPersonEvent, personFigures, personTask, startsAttribution, type PersonCounts } from "./person-figures.ts";
+import { addPersonEvent, emptyPersonCounts, isPersonEvent, personCoverage, personFigures, personTask, startsAttribution, type PersonCounts } from "./person-figures.ts";
 import { closedId, journalFigures, mergeBlock, NO_EVIDENCE, reviewBlock, specsBlock, type CancelCause, type CohortKind, type DeliveryBlock, type HandoffsBlock, type MemoryBlock, type MergeBlock, type PersonBlock, type ResearchEvidence, type ReviewBlock, type SpecsBlock, cancelCauseOf } from "./research-record.ts";
 export type { CancelCause, CohortKind, DeliveryBlock, HandoffsBlock, MemoryBlock, MergeBlock, PersonBlock, ResearchEvidence, ReviewBlock, SpecsBlock } from "./research-record.ts";
 
@@ -250,7 +250,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(closedAt);
     const task = evidence.tasks.get(a.task), board = evidence.board;
     const began = a.createdAt ? Date.parse(a.createdAt) : a.startedAt ? Date.parse(a.startedAt) : NaN;
-    const covered = personReportingSince !== null && Number.isFinite(began) && began >= personReportingSince;
+    const covered = personCoverage(personReportingSince, began);
     const ownerFamily = closedId(a.owners.at(-1) ? evidence.familyOf?.(a.owners.at(-1)!) : undefined);
     const approvedMs = outcome === "approved" ? Date.parse(approvedAt!) : null;
     const created = a.createdAt ? Date.parse(a.createdAt) : NaN;

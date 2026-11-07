@@ -138,5 +138,29 @@ test("addPersonEvent and personFigures keep unobserved as null", () => {
   addPersonEvent(counts, { v: 1, at: "2026-10-10T00:00:00.000Z", type: "permission", id: "x", peer: "codex", event: "answered", surface: "console", option: "allow_once", latencyMs: 1500 } as PersonEvent);
   expect(personFigures(counts, true).latencyMs).toEqual({ sum: 1500, n: 1, unknown: 0 });
   expect(personFigures(counts, false)).toEqual(UNKNOWN_PERSON_FIGURES);
-  expect(personFigures(undefined, true)).toEqual(UNKNOWN_PERSON_FIGURES);
+  // Covered with no events of its own is a known zero (#1298 review); uncovered is unknown whatever the counts say.
+  expect(personFigures(undefined, true)).toMatchObject({ permissions: { asked: 0 }, completions: 0, latencyMs: { sum: 0, n: 0, unknown: 0 } });
+  expect(personFigures(undefined, false)).toEqual(UNKNOWN_PERSON_FIGURES);
+});
+
+// #1298 review: the report and the record decide unknown against zero in one place, so a covered task nobody was asked about is a known zero in both.
+test("a covered task with no interactions is a known zero in the report and the record alike, and an uncovered one is unknown in both", () => {
+  const log = [
+    taskEvent(0, 1, "proposed", "proposed"), taskEvent(1, 1, "accepted", "in_progress", { owner: "codex" }), taskEvent(2, 1, "approved", "approved"),
+    ev(5, { type: "hub_start", instance: "run-2", personAttribution: true }),
+    taskEvent(6, 2, "proposed", "proposed"), taskEvent(7, 2, "accepted", "in_progress", { owner: "codex" }), taskEvent(9, 2, "approved", "approved"),
+    taskEvent(10, 3, "backlogged", "backlog"), taskEvent(11, 3, "backlog pulled", "proposed"), taskEvent(12, 3, "accepted", "in_progress", { owner: "codex" }), taskEvent(13, 3, "approved", "approved"),
+  ];
+  const report = summarizeByTask(log), records = taskRecords(log, PROJECT, writer);
+  const zero = { permissions: { asked: 0, allowed: 0, denied: 0, expired: 0 }, questions: { asked: 0, answered: 0, expired: 0 }, completions: 0, cliRefusals: 0, consoleConfirmations: null, latencyMs: { sum: 0, n: 0, unknown: 0 } };
+  for (const id of [2, 3]) {
+    expect(report.tasks[String(id)]!.person).toEqual(zero);
+    expect(records.find(r => r.task === id)!.person).toEqual(zero);
+  }
+  expect(report.tasks["1"]!.person).toEqual(UNKNOWN_PERSON_FIGURES);
+  expect(records.find(r => r.task === 1)!.person).toEqual(UNKNOWN_PERSON_FIGURES);
+  // The text report says so too: a known zero is not "person unknown".
+  const text = formatTaskReport(report).join("\n");
+  expect(text).toMatch(/task #2: .*\n\s+person: permissions 0 asked/);
+  expect(text).toMatch(/task #1: .*\n\s+person unknown/);
 });

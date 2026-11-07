@@ -5603,11 +5603,18 @@ export async function startDaemon(opts: DaemonOptions) {
   const questionStore = new QuestionStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => questionStore.close());
   const questionAttributions = new Map<string, TaskAttribution>();
+  /**
+   * The attribution of a question event. It is resolved ONLY when the question opens (`asked`, or `unavailable`, which has no set), by the rule `turn_end` uses, and cached by set. Every later event
+   * of a set repeats the cached answer. A set with no cached answer (the hub restarted while the question was open, which `QuestionDesk.repair` leaves answerable, or the bounded map evicted it)
+   * is `unattributed`: re-resolving it would put the person's answer, with its full latency, on whatever task the peer works on NOW, which is the read-time attribution this exists to prevent.
+   */
   const withQuestionAttribution = (e: Extract<HubEvent, { type: "question" }>): HubEvent => {
     let attribution = questionAttributions.get(e.set);
     if (!attribution) {
-      attribution = taskAttribution(e.peer);
-      if (e.set !== "-") { questionAttributions.set(e.set, attribution); if (questionAttributions.size > 512) questionAttributions.delete(questionAttributions.keys().next().value!); }
+      if (e.event === "asked" || e.event === "unavailable") {
+        attribution = taskAttribution(e.peer);
+        if (e.set !== "-") { questionAttributions.set(e.set, attribution); if (questionAttributions.size > 512) questionAttributions.delete(questionAttributions.keys().next().value!); }
+      } else attribution = { attribution: "unattributed" };
     }
     // A closed question's entry is released; a pending one keeps it for its answer.
     if (e.event === "answered" || e.event === "superseded" || e.event === "cancelled" || e.event === "expired") questionAttributions.delete(e.set);
