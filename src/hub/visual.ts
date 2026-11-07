@@ -69,7 +69,7 @@ function text(value: unknown, cap: number, field: string, screen: Screen, nonemp
   if (typeof value !== "string" || bytes(value) > cap) fail(field, `expected text of at most ${cap} UTF-8 bytes`);
   const clean = sanitize(value);
   if (bytes(clean) > cap || nonempty && !clean.trim()) fail(field, "sanitized text is empty or exceeds its byte bound");
-  try { if (screen(value) !== true || screen(clean) !== true) fail(field, "private-pattern screen refused this text"); }
+  try { if (screen(value) !== true || screen(clean) !== true) fail(field, "privacy pattern screen refused this text"); }
   catch (error) { if (error instanceof VisualValidationError) throw error; fail(field, "privacy screen unavailable"); }
   return preserve ? value : clean;
 }
@@ -205,14 +205,17 @@ export class VisualStore {
   hasRecords(): boolean { return this.db.query("SELECT 1 AS present FROM visuals LIMIT 1").get() !== null; }
   /** Stream bounded raw rows, not images. Length-prefixed canonical tuples bind every stored field and row loss. */
   integrity(): { count: number; digest: string } {
-    const hash = createHash("sha256").update("hub-visual-integrity-v1"), rows = this.db.query<Raw, []>(`SELECT ${metadataColumns},${jsonColumns} FROM visuals ORDER BY id`).iterate();
+    const hash = createHash("sha256").update("hub-visual-integrity-v1");
+    const statement = this.db.prepare<Raw, []>(`SELECT ${metadataColumns},${jsonColumns} FROM visuals ORDER BY id`);
     let count = 0;
-    for (const raw of rows) {
-      readRaw(raw); // Corrupt or oversize rows refuse the entire inventory, never disappear from it.
-      const tuple = JSON.stringify([raw.id, raw.task, raw.from, raw.kind, raw.title, raw.payload_json, raw.files_json, raw.created]);
-      hash.update(`${bytes(tuple)}:`).update(tuple); count++;
-      if (!Number.isSafeInteger(count)) fail("integrity", "visual count exceeds its safe range");
-    }
+    try {
+      for (const raw of statement.iterate()) {
+        readRaw(raw); // Corrupt or oversize rows refuse the entire inventory, never disappear from it.
+        const tuple = JSON.stringify([raw.id, raw.task, raw.from, raw.kind, raw.title, raw.payload_json, raw.files_json, raw.created]);
+        hash.update(`${bytes(tuple)}:`).update(tuple); count++;
+        if (!Number.isSafeInteger(count)) fail("integrity", "visual count exceeds its safe range");
+      }
+    } finally { statement.finalize(); }
     return { count, digest: hash.digest("hex") };
   }
   list(input: { task?: number; limit?: number } = {}): VisualSummary[] {

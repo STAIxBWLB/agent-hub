@@ -127,6 +127,9 @@ test("persisted malformed, oversized and unknown-field rows fail closed without 
       expect(() => f.store.get(visual.id)).toThrow("stored visual is corrupt");
       expect(() => f.store.integrity()).toThrow("stored visual is corrupt");
     }
+    // A refused streaming inventory must release its read cursor so another connection can repair the row.
+    db.query("UPDATE visuals SET payload_json=? WHERE id=?").run(JSON.stringify(visual.payload), visual.id);
+    expect(f.store.integrity().count).toBe(1);
     db.query("UPDATE visuals SET title=? WHERE id=?").run("x".repeat(2001), visual.id);
     expect(() => f.store.list()).toThrow();
   } finally { db.close(); }
