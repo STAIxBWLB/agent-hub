@@ -132,3 +132,32 @@ test("a throwing changed notification cannot undo fail-closed stop", async () =>
   watch.start(); clock.fire(100); await settle(); await watch.stop();
   expect(checks).toBe(1); expect(stops).toBe(1); expect(changes).toBe(1); expect(clock.pending).toEqual([]);
 });
+
+for (const outcome of ["resolve", "reject"] as const) test(`${outcome} worker failure before the first poll closes and joins without checking`, async () => {
+  const clock = new Clock(), failure = deferred<void>(), stopped = deferred<void>(); let changes = 0, stops = 0, checks = 0, joined = false;
+  const watch = createReviewerPolicyWatch({ failure: failure.promise,
+    async check() { checks++; return true; }, async stop() { stops++; await stopped.promise; },
+  }, () => { changes++; }, clock);
+  watch.start(); expect(clock.pending.map(job => job.due)).toEqual([100]);
+  if (outcome === "resolve") failure.resolve(undefined); else failure.reject(Error("synthetic worker boot failure"));
+  await settle(); expect(changes).toBe(1); expect(stops).toBe(1); expect(checks).toBe(0); expect(clock.pending).toEqual([]);
+  const join = watch.stop(); void join.then(() => { joined = true; }); await settle(); expect(joined).toBe(false);
+  stopped.resolve(undefined); await join; expect(joined).toBe(true); expect(stops).toBe(1); expect(changes).toBe(1);
+});
+
+test("worker failure is inactive before ownership attaches and late failure after stop is ignored", async () => {
+  const clock = new Clock(), failure = deferred<void>(); let attached = false, changes = 0, stops = 0, checks = 0;
+  const watch = createReviewerPolicyWatch({ failure: failure.promise,
+    async check() { checks++; return true; }, async stop() { stops++; },
+  }, () => { expect(attached).toBe(true); changes++; }, clock);
+  failure.resolve(undefined); await settle(); expect(changes).toBe(0); expect(stops).toBe(0); expect(clock.jobs).toEqual([]);
+  attached = true; watch.start(); await settle(); await watch.stop();
+  expect(changes).toBe(1); expect(stops).toBe(1); expect(checks).toBe(0); expect(clock.pending).toEqual([]);
+
+  const lateClock = new Clock(), lateFailure = deferred<void>(); let lateChanges = 0, lateStops = 0, lateChecks = 0;
+  const lateWatch = createReviewerPolicyWatch({ failure: lateFailure.promise,
+    async check() { lateChecks++; return true; }, async stop() { lateStops++; },
+  }, () => { lateChanges++; }, lateClock);
+  lateWatch.start(); await lateWatch.stop(); lateFailure.resolve(undefined); await settle();
+  expect(lateChanges).toBe(0); expect(lateStops).toBe(1); expect(lateChecks).toBe(0); expect(lateClock.pending).toEqual([]);
+});
