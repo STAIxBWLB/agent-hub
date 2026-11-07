@@ -209,6 +209,7 @@ import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
 import { readEvidence } from "./research-record.ts";
+import { memoryFigures, onlyTaskMemory, UNKNOWN_MEMORY_FIGURES, type MemoryFigures } from "./research-memory.ts";
 import { parseResearchRunners, type RegisteredRunnerV1 } from "./research-runner.ts";
 import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
 import { projectChain } from "@staix/agent-mem";
@@ -1251,13 +1252,41 @@ export async function startDaemon(opts: DaemonOptions) {
   // first writes once its peers have stopped and their turns ended.
   const researchGraceMs = opts.researchGraceMs ?? 10_000;
   const researchPending = new Map<number, { since: number; timer: ReturnType<typeof setTimeout> }>();
+  /**
+   * #1279: the counter figures of one task, read from agent-mem's sidecar at the moment the record is written (the sidecar, the store and the memory project are bound further down, and exist by
+   * then). Undefined when memory or the sidecar is off, so the record's counters stay unknown; a task that is private reports none, whatever the sidecar holds.
+   */
+  const memoryFiguresFor = (taskId: number): MemoryFigures => {
+    const row = board.get(taskId);
+    if (!candidates || !memoryStore || !row || tasks.isPii(row)) return { ...UNKNOWN_MEMORY_FIGURES };
+    try {
+      const store = memoryStore, project = memoryProject;
+      const planContext = { cwd: opts.cwd, project, repo: memoryRepo, deny: config.local.deny };
+      const briefTask = { id: row.id, created: row.created, title: "", refs: { paths: row.refs.paths ?? [] }, plan: { paths: row.plan?.paths ?? [], symbols: row.plan?.symbols ?? [] } };
+      // The store has no read by id (`get` and `list` each rebuild the whole live view), so it is listed at most once per record, and only when the task has a rendered counter at all: a task with
+      // none never touches it. Only the rendered entries are screened, not the store. A hidden or unreadable entry is simply absent, and the figures then call their fail counts unknown.
+      let listed: Map<string, ReturnType<MemoryStore["list"]>[number]> | undefined;
+      const view = (id: string) => {
+        listed ??= new Map(store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map(v => [v.id, v]));
+        const found = listed.get(id);
+        return found ? screenMemory([found])[0] : undefined;
+      };
+      return memoryFigures({
+        counters: candidates.counters(project),
+        taskKey: taskKey(project, row),
+        view,
+        matchingPlan: fails => matchingPlanFails(briefTask, fails, planContext),
+      });
+    } catch { return { ...UNKNOWN_MEMORY_FIGURES }; }
+  };
   const writeResearch = (taskId: number) => {
     const pending = researchPending.get(taskId);
     if (pending) clearTimeout(pending.timer);
     researchPending.delete(taskId);
     try {
       // #1277: the board and journal are read through a read-only handle, so the record carries its v2 blocks; the family lookup is the project's own (instances resolve there).
-      const evidence = { ...readEvidence(opts.stateDir, projectId), familyOf: (peer: string) => adapterCatalog.familyOf(peer, declarations) };
+      // Scoped to the one task: the live writer runs on the daemon thread and must not parse every task's history and the whole journal for one record (a backfill reads them all).
+      const evidence = { ...readEvidence(opts.stateDir, projectId, taskId), familyOf: (peer: string) => adapterCatalog.familyOf(peer, declarations), memory: onlyTaskMemory(taskId, memoryFiguresFor) };
       appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }, evidence).filter((r) => r.task === taskId));
     } catch (error) {
       if (!researchLogged) log(`research record not written: ${(error as Error).message}`);
@@ -5122,6 +5151,9 @@ export async function startDaemon(opts: DaemonOptions) {
         const completion = t.history.findLast(h => h.by === by && (h.event === "done" || h.event === "done (checking)"));
         if (!piiTurn && !reviewTurn && !tasks.isPii(t) && completion && !completion.withheld && typeof a.summary === "string" && completion.note?.startsWith(a.summary)) {
           citeMemory(by, a.summary, `summary:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
+          // #1279: the reasons of a spec acknowledgement are hub-screened text too, and one key per task keeps a repeat idempotent.
+          const reasons = Array.isArray(a.spec_ack) ? a.spec_ack.flatMap((row: unknown) => typeof (row as { reason?: unknown })?.reason === "string" ? [(row as { reason: string }).reason] : []).join("\n") : "";
+          if (reasons) citeMemory(by, reasons, `spec_ack:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
         }
         // A silent cohort (issue #107): the member that integrates is asked to check its work first; no done yet.
         const last = t.history.at(-1);
@@ -5135,10 +5167,24 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_sdlc_record":
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(await tasks.recordSdlc(by, a.id, a.receipt));
-      case "hub_review":
-        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings));
-      case "hub_remember":
-        return tasks.remember(by, a);
+      case "hub_review": {
+        const reviewed = await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings);
+        // #1279: a verdict note that names a brief entry is a citation. The same exclusions as a done summary apply (a PII or review-observer turn, withheld text), and the key binds it to this verdict.
+        const verdict = reviewed.history.findLast(h => h.by === by && (h.event === "approved" || h.event === "changes_requested"));
+        if (!piiTurn && !reviewTurn && !tasks.isPii(reviewed) && verdict && !verdict.withheld && typeof a.note === "string" && a.note && verdict.note?.startsWith(a.note)) {
+          citeMemory(by, a.note, `review:${reviewed.id}:${reviewed.history.indexOf(verdict)}`, [newEnvelope(by, "", { refs: { task: String(reviewed.id) } })]);
+        }
+        return line(reviewed);
+      }
+      case "hub_remember": {
+        const saved = await tasks.remember(by, a);
+        // #1279: a saved note that names another entry cites it. `tasks.remember` already refused a PII task, a private path and a secret, so only a note it saved gets here.
+        if (!piiTurn && !reviewTurn && typeof a.text === "string" && a.text && !/not saved|nothing saved/.test(saved)) {
+          const task = a.task !== undefined && Number.isSafeInteger(Number(a.task)) ? Number(a.task) : undefined;
+          citeMemory(by, a.text, `remember:${task ?? "none"}:${createHash("sha256").update(a.text).digest("hex").slice(0, 16)}`, task !== undefined ? [newEnvelope(by, "", { refs: { task: String(task) } })] : []);
+        }
+        return saved;
+      }
       case "hub_checkpoint": {
         const summary = String(a.summary ?? "").trim();
         if (!summary) throw new Error("summary is required");
