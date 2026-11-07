@@ -30,7 +30,7 @@ function fixture(): { context: ProofContext; prepared: KimiPreparedFixture; effe
   writeFileSync(join(tool, "config.toml"), 'telemetry=false\nhooks=[]\ndefault_model="fixture"\n[providers."managed:kimi-code"]\ntype="kimi"\nbase_url="https://api.kimi.ai/coding/v1"\n[providers."managed:kimi-code".oauth]\nstorage="file"\nkey="oauth/kimi-code"\noauth_host="https://auth.kimi.ai"\n[models.fixture]\nprovider="managed:kimi-code"\nmodel="kimi-for-coding"\nprotocol="anthropic"\nmax_context_size=32768\ncapabilities=["tool_use"]\n', { mode: 0o600 });
   const calls: string[] = [];
   const broker = createReviewerMcpSession({ task: 7, current: () => true,
-    tools: ["hub_review", "hub_task_show"].map(name => ({ name, description: "fixture", inputSchema: { type: "object", properties: { id: { type: "integer" } }, required: ["id"] } })),
+    tools: ["hub_review", "hub_task_show"].map(name => ({ name, description: "fixture", inputSchema: { type: "object" as const, properties: { id: { type: "integer" } }, required: ["id"], additionalProperties: false as const } })),
     call: async name => { calls.push(name); return "synthetic result"; } }); brokers.push(broker);
   const context: ProofContext = { id: "kimi-review", version: "2.5.1", root, home, prefix, cwd,
     env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, LANG: "C" }, signal: new AbortController().signal,
