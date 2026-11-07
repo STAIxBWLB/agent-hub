@@ -209,7 +209,7 @@ import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
 import { readEvidence } from "./research-record.ts";
-import { memoryFigures, UNKNOWN_MEMORY_FIGURES, type MemoryFigures } from "./research-memory.ts";
+import { memoryFigures, onlyTaskMemory, UNKNOWN_MEMORY_FIGURES, type MemoryFigures } from "./research-memory.ts";
 import { parseResearchRunners, type RegisteredRunnerV1 } from "./research-runner.ts";
 import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
 import { projectChain } from "@staix/agent-mem";
@@ -1263,12 +1263,18 @@ export async function startDaemon(opts: DaemonOptions) {
       const store = memoryStore, project = memoryProject;
       const planContext = { cwd: opts.cwd, project, repo: memoryRepo, deny: config.local.deny };
       const briefTask = { id: row.id, created: row.created, title: "", refs: { paths: row.refs.paths ?? [] }, plan: { paths: row.plan?.paths ?? [], symbols: row.plan?.symbols ?? [] } };
-      // One screened listing per record, not one per entry: a hidden or unreadable entry is simply absent, and the figures then call their fail counts unknown.
-      const visible = new Map(screenMemory(store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })).map(v => [v.id, v]));
+      // The store has no read by id (`get` and `list` each rebuild the whole live view), so it is listed at most once per record, and only when the task has a rendered counter at all: a task with
+      // none never touches it. Only the rendered entries are screened, not the store. A hidden or unreadable entry is simply absent, and the figures then call their fail counts unknown.
+      let listed: Map<string, ReturnType<MemoryStore["list"]>[number]> | undefined;
+      const view = (id: string) => {
+        listed ??= new Map(store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map(v => [v.id, v]));
+        const found = listed.get(id);
+        return found ? screenMemory([found])[0] : undefined;
+      };
       return memoryFigures({
         counters: candidates.counters(project),
         taskKey: taskKey(project, row),
-        view: id => visible.get(id),
+        view,
         matchingPlan: fails => matchingPlanFails(briefTask, fails, planContext),
       });
     } catch { return { ...UNKNOWN_MEMORY_FIGURES }; }
@@ -1280,7 +1286,7 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       // #1277: the board and journal are read through a read-only handle, so the record carries its v2 blocks; the family lookup is the project's own (instances resolve there).
       // Scoped to the one task: the live writer runs on the daemon thread and must not parse every task's history and the whole journal for one record (a backfill reads them all).
-      const evidence = { ...readEvidence(opts.stateDir, projectId, taskId), familyOf: (peer: string) => adapterCatalog.familyOf(peer, declarations), memory: memoryFiguresFor };
+      const evidence = { ...readEvidence(opts.stateDir, projectId, taskId), familyOf: (peer: string) => adapterCatalog.familyOf(peer, declarations), memory: onlyTaskMemory(taskId, memoryFiguresFor) };
       appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }, evidence).filter((r) => r.task === taskId));
     } catch (error) {
       if (!researchLogged) log(`research record not written: ${(error as Error).message}`);

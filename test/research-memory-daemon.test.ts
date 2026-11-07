@@ -97,3 +97,24 @@ test("a review verdict note that names a rendered entry is a citation keyed to t
   await until(() => sidecar.counters(w.project).some(c => c.key.deliveryId.startsWith("review:1:")), "the review citation");
   expect(sidecar.counters(w.project).find(c => c.key.deliveryId.startsWith("review:1:"))).toMatchObject({ cited: 1 });
 });
+
+// #1297 review: one approval must not cost a sidecar read per terminal task in the log.
+test("approving a task reads the sidecar's counters once, however many terminal tasks the log already holds", async () => {
+  const w = await world();
+  // Eleven earlier tasks reach a terminal state first. Research is on, so each writes its own record (and reads once for itself).
+  for (let id = 1; id <= 11; id++) {
+    await w.op("hub_task_propose", { title: `earlier ${id}`, class: "plan", owner: "worker" });
+    expect(await w.op("hub_task_done", { id, summary: "done" })).toContain("approved");
+  }
+  await until(() => { try { return readStore(w.file).length >= 11; } catch { return false; } }, "the eleven earlier records", 600);
+  const original = CandidateStore.prototype.counters;
+  let reads = 0;
+  CandidateStore.prototype.counters = function (this: CandidateStore, ...args: Parameters<CandidateStore["counters"]>) { reads++; return original.apply(this, args); };
+  cleanup.push(() => { CandidateStore.prototype.counters = original; });
+  await w.op("hub_task_propose", { title: "the twelfth", class: "plan", owner: "worker" });
+  expect(await w.op("hub_task_done", { id: 12, summary: "done" })).toContain("approved");
+  await until(() => { try { return readStore(w.file).length >= 12; } catch { return false; } }, "the twelfth record", 600);
+  await Bun.sleep(150);
+  // The log now holds twelve terminal tasks and the live writer built records for all of them, but computed memory figures for one.
+  expect(reads).toBe(1);
+});
