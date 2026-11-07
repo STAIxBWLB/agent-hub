@@ -164,6 +164,7 @@
   "scripts/compat-receipts/output.ts:RECEIPT_OUTPUT_MS:inline:RECEIPT_OUTPUT_MS=HELPER_MS * 2#0": "operational",
   "scripts/compat-receipts/proof-worker.ts:INPUT_CAP:constant:INPUT_CAP=1024 * 1024#0": "safety floor",
   "scripts/compat-receipts/proofs/jcode-control.ts:controlProofs:inline:lines.length > 64=64#0": "safety floor",
+  "scripts/compat-receipts/proofs/jcode.ts:completionAttempts:inline:completionAttempts=0#0": "operational",
   "scripts/compat-receipts/proofs/jcode.ts:fetch:inline:requests.length >= 2=2#0": "safety floor",
   "scripts/compat-receipts/proofs/jcode.ts:killMs:inline:killMs=1000#0": "operational",
   "scripts/compat-receipts/proofs/jcode.ts:runJcodeProofs:inline:content=1#0": "contract",
