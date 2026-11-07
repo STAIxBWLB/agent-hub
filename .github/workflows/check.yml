@@ -18,12 +18,12 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # #1257: scripts/check-package.mjs parses `npm pack --dry-run --json`, whose shape is an npm major's to change. The gate shards run this npm, the same
 # version release.yml publishes with (test/npm-pin.test.ts keeps the two equal); raise both together after reading the new shape.
 env:
   NPM_VERSION: '11.20.0'
-  actions: read
 
 concurrency:
   # #609: one group per PR, so PRs run side by side; within a PR a newer pending run replaces the older pending one

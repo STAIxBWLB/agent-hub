@@ -5,6 +5,12 @@ import { packEntry } from "../scripts/lib/npm-pack-shape.mjs";
 // #1257: CI parses `npm pack --json` (scripts/check-package.mjs) on an npm pinned in check.yml, the version release.yml publishes with.
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
+test("#1257 check.yml keeps exactly the permissions scripts/ci-gates.mjs needs, and the env block is its own top-level key", () => {
+  const check = Bun.YAML.parse(read(".github/workflows/check.yml")) as { permissions?: Record<string, string>; env?: Record<string, string> };
+  expect(check.permissions).toEqual({ contents: "read", actions: "read" });
+  expect(Object.keys(check.env ?? {})).toEqual(["NPM_VERSION"]);
+});
+
 test("#1257 check.yml and release.yml pin the same npm, and every gate shard installs it before the gate", () => {
   const check = Bun.YAML.parse(read(".github/workflows/check.yml")) as { env?: Record<string, string>; jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
   const pinned = check.env?.NPM_VERSION;
