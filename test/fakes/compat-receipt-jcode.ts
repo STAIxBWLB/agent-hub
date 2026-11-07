@@ -127,6 +127,7 @@ if (args[0] === "--proof-worker") {
         if (fault === "context-changed") secondMessages[0] = { role: "user", content: sessionContext.replace("Date: 2026-11-07", "Date: 2026-11-08") };
         if (fault === "context-position") secondMessages = [originalUser, contextMessage(), assistant, steerUser];
         const second = await post([{ role: "system", content: "fixture system" }, ...secondMessages]); await second.text();
+        if (fault === "extra-completion") { const third = await post(secondMessages); await third.text(); }
         rmSync(busy, { force: true });
         answer({ stopReason: fault === "cancelled" ? "cancelled" : "end_turn" });
       }

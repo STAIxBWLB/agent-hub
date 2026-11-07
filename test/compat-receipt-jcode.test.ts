@@ -154,3 +154,12 @@ test("an empty lock at another private location is not the source-bound coordina
   });
   expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
 }, 20000);
+
+test("a third completion attempt fails even when only two request bodies are retained", async () => {
+  const result = await run("extra-completion", 5000, root => {
+    const rows = readFileSync(join(root, "jcode-proof-observations.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(rows).toContainEqual({ step: "steer-request-count", cause: "assertion", rootClass: "none", passed: false, count: 3 });
+  });
+  expect(result["active-turn-soft-interrupt"]).toEqual({ status: "fail", cause: "proof-failed" });
+  expect(result["serve-cleanup"]).toEqual({ status: "pass", cause: "ok" });
+}, 20000);

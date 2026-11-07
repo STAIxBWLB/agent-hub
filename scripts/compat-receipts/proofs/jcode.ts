@@ -257,6 +257,7 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
   let releaseFirst: (() => void) | undefined;
   const nativeHome = join(context.root, "jcode-home"), observer = join(context.root, "jcode-mcp-observer.mjs"), observed = join(context.root, "jcode-mcp-observed.json");
   const launch = randomUUID(), requests: any[] = [];
+  let completionAttempts = 0;
   const launchNative = (kind: "serve" | "acp"): ChildProcess => {
     signal.throwIfAborted();
     const argv = jcodeCommand(context.artifact.command, kind, "j.sock", context.cwd, MODEL, PROFILE);
@@ -299,10 +300,12 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
     result.isolation = { status: "pass", cause: "ok" };
     // The endpoint is selected only by this fresh private native profile, never by inherited provider variables.
     gateway = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-      if (request.headers.has("origin") || request.headers.has("authorization") || request.headers.has("x-api-key")) return new Response("refused", { status: 403 });
       const url = new URL(request.url);
+      const completion = request.method === "POST" && url.pathname === "/v1/chat/completions";
+      if (completion) completionAttempts++;
+      if (request.headers.has("origin") || request.headers.has("authorization") || request.headers.has("x-api-key")) return new Response("refused", { status: 403 });
       if (request.method === "GET" && url.pathname === "/v1/models") return Response.json({ object: "list", data: [{ id: MODEL, object: "model", owned_by: "receipt" }] });
-      if (request.method !== "POST" || url.pathname !== "/v1/chat/completions" || requests.length >= 2) return new Response("refused", { status: 404 });
+      if (!completion || requests.length >= 2) return new Response("refused", { status: 404 });
       const reader = request.body?.getReader(); if (!reader) return new Response("refused", { status: 400 });
       let size = 0; const chunks: Uint8Array[] = [];
       try { for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.length; if (size > context.limits.outputBytes) return new Response("refused", { status: 413 }); chunks.push(part.value); } }
@@ -374,7 +377,7 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
     observe({ step: "steer-ack", cause: "ok", rootClass: "none", passed: true, count: 0 });
     releaseFirst!(); releaseFirst = undefined;
     steeringCheck("steer-end-turn", (await prompt).result?.stopReason === "end_turn");
-    steeringCheck("steer-request-count", requests.length === 2, requests.length);
+    steeringCheck("steer-request-count", completionAttempts === 2 && requests.length === 2, completionAttempts);
     const conversation = (messages: any[]) => messages.filter(message => message?.role !== "system" && message?.role !== "developer");
     const rawFirst = requests[0].messages, rawSecond = requests[1].messages;
     let first = conversation(rawFirst), second = conversation(rawSecond);
