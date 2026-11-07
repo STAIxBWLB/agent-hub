@@ -98,7 +98,7 @@ test("private diagnostics contain closed checkpoints only and retain exact proof
       expect(Object.keys(row).sort()).toEqual(["cause", "count", "passed", "rootClass", "step"]);
       expect(typeof row.passed).toBe("boolean"); expect(Number.isSafeInteger(row.count)).toBe(true);
       expect(["none", "home", "jcode-home"]).toContain(row.rootClass);
-      expect(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io", "original", "steer", "head", "session-context", "system-reminder", "other", "directory", "regular"]).toContain(row.cause);
+      expect(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io", "original", "steer", "head", "session-context", "system-reminder", "other", "directory", "regular", "identity-lock", "install-marker", "version-marker", "usage-outbox", "concurrency-dir", "active-sessions", "category-optout", "share-transcript-consent"]).toContain(row.cause);
       expect(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "telemetry-walk", "first-shape", "second-shape", "telemetry-kind"]).toContain(row.step);
     }
     expect(rows).toContainEqual({ step: "first-shape", cause: "original", rootClass: "none", passed: true, count: 0 });
@@ -127,6 +127,7 @@ test("a matched telemetry directory reports bounded child count without relaxing
   const result = await run("none", 5000, root => {
     const rows = readFileSync(join(root, "jcode-proof-observations.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(rows).toContainEqual({ step: "telemetry-kind", cause: "directory", rootClass: "home", passed: true, count: 0 });
-  }, false, root => mkdirSync(join(root, "home", "telemetry_fixture")));
+    expect(rows.some(row => row.step === "telemetry-walk" && row.cause === "usage-outbox" && row.rootClass === "home" && row.passed === false)).toBe(true);
+  }, false, root => mkdirSync(join(root, "home", "telemetry_usage_outbox")));
   expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
 }, 20000);

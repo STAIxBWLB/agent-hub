@@ -15,7 +15,7 @@ const PROMPT = "receipt original prompt", STEER = "receipt steer prompt", HEAD =
 const SERVER_KEYS = ["argv", "debug_socket_path", "idle_timeout_secs", "owner_pid", "pid", "ppid", "schema_version", "scope", "socket_path", "started_at"];
 export interface JcodeProofObservation {
   step: "steer-pong" | "steer-subscribe" | "steer-idle" | "steer-stream-arrived" | "steer-active" | "steer-ack" | "steer-end-turn" | "steer-request-count" | "steer-first-conversation" | "steer-second-conversation" | "telemetry-walk" | "first-shape" | "second-shape" | "telemetry-kind";
-  cause: "ok" | "pending" | "assertion" | "telemetry-id" | "milestone" | "opt-out-marker" | "other-telemetry-name" | "symlink" | "entry-budget" | "io" | "original" | "steer" | "head" | "session-context" | "system-reminder" | "other" | "directory" | "regular";
+  cause: "ok" | "pending" | "assertion" | "telemetry-id" | "milestone" | "opt-out-marker" | "other-telemetry-name" | "symlink" | "entry-budget" | "io" | "original" | "steer" | "head" | "session-context" | "system-reminder" | "other" | "directory" | "regular" | "identity-lock" | "install-marker" | "version-marker" | "usage-outbox" | "concurrency-dir" | "active-sessions" | "category-optout" | "share-transcript-consent";
   rootClass: "none" | "home" | "jcode-home";
   passed: boolean;
   count: number;
@@ -139,7 +139,13 @@ function hasTelemetry(directories: readonly string[], cap: number, observe: (eve
           } catch { complete = false; }
         }
         observe({ step: "telemetry-kind", cause: entry.isDirectory() ? "directory" : entry.isFile() ? "regular" : "other", rootClass, passed: complete, count: entries });
-        report(name === "telemetry_id" ? "telemetry-id" : name === "no_telemetry" ? "opt-out-marker" : /milestone/i.test(name) ? "milestone" : "other-telemetry-name");
+        const classification: JcodeProofObservation["cause"] = name === "telemetry_id" ? "telemetry-id"
+          : name === "telemetry_id.lock" ? "identity-lock" : name === "telemetry_install_sent" ? "install-marker"
+          : name === "telemetry_version_sent" ? "version-marker" : name === "telemetry_usage_outbox" ? "usage-outbox"
+          : name === "telemetry_concurrency_v2" ? "concurrency-dir" : name === "telemetry_active_sessions" ? "active-sessions"
+          : name === "no_telemetry" ? "opt-out-marker" : /^no_telemetry_(?:content|usage|crashes|features|cost|accounts)$/.test(name) ? "category-optout"
+          : name === "telemetry_share_transcripts_v1" ? "share-transcript-consent" : /milestone/i.test(name) ? "milestone" : "other-telemetry-name";
+        report(classification);
         return true;
       }
       if (entry.isDirectory() && walk(join(dir, name), rootClass)) return true;
