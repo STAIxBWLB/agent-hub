@@ -442,7 +442,7 @@ inside a peer.
   recorded, never counted) is the `tokens` window, source `hub count, kimi wire log, of kimi_tokens_5h N`. Any read the reader
   cannot trust gives unknown (one notice, the reading dropped), never a short count. `ahub budget set`
   feeds a reading by hand. `local` has no quota and is never paused.
-- Gate at `budget.gate` (default 0.9) on any fresh window; readings older than
+- Gate at `budget.gate` (default 0.99, a registered setting) on any fresh window; readings older than
   `budget.stale_min` are ignored. Checkpoint first, pause second: the peer gets one
   important envelope asking it to write `.agenthub/checkpoint.md` and call `hub_checkpoint`,
   the hub waits up to `budget.checkpoint_timeout_s`, then pauses it; a hard-limited peer is
