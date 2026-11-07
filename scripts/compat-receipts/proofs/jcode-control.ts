@@ -20,7 +20,7 @@ async function controlProofs(context: ProofContext): Promise<ProofResults> {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size));
     const lines = text.trim().split("\n");
     if (lines.length > 64) throw new Error("diagnostic bound");
-    const steps = new Set(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "first-shape", "second-shape", "telemetry-kind", "telemetry-walk"]);
+    const steps = new Set(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-context-binding", "steer-first-conversation", "steer-second-conversation", "first-shape", "second-shape", "telemetry-kind", "telemetry-walk"]);
     const causes = new Set(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io", "original", "steer", "head", "session-context", "system-reminder", "other", "directory", "regular", "identity-lock", "install-marker", "version-marker", "usage-outbox", "concurrency-dir", "active-sessions", "category-optout", "share-transcript-consent"]);
     const roots = new Set(["none", "home", "jcode-home"]);
     const records = lines.map(line => JSON.parse(line));
