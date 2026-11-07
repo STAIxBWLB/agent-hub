@@ -19,7 +19,9 @@ Date: 2026-11-08. Scope: exact native version Kimi Code 2.5.2 on macOS arm64, is
 - `hub_inbox`: a queued message was pulled and the person prompt that called the tool produced one `done`. The hub message itself opened no additional person run.
 - Earlier forced-close/restart probes produced one `interrupted` for the open run, never a duplicate on later reads.
 - `ahub results --json` exposed only ids, peer, outcome, times and `private: true`. The launch-scoped plugin was removed on normal exit and other plugins stayed installed.
-- Focused regression suites: 34 pass, 0 fail, then 18 pass, 0 fail, plus typecheck. These covered the codec, launcher, completion flow, missing prompt ids, absent Stop/Notification hooks and unknown inventory.
+- Focused regression suites: 66 completion/agy tests, 36 full-gate failure-focused tests and 8 launcher rechecks passed, plus typecheck and bundle freshness. These covered the codec, launcher, completion flow, missing prompt ids, absent Stop/Notification hooks, unknown inventory, compat receipts and unverified-version behavior.
+- Full Linux `scripts/check.sh --changed` at `196ef79c2f17ae4422e0c9c82f3aad72633110c2`: **12634 pass, 101 skip, 0 fail**, ending `check: OK`. The earlier full run's 10 failures were all fixed and re-run in the focused suites.
+- OCR delegation covered all 20 reviewable files at that head. Two preview/ownership findings were fixed with red/green plugin regressions.
 
 ## Acceptance criteria
 
@@ -30,12 +32,12 @@ Date: 2026-11-08. Scope: exact native version Kimi Code 2.5.2 on macOS arm64, is
 - [x] AC5: forged, stale, wrong-launch, wrong-session, wrong-cwd and replayed observations create no run, completion or receipt.
 - [x] AC6: active background work and unknown inventory never produce a premature `done`.
 - [x] AC7: no prompt, answer, hook error, task command or title reaches completion rows, events, logs or memory; native-person results are private stubs.
-- [x] AC8: only compat `kimi-tui` 2.5.2 enables the bridge; other versions keep existing behavior.
-- [ ] AC9: `scripts/check.sh --changed` at the final head is pending. Live exact-version evidence above is complete.
+- [x] AC8: only compat `kimi-tui` 2.5.2 enables the bridge; other versions keep existing TUI behavior with completion disabled.
+- [x] AC9: `scripts/check.sh --changed` passed at `196ef79c2f17ae4422e0c9c82f3aad72633110c2`, with 12634 pass, 101 skip and 0 fail. Live exact-version evidence above is complete.
 
 ## Hardcoded-value calibration
 
-A fresh blind sample of 80 decided entries passed 69/80 (86.25%) after applying the published contract, external-input safety floor, operational default and test-seam distinctions. The new inventory constants were then classified; `bun scripts/inventory-hardcoded-values.ts --check` passed (3457 entries, 2452 classified, 1005 baseline).
+A fresh blind sample of 80 decided entries passed 69/80 (86.25%) after applying the published contract, external-input safety floor, operational default and test-seam distinctions. The new inventory constants were then classified; `bun scripts/inventory-hardcoded-values.ts --check` passed (3494 entries, 2489 classified, 1005 baseline).
 
 ## Implementation boundary
 
