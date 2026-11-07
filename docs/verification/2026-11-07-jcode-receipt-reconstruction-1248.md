@@ -33,8 +33,9 @@ wrapper `jcode-macos-aarch64`. That is packaging evidence, not native Mac eviden
 ## Reconstructed procedure and observed legs
 
 The single imported module owns private HOME/JCODE_HOME, the loopback provider,
-serve/ACP children and their cleanup. Every native argv uses production
-`jcodeCommand`. The MCP entry carries no peer environment; the observer checks the
+serve/ACP children and their cleanup. Serve and ACP argv reuse production
+`jcodeCommand`; version and private-provider configuration use parameterized
+commands. The MCP entry carries no peer environment; the observer checks the
 two synthetic owned-launch markers inherited by its native child. No real native
 home, account, API key or model is supplied. The four real-home hashes from the
 historical receipt were not reproduced: only the private HOME decoys are fenced.
