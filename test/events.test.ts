@@ -138,3 +138,14 @@ test("#199 review: decisions without a session key still count model changes, wi
   expect(r.routes["pi hub/auto"]).toMatchObject({ decisions: 3, sessions: 0, stateless: 3, switches: 1, toolLoopSwitches: 1 });
   expect(formatReport(r).join("\n")).toContain("route pi hub/auto: 3 decisions, sessions unknown (3 decisions without a session key); 1 model change, 1 inside tool loops");
 });
+
+test("#1281 a batch appends tokens and usage together and reports a failed append", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-kimi-batch-"));
+  try {
+    const log = eventLog(join(dir, "events.jsonl"));
+    expect(log.batch([{ type: "tokens", peer: "kimi", n: 10, attribution: "unattributed" }, { type: "usage", peer: "kimi", source: "kimi_wire", id: "row-1" }])).toBe(true);
+    expect(readEvents(join(dir, "events.jsonl")).map(event => event.type)).toEqual(["tokens", "usage"]);
+    const failed = eventLog(join(dir, "missing", "events.jsonl"));
+    expect(failed.batch([{ type: "tokens", peer: "kimi", n: 11 }, { type: "usage", peer: "kimi", source: "kimi_wire", id: "row-2" }])).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
