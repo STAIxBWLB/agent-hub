@@ -1,13 +1,13 @@
 import { closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { COMPAT, isCompatId } from "../src/adapters/compat.ts";
+import { isCompatId } from "../src/adapters/compat.ts";
 import { realPath } from "../src/hub/project.ts";
 import { installCompatArtifact } from "./compat-receipts/install.ts";
 import { runManifestProofs } from "./compat-receipts/proofs.ts";
 import { runBoundedReceiptCommand } from "./compat-receipts/runner.ts";
-import { ReceiptError, type Cause, type LegResult, type ManifestEntry, type ProofResults, type ReceiptContext, type ReceiptLimits, type ReceiptPorts, type ReceiptSummary, type InstalledArtifact } from "./compat-receipts/types.ts";
+import { ReceiptError, type Cause, type LegResult, type ManifestEntry, type ReceiptContext, type ReceiptLimits, type ReceiptPorts, type ReceiptSummary, type InstalledArtifact } from "./compat-receipts/types.ts";
 
 const DEFAULT_LIMITS: ReceiptLimits = { totalMs: 15 * 60_000, installMs: 3 * 60_000, legMs: 2 * 60_000,
   outputBytes: 1024 * 1024, artifactBytes: 512 * 1024 * 1024, expandedBytes: 1024 * 1024 * 1024, archiveEntries: 20_000 };

@@ -123,7 +123,7 @@ async function releaseArtifact(context: ReceiptContext, entry: ManifestEntry, fe
     return matches[0]!;
   };
   const target = select(asset), checksum = select(checksumAsset);
-  const download = async (item: any, cap: number) => {
+  const download = async (item: ReleaseAsset, cap: number) => {
     const url = publicURL(item.url, ["api.github.com"]);
     // Follow public asset redirects only through the closed HTTPS host set.
     return bytes(fetcher, url, signal, cap);

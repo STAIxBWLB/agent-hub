@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { parseProcessTable, stopOwnedProcess, trackGroup, type ProcRow } from "../../src/hub/child-process.ts";
-import type { CommandOptions, CommandResult, ReceiptCommand } from "./types.ts";
+import type { CommandResult, ReceiptCommand } from "./types.ts";
 
 // Operational cleanup bounds; diagnostics never inherit the caller's credential environment.
 const TABLE_MS = 2_000, TERM_MS = 250, KILL_MS = 1_000;

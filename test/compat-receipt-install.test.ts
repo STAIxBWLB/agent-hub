@@ -17,7 +17,7 @@ async function fixture(run: ReceiptCommand): Promise<ReceiptContext> {
   return { id: "codex-review", version: "0.167.0", root, home, prefix, cwd, env: { PATH: "/usr/bin:/bin", HOME: "/forbidden", npm_config_userconfig: "/forbidden", NPM_TOKEN: "forbidden" }, signal: new AbortController().signal,
     limits: { totalMs: 5000, installMs: 3000, legMs: 1000, outputBytes: 65536, artifactBytes: 65536, expandedBytes: 65536, archiveEntries: 32 }, run };
 }
-function npmFetch(data: Buffer, overrides: Record<string, unknown> = {}): typeof fetch {
+function npmFetch(data: Buffer, overrides: Record<string, unknown> = {}): ReceiptFetch {
   const integrity = `sha512-${createHash("sha512").update(data).digest("base64")}`;
   return (async (url: any) => String(url).endsWith("/0.167.0")
     ? Response.json({ name: "@openai/codex", version: "0.167.0", dist: { integrity, tarball: "https://registry.npmjs.org/codex.tgz" }, ...overrides })
@@ -74,7 +74,7 @@ function archive(name: string, type = "0"): Buffer {
   const checksum = header.reduce((sum, value) => sum + value, 0); header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148);
   return gzipSync(Buffer.concat([header, Buffer.from("x"), Buffer.alloc(511 + 1024)]));
 }
-async function releaseFixture(data: Buffer): Promise<{ context: ReceiptContext; releaseEntry: ManifestEntry; fetcher: typeof fetch }> {
+async function releaseFixture(data: Buffer): Promise<{ context: ReceiptContext; releaseEntry: ManifestEntry; fetcher: ReceiptFetch }> {
   const context = await fixture(async (argv, options) => {
     const child = Bun.spawn([...argv], { cwd: options.cwd, env: options.env, stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
