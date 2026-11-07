@@ -1179,7 +1179,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   up: async () => {
     const unattended = unattendedEnv || args.includes("--unattended");
     if (unattended) console.error(UNATTENDED_WARNING);
-    const status = await startProject(registeredProject(), { unattended, liveTest, ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId, AGENTHUB_PEER_ID: continuationPeer, AGENTHUB_RECOVERY_CONDUCTOR: continuationPeer, AGENTHUB_RECOVERY_CONTINUATION: continuationId } } : {}) });
+    const status = await startProject(registeredProject(), { unattended, liveTest, starting: pid => console.error(`ahub: hub is still starting, pid ${pid}; waiting for readiness, run ahub status in another terminal to inspect progress`), ...(recoveryLauncherCurrent ? { current: recoveryLauncherCurrent, env: { ...personEnv(process.env), AGENTHUB_RECOVERY_OPERATION: continuationId, AGENTHUB_PEER_ID: continuationPeer, AGENTHUB_RECOVERY_CONDUCTOR: continuationPeer, AGENTHUB_RECOVERY_CONTINUATION: continuationId } } : {}) });
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
     if (recoveryLauncherCurrent) { recoveryLauncherCurrent(); return; }
     // #608: the default agent set, only for a person's own `ahub up` (never an agent's, a live test's, or an upgrade or recovery relaunch, which set AGENTHUB_RECOVERY_OPERATION).
