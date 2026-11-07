@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { classifyPr, MONOLITH, summarize } from "../scripts/spec-dogfood-report.ts";
+import { classifyPr, isReleaseMerge, MONOLITH, summarize } from "../scripts/spec-dogfood-report.ts";
 
 // #1064 T6: the co-change share is the AC11 metric, so its classification is pinned here.
 const bus = { id: "bus", path: "docs/design/bus.md" }, board = { id: "task-board", path: "docs/design/task-board.md" };
@@ -23,4 +23,10 @@ test("#1064 T6 summarize counts touching PRs and the share, with no share when n
   expect(summarize([{ touches: true, specChanged: true, ids: ["bus"] }, { touches: true, specChanged: false, ids: ["bus"] }, { touches: false, specChanged: false, ids: [] }]))
     .toEqual({ prs: 3, touching: 2, coChanged: 1, share: 0.5 });
   expect(summarize([{ touches: false, specChanged: false, ids: [] }])).toEqual({ prs: 1, touching: 0, coChanged: 0, share: null });
+});
+
+test("#1064 T6 a release PR's merge commit is not a PR of its own, an ordinary squash or merge is", () => {
+  expect(isReleaseMerge("Merge pull request #1252 from STAIxBWLB/release/0.34.0")).toBe(true);
+  expect(isReleaseMerge("feat(upgrade): confirmed reattach of orphaned-but-connected Orca terminals (#1249)")).toBe(false);
+  expect(isReleaseMerge("Merge pull request #900 from STAIxBWLB/feat/rooms")).toBe(false);
 });

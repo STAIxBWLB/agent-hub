@@ -40,12 +40,16 @@ function git(root: string, args: string[]): string {
   return result.stdout;
 }
 
-/** First-parent commits of `ref` in the window, each with the files it changed against its first parent. */
+/** A release PR's merge commit repeats changes its component PRs already brought to main, so it is not a PR of its own here. */
+export function isReleaseMerge(subject: string): boolean { return /^Merge pull request #\d+ from \S+\/release\//.test(subject); }
+
+/** First-parent commits of `ref` in the window, each with the files it changed against its first parent. Release merges are left out. */
 export function prCommits(root: string, since: string, until: string, ref = "origin/main"): PrCommit[] {
   const out: PrCommit[] = [];
   for (const line of git(root, ["log", "--first-parent", `--since=${since}`, `--until=${until}`, "--format=%H%x09%cI%x09%s", ref]).split("\n")) {
     if (!line.trim()) continue;
     const [sha, date, ...subject] = line.split("\t");
+    if (isReleaseMerge(subject.join("\t"))) continue;
     const files = git(root, ["diff-tree", "--no-commit-id", "-r", "--name-only", "-m", "--first-parent", sha!]).split("\n").filter(Boolean);
     out.push({ sha: sha!, date: date!, subject: subject.join("\t"), files });
   }
