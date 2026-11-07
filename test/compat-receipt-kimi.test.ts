@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { runKimiNativeProofs, runKimiProofs } from "../scripts/compat-receipts/proofs/kimi.ts";
-import type { KimiPreparedFixture } from "../scripts/compat-receipts/proofs/reviewers.ts";
+import { runKimiBrokerControls, type KimiPreparedFixture } from "../scripts/compat-receipts/proofs/reviewers.ts";
 import type { CommandResult, ProofContext, ReceiptCommand } from "../scripts/compat-receipts/types.ts";
 import { createReviewerMcpSession, type ReviewerMcpSession } from "../src/adapters/reviewer-mcp.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -30,7 +30,7 @@ function fixture(): { context: ProofContext; prepared: KimiPreparedFixture; effe
   writeFileSync(join(tool, "config.toml"), 'telemetry=false\nhooks=[]\ndefault_model="fixture"\n[providers."managed:kimi-code"]\ntype="kimi"\nbase_url="https://api.kimi.ai/coding/v1"\n[providers."managed:kimi-code".oauth]\nstorage="file"\nkey="oauth/kimi-code"\noauth_host="https://auth.kimi.ai"\n[models.fixture]\nprovider="managed:kimi-code"\nmodel="kimi-for-coding"\nprotocol="anthropic"\nmax_context_size=32768\ncapabilities=["tool_use"]\n', { mode: 0o600 });
   const calls: string[] = [];
   const broker = createReviewerMcpSession({ task: 7, current: () => true,
-    tools: ["hub_review", "hub_task_show"].map(name => ({ name, description: "fixture", inputSchema: { type: "object" as const, properties: { id: { type: "integer" } }, required: ["id"], additionalProperties: false as const } })),
+    tools: ["hub_review", "hub_task_show", "hub_task_propose"].map(name => ({ name, description: "fixture", inputSchema: { type: "object" as const, properties: { id: { type: "integer" } }, required: ["id"], additionalProperties: false as const } })),
     call: async name => { calls.push(name); return "synthetic result"; } }); brokers.push(broker);
   const context: ProofContext = { id: "kimi-review", version: "2.5.1", root, home, prefix, cwd,
     env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, LANG: "C" }, signal: new AbortController().signal,
@@ -137,4 +137,38 @@ test("Kimi wrapper refuses caller HOME before preparation or fake executable eff
 test("promoted Kimi preload is byte-identical to receipt-bound source", () => {
   const guard = readFileSync(new URL("../scripts/compat-receipts/proofs/kimi-loopback-only.cjs", import.meta.url));
   expect(createHash("sha256").update(guard).digest("hex")).toBe("f4e4714ac846c9e1861306f19c1c656350d1d4180818bd834aa34d1ae0ced8df");
+});
+
+
+test("shared Kimi broker controls refuse an offered third tool and preserve a positive callback baseline", async () => {
+  let active = true; const calls: string[] = [], requests: { method: string; name?: string }[] = [];
+  const broker = createReviewerMcpSession({ task: 7, current: () => active,
+    tools: ["hub_review", "hub_task_show", "hub_task_propose"].map(name => ({ name, description: "fixture", inputSchema: { type: "object" as const, properties: { id: { type: "integer" } }, required: ["id"], additionalProperties: false as const } })),
+    call: async name => { calls.push(name); return "synthetic result"; } }); brokers.push(broker);
+  const binding = JSON.parse(broker.config).mcpServers["agent-hub"] as { url: string; headers: Record<string, string> };
+  for (const name of ["hub_task_show", "hub_review"]) {
+    const response = await fetch(binding.url, { method: "POST", headers: { ...binding.headers, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: { id: 7 } } }) });
+    expect((await response.json() as { error?: unknown }).error).toBeUndefined();
+  }
+  await runKimiBrokerControls(broker.config, new AbortController().signal, () => { active = false; }, () => calls.length, async (...args) => {
+    const body = JSON.parse(String(args[1]?.body)) as { method: string; params?: { name?: string } };
+    requests.push({ method: body.method, name: body.params?.name });
+    return await fetch(...args);
+  });
+  expect(requests.filter(row => row.method === "tools/call").map(row => row.name)).toEqual(["hub_review", "hub_task_accept", "hub_task_propose", "hub_task_show", "hub_task_show"]);
+  expect(requests.filter(row => row.method === "tools/list")).toHaveLength(3);
+  expect(calls).toEqual(["hub_task_show", "hub_review"]);
+  expect(active).toBe(false);
+});
+
+test("shared Kimi broker controls reject a third tool in observed inventory", async () => {
+  const f = fixture();
+  await expect(runKimiBrokerControls(f.prepared.brokerConfig, new AbortController().signal, () => {}, () => 0, async (...args) => {
+    const response = await fetch(...args);
+    const value = await response.json() as { result: { tools: { name: string }[] } };
+    value.result.tools.push({ name: "hub_task_propose" });
+    return Response.json(value);
+  })).rejects.toMatchObject({ causeCode: "proof-failed" });
+  expect(f.prepared.calls).toEqual([]);
 });

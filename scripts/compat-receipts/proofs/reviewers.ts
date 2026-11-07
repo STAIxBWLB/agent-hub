@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { ReceiptError, type ProofContext, type ProofResults } from "../types.ts";
+import { ReceiptError, type ProofContext, type ProofResults, type ReceiptFetch } from "../types.ts";
 import type { ReviewerLaunch, ReviewerPrepareContext } from "../../../src/adapters/reviewer-print.ts";
 
 const contained = (root: string, value: string): boolean => {
@@ -95,6 +95,32 @@ async function codex(context: ProofContext, result: ProofResults, trust: () => v
 export interface KimiPreparedFixture { launch: ReviewerLaunch; brokerConfig: string; calls: readonly string[] }
 export type KimiNativeProof = (fixture: KimiPreparedFixture) => Promise<ProofResults>;
 
+/** Exercise the production task broker, including an offered third tool and post-revocation reads. */
+export async function runKimiBrokerControls(config: string, signal: AbortSignal, revoke: () => void, callbackCount: () => number, request: ReceiptFetch = fetch): Promise<void> {
+  const baseline = callbackCount();
+  const binding = JSON.parse(config).mcpServers["agent-hub"] as { url: string; headers: Record<string, string> };
+  const rpc = async (method: string, params?: object, authorize = true): Promise<{ error?: unknown; result?: { tools?: { name?: unknown }[] } }> => {
+    const response = await request(binding.url, { method: "POST", signal,
+      headers: { "content-type": "application/json", ...(authorize ? binding.headers : {}) },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+    if (!authorize) { check(response.status === 401); return {}; }
+    check(response.status === 200);
+    return await response.json() as { error?: unknown; result?: { tools?: { name?: unknown }[] } };
+  };
+  const inventory = (await rpc("tools/list")).result?.tools;
+  check(Array.isArray(inventory) && JSON.stringify(inventory.map(tool => tool.name)) === JSON.stringify(["hub_review", "hub_task_show"]));
+  const refused = async (name: string, id: number) => { check((await rpc("tools/call", { name, arguments: { id } })).error !== undefined); };
+  await refused("hub_review", 8);
+  await refused("hub_task_accept", 7);
+  await refused("hub_task_propose", 7);
+  await rpc("tools/call", { name: "hub_task_show", arguments: { id: 7 } }, false);
+  await rpc("tools/list", undefined, false);
+  revoke();
+  await refused("hub_task_show", 7);
+  check((await rpc("tools/list")).error !== undefined);
+  check(callbackCount() === baseline);
+}
+
 async function kimi(context: ProofContext, result: ProofResults, trust: () => void, native?: KimiNativeProof): Promise<void> {
   const { kimiReviewerBackend } = await import("../../../src/adapters/kimi-review.ts");
   const { createReviewerMcpSession } = await import("../../../src/adapters/reviewer-mcp.ts");
@@ -142,17 +168,7 @@ async function kimi(context: ProofContext, result: ProofResults, trust: () => vo
     phase = "native-tool-loop";
     if (native) Object.assign(result, await native({ launch, brokerConfig: broker.config, calls }));
     phase = "broker-refusals";
-    const callbackBaseline = calls.length;
-    const binding = JSON.parse(broker.config).mcpServers["agent-hub"] as { url: string; headers: Record<string, string> };
-    const rpc = async (name: string, id: number, authorize = true) => {
-      const response = await fetch(binding.url, { method: "POST", signal: context.signal,
-        headers: { "content-type": "application/json", ...(authorize ? binding.headers : {}) },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: { id } } }) });
-      if (!authorize) { check(response.status === 401); return; }
-      const body = await response.json() as { error?: unknown }; check(body.error !== undefined);
-    };
-    await rpc("hub_review", 8); await rpc("hub_task_accept", 7); await rpc("hub_task_show", 7, false);
-    active = false; await rpc("hub_task_show", 7); check(calls.length === callbackBaseline);
+    await runKimiBrokerControls(broker.config, context.signal, () => { active = false; }, () => calls.length);
     mark(result, ["broker-refusals"], "pass");
     phase = "cleanup";
     check(boundedText(join(source, "config.toml"), context) === config && boundedText(join(source, "device_id"), context) === "synthetic-fixture-device");
