@@ -2,7 +2,7 @@
 
 Date: 2026-11-07. Task #761. Receipt pointers were read from `src/adapters/compat.ts` at `3440e7b10dc6b4537d56541774436aa4f7d49a92`. The data source is [manifest.json](../../scripts/compat-receipts/manifest.json). This audit runs no agent CLI, installer, model, TUI or workflow and changes no verified version.
 
-`autoAdmit` means policy eligibility after every required leg and artifact binding passes. It is not an implemented driver or a current pass. Missing work is not-run. Native macOS arm64 qualification is retained; a portable Linux fixture or source comparison does not qualify a Linux-only rerun. Qwen explicitly rejected Linux-only evidence. Optional, explicitly unverified model/TUI follow-ups do not become new admission requirements.
+`autoAdmit` means policy eligibility after every required leg and artifact binding passes. It is not an implemented driver or a current pass. Missing work is not-run. One Mac arm64 job can repeat an eligible id's complete procedure, including its portable checks; the Linux category does not require an extra matrix job. Native macOS arm64 qualification is retained; a portable Linux fixture or source comparison does not qualify a Linux-only rerun. Qwen explicitly rejected Linux-only evidence. Optional, explicitly unverified model/TUI follow-ups do not become new admission requirements.
 
 Source comparison can produce hashes and diffs on Linux. Changed security/contract regions still require scoped human review: diff availability alone is never a passing review leg. T1 must report such work as not-run until reviewed.
 
@@ -43,8 +43,8 @@ Current receipt: [2026-11-03-pi-150-compat.md](2026-11-03-pi-150-compat.md). `au
 - **tool-replay**: `macos-runner`, required, runner OS `macos`. [## Results](2026-11-03-pi-150-compat.md): "Managed tool callback and receipt replay".
 - **failed-tool**: `macos-runner`, required, runner OS `macos`. [## Results](2026-11-03-pi-150-compat.md): "Failed tool result".
 - **zero-provider-requests**: `macos-runner`, required, runner OS `macos`. [## Results](2026-11-03-pi-150-compat.md): "Zero requests reached the loopback provider".
-- **host-permission-modes**: `linux-ci`, required, runner OS `linux`. [## Results](2026-11-03-pi-150-compat.md): "Host permission modes".
-- **version-admission**: `linux-ci`, required, runner OS `linux`. [## Results](2026-11-03-pi-150-compat.md): "Version admission".
+- **host-permission-modes**: `linux-ci`, required, runner OS `linux, macos`. [## Results](2026-11-03-pi-150-compat.md): "Host permission modes".
+- **version-admission**: `linux-ci`, required, runner OS `linux, macos`. [## Results](2026-11-03-pi-150-compat.md): "Version admission".
 - **isolated-home-cleanup**: `macos-runner`, required, runner OS `macos`. [## Identity and isolation](2026-11-03-pi-150-compat.md): "9551 entries, identical.".
 
 ### Explicitly unverified follow-ups
@@ -90,7 +90,7 @@ Current receipt: [2026-11-06-claude-implementer-2.1.319.md](2026-11-06-claude-im
 - **wrapper-quoted-paths**: `macos-runner`, required, runner OS `macos`. [## Native observations](2026-10-26-headless-claude-shell-context.md): "Spaces and apostrophes in root/executable paths".
 - **wrapper-cleanup**: `macos-runner`, required, runner OS `macos`. [## Native observations](2026-10-26-headless-claude-shell-context.md): "Native exit 0, host stopped, no remaining live native group members".
 - **wrapper-binary-fence**: `macos-runner`, required, runner OS `macos`. [## Native observations](2026-10-26-headless-claude-shell-context.md): "Binary unchanged across the case".
-- **upstream-impact-review**: `linux-ci`, required, runner OS `linux`. [## Upstream changes since 2.1.318](2026-11-06-claude-implementer-2.1.319.md): "This receipt therefore rests on observed behavior only".
+- **upstream-impact-review**: `linux-ci`, required, runner OS `linux, macos`. [## Upstream changes since 2.1.318](2026-11-06-claude-implementer-2.1.319.md): "This receipt therefore rests on observed behavior only".
 
 ### Explicitly unverified follow-ups
 
@@ -106,9 +106,9 @@ Current receipt: [2026-11-06-codex-0167-reviewer-isolation.md](2026-11-06-codex-
 
 ### Recorded receipt legs
 
-- **source-impact**: `linux-ci`, required, runner OS `linux`. [## Source identity and re-read regions](2026-11-06-codex-0167-reviewer-isolation.md): "Each of the seven files read for 0.166.0".
+- **source-impact**: `linux-ci`, required, runner OS `linux, macos`. [## Source identity and re-read regions](2026-11-06-codex-0167-reviewer-isolation.md): "Each of the seven files read for 0.166.0".
   - Changed source: not-run until the changed security/contract regions have been reviewed; never infer a pass from diff availability.
-- **tag-binding**: `linux-ci`, required, runner OS `linux`. [## Source identity and re-read regions](2026-11-06-codex-0167-reviewer-isolation.md): "annotated tag object".
+- **tag-binding**: `linux-ci`, required, runner OS `linux, macos`. [## Source identity and re-read regions](2026-11-06-codex-0167-reviewer-isolation.md): "annotated tag object".
 - **version-negative**: `macos-runner`, required, runner OS `macos`. [## Native production preparation](2026-11-06-codex-0167-reviewer-isolation.md): "Refused only at version admission".
 - **empty-home-prepare**: `macos-runner`, required, runner OS `macos`. [## Native production preparation](2026-11-06-codex-0167-reviewer-isolation.md): "empty homes | All production preparation legs pass".
 - **ambient-prepare**: `macos-runner`, required, runner OS `macos`. [## Native production preparation](2026-11-06-codex-0167-reviewer-isolation.md): "synthetic ambient config | All production preparation legs pass".
@@ -150,7 +150,7 @@ Current receipt: [2026-11-06-kimi-251-reviewer-compat.md](2026-11-06-kimi-251-re
 - **environment-decoy**: `macos-runner`, required, runner OS `macos`. [## Isolated production and native controls](2026-11-06-kimi-251-reviewer-compat.md): "Trust-workspace environment decoy removed from launch environment".
 - **cleanup**: `macos-runner`, required, runner OS `macos`. [## Isolated production and native controls](2026-11-06-kimi-251-reviewer-compat.md): "Original synthetic config/credential bytes, owned-group and temporary cleanup".
 - **network-guard-control**: `macos-runner`, required, runner OS `macos`. [## Isolated production and native controls](2026-11-06-kimi-251-reviewer-compat.md): "A separate preload positive control blocked a".
-- **source-review**: `linux-ci`, required, runner OS `linux`. [## Source review](2026-11-06-kimi-251-reviewer-compat.md): "Model-free native exact-two-tool inventories across all fixed-response requests are still required".
+- **source-review**: `linux-ci`, required, runner OS `linux, macos`. [## Source review](2026-11-06-kimi-251-reviewer-compat.md): "Model-free native exact-two-tool inventories across all fixed-response requests are still required".
   - Changed source: not-run until the changed security/contract regions have been reviewed; never infer a pass from diff availability.
 
 ### Explicitly unverified follow-ups
@@ -174,7 +174,7 @@ Current receipt: [2026-10-26-jcode-0.99.1.md](2026-10-26-jcode-0.99.1.md). `auto
 - **mcp-owned-environment**: `macos-runner`, required, runner OS `macos`. [## Contract legs (idle server, no model)](2026-10-26-jcode-0.99.1.md): "its environment held exactly `AGENTHUB_PEER_ID` and `AGENTHUB_LAUNCH_ID`".
 - **telemetry**: `macos-runner`, required, runner OS `macos`. [## Contract legs (idle server, no model)](2026-10-26-jcode-0.99.1.md): "no telemetry file appeared in the isolated home.".
 - **active-turn-soft-interrupt**: `macos-runner`, required, runner OS `macos`. [## Steering leg (the 0.99.0 check, now on a running turn)](2026-10-26-jcode-0.99.1.md): "No real provider, key or model was involved.".
-- **source-comparison**: `linux-ci`, required, runner OS `linux`. [## Source comparison v0.99.0..v0.99.1](2026-10-26-jcode-0.99.1.md): "232 commits, 300 files, read only through the GitHub compare API (nothing built).".
+- **source-comparison**: `linux-ci`, required, runner OS `linux, macos`. [## Source comparison v0.99.0..v0.99.1](2026-10-26-jcode-0.99.1.md): "232 commits, 300 files, read only through the GitHub compare API (nothing built).".
   - Changed source: not-run until the changed security/contract regions have been reviewed; never infer a pass from diff availability.
 
 ### Explicitly unverified follow-ups

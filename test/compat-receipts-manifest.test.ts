@@ -35,7 +35,7 @@ interface Entry {
   unverifiedFollowups: Leg[];
 }
 const ROOT = resolve(import.meta.dir, "..");
-const manifest = JSON.parse(readFileSync(join(ROOT, "scripts/compat-receipts/manifest.json"), "utf8")) as {
+const manifest = JSON.parse(readFileSync(resolve(import.meta.dir, "../scripts/compat-receipts/manifest.json"), "utf8")) as {
   schemaVersion: number;
   entries: Record<string, Entry>;
 };
@@ -100,6 +100,11 @@ test("auto-admission cannot bypass model, TUI, unknown-platform or unavailable-i
     const blocked = entry.install.method === "unavailable" || entry.legs.some(leg => leg.requiredForAdmission &&
       (leg.category === "account-or-model" || leg.category === "tui-desktop" || leg.runnerOS.includes("unspecified")));
     if (blocked) expect(entry.autoAdmit, id).toBe(false);
+    if (entry.autoAdmit) for (const os of entry.runnerOS) {
+      for (const leg of entry.legs.filter(leg => leg.requiredForAdmission)) {
+        expect(leg.runnerOS.includes(os), `${id}/${leg.id}: complete receipt runner ${os}`).toBe(true);
+      }
+    }
     for (const leg of entry.legs) if (leg.automation) expect(leg.onChangedSource, `${id}/${leg.id}`).toContain("not-run");
   }
 });

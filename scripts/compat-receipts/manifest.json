@@ -17,7 +17,6 @@
     "pi": {
       "receipt": "docs/verification/2026-11-03-pi-150-compat.md",
       "runnerOS": [
-        "linux",
         "macos"
       ],
       "nativePlatform": "macos-arm64",
@@ -128,7 +127,8 @@
           "label": "Host permission modes",
           "category": "linux-ci",
           "runnerOS": [
-            "linux"
+            "linux",
+            "macos"
           ],
           "requiredForAdmission": true,
           "evidence": {
@@ -143,7 +143,8 @@
           "label": "Version admission",
           "category": "linux-ci",
           "runnerOS": [
-            "linux"
+            "linux",
+            "macos"
           ],
           "requiredForAdmission": true,
           "evidence": {
@@ -219,7 +220,6 @@
     "claude-implementer": {
       "receipt": "docs/verification/2026-11-06-claude-implementer-2.1.319.md",
       "runnerOS": [
-        "linux",
         "macos"
       ],
       "nativePlatform": "macos-arm64",
@@ -681,7 +681,8 @@
           "label": "Scoped permission/MCP/hooks/lifetime changelog review",
           "category": "linux-ci",
           "runnerOS": [
-            "linux"
+            "linux",
+            "macos"
           ],
           "requiredForAdmission": true,
           "evidence": {
@@ -773,7 +774,6 @@
     "codex-review": {
       "receipt": "docs/verification/2026-11-06-codex-0167-reviewer-isolation.md",
       "runnerOS": [
-        "linux",
         "macos"
       ],
       "nativePlatform": "macos-arm64",
@@ -801,7 +801,8 @@
           "label": "Each of the seven files read for 0.166.0",
           "category": "linux-ci",
           "runnerOS": [
-            "linux"
+            "linux",
+            "macos"
           ],
           "requiredForAdmission": true,
           "evidence": {
@@ -818,7 +819,8 @@
           "label": "annotated tag object",
           "category": "linux-ci",
           "runnerOS": [
-            "linux"
+            "linux",
+            "macos"
           ],
           "requiredForAdmission": true,
           "evidence": {
@@ -1160,7 +1162,6 @@
     "kimi-review": {
       "receipt": "docs/verification/2026-11-06-kimi-251-reviewer-compat.md",
       "runnerOS": [
-        "linux",
         "macos"
       ],
       "nativePlatform": "macos-arm64",
@@ -1316,7 +1317,8 @@
           "label": "Trust, MCP, allowlist and OAuth source impact review",
           "category": "linux-ci",
           "runnerOS": [
-            "linux"
+            "linux",
+            "macos"
           ],
           "requiredForAdmission": true,
           "evidence": {
@@ -1395,7 +1397,6 @@
     "jcode": {
       "receipt": "docs/verification/2026-10-26-jcode-0.99.1.md",
       "runnerOS": [
-        "linux",
         "macos"
       ],
       "nativePlatform": "macos-arm64",
@@ -1509,7 +1510,8 @@
           "label": "source comparison",
           "category": "linux-ci",
           "runnerOS": [
-            "linux"
+            "linux",
+            "macos"
           ],
           "requiredForAdmission": true,
           "evidence": {
