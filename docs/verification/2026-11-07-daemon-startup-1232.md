@@ -126,6 +126,11 @@ counters: its 297 auxiliary bytes are retained as an aggregate observation, not
 retroactively assigned to `usageRollupReadBytes` or `residualExtraReadBytes`.
 There was no fourth private run. The underlying daemon change is unchanged.
 
+At `33ad860f5bda`, typecheck and all 61 focused tests passed. The stricter public
+synthetic acceptance run took 1364 ms and independently measured 8388608 rollup
+bytes, one rollup call and one residual appender byte. Seed passes remained one,
+with no event `readFileSync` call, abandoned body read or prohibited effect.
+
 The shared line predicate preserves measured-time handling, malformed-line
 skipping and a complete final JSON record without a newline. Streaming UTF-8
 decoding has no line-size or history ceiling. Native-stop IDs and Claude usage
@@ -152,6 +157,12 @@ keys, which are classified separately without changing the baseline or existing
 labels. Tests compare legacy and streamed seed results, long/fragmented UTF-8
 records, quota/Kimi/token semantics, actual reader I/O, repeated observer calls,
 late confirmation, cancellation, competing claims and both readiness bounds.
+
+The full canonical dgx02 gate at
+`d16e7ea18613adeb4c0705085e45f5454abf5698` passed: 12248 pass, 101 skip,
+0 fail across 953 files, with no current-invocation daemon leaks. That full result
+predates the benchmark-only scoped-I/O and cleanup corrections described above;
+their current-head delta gate and hosted CI are recorded separately in the PR/task.
 
 The pinned Bun 1.4.2 bundle was regenerated after a worktree-local frozen install.
 Final canonical gate, hosted CI and review-thread evidence are recorded in the
