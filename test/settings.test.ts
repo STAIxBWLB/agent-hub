@@ -461,9 +461,9 @@ test("AC7: the Settings section renders every row from the registry with its sou
   for (const label of ["Confirm removal of kimi", "Stop an active turn now", "Preview kimi: participates"]) expect(root.all().find(n => n.attrs["aria-label"] === label)).toBeDefined();
 });
 
-test("#1292 budget.gate is a registered setting: a number from 0 to 1, raising it needs a settings session or a terminal, and a conductor cannot set it", () => {
+test("#1292 budget.gate is a registered setting: a number from 0 to 1 that applies at the next quota reading, raising it needs a settings session or a terminal, and a conductor cannot set it", () => {
   const gate = def("budget.gate");
-  expect(gate).toMatchObject({ type: "number", min: 0, max: 1, store: "config", applies: "live", risk: "raises", path: ["budget", "gate"] });
+  expect(gate).toMatchObject({ type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["budget", "gate"] });
   expect(checkSettingValue(gate, 0.95)).toBe(0.95);
   expect(checkSettingValue(gate, null)).toBeNull();
   for (const bad of [1.5, -0.1, Number.NaN, "0.9"]) expect(() => checkSettingValue(gate, bad)).toThrow("budget.gate takes a number from 0 to 1");
