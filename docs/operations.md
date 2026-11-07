@@ -3603,16 +3603,20 @@ publication. The summary
 separates `ownedStopConfirmed` from `processCleanup: proven|unproven` and gives its
 reason. An empty leader process group cannot prove lifetime cleanup: a helper can
 detach into a new group with ignored pipes and survive its launcher. Detected
-survivors fail the run. Native lifetime cleanup remains unproven in T1; a required
-cleanup leg stays not-run, eligibility is false, and the private workspace is kept
-until runner destruction. Its location is reported only on stderr. A portable
+survivors and an unconfirmed owned stop fail the run. Producer cleanup legs assert
+that the native group they started stopped, using their original receipt evidence;
+they retain that pass or fail independently of harness lifetime cleanup. Native
+lifetime cleanup remains unproven in T1 and is reported without gating eligibility.
+A passing receipt with eligible policy and confirmed owned stop can be eligible
+while lifetime cleanup is unproven, provided no survivor was detected. The private
+workspace is kept until runner destruction; its location is reported only on stderr. A portable
 process supervisor belongs to a separate follow-up. Disposable runner lifetime is
 the containment boundary, not fresh HOME or process-group emptiness.
 
 The output directory is held open before installation. Exclusive, no-follow
 writes are relative to that handle, so replacing an ancestor cannot redirect the
 receipt. The receipt excludes raw native stdout/stderr and private prefix paths.
-No PR is created by T1. The publisher/token choice and producer promotions are
+No PR is created by T1. Publisher integration and producer promotions are
 follow-ups.
 
 

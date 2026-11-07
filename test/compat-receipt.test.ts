@@ -207,7 +207,7 @@ test("normal leader exit and an empty old PGID never prove a detached helper's l
   const f = fixture("detach-normal");
   f.ports.limits = { totalMs: 15_000, legMs: 8000, installMs: 2000 };
   const summary = await f.run();
-  expect(summary.eligible).toBe(false); expect(summary.processCleanup).toBe("unproven");
+  expect(summary.processCleanup).toBe("unproven");
   expect(summary.processCleanupReason.length).toBeGreaterThan(0);
   expect(summary.containment).toBe("disposable-runner-lifetime");
   expect(f.commands).toHaveLength(1);
@@ -220,9 +220,11 @@ test("normal leader exit and an empty old PGID never prove a detached helper's l
   expect(live(child.leader)).toBe(false); expect(live(child.descendant)).toBe(true);
   const isolation = summary.legs.find(leg => leg.id === cleanupLeg)!;
   if (command.survivorDetected) {
+    expect(summary.eligible).toBe(false);
     expect(summary.outcome).toBe("fail"); expect(isolation).toMatchObject({ status: "fail", cause: "cleanup" });
   } else {
-    expect(isolation).toMatchObject({ status: "not-run", cause: "process-cleanup-unproven" });
+    expect(summary.eligible).toBe(true); expect(summary.outcome).toBe("pass");
+    expect(isolation).toMatchObject({ status: "pass", cause: "ok" });
   }
   expect(existsSync(f.contexts[0]!.root)).toBe(true);
   output(summary, f.out);

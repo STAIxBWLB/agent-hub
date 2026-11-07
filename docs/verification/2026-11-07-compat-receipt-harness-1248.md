@@ -56,7 +56,8 @@ None can become a pass merely because installation or configuration succeeded.
   isolated interpreters while preserving historical defaults/assertions. A group
   must exit 0 with exact cases, version, binary stability and its native/host
   group assertions before those assertions pass. These assertions do not prove
-  lifetime cleanup of detached helpers; cleanup admission legs remain not-run. PID groups are never signalled after their
+  lifetime cleanup of detached helpers. Producer cleanup legs retain their pass or
+  fail on this original group evidence. PID groups are never signalled after their
   reaped leader may have been reused. Original historical producer fingerprints
   are history, not hashes of these newly parameterized files.
 
@@ -70,7 +71,9 @@ publication. The
 production owned-process/descendant teardown is reused with a credential-free
 process-table observer. Unconfirmed owned stop or a detected survivor fails the run.
 Lifetime cleanup is separately reported as unproven, never inferred from an empty
-leader PGID; required cleanup admission legs remain not-run and ineligible.
+leader PGID. Per the corrected ruling, this reported property does not gate
+eligibility or rewrite producer cleanup assertions: outcome pass, policy eligibility,
+confirmed owned stop and no detected survivor are the admission conditions.
 An inconsistent optimistic pass/timeout result is rejected.
 
 The test suite uses fake package metadata/bytes, fake installers and fake proof
@@ -82,7 +85,9 @@ extraction, committed producer mapping and isolated-worker missing-producer refu
 The adversarial cleanup fixture launches a detached helper with a new PGID and
 ignored pipes, then exits its launcher with code 0. The helper can remain alive
 when the original group is empty. T1 reports `processCleanup: unproven` with a
-reason, preserves owned-stop checks and fails any survivor it can detect. It does
+reason, preserves owned-stop checks and fails any survivor it can detect. A passing
+producer cleanup leg can remain pass and the receipt can be eligible while harness
+lifetime cleanup is unproven; the test suite covers that distinction. It does
 not install a Linux subreaper or macOS supervisor. Disposable runner lifetime is
 the containment boundary; workflow integration must destroy the VM/container.
 A process-supervision follow-up is required for lifetime proof.
@@ -97,4 +102,4 @@ These are harness/host fixture results, not new native CLI compatibility receipt
 Final committed-head dgx02 checks and hosted exact-head CI are recorded in the PR
 and task submission. No local full suite, native agent installation, account,
 real API key or model run is claimed. Producer promotions and workflow/publisher
-integration remain outside this PR; the person still owns the token decision.
+integration remain outside this PR; T2 publisher integration follows the person's separate token decision.

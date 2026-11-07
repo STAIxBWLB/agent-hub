@@ -24,7 +24,7 @@ const DIAGNOSTICS: Record<Cause, readonly [string, string]> = {
   "producer-not-importable": ["The historical producer is not import-safe or candidate-parameterized.", "Extract and review its callable proof in the producer follow-up; do not copy its assertions into this harness."],
   "not-applicable": ["The original pre-admission negative condition does not apply to this already-admitted candidate.", "Use an unverified candidate for the negative check; do not remove verified versions or change machine trust to force it."],
   "disposable-required": ["The harness requires an explicitly disposable runner; a personal Mac is not contained by a temporary HOME.", "Use a GitHub-hosted runner or disposable Linux container and pass --disposable-runner; never run on a personal host."],
-  "process-cleanup-unproven": ["Lifetime process cleanup is unproven; a helper can detach outside the original process group.", "Use runner destruction for containment and complete the process-supervision follow-up before claiming this cleanup leg."],
+  "process-cleanup-unproven": ["Lifetime process cleanup is unproven; a helper can detach outside the original process group.", "Use runner destruction for containment and complete the process-supervision follow-up before claiming lifetime process cleanup."],
   "source-review-required": ["The receipt requires scoped source or lifecycle review that this harness cannot certify.", "Complete the recorded human review; a fetched diff or successful install is not that review."],
   "install-unavailable": ["The exact artifact could not be installed with the recorded public method.", "Inspect the public artifact and installer on the required platform; no global installer or trust change is performed."],
   integrity: ["The exact artifact identity or integrity binding did not match.", "Check the publisher's exact-version metadata and checksum before any execution."],
@@ -166,9 +166,6 @@ export async function runCompatReceipt(input: { id: string; version: string; out
     if (ownedStopConfirmed && lifetime.status === "proven") try { rmSync(root, { recursive: true, force: true }); } catch { ownedStopConfirmed = false; }
   }
   if (!ownedStopConfirmed) for (const [index, leg] of legs.entries()) if (leg.status === "pass") legs[index] = proof("fail", "cleanup", leg.id, leg.requiredForAdmission);
-  if (lifetime.status === "unproven") for (const [index, leg] of legs.entries()) {
-    if (leg.status === "pass" && /(?:^|-)cleanup$/.test(leg.id)) legs[index] = proof("not-run", "process-cleanup-unproven", leg.id, leg.requiredForAdmission);
-  }
   const required = legs.filter(leg => leg.requiredForAdmission);
   let outcome: ReceiptSummary["outcome"] = "pass";
   if (!ownedStopConfirmed || survivorDetected || installation.status === "fail" || required.some(leg => leg.status === "fail")) outcome = "fail";
@@ -178,7 +175,7 @@ export async function runCompatReceipt(input: { id: string; version: string; out
   const summary: ReceiptSummary = { schemaVersion: 1, id: input.id, version: input.version, runnerOS: os, architecture,
     procedureReceipt: entry.receipt, generatedAt: new Date().toISOString(), bounds: { totalMs: limits.totalMs + RECEIPT_CLEANUP_MS + RECEIPT_OUTPUT_MS, legMs: limits.legMs + RECEIPT_CLEANUP_MS, cleanupMs: RECEIPT_CLEANUP_MS, outputMs: RECEIPT_OUTPUT_MS }, ownedStopConfirmed, processCleanup: lifetime.status, processCleanupReason: lifetime.reason, containment: "disposable-runner-lifetime",
     installation: { status: installation.status, cause: installation.cause, reason, nextStep },
-    artifact: artifact ? { method: artifact.method, integrity: artifact.integrity } : null, integrity: artifact?.integrity ?? null, autoAdmit, eligible: outcome === "pass" && autoAdmit && ownedStopConfirmed && lifetime.status === "proven",
+    artifact: artifact ? { method: artifact.method, integrity: artifact.integrity } : null, integrity: artifact?.integrity ?? null, autoAdmit, eligible: outcome === "pass" && autoAdmit && ownedStopConfirmed && !survivorDetected,
     outcome, elapsedMs: Math.round(performance.now() - started), legs };
   try { await out.write(summary, renderReceipt(summary)); } finally { out.close(); }
   if (!ownedStopConfirmed || lifetime.status === "unproven") console.error(`Process cleanup is unproven; next: destroy the disposable runner after inspecting only the retained private workspace ${root}.`);

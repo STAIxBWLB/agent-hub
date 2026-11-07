@@ -92,7 +92,7 @@ test("Claude wrapper host cleanup is required independently of native group clea
   expect(results["write-allow"]).toEqual({ status: "pass", cause: "ok" });
 });
 
-test("native group flags do not promote an unproven command lifetime into cleanup proof", async () => {
+test("producer group cleanup can pass and qualify while harness lifetime cleanup remains unproven", async () => {
   const f = fixture();
   const cleanupEntry = entry("wrapper-cleanup");
   const result = await runCompatReceipt({ id: "claude-implementer", version: f.version, out: join(f.root, "lifetime-output"), disposableRunner: true }, {
@@ -104,8 +104,28 @@ test("native group flags do not promote an unproven command lifetime into cleanu
   });
   expect(result.ownedStopConfirmed).toBe(true);
   expect(result.processCleanup).toBe("unproven");
-  expect(result.legs).toMatchObject([{ id: "wrapper-cleanup", status: "not-run", cause: "process-cleanup-unproven" }]);
+  expect(result.legs).toMatchObject([{ id: "wrapper-cleanup", status: "pass", cause: "ok" }]);
+  expect(result.outcome).toBe("pass");
+  expect(result.eligible).toBe(true);
+  expect(result.containment).toBe("disposable-runner-lifetime");
+  expect(result.processCleanupReason).toBeTruthy();
+  expect(existsSync(f.marker)).toBe(false);
+});
+
+for (const fault of ["unconfirmed-stop", "detected-survivor"] as const) test(`reported lifetime cannot bypass ${fault}`, async () => {
+  const f = fixture(), command = claudePort(f, [], "lifetime-unproven");
+  const result = await runCompatReceipt({ id: "claude-implementer", version: f.version, out: join(f.root, "failed-stop-output"), disposableRunner: true }, {
+    disposable: true, entry: entry("wrapper-cleanup"),
+    install: async context => { roots.push(context.root); return artifact(context.prefix, f.marker); },
+    proofs: runClaudeProofs,
+    run: async (argv, options) => ({ ...await command(argv, options), ownedStopConfirmed: fault !== "unconfirmed-stop", survivorDetected: fault === "detected-survivor" }),
+    limits: { totalMs: 10_000, installMs: 5_000, legMs: 5_000 },
+  });
+  expect(result.processCleanup).toBe("unproven");
+  expect(result.ownedStopConfirmed).toBe(false);
+  expect(result.outcome).toBe("fail");
   expect(result.eligible).toBe(false);
+  expect(result.legs).toMatchObject([{ id: "wrapper-cleanup", status: "fail", cause: "cleanup" }]);
   expect(existsSync(f.marker)).toBe(false);
 });
 
