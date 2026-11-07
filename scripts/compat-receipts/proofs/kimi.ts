@@ -99,7 +99,7 @@ async function nativeCase(context: ProofContext, fixture: KimiPreparedFixture, r
     writeFileSync(join(tool, "config.toml"), config, { mode: 0o600 });
     const parsed = Bun.TOML.parse(config) as { providers: Record<string, { base_url: string; oauth: { oauth_host: string } }> };
     check(parsed.providers["managed:kimi-code"]?.base_url === `${base}/v1` && parsed.providers["managed:kimi-code"]?.oauth.oauth_host === `${base}/auth`);
-    check(fixture.launch.current?.() === true && fixture.launch.envMode === "replace" && fixture.launch.env?.KIMI_CODE_TRUST_WORKSPACE === undefined && fixture.launch.env.KIMI_DISABLE_OAUTH_LOCK === undefined);
+    check(fixture.launch.env && fixture.launch.current?.() === true && fixture.launch.envMode === "replace" && fixture.launch.env.KIMI_CODE_TRUST_WORKSPACE === undefined && fixture.launch.env.KIMI_DISABLE_OAUTH_LOCK === undefined);
     const baseline = fixture.calls.length;
     const run = await context.run([...context.artifact.command, "-p", "Run only the synthetic fixture operations.", "--output-format", "stream-json", "--agent-file", agent, "--skills-dir", skills], {
       cwd, env: { ...fixture.launch.env, HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temp}/`, XDG_CONFIG_HOME: join(home, ".config"), NODE_OPTIONS: `--require ${JSON.stringify(guard)}`, PROBE_NETWORK_LOG: networkLog },
