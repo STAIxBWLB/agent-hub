@@ -87,7 +87,7 @@ export async function runQwenProofs(context: ProofContext): Promise<ProofResults
     const permissionFile = join(directory, "permission-result.json"), permissionConfig = join(directory, "permission-input.json"), permissionNetwork = join(directory, "permission-network.log");
     writeFileSync(permissionConfig, JSON.stringify({ moduleUrl: pathToFileURL(exported).href, output: permissionFile }), { flag: "wx", mode: 0o600 });
     const permission = await context.run([node, fileURLToPath(new URL("./qwen-permission.mjs", import.meta.url)), permissionConfig], {
-      cwd: context.cwd, env: { ...env, NODE_OPTIONS: `--require ${guard}`, PROBE_NETWORK_LOG: permissionNetwork }, signal: context.signal,
+      cwd: context.cwd, env: { ...env, NODE_OPTIONS: `--require ${JSON.stringify(guard)}`, PROBE_NETWORK_LOG: permissionNetwork }, signal: context.signal,
       timeoutMs: context.limits.legMs, maxBytes: context.limits.outputBytes,
     });
     const callback = record(permissionFile, context.limits.outputBytes), noPermissionNetwork = !lstatSync(permissionNetwork, { throwIfNoEntry: false }) || read(permissionNetwork, context.limits.outputBytes).length === 0;

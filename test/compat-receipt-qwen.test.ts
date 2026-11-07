@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { runQwenProofs } from "../scripts/compat-receipts/proofs/qwen.ts";
 import { runBoundedReceiptCommand } from "../scripts/compat-receipts/runner.ts";
 import type { ManifestEntry, ProofContext } from "../scripts/compat-receipts/types.ts";
@@ -61,6 +62,24 @@ test("the committed Qwen promotions exercise the exact fake candidate, RPC mode 
   expect(context.env).toEqual(before);
   expect(readFileSync(join(context.artifact.packageRoot, "chunks/acpAgent-FIXTURE.js"))).toEqual(source);
   expect(readdirSync(join(context.artifact.packageRoot, "chunks"))).toEqual(["acpAgent-FIXTURE.js"]);
+}, 20_000);
+
+test("canonical Qwen helpers load the actual network preload from a path containing spaces", async () => {
+  const context = fixture(), original = join(import.meta.dir, "../scripts/compat-receipts/proofs");
+  const relocated = join(context.root, "producer helpers with spaces"), helpers = join(relocated, "scripts/compat-receipts/proofs"), project = join(relocated, "src/hub");
+  mkdirSync(helpers, { recursive: true, mode: 0o700 }); mkdirSync(project, { recursive: true, mode: 0o700 });
+  // Relocate canonical files byte-for-byte; keep the production path helper single-sourced.
+  for (const name of ["qwen.ts", "qwen-acp.py", "qwen-permission.mjs", "qwen-network.cjs"]) copyFileSync(join(original, name), join(helpers, name));
+  writeFileSync(join(project, "project.ts"), `export { realPath } from ${JSON.stringify(new URL("../src/hub/project.ts", import.meta.url).href)};\n`);
+  const relocatedProducer = await import(pathToFileURL(join(helpers, "qwen.ts")).href) as { runQwenProofs(context: ProofContext): ReturnType<typeof runQwenProofs> };
+  const result = await relocatedProducer.runQwenProofs(context);
+  expect(result[ACP]).toEqual({ status: "pass", cause: "ok" }); expect(result[PERMISSION]).toEqual({ status: "pass", cause: "ok" }); expect(result[NETWORK]).toEqual({ status: "pass", cause: "ok" });
+  const native = JSON.parse(readFileSync(join(context.root, "qwen-producer/acp-result.json"), "utf8"));
+  expect(native.guardPositiveControl).toBe(true); expect(native.groupGone).toBe(true);
+  expect(readFileSync(join(context.root, "qwen-producer/acp/network-positive.log"), "utf8")).toContain("blocked network attempt");
+  const input = JSON.parse(readFileSync(join(context.root, "qwen-producer/acp-input.json"), "utf8"));
+  expect(input.guard).toBe(join(helpers, "qwen-network.cjs")); expect(input.guard).toContain("producer helpers with spaces");
+  expect(readFileSync(input.guard)).toEqual(readFileSync(join(original, "qwen-network.cjs")));
 }, 20_000);
 
 for (const fault of ["identity", "version", "protocol", "auth", "default-mode", "model", "missing-mode", "mode-ack"] as const) test(`Qwen ACP ${fault} cannot become a passing native leg`, async () => {
