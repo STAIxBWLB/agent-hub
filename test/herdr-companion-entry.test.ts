@@ -443,16 +443,20 @@ test("AC7: with the host disabled the entry refuses and touches nothing, and Her
   expect(s.fake.snapshot()).toEqual(before);
 });
 
-test("AC7: the shipped mod is three files in one owned folder, docks nothing, and the glue stays within the documented host API", () => {
-  expect(readdirSync(MOD).sort()).toEqual(["core.js", "main.js", "mod.json"]);
+test("AC7: the shipped mod is five files in one owned folder, docks nothing, and the glue stays within the documented host API", () => {
+  expect(readdirSync(MOD).sort()).toEqual(["card.js", "core.js", "focus.js", "main.js", "mod.json"]);
   expect(JSON.parse(readFileSync(join(MOD, "mod.json"), "utf8"))).toEqual({ place: "none", overlay: { width: 640, height: 460 } });
   const code = (text: string) => text.replace(/^\s*\/\/.*$/gm, ""); // the scans below read code, not the comments that explain it
-  const main = code(readFileSync(join(MOD, "main.js"), "utf8")), logic = code(readFileSync(join(MOD, "core.js"), "utf8"));
+  const main = code(readFileSync(join(MOD, "main.js"), "utf8")), logic = ["core.js", "card.js", "focus.js"].map(n => code(readFileSync(join(MOD, n), "utf8"))).join("\n");
   const imports = [...main.matchAll(/import \{([^}]*)\} from "herdr"/g)].flatMap(m => m[1]!.split(",").map(x => x.trim()));
-  expect(imports.sort()).toEqual(["closeOverlay", "exec", "focused", "machines", "props", "run", "spaces", "theme", "window"].sort());
-  for (const text of [main, logic]) for (const bad of [/\bfetch\(/, /XMLHttpRequest/, /setInterval|setTimeout/, /localStorage/, /writeTextFile|readTextFile/, /shared\(|setShared\(/, /\bhc\(/, /(^|[^.\w])notify\(/, /watchFolder/, /openOverlay/, /process\.|child_process|Bun\./, /structuredClone/, /\bpane\.close|terminal\.kill|terminal\.park|tab\.close|space\.close/])
+  expect(imports.sort()).toEqual(["closeOverlay", "exec", "focused", "hc", "machines", "props", "run", "spaces", "terminals", "theme", "window"].sort());
+  for (const text of [main, logic]) for (const bad of [/\bfetch\(/, /XMLHttpRequest/, /setInterval|setTimeout/, /localStorage/, /writeTextFile|readTextFile/, /shared\(|setShared\(/, /(^|[^.\w])notify\(/, /watchFolder/, /openOverlay/, /process\.|child_process|Bun\./, /structuredClone/, /\bpane\.close|terminal\.kill|terminal\.park|tab\.close|space\.close/])
     expect(text, String(bad)).not.toMatch(bad);
   expect(logic).not.toMatch(/from ["']herdr["']|from ["']gpui-kit["']/);
+  // hc is allowed in exactly one form: `hc(["get", <address>, "--json"])`. Any other call, or a call through a variable, fails here.
+  const hcCalls = [...logic.matchAll(/host\.hc\(([^)]*\))/g)].map(m => m[1]);
+  expect(hcCalls).toEqual(['["get", row.address, "--json"])']);
+  expect([...main.matchAll(/\bhc\(/g)]).toEqual([]);
   // main.js is glue: it holds no project, machine or argument decision
   expect(main).not.toMatch(/FIXED|"ahub"|--project|\.exec\(/);
   for (const text of [main, logic, readFileSync(join(MOD, "mod.json"), "utf8")]) expect(text).not.toMatch(/orca/i);

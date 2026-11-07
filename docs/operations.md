@@ -6618,3 +6618,15 @@ dashboard runs the existing `ahub ui` and keeps no link or ticket. A remote spac
 command, never a dashboard link. Remove it by deleting the folder. It starts, stops and upgrades nothing and is not an
 ahub dependency. `herdr-app check` accepts it in a scratch home; the native open and disable receipt is a person-run
 leg that has not been run.
+
+### Herdr status card and existing-console focus (#1199 H2)
+
+The Herdr entry also offers three read-only actions. **Status** reads `ahub --project <id> status --json` from the project folder on the
+selected machine, on a click only, and shows task counts, peer states and queue lengths and the hub version from a closed
+allowlist, so no task or note text reaches it. Missing CLI, timeout, an exit error, no hub running, oversized or
+unrecognized output, an old hub, a partial reading and a stale one are distinct states. **Focus console** and **Peek
+console** (this computer only) accept a terminal only after `hc get` shows it live and running `ahub console` for the
+selected project, exactly one match, rechecked right before a single `pane.focus` or `terminal.peek`, and a focus is
+believed only after Herdr's `focused()` shows it. They never start, replace, type into or close a terminal, and
+Herdr's own working, blocked, done and idle words are shown, never sent to ahub. A console started through a wrapper is
+not recognized and the person uses Open console. The native focus receipt is a person-run leg that has not been run.

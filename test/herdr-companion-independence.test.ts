@@ -16,10 +16,11 @@ test("no ahub source, script, package or plugin file names the Herdr entry or it
   expect(JSON.stringify(pkg)).not.toMatch(/herdr/i);
 });
 
-test("the mod folder is self-contained: core.js imports nothing, main.js imports only the host's own modules and ./core.js", () => {
+test("the mod folder is self-contained: card.js and focus.js import nothing, core.js imports only those two, main.js imports only the host's own modules and ./core.js", () => {
   const strip = (text: string) => text.replace(/^\s*\/\/.*$/gm, "");
   const core = strip(readFileSync(join(MOD, "core.js"), "utf8")), main = strip(readFileSync(join(MOD, "main.js"), "utf8"));
-  expect(core).not.toMatch(/^\s*import\s/m);
+  for (const leaf of ["card.js", "focus.js"]) { expect(strip(readFileSync(join(MOD, leaf), "utf8")), leaf).not.toMatch(/^\s*import\s|\brequire\(|import\(/m); }
+  expect([...core.matchAll(/from "([^"]+)"/g)].map(m => m[1]).sort()).toEqual(["./card.js", "./focus.js"]);
   expect(core).not.toMatch(/\brequire\(|import\(/);
   const specs = [...main.matchAll(/from "([^"]+)"/g)].map(m => m[1]).sort();
   expect(specs).toEqual(["./core.js", "gpui-base", "gpui-kit", "herdr"]);
@@ -34,8 +35,8 @@ test("the Herdr entry shares no file or import with the Orca companion, in eithe
   for (const name of ["orca-companion-host.ts", "orca-companion-cli.ts"]) for (const file of herdrFiles) expect(readFileSync(file, "utf8")).not.toContain(name);
 });
 
-test("the mod's owned footprint is exactly three files and a single folder name", () => {
-  expect(readdirSync(MOD).sort()).toEqual(["core.js", "main.js", "mod.json"]);
+test("the mod's owned footprint is exactly five files and a single folder name", () => {
+  expect(readdirSync(MOD).sort()).toEqual(["card.js", "core.js", "focus.js", "main.js", "mod.json"]);
   const readme = readFileSync(join(ROOT, "integrations/herdr/README.md"), "utf8");
   expect(readme).toMatch(/mods\/ahub/);
   expect(readme).toMatch(/Never overwrite/);
