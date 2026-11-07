@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { prepareCompatArtifacts, type CompatBuildContext, type PreparedBundleDescriptor } from "../scripts/compat-prepare.ts";
 import { readCompatVerified } from "../scripts/compat-publish-files.ts";
-import { planCompatPublish } from "../scripts/compat-publish.ts";
+import { planCompatPublish, type PublishedLeg } from "../scripts/compat-publish.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -144,7 +144,7 @@ test("failed observations retain canonical scalar measurements and closed leg st
   writeFileSync(file, JSON.stringify(summary));
   const result = await prepareCompatArtifacts(f.input, { head: () => head, build: f.build });
   expect(result.rejectedBatch).toBe(false); expect(result.artifacts).toHaveLength(1); expect(f.calls).toEqual([]);
-  const canonical = result.artifacts[0] as { elapsedMs: number; survivorDetected: boolean; eligible: boolean; legs: { status: string; cause: string; reason: string }[] };
+  const canonical = result.artifacts[0] as { elapsedMs: number; survivorDetected: boolean; eligible: boolean; legs: (PublishedLeg & { reason: string; nextStep: string })[] };
   expect(canonical.elapsedMs).toBe(1); expect(canonical.survivorDetected).toBe(true); expect(canonical.eligible).toBe(false);
   expect(canonical.legs[0]).toEqual({ id: "native-identity", category: "macos-runner", requiredForAdmission: true, status: "fail", cause: "proof-failed", reason: "", nextStep: "" });
   expect(result.plan.actions[0]).toMatchObject({ kind: "update-drift", cause: "proof-failed" }); expect(JSON.stringify(result)).not.toContain("NATIVE_UNTRUSTED_TEXT"); f.restored();
