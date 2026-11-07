@@ -314,6 +314,8 @@ async function measure(root: string): Promise<void> {
   const { syncBuiltinESMExports } = await import("node:module");
   const allowed = (command: unknown, args: unknown): boolean => {
     if (typeof command !== "string" || !Array.isArray(args)) return false;
+    // The pinned portable helper deliberately invokes git/realpath by basename. Resolve only these closed names in the isolated fixed PATH.
+    if (["git", "ps", "realpath"].includes(command)) command = Bun.which(command, { PATH: process.env.PATH }) ?? "";
     if (["/bin/ps", "/usr/bin/ps", "/bin/realpath", "/usr/bin/realpath"].includes(command)) return true;
     if (!["/usr/bin/git", "/bin/git"].includes(command)) return false;
     const words = [...args] as string[];
