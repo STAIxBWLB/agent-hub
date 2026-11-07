@@ -21,7 +21,7 @@ Date: 2026-11-08. Scope: exact native version Kimi Code 2.5.2 on macOS arm64, is
 - `ahub results --json` exposed only ids, peer, outcome, times and `private: true`. The launch-scoped plugin was removed on normal exit and other plugins stayed installed.
 - Focused regression suites: 76 completion, agy, launcher and review-follow-up tests plus 36 full-gate failure-focused tests passed, with typecheck and bundle freshness. These covered the codec, completion flow, missing prompt ids, absent Stop/Notification hooks, unknown inventory, compat receipts and unverified-version behavior.
 - PR review follow-up: the version probe preserves a wrapper/interpreter prefix without launch-only model options. A shared-home plugin record carries its owner pid and process signature; an active or unknown owner is never replaced, and only a proven-gone owner is stale.
-- Full Linux `scripts/check.sh --changed` at `196ef79c2f17ae4422e0c9c82f3aad72633110c2`: **12634 pass, 101 skip, 0 fail**, ending `check: OK`. The earlier full run's 10 failures were all fixed and re-run in the focused suites.
+- Full Linux `scripts/check.sh --changed` at `989b6e79b9d3fc8da44326e2462aa674612add62`: **12636 pass, 101 skip, 0 fail**, ending `check: OK`. The earlier full run's 10 failures were all fixed and re-run in the focused suites.
 - OCR delegation covered all 20 reviewable files at that head. Two preview/ownership findings were fixed with red/green plugin regressions.
 
 ## Acceptance criteria
@@ -34,7 +34,7 @@ Date: 2026-11-08. Scope: exact native version Kimi Code 2.5.2 on macOS arm64, is
 - [x] AC6: active background work and unknown inventory never produce a premature `done`.
 - [x] AC7: no prompt, answer, hook error, task command or title reaches completion rows, events, logs or memory; native-person results are private stubs.
 - [x] AC8: only compat `kimi-tui` 2.5.2 enables the bridge; other versions keep existing TUI behavior with completion disabled.
-- [x] AC9: `scripts/check.sh --changed` passed at `196ef79c2f17ae4422e0c9c82f3aad72633110c2`, with 12634 pass, 101 skip and 0 fail. Live exact-version evidence above is complete.
+- [x] AC9: `scripts/check.sh --changed` passed at `989b6e79b9d3fc8da44326e2462aa674612add62`, with 12636 pass, 101 skip and 0 fail. Live exact-version evidence above is complete.
 
 ## Hardcoded-value calibration
 
