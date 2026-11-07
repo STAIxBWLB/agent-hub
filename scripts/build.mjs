@@ -1,5 +1,5 @@
-// Bundles the Claude channel server into the plugin dir (the marketplace copies only that dir) and stamps the
-// package version into the plugin manifest. `--check` fails when the committed bundle or manifest is stale.
+// Bundles the Claude channel server and native hook/worker entry points into the plugin dir (the marketplace copies
+// only that dir) and stamps the package version into the plugin manifest. `--check` fails when a committed bundle or manifest is stale.
 import { readFileSync, writeFileSync } from "node:fs";
 
 // Bun.build output differs between Bun versions, and CI builds with .bun-version: re-run once under that Bun (#591).
