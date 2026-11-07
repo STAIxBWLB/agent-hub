@@ -92,25 +92,30 @@ async function codex(context: ProofContext, result: ProofResults, trust: () => v
   } finally { removeFixture(config); }
 }
 
-async function kimi(context: ProofContext, result: ProofResults, trust: () => void): Promise<void> {
+export interface KimiPreparedFixture { launch: ReviewerLaunch; brokerConfig: string; calls: readonly string[] }
+export type KimiNativeProof = (fixture: KimiPreparedFixture) => Promise<ProofResults>;
+
+async function kimi(context: ProofContext, result: ProofResults, trust: () => void, native?: KimiNativeProof): Promise<void> {
   const { kimiReviewerBackend } = await import("../../../src/adapters/kimi-review.ts");
   const { createReviewerMcpSession } = await import("../../../src/adapters/reviewer-mcp.ts");
   const source = process.env.KIMI_CODE_HOME!;
   mkdirSync(source, { recursive: true, mode: 0o700 });
   if (["config.toml", "credentials", "oauth", "device_id"].some(name => existsSync(join(source, name)))) throw new ReceiptError("input");
   for (const name of ["credentials", "oauth"]) mkdirSync(join(source, name), { mode: 0o700 });
-  const config = 'default_model = "fixture-model"\n[providers."managed:kimi-code"]\ntype = "kimi"\nbase_url = "https://api.kimi.ai/coding/v1"\n[providers."managed:kimi-code".oauth]\nstorage = "file"\nkey = "oauth/kimi-code"\n[models.fixture-model]\nprovider = "managed:kimi-code"\nmodel = "fixture-model"\n';
+  const config = 'default_model="fixture"\ntelemetry=false\nhooks=[]\n[providers."managed:kimi-code"]\ntype="kimi"\nbase_url="https://api.kimi.ai/coding/v1"\n[providers."managed:kimi-code".oauth]\nstorage="file"\nkey="oauth/kimi-code"\noauth_host="https://auth.kimi.ai"\n[models.fixture]\nprovider="managed:kimi-code"\nmodel="kimi-for-coding"\nprotocol="anthropic"\nmax_context_size=32768\ncapabilities=["tool_use"]\n';
+  const token = JSON.stringify({ access_token: "synthetic-access-only", expires_at: Math.floor(Date.now() / 1000) + 7200, expires_in: 7200, token_type: "Bearer", scope: "fixture" });
   writeFileSync(join(source, "config.toml"), config, { mode: 0o600 });
   writeFileSync(join(source, "device_id"), "synthetic-fixture-device", { mode: 0o600 });
+  writeFileSync(join(source, "credentials/kimi-code.json"), token, { mode: 0o600 });
   const decoy = process.env.KIMI_CODE_TRUST_WORKSPACE;
   process.env.KIMI_CODE_TRUST_WORKSPACE = "fixture-decoy";
-  const tools = ["hub_review", "hub_task_show"].map(name => ({ name, description: "Synthetic host fixture", inputSchema: { type: "object" as const, properties: { id: { type: "integer" } }, required: ["id"], additionalProperties: false as const } }));
-  let active = true, calls = 0;
+  const tools = ["hub_review", "hub_task_show", "hub_task_propose"].map(name => ({ name, description: "Synthetic host fixture", inputSchema: { type: "object" as const, properties: { id: { type: "integer" }, verdict: { type: "string" }, note: { type: "string" } }, required: ["id"], additionalProperties: false as const } }));
+  let active = true; const calls: string[] = [];
   let broker: ReturnType<typeof createReviewerMcpSession> | undefined;
   let launch: ReviewerLaunch | undefined;
   let phase = "prepare";
   try {
-    broker = createReviewerMcpSession({ task: 7, current: () => active, tools, call: async () => { calls++; return "fixture result"; } });
+    broker = createReviewerMcpSession({ task: 7, current: () => active, tools, call: async name => { calls.push(name); return "fixture result"; } });
     trust();
     const value = await kimiReviewerBackend.prepare({ peer: "kimi-review", cwd: context.cwd, sessionId: "fixture-review", task: 7,
       mcpConfig: broker.config, systemPrompt: "Synthetic preparation only; no native print child.", input: "Public fixture facts", privatePaths: [],
@@ -134,7 +139,10 @@ async function kimi(context: ProofContext, result: ProofResults, trust: () => vo
     phase = "environment-decoy";
     check(launch.env?.KIMI_CODE_TRUST_WORKSPACE === undefined);
     mark(result, ["environment-decoy"], "pass");
+    phase = "native-tool-loop";
+    if (native) Object.assign(result, await native({ launch, brokerConfig: broker.config, calls }));
     phase = "broker-refusals";
+    const callbackBaseline = calls.length;
     const binding = JSON.parse(broker.config).mcpServers["agent-hub"] as { url: string; headers: Record<string, string> };
     const rpc = async (name: string, id: number, authorize = true) => {
       const response = await fetch(binding.url, { method: "POST", signal: context.signal,
@@ -144,7 +152,7 @@ async function kimi(context: ProofContext, result: ProofResults, trust: () => vo
       const body = await response.json() as { error?: unknown }; check(body.error !== undefined);
     };
     await rpc("hub_review", 8); await rpc("hub_task_accept", 7); await rpc("hub_task_show", 7, false);
-    active = false; await rpc("hub_task_show", 7); check(calls === 0);
+    active = false; await rpc("hub_task_show", 7); check(calls.length === callbackBaseline);
     mark(result, ["broker-refusals"], "pass");
     phase = "cleanup";
     check(boundedText(join(source, "config.toml"), context) === config && boundedText(join(source, "device_id"), context) === "synthetic-fixture-device");
@@ -152,8 +160,9 @@ async function kimi(context: ProofContext, result: ProofResults, trust: () => vo
     await release(launch); launch = undefined;
     check(!existsSync(tool));
     check(boundedText(join(source, "config.toml"), context) === config && boundedText(join(source, "device_id"), context) === "synthetic-fixture-device");
-    check(["credentials", "oauth"].every(name => readdirSync(join(source, name)).length === 0));
-    // Preparation cleanup was checked, but the manifest's native-loop cleanup remains unproved.
+    check(boundedText(join(source, "credentials/kimi-code.json"), context) === token);
+    check(readdirSync(join(source, "credentials")).join() === "kimi-code.json" && readdirSync(join(source, "oauth")).length === 0);
+    // Without the native callback this proves preparation cleanup only; native cleanup stays not-run.
   } catch (error) {
     if (error instanceof ReceiptError && error.causeCode === "cleanup") throw error;
     mark(result, [phase], "fail", failure(error, context));
@@ -167,8 +176,8 @@ async function kimi(context: ProofContext, result: ProofResults, trust: () => vo
   }
 }
 
-/** Called only in a fresh isolated worker; never starts either reviewer's model/native print launch. */
-async function reviewerProofs(context: ProofContext): Promise<ProofResults> {
+/** Fresh isolated worker only. A Kimi callback may run fixed synthetic loopback controls. */
+async function reviewerProofs(context: ProofContext, nativeKimi?: KimiNativeProof): Promise<ProofResults> {
   if (context.id !== "codex-review" && context.id !== "kimi-review") return {};
   if (context.signal.aborted) throw new ReceiptError("cancelled");
   fixtureEnvironment(context);
@@ -197,12 +206,12 @@ async function reviewerProofs(context: ProofContext): Promise<ProofResults> {
     writeTrust(context.id, context.version, false, trustFile);
   };
   try {
-    if (context.id === "codex-review") await codex(context, result, trust); else await kimi(context, result, trust);
+    if (context.id === "codex-review") await codex(context, result, trust); else await kimi(context, result, trust, nativeKimi);
     return result;
   } finally { removeFixture(trustFile); }
 }
 
-export async function runReviewerProofs(context: ProofContext): Promise<ProofResults> {
-  try { return await reviewerProofs(context); }
+export async function runReviewerProofs(context: ProofContext, nativeKimi?: KimiNativeProof): Promise<ProofResults> {
+  try { return await reviewerProofs(context, nativeKimi); }
   catch (error) { throw error instanceof ReceiptError ? error : new ReceiptError("proof-failed"); }
 }
