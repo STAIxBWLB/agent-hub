@@ -1,7 +1,7 @@
 import type { CompatId } from "../../src/adapters/compat.ts";
 
 export type LegStatus = "pass" | "fail" | "not-run";
-export const CAUSES = ["ok", "proof-failed", "timeout", "cancelled", "platform", "model-required", "tui-required", "producer-not-committed", "producer-not-importable", "source-review-required", "install-unavailable", "integrity", "input", "cleanup"] as const;
+export const CAUSES = ["ok", "proof-failed", "timeout", "cancelled", "platform", "model-required", "tui-required", "producer-not-committed", "producer-not-importable", "not-applicable", "source-review-required", "install-unavailable", "integrity", "input", "cleanup"] as const;
 export type Cause = typeof CAUSES[number];
 export interface ManifestLeg { id: string; label: string; category: string; runnerOS: string[]; requiredForAdmission: boolean }
 export interface ManifestEntry {
@@ -48,7 +48,7 @@ export interface ReceiptSummary {
   architecture: string;
   procedureReceipt: string;
   generatedAt: string;
-  bounds: { totalMs: number; legMs: number };
+  bounds: { totalMs: number; legMs: number; cleanupMs: number };
   cleanupConfirmed: boolean;
   installation: ProofResult & { reason: string; nextStep: string };
   artifact: { method: string; integrity: string } | null;

@@ -4,6 +4,7 @@ import type { CommandResult, ReceiptCommand } from "./types.ts";
 
 // Operational cleanup bounds; diagnostics never inherit the caller's credential environment.
 const TABLE_MS = 2_000, TERM_MS = 250, KILL_MS = 1_000;
+export const RECEIPT_CLEANUP_MS = 10_000;
 async function cleanProcessTable(): Promise<ProcRow[] | undefined> {
   const executable = Bun.which("ps", { PATH: "/usr/bin:/bin" });
   if (!executable) return;
@@ -30,11 +31,18 @@ export const runBoundedReceiptCommand: ReceiptCommand = async (argv, options) =>
     const finish = async (exitCode: number | null) => {
       if (settled) return;
       settled = true; clearTimeout(timer); options.signal.removeEventListener("abort", aborted);
-      let cleanup = true;
-      try {
-        if (!(await cleanProcessTable())) cleanup = false;
-        await stopOwnedProcess(child, { group: true, termMs: TERM_MS, killMs: KILL_MS, table: cleanProcessTable });
-      } catch { cleanup = false; }
+      let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = await Promise.race([
+        (async () => {
+          try {
+            const observed = !!(await cleanProcessTable());
+            await stopOwnedProcess(child, { group: true, termMs: TERM_MS, killMs: KILL_MS, table: cleanProcessTable });
+            return observed;
+          } catch { return false; }
+        })(),
+        new Promise<false>(done => { cleanupTimer = setTimeout(() => done(false), RECEIPT_CLEANUP_MS); }),
+      ]);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
       resolve({ exitCode: overflow ? 1 : exitCode, stdout, stderr, timedOut, cleanup });
     };
     const aborted = () => { void finish(null); };

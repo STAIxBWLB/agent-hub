@@ -6,7 +6,7 @@ import { isCompatId } from "../src/adapters/compat.ts";
 import { realPath } from "../src/hub/project.ts";
 import { installCompatArtifact } from "./compat-receipts/install.ts";
 import { runManifestProofs } from "./compat-receipts/proofs.ts";
-import { runBoundedReceiptCommand } from "./compat-receipts/runner.ts";
+import { RECEIPT_CLEANUP_MS, runBoundedReceiptCommand } from "./compat-receipts/runner.ts";
 import { ReceiptError, type Cause, type LegResult, type ManifestEntry, type ReceiptContext, type ReceiptLimits, type ReceiptPorts, type ReceiptSummary, type InstalledArtifact } from "./compat-receipts/types.ts";
 
 const DEFAULT_LIMITS: ReceiptLimits = { totalMs: 15 * 60_000, installMs: 3 * 60_000, legMs: 2 * 60_000,
@@ -21,6 +21,7 @@ const DIAGNOSTICS: Record<Cause, readonly [string, string]> = {
   "tui-required": ["This leg requires an interactive TUI or desktop and was not executed.", "Use the receipt's separately authorized interactive procedure."],
   "producer-not-committed": ["producer not committed; see follow-up task", "Complete and review the per-id producer follow-up before treating this leg as proved."],
   "producer-not-importable": ["The historical producer is not import-safe or candidate-parameterized.", "Extract and review its callable proof in the producer follow-up; do not copy its assertions into this harness."],
+  "not-applicable": ["The original pre-admission negative condition does not apply to this already-admitted candidate.", "Use an unverified candidate for the negative check; do not remove verified versions or change machine trust to force it."],
   "source-review-required": ["The receipt requires scoped source or lifecycle review that this harness cannot certify.", "Complete the recorded human review; a fetched diff or successful install is not that review."],
   "install-unavailable": ["The exact artifact could not be installed with the recorded public method.", "Inspect the public artifact and installer on the required platform; no global installer or trust change is performed."],
   integrity: ["The exact artifact identity or integrity binding did not match.", "Check the publisher's exact-version metadata and checksum before any execution."],
@@ -61,11 +62,16 @@ function isolatedEnvironment(root: string, home: string): NodeJS.ProcessEnv {
   return env;
 }
 async function bounded<T>(signal: AbortSignal, ms: number, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const local = new AbortController(), combined = AbortSignal.any([signal, local.signal]);
+  const local = new AbortController(), combined = AbortSignal.any([signal, local.signal]), deadline = performance.now() + ms;
   let rejectAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_, reject) => { rejectAbort = () => reject(new ReceiptError("timeout")); combined.addEventListener("abort", rejectAbort, { once: true }); });
   const timer = setTimeout(() => local.abort(), ms);
-  try { if (combined.aborted) throw new ReceiptError("timeout"); return await Promise.race([operation(combined), aborted]); }
+  try {
+    if (combined.aborted) throw new ReceiptError("timeout");
+    const value = await Promise.race([operation(combined), aborted]);
+    if (combined.aborted || performance.now() >= deadline) throw new ReceiptError("timeout");
+    return value;
+  }
   finally { clearTimeout(timer); if (rejectAbort) combined.removeEventListener("abort", rejectAbort); }
 }
 function blockedCause(leg: ManifestEntry["legs"][number], os: string, architecture: string, entry: ManifestEntry): Cause | undefined {
@@ -91,7 +97,7 @@ function writeOutput(out: string, summary: ReceiptSummary): void {
 
 /** Host/test ports are programmatic only; the CLI never selects code or credentials from configuration. */
 export async function runCompatReceipt(input: { id: string; version: string; out: string }, ports: ReceiptPorts = {}): Promise<ReceiptSummary> {
-  if (!isCompatId(input.id) || input.version.length > 64 || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(input.version)) throw new ReceiptError("input");
+  if (!isCompatId(input.id) || input.version.length > 64 || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(input.version)) throw new ReceiptError("input");
   const manifest = JSON.parse(readFileSync(fileURLToPath(new URL("./compat-receipts/manifest.json", import.meta.url)), "utf8")) as { entries: Record<string, ManifestEntry> };
   const entry = ports.entry ?? manifest.entries[input.id]!;
   const categories = new Set(["linux-ci", "macos-runner", "account-or-model", "tui-desktop"]);
@@ -110,7 +116,7 @@ export async function runCompatReceipt(input: { id: string; version: string; out
   let cleanup = true;
   const context: ReceiptContext = { id: input.id, version: input.version, root, home, prefix, cwd, env, signal: controller.signal, limits,
     run: async (argv, options) => {
-      if (options.signal.aborted || controller.signal.aborted) throw new ReceiptError("timeout");
+      if (options.signal.aborted || controller.signal.aborted || performance.now() - started >= limits.totalMs) throw new ReceiptError("timeout");
       const task = (ports.run ?? runBoundedReceiptCommand)(argv, { ...options, signal: AbortSignal.any([controller.signal, options.signal]),
         timeoutMs: Math.min(options.timeoutMs, Math.max(1, limits.totalMs - (performance.now() - started))) });
       active.add(task);
@@ -134,11 +140,12 @@ export async function runCompatReceipt(input: { id: string; version: string; out
       if (runnable.length) try {
         const results = await bounded(controller.signal, limits.legMs, signal => (ports.proofs ?? runManifestProofs)({ ...context, signal, artifact: artifact!, entry: { ...entry, legs: runnable } }));
         for (const leg of runnable) {
+          if (!Object.hasOwn(results, leg.id)) continue;
           const result = results[leg.id];
-          if (result && ["pass", "fail", "not-run"].includes(result.status) && Object.hasOwn(DIAGNOSTICS, result.cause)) {
-            legs[entry.legs.indexOf(leg)] = proof(result.status, result.cause, leg.id, leg.requiredForAdmission);
-            if (result.cause === "cleanup") cleanup = false;
-          }
+          if (!result || !["pass", "fail", "not-run"].includes(result.status) || !Object.hasOwn(DIAGNOSTICS, result.cause) ||
+            (result.status === "pass") !== (result.cause === "ok")) throw new ReceiptError("proof-failed");
+          legs[entry.legs.indexOf(leg)] = proof(result.status, result.cause, leg.id, leg.requiredForAdmission);
+          if (result.cause === "cleanup") cleanup = false;
         }
       } catch (error) {
         const cause = error instanceof ReceiptError ? error.causeCode : "proof-failed";
@@ -159,17 +166,22 @@ export async function runCompatReceipt(input: { id: string; version: string; out
   const autoAdmit = entry.autoAdmit && input.id !== "codex-review" && input.id !== "agy" && !entry.legs.some(leg => leg.requiredForAdmission && ["account-or-model", "tui-desktop"].includes(leg.category));
   const [reason, nextStep] = DIAGNOSTICS[installation.cause];
   const summary: ReceiptSummary = { schemaVersion: 1, id: input.id, version: input.version, runnerOS: os, architecture,
-    procedureReceipt: entry.receipt, generatedAt: new Date().toISOString(), bounds: { totalMs: limits.totalMs, legMs: limits.legMs }, cleanupConfirmed: cleanup,
+    procedureReceipt: entry.receipt, generatedAt: new Date().toISOString(), bounds: { totalMs: limits.totalMs + RECEIPT_CLEANUP_MS, legMs: limits.legMs + RECEIPT_CLEANUP_MS, cleanupMs: RECEIPT_CLEANUP_MS }, cleanupConfirmed: cleanup,
     installation: { status: installation.status, cause: installation.cause, reason, nextStep },
     artifact: artifact ? { method: artifact.method, integrity: artifact.integrity } : null, integrity: artifact?.integrity ?? null, autoAdmit, eligible: outcome === "pass" && autoAdmit && cleanup,
     outcome, elapsedMs: Math.round(performance.now() - started), legs };
   writeOutput(out, summary);
+  if (!cleanup) console.error(`Owned cleanup is unconfirmed; next: inspect only the retained private workspace ${root}.`);
   return summary;
 }
 
 if (import.meta.main) {
   const [id, version, flag, out, ...extra] = process.argv.slice(2);
   if (!id || !version || flag !== "--out" || !out || extra.length) { console.error("Invalid receipt arguments; next: bun scripts/compat-receipt.ts <id> <version> --out <dir>"); process.exitCode = 2; }
-  else try { const result = await runCompatReceipt({ id, version, out }); console.log(JSON.stringify(result)); process.exitCode = result.outcome === "pass" ? 0 : result.outcome === "not-run" ? 3 : 1; }
+  else try {
+    const result = await runCompatReceipt({ id, version, out });
+    await new Promise<void>(done => { process.stdout.write(`${JSON.stringify(result)}\n`, () => done()); });
+    process.exit(result.outcome === "pass" ? 0 : result.outcome === "not-run" ? 3 : 1);
+  }
   catch { console.error("Receipt harness refused the input or output; next: use an exact version and a new owned output directory."); process.exitCode = 2; }
 }

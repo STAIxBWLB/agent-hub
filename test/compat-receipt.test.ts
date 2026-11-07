@@ -148,3 +148,13 @@ test("a symlink output directory is refused without changing its existing target
   expect(f.contexts).toEqual([]); expect(lstatSync(f.out).isSymbolicLink()).toBe(true);
   expect(readdirSync(target)).toEqual(["keep.txt"]); expect(readFileSync(sentinel, "utf8")).toBe("untouched");
 });
+
+test("an inconsistent optimistic producer result cannot make a receipt eligible", async () => {
+  const f = fixture();
+  f.ports.proofs = async () => ({ [nativeLeg]: { status: "pass", cause: "timeout" } });
+  const summary = await f.run();
+  expect(summary.eligible).toBe(false);
+  expect(summary.outcome).toBe("fail");
+  expect(summary.legs.find(leg => leg.id === nativeLeg)).toMatchObject({ status: "fail", cause: "proof-failed" });
+  output(summary, f.out);
+});

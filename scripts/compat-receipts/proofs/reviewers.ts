@@ -54,7 +54,8 @@ async function codex(context: ProofContext, result: ProofResults, trust: () => v
     return await codexReviewerBackend.prepare(input);
   };
   // This is a real version refusal, not a patched COMPAT array. Already-admitted versions have no negative candidate leg.
-  if (!assessVersion("codex-review", context.version, []).ok) {
+  if (assessVersion("codex-review", context.version, []).ok) result["version-negative"] = { status: "not-run", cause: "not-applicable" };
+  else {
     let negative: ReviewerLaunch | undefined;
     try {
       const value = await prepare("codex-version-negative");

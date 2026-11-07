@@ -3551,6 +3551,59 @@ Optional model/TUI behavior explicitly left unverified by a model-free receipt i
 
 For CI-opened PRs, the person still chooses between explicit `check.yml` dispatch with GITHUB_TOKEN and a GitHub App installation token. Dispatch avoids an additional App secret but needs Actions write permission in the publisher and exact-head evidence; it does not run the separate PR-only closing-refs/routing-receipt workflows. An App token lets normal PR events start checks, with person-owned scoped credentials confined to the publisher. Neither route is enabled here. Current [GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) also describes approval-required PR runs for GITHUB_TOKEN automation; that is not unattended CI. See the audit for permissions, queue and gate trade-offs.
 
+### Isolated receipt harness (#1248 T1)
+
+Run `bun scripts/compat-receipt.ts <id> <exact-version> --out <new-owned-directory>`
+from the checkout. The command writes `summary.json` and `receipt.md` without
+changing COMPAT, trust on this machine, or any workflow. Its exit codes are 0 for
+a completed pass, 1 for failure, 3 for required work left not-run, and 2 for invalid
+input/output. `eligible` also requires the manifest's admission policy; a pass
+alone never overrides the Codex/agy policy or a required model/TUI leg.
+
+The installer binds exact npm metadata and SRI before installing the verified
+local tarball into its private prefix, with empty user/global npm configs and a
+private cache. Release assets must match their tagged SHA-256 digest and checksum
+before bounded extraction; absolute/traversal/link/nonregular archive entries and
+size/count excesses refuse. No global installer or caller credential environment
+is used. Normal npm lifecycle behavior is not silently disabled; this does not
+certify an unreviewed lifecycle proof. Isolation uses fresh HOME/XDG/tool homes and
+an allowlisted environment, not a claim of kernel confinement for every installer.
+
+Proof APIs load in a separate worker after that environment is established. The
+Codex backend's real production preparation is reused, including empty and
+ambient fixtures; its returned model `exec` command is never started. Kimi private
+configuration, exact host inventory and broker refusals are separate from native
+tool dispatch. Committed Claude transport/wrapper producers are imported through
+`runpy`, with optional exact-version/runtime-path inputs; their historical defaults
+and behavior assertions remain intact. No prepare evidence-description string is
+used as an execution-time proof.
+
+| Proof family | T1 can run | Explicit not-run work |
+| --- | --- | --- |
+| Codex reviewer | Committed production prepare, actual metadata/native-canary checks and launch configuration assertions | Model-backed hub call, separate control artifact and human source review |
+| Kimi reviewer | Committed prepare, generated private config/inventory, environment decoy and host broker refusals | Native loop, Write positive/negative controls, network guard and native-child cleanup producer |
+| Claude implementer | Committed Write/Bash/rewrite and host-wrapper producer groups | Human upstream-impact review; unsupported launcher forms |
+| Pi | Artifact acquisition only in this core | Historical top-level producer needs import-safe/candidate-version extraction |
+| Qwen ACP and Jcode | Artifact acquisition only in this core | Producer not committed; see follow-up task |
+| agy and qwen-dual | Policy and unavailable/manual-leg reporting | No public agy installer; account/model/TUI or unspecified-platform legs |
+
+Every manifest leg appears as pass, fail or not-run with a cause and next step.
+Missing producers are not inferred from configuration or other host tests. Partial
+receipts cannot qualify a candidate while required work is missing. Source/lifecycle
+semantic review is not a fetched-diff pass. Synthetic loopback fixture sentinels are
+not real provider API keys; parent account/model variables never reach a worker.
+
+Default execution deadlines are 15 minutes overall, 3 minutes for installation
+and 2 minutes per proof-worker/group. Owned-process teardown has a separately
+bounded 10-second allowance, included in the JSON wall-time bounds. Cleanup must
+be confirmed before any pass is retained; otherwise the private workspace is
+retained, its location is reported only on stderr, and eligibility is false.
+The receipt excludes raw native stdout/stderr and private prefix paths. No PR is
+created by T1. The publisher/token choice and producer promotions are follow-ups.
+Mac runs remain heavyweight operations subject to workspace resource admission;
+an agent runs a CLI only inside the harness prefix and reports that isolated run.
+
+
 ## Upgrade and crash recovery
 
 ### Side by side project versions (#1039)
