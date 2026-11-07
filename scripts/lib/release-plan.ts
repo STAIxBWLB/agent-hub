@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { FACT_FILES, renderFacts } from "./readme-facts.ts";
 
 /**
  * #787 P3b: the pure and port-driven parts of release preparation and the guarded tag. `scripts/release-prepare.ts` and
@@ -207,7 +208,8 @@ export function releaseTag(root: string, version: string, opts: { execute: boole
 }
 
 export interface PreparationPlan { current: string; version: string; bump: "minor" | "patch"; lastTag: string; subjects: string[]; prs: number[]; receipts: string[]; branch: string }
-export type Preparation = { ok: true; plan: PreparationPlan; wrote: boolean; stale: string[] } | { ok: false; refusals: string[] };
+/** `facts`: the generated doc blocks (`<file> facts:<name>`) the preparation wrote, or, on a dry run, would write (#1273). */
+export type Preparation = { ok: true; plan: PreparationPlan; wrote: boolean; stale: string[]; facts: string[] } | { ok: false; refusals: string[] };
 
 /**
  * Release preparation, the mechanical half of AGENTS.md "Releasing" steps 1 and 2: the version bump, the README Status line, the
@@ -240,17 +242,26 @@ export function prepareRelease(root: string, opts: { version?: string; dryRun: b
   let nextChangelog = "", nextReadme = "", nextPackage = "", nextQuickstart = "";
   try { nextChangelog = moveUnreleased(changelog, version); nextReadme = setReadmeStatus(opts.read("README.md"), version); nextPackage = setPackageVersion(opts.read("package.json"), version); nextQuickstart = ensureUpgradeNote(opts.read("docs/quickstart.md"), version); }
   catch (error) { refusals.push(error instanceof Error ? error.message : String(error)); }
+  if (refusals.length) return { ok: false, refusals };   // an earlier step's refusal stands alone: the facts below read its output
+  // #1273: the generated facts blocks (install tag, pins) are rendered over the files as they will be written, so a release PR passes scripts/readme-facts.ts with no manual `--write`.
+  const pending: Record<string, string> = { "package.json": nextPackage, "README.md": nextReadme, "docs/quickstart.md": nextQuickstart };
+  const readPending = (path: string): string | undefined => { if (path in pending) return pending[path]; try { return opts.read(path); } catch { return undefined; } };
+  const rendered = renderFacts(readPending, { packageJson: nextPackage, bunVersion: readPending(".bun-version") ?? "" }, FACT_FILES, { tolerant: true });
+  if (rendered.errors.length) refusals.push(...rendered.errors.map(error => `the generated doc facts cannot be rendered: ${error}`));
   if (refusals.length) return { ok: false, refusals };
+  Object.assign(pending, rendered.files);
+  const facts = rendered.drift.map(d => `${d.file} facts:${d.name}`);
 
   const added = git("diff", "--name-only", "--diff-filter=A", `${lastTag}..HEAD`, "--", "docs/verification").stdout.split("\n").filter(path => path && !/^docs\/verification\/\d{4}-\d{2}-\d{2}-\d+\.\d+\.\d+\.md$/.test(path));
   const plan: PreparationPlan = { current, version, bump, lastTag, subjects, prs: prNumbers(subjects), receipts: added, branch };
-  if (opts.dryRun) return { ok: true, plan, wrote: false, stale: [] };
+  if (opts.dryRun) return { ok: true, plan, wrote: false, stale: [], facts };
 
-  opts.write("package.json", nextPackage); opts.write("README.md", nextReadme); opts.write("CHANGELOG.md", nextChangelog); opts.write("docs/quickstart.md", nextQuickstart);
+  opts.write("package.json", nextPackage); opts.write("README.md", pending["README.md"]!); opts.write("CHANGELOG.md", nextChangelog); opts.write("docs/quickstart.md", pending["docs/quickstart.md"]!);
+  for (const [file, text] of Object.entries(rendered.files)) if (!(file in { "README.md": 1, "docs/quickstart.md": 1 })) opts.write(file, text);
   const built = opts.run(["bun", "run", "build"], { cwd: root });
   if (built.code !== 0) return { ok: false, refusals: [`bun run build failed: ${(built.stderr || built.stdout).trim().split("\n").slice(-2).join(" ")}`] };
   opts.write(`docs/verification/${opts.today}-${version}.md`, reportSkeleton(plan, git("rev-parse", "--short=8", "HEAD").stdout.trim()));
-  return { ok: true, plan, wrote: true, stale: staleDocuments(root, opts.run) };
+  return { ok: true, plan, wrote: true, stale: staleDocuments(root, opts.run), facts };
 }
 
 /** Documents `check-docs` reports stale, as the agent's review list. The script exits 0 for stale documents unless `--require-fresh`. */
