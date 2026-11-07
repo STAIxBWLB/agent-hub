@@ -1,9 +1,12 @@
 // agent-hub companion for Orca: the trusted worker (#1198 O1). `createCompanion` holds every decision and takes its ports as arguments, so the tests run it against the O0 fixtures; the
 // default export is the thin `activate(orca)` that Orca calls, wired to the real host, the real filesystem and the real child process. See README.md for what is and is not proven.
 import { spawn } from "node:child_process";
+import { classifyStatusRun, projectStatus } from "./status.mjs";
 import { REFUSALS, CLI_LIMITS, ENTRY_KINDS, bindWorkspace, canonicalizeHere, entryFor, parseSettings, readInventory, readSnapshot, refuse, runCli, terminalCommand, verifyBinding } from "./companion.mjs";
 
-const HANDLERS = Object.freeze(["workspaces.list", "workspace.bind", "entry.open"]);
+const HANDLERS = Object.freeze(["workspaces.list", "workspace.bind", "entry.open", "status.read"]);
+/** What `ahub` prints, as its first words, when no hub runs for the project (src/hub/control-client.ts). Tested as a prefix and never returned. */
+const NO_HUB_PREFIX = "ahub: no hub running for ";
 
 /** Strict input: exactly these keys, each a plain own data property. A panel is the plugin's own code, but a request is still untrusted until read. */
 function exact(value, keys) {
@@ -91,7 +94,35 @@ export function createCompanion(ports) {
     return done("entry.open", { ok: true, status: "terminal_created" });
   }
 
-  return { list, bind, open, handlers: { "workspaces.list": list, "workspace.bind": bind, "entry.open": open } };
+  /**
+   * Read the project's public status, on a user action only: re-verify the exact binding, then run `ahub status --json` (the folder is the working directory, nothing else) and project a closed
+   * allowlist of its fields. No poller, no transcript read, no write. Offline, an older hub and a failed run stay distinct, and nothing of the output or stderr is returned.
+   */
+  async function readStatus(input) {
+    const value = exact(input, ["snapshot"]);
+    if (!value || !readSnapshot(value.snapshot)) return done("status.read", refuse("bad_request"));
+    const ctx = await context();
+    if (ctx.settings.ahubInvalid) return done("status.read", refuse("invalid_setting"));
+    const raw = await inventory();
+    if (raw === undefined) return done("status.read", refuse("inventory_unavailable"));
+    const verified = verifyBinding(value.snapshot, raw, ctx);
+    if (!verified.ok) return done("status.read", verified);
+    let result;
+    try { result = await ports.spawnCli({ executable: ctx.settings.ahubPath ?? "ahub", argv: ["status", "--json"], cwd: verified.binding.root, hostId: verified.binding.hostId, ...CLI_LIMITS }); }
+    catch (error) { return done("status.read", refuse(error && typeof error === "object" && error.code === "ENOENT" ? "cli_missing" : "cli_failed")); }
+    const ran = classifyStatusRun(result, result?.stderrSaysNoHub === true);
+    if (ran.kind === "offline") return done("status.read", { ok: true, state: "offline", ...fixedReading() });
+    if (ran.kind !== "ok") return done("status.read", refuse(ran.kind === "timeout" ? "cli_timeout" : ran.kind === "too_large" ? "cli_output_too_large" : "cli_failed"));
+    let parsed;
+    try { parsed = JSON.parse(result.stdout); } catch { return done("status.read", refuse("unrecognized_output")); }
+    // `ahub status --json` prints the status object itself.
+    const fetchedAt = Date.now();
+    const reading = projectStatus(parsed, fetchedAt, fetchedAt);
+    return done("status.read", reading.ok ? { ...reading, fetchedAt } : reading);
+  }
+  const fixedReading = () => ({ version: null, tasks: null, peers: null, missing: [], ageMs: 0, fetchedAt: Date.now() });
+
+  return { list, bind, open, status: readStatus, handlers: { "workspaces.list": list, "workspace.bind": bind, "entry.open": open, "status.read": readStatus } };
 }
 
 /**
@@ -118,10 +149,12 @@ export function realSpawnCli(call) {
       out += bytes.toString("utf8"); used += bytes.length;
     };
     child.stdout.on("data", take);
-    child.stderr.on("data", () => { /* stderr is not read: it may hold a path or a hub message, and nothing here needs it */ });
+    // stderr is never kept. Only its first 64 bytes are tested, once, against ahub's own fixed no-hub prefix, and the answer is a boolean: stderr can hold a path, and nothing needs it.
+    let head = "";
+    child.stderr.on("data", chunk => { if (head.length < 64) head += Buffer.from(chunk).toString("utf8", 0, 64 - head.length); });
     const timer = setTimeout(() => { timedOut = true; stop(); finish({ stdout: "", stderr: "", exitCode: null, timedOut: true, truncated }); }, call.timeoutMs);
     child.once("error", error => { if (!settled) { settled = true; clearTimeout(timer); reject(error); } });
-    child.once("close", code => finish({ stdout: out, stderr: "", exitCode: timedOut ? null : code, timedOut, truncated }));
+    child.once("close", code => finish({ stdout: out, stderr: "", exitCode: timedOut ? null : code, timedOut, truncated, stderrSaysNoHub: head.startsWith(NO_HUB_PREFIX) }));
   });
 }
 
