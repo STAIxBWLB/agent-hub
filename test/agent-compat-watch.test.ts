@@ -14,7 +14,7 @@ const aheadFetch = async (url: string) => ({ json: async () => url.includes("api
 test("watch emits exact structured candidates independently of report text", async () => {
   const verdict = await watch(aheadFetch);
   expect(verdict.ahead).toEqual(publicIds.map(id => ({ id, version: "9.9.9" })));
-  expect(verdict.code).toBe(3);
+  expect(verdict.code).toBe(3); expect(verdict.verified).toEqual([]);
   const matrix = harnessMatrix(verdict.ahead, manifest);
   const supported = publicIds.filter(id => manifest.entries[id].runnerOS.some((os: string) => ["macos", "linux"].includes(os)));
   expect(matrix.include.map(row => row.id)).toEqual(supported);
@@ -27,7 +27,7 @@ test("unknown or malformed publication versions never become matrix data", async
     expect(await latestVersion({ kind: "npm", pkg: "fixture" }, async () => ({ json: async () => ({ version }) }))).toBeUndefined();
   }
   const verdict = await watch(async () => { throw Error("offline"); });
-  expect(verdict.code).toBe(3); expect(verdict.ahead).toEqual([]);
+  expect(verdict.code).toBe(3); expect(verdict.ahead).toEqual([]); expect(verdict.verified).toEqual([]);
   expect(verdict.report).toContain("latest unknown, unknown");
 });
 
@@ -49,4 +49,18 @@ test("workflow mode writes JSON step outputs and its report without parsing repo
   expect(JSON.parse(fields.ahead_json!)).toEqual(result.ahead);
   expect(JSON.parse(fields.matrix!)).toEqual(result.matrix);
   expect(readFileSync(report, "utf8")).toBe(`${result.report}\n`);
+});
+
+
+test("confirmed verified IDs are structured and disjoint from ahead and unknown IDs", async () => {
+  let at = 0;
+  const selected = publicIds[0]!;
+  const result = await watch(async () => {
+    const id = publicIds[at++]!;
+    if (id === selected) throw Error("unreadable source");
+    const source = SOURCES[id], value = COMPAT[id].verified[0];
+    return { json: async () => source.kind === "github" ? { tag_name: `v${value}` } : { version: value } };
+  });
+  expect(result.verified).toEqual(publicIds.filter(id => id !== selected));
+  expect(result.ahead).toEqual([]); expect(result.code).toBe(3);
 });

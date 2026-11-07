@@ -181,21 +181,24 @@ jobs:
           args=(--prepared prepared --repo "$GITHUB_REPOSITORY" --source-base "$SOURCE_BASE_SHA" --validate-only)
           if [ "$COMPAT_DRY" = true ]; then args+=(--dry-run); fi
           node --experimental-strip-types scripts/compat-publish-run.ts "${args[@]}"
-      - name: Stage the validated watch report
-        run: node --input-type=module -e 'import {readFileSync,writeFileSync} from "node:fs"; const value=JSON.parse(readFileSync("prepared/index.json","utf8")); writeFileSync("report.md", value.watch.report + "\n");'
+      - name: Stage the validated watch report and ID lists
+        id: report
+        run: node --input-type=module -e 'import {readFileSync,writeFileSync,appendFileSync} from "node:fs"; const value=JSON.parse(readFileSync("prepared/index.json","utf8")); writeFileSync("report.md", value.watch.report + "\n"); appendFileSync(process.env.GITHUB_OUTPUT, "verified_ids=" + JSON.stringify(value.watch.verified) + "\ncandidate_ids=" + JSON.stringify(value.watch.candidates.map(row => row.id)) + "\n");'
       - name: Keep the agent-compat issue current
         if: github.event_name != 'workflow_dispatch' || !inputs.dry
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AHEAD: ${{ needs.watch.outputs.ahead }}
           COMPAT_PREPARED: prepared
+          COMPAT_VERIFIED: ${{ steps.report.outputs.verified_ids }}
+          COMPAT_CANDIDATES: ${{ steps.report.outputs.candidate_ids }}
           SOURCE_BASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           number=$(gh issue list --state open --limit 1000 --json number,title | node --experimental-strip-types scripts/agent-compat-issue.ts)
           if [ "$AHEAD" = "true" ]; then
             if [ -n "${COMPAT_PREPARED:-}" ]; then
-              node --experimental-strip-types scripts/compat-publish-run.ts --repo "$GITHUB_REPOSITORY" --retain-rows report.md
+              node --experimental-strip-types scripts/compat-publish-run.ts --repo "$GITHUB_REPOSITORY" --retain-rows report.md --verified-ids "$COMPAT_VERIFIED" --candidate-ids "$COMPAT_CANDIDATES"
             fi
             gh label create agent-compat --color FBCA04 --description "agent CLI version drift (#691)" 2>/dev/null || true
             if [ -n "$number" ]; then gh issue edit "$number" --body-file report.md

@@ -3549,7 +3549,43 @@ The data-only [manifest](../scripts/compat-receipts/manifest.json) and [per-leg 
 
 Optional model/TUI behavior explicitly left unverified by a model-free receipt is not a new admission leg. `codex-review` requires its separately authorized model-backed tool-call proof. `agy` has no public install source. `qwen-dual` requires real-model and TUI work and its current receipt does not name the OS. The manifest records acquisition metadata separately from historical native-binary evidence; no CLI installation or COMPAT change is made by this audit.
 
-For CI-opened PRs, the person still chooses between explicit `check.yml` dispatch with GITHUB_TOKEN and a GitHub App installation token. Dispatch avoids an additional App secret but needs Actions write permission in the publisher and exact-head evidence; it does not run the separate PR-only closing-refs/routing-receipt workflows. An App token lets normal PR events start checks, with person-owned scoped credentials confined to the publisher. Neither route is enabled here. Current [GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) also describes approval-required PR runs for GITHUB_TOKEN automation; that is not unattended CI. See the audit for permissions, queue and gate trade-offs.
+For CI-opened PRs, the person selected `GITHUB_TOKEN` with explicit `check.yml` dispatch on `compat/<id>-<version>` (2026-11-07). The publisher needs `actions: write` for dispatch in addition to its branch, PR and issue permissions. No GitHub App credentials are used. Dispatch supplies exact-head check evidence; it does not trigger the separate PR-only closing-refs/routing-receipt workflows. The T0 audit retains the alternative App-token trade-offs as history. Current [GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) also describes approval-required PR runs for GITHUB_TOKEN automation; that is not unattended CI. See the audit for permissions, queue and gate trade-offs.
+
+### Automated receipt workflow (#1248 T2)
+
+After merge, `agent-compat.yml` runs daily and can be dispatched with `dry: true`
+(the manual default). The watcher emits validated ahead/version and verified-ID
+JSON directly; matrix construction never parses report prose. At most eight IDs
+are considered, with two hosted jobs at once. An unspecified manifest OS stays
+not-run rather than receiving an invented native-platform proof.
+
+The candidate matrix has only `contents: read`, no supplied secrets, checkout
+credentials disabled and a 20-minute job bound. It runs the disposable harness and
+uploads JSON/Markdown even for failed or not-run legs. A separate trusted read-only
+job validates the summaries and builds the embedded COMPAT bundle from repository
+source. It never imports candidate JS or Markdown. The publisher downloads that
+job's immutable artifact ID and validates descriptors, byte hashes, identities,
+complete leg sets and trusted manifest policy again.
+
+Only the publisher has contents/PR/issues write and Actions dispatch permission.
+It executes first-party Node code and `gh` REST calls, with no package install,
+build or candidate execution. All required legs must pass and trusted `autoAdmit`
+must allow the ID; artifact `eligible` alone is not evidence. It changes only the
+exact COMPAT row, its receipt and prepared plugin assets on `compat/<id>-<version>`.
+Existing bot branches are checked for manual drift; unknown collisions refuse,
+updates append without force, and verification PRs are never auto-merged. A newer
+same-ID PR supersedes an older one only after the replacement and its check
+dispatch succeed.
+
+Other results update closed-cause receipt blocks in the exact-title drift issue.
+Confirmed verified IDs remove their stale blocks, while still-drifting or unknown
+IDs retain their evidence. Report text never supplies those identities. Dry mode
+still performs isolated proof and read-only build/artifact work, then prints the
+planned GitHub changes without creating/updating branches, PRs, labels or issues.
+It is not native compatibility qualification on the person's Mac.
+
+See the [T2 verification report](verification/2026-11-07-compat-workflow-1248.md)
+for the data/credential boundary, fixtures and final committed-head evidence.
 
 ### Isolated receipt harness (#1248 T1)
 

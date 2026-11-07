@@ -42,7 +42,7 @@ export async function latestVersion(source: WatchSource, fetchImpl: FetchLike = 
 
 export interface AheadCandidate { id: CompatId; version: string }
 export interface HarnessCandidate extends AheadCandidate { runnerOS: "macos" | "linux"; runner: "macos-latest" | "ubuntu-latest" }
-export type WatchVerdict = { code: 0 | 3; report: string; ahead: AheadCandidate[] };
+export type WatchVerdict = { code: 0 | 3; report: string; ahead: AheadCandidate[]; verified: CompatId[] };
 /** Only an explicitly named supported native OS becomes a runnable matrix entry. */
 export function harnessMatrix(ahead: readonly AheadCandidate[], manifest: { entries: Record<string, { runnerOS: string[] }> }): { include: HarnessCandidate[] } {
   if (ahead.length > 8 || new Set(ahead.map(row => row.id)).size !== ahead.length) throw Error("agent-compat: invalid candidate set");
@@ -68,23 +68,24 @@ export type DriftRow = { id: string; line: string };
  * the drift issue. `notices` holds the informational rows (agy-style no-public-source kinds), which are printed but
  * never make the watcher exit 3 — agy must never cause a failure.
  */
-export async function watchRows(fetchImpl: FetchLike = fetch): Promise<{ drift: DriftRow[]; notices: string[]; ahead: AheadCandidate[] }> {
+export async function watchRows(fetchImpl: FetchLike = fetch): Promise<{ drift: DriftRow[]; notices: string[]; ahead: AheadCandidate[]; verified: CompatId[] }> {
   const drift: DriftRow[] = [];
   const notices: string[] = [];
   const ahead: AheadCandidate[] = [];
+  const verified: CompatId[] = [];
   for (const id of Object.keys(COMPAT) as CompatId[]) {
     const source = SOURCES[id] ?? { kind: "none" as const };
     // A no-public-source kind is an informational note, not drift: it can be neither ahead nor behind a public version.
     if (source.kind === "none") { notices.push(`- **${id}**: no public source; local drift only (${describe(id)}).`); continue; }
     const latest = await latestVersion(source, fetchImpl);
     const verdict = assessVersion(id, latest, []);
-    if (verdict.ok && verdict.state === "verified") continue;
+    if (verdict.ok && verdict.state === "verified") { verified.push(id); continue; }
     // A source that cannot be read reads as unknown, never as a refusal or a crash.
     const state = latest === undefined ? "unknown" : verdict.state;
     if (latest !== undefined) ahead.push({ id, version: latest });
     drift.push({ id, line: `- **${id}** (${sourceLabel(source)}): latest ${latest ?? "unknown"}, ${state}; ${describe(id)}; repeat the receipt in ${COMPAT[id].receipt} before adding the version.` });
   }
-  return { drift, notices, ahead };
+  return { drift, notices, ahead, verified };
 }
 
 /**
@@ -93,19 +94,19 @@ export async function watchRows(fetchImpl: FetchLike = fetch): Promise<{ drift: 
  * script keys on. Notices are always printed but never move the exit code on their own.
  */
 export async function watch(fetchImpl: FetchLike = fetch, now = new Date()): Promise<WatchVerdict> {
-  const { drift, notices, ahead } = await watchRows(fetchImpl);
+  const { drift, notices, ahead, verified } = await watchRows(fetchImpl);
   const footer = ["", `Checked ${now.toISOString().slice(0, 10)} by .github/workflows/agent-compat.yml.`];
   if (!drift.length) {
     // All public sources verified: exit 0 even when an informational notice (agy) remains, so the workflow closes the drift issue.
     const report = ["Every watched agent CLI's latest published version is verified.", ...(notices.length ? ["", "Informational:", ...notices] : []), ...footer];
-    return { code: 0, report: report.join("\n"), ahead };
+    return { code: 0, report: report.join("\n"), ahead, verified };
   }
   const report = ["Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).", "",
     ...drift.map(row => row.line),
     ...(notices.length ? ["", "Informational (no public source, not drift):", ...notices] : []), "",
     "Next step for each: a model-free receipt in `docs/verification/`, then add the version to `verified` in the same PR. Until then a person may run `ahub agents trust <id> <version>` on their machine.",
     ...footer].join("\n");
-  return { code: 3, report, ahead };
+  return { code: 3, report, ahead, verified };
 }
 
 export async function runWatchCli(args: string[], fetchImpl: FetchLike = fetch): Promise<number> {
@@ -123,7 +124,7 @@ export async function runWatchCli(args: string[], fetchImpl: FetchLike = fetch):
     const matrix = harnessMatrix(verdict.ahead, manifest), result = { schemaVersion: 1, ...verdict, matrix };
     if (options["--report"]) writeFileSync(options["--report"], `${verdict.report}\n`);
     if (options["--output"]) writeFileSync(options["--output"], `${JSON.stringify(result)}\n`);
-    if (options["--github-output"]) appendFileSync(options["--github-output"], `ahead=${verdict.code === 3}\nahead_json=${JSON.stringify(verdict.ahead)}\nmatrix=${JSON.stringify(matrix)}\nhas_runners=${matrix.include.length > 0}\n`);
+    if (options["--github-output"]) appendFileSync(options["--github-output"], `ahead=${verdict.code === 3}\nahead_json=${JSON.stringify(verdict.ahead)}\nverified_json=${JSON.stringify(verdict.verified)}\nmatrix=${JSON.stringify(matrix)}\nhas_runners=${matrix.include.length > 0}\n`);
     console.log(json ? JSON.stringify(result) : verdict.report);
     return options["--github-output"] ? 0 : verdict.code;
   } catch {

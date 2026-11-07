@@ -44,6 +44,9 @@ test("manual dry run is the default and every publisher mutation is guarded", ()
   expect(workflow.on.workflow_dispatch.inputs.dry).toEqual({ description: "Run isolated proofs and prepare artifacts, print GitHub changes without applying them", type: "boolean", default: true });
   const publisher = workflow.jobs.publish!, legacy = publisher.steps.find(step => step.name === "Keep the agent-compat issue current")!;
   expect(legacy.if).toBe("github.event_name != 'workflow_dispatch' || !inputs.dry");
+  expect(legacy.env?.COMPAT_VERIFIED).toBe("${{ steps.report.outputs.verified_ids }}");
+  expect(legacy.env?.COMPAT_CANDIDATES).toBe("${{ steps.report.outputs.candidate_ids }}");
+  expect(legacy.run).toContain('--verified-ids "$COMPAT_VERIFIED" --candidate-ids "$COMPAT_CANDIDATES"');
   for (const step of publisher.steps.filter(step => step.run?.includes("scripts/compat-publish-run.ts") && step.name !== legacy.name)) {
     expect(step.env?.COMPAT_DRY).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.dry }}");
     expect(step.run).toContain('args+=(--dry-run)');
