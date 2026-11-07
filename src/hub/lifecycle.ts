@@ -1,8 +1,9 @@
+import { waitForStartupReadiness, type StartupOwner } from "./startup-readiness.ts";
 import { resolveProjectRuntime, recordProjectRuntime, confirmProjectRuntime, readProjectRuntimeForCaller, projectRuntimeRefusal, type ProjectRuntimeSelection } from "./project-runtime.ts";
 import { scheduleRuntimeCapturePrune } from "./runtime-capture-prune.ts";
 import { createProjectRuntimeAccess, type ProjectRuntimeAccess } from "./project-runtime-state.ts";
 import { isDatabaseBusyReply, RecoveryDatabaseBusy } from "./recovery-error.ts";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -176,7 +177,7 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
   }
 }
 
-export async function startProject(project: Project, options: { unattended?: boolean; env?: NodeJS.ProcessEnv; liveTest?: boolean; current?: () => void } = {}): Promise<any> {
+export async function startProject(project: Project, options: { unattended?: boolean; env?: NodeJS.ProcessEnv; liveTest?: boolean; current?: () => void; starting?: (pid: number) => void } = {}): Promise<any> {
   options.current?.();
   assertLifecycleAvailable(project.root);
   const registry = new Registry();
@@ -195,6 +196,7 @@ export async function startProject(project: Project, options: { unattended?: boo
     if (before.state !== "stopped" && before.state !== "starting") throw new Error(before.error ?? before.state);
     if (!existsSync(join(project.root, ".agenthub", "config.json"))) throw new Error("project is not initialized; run ahub init there first");
     let launchedRuntime: ProjectRuntimeSelection | undefined;
+    let startupChild: ChildProcess | undefined, startupSignature: string | undefined, launchFailed = false;
     if (before.state === "stopped") {
       const launchEnv = { ...(options.env ?? process.env) };
       // Expired operation ids must not make an ordinary startup load a retired snapshot.
@@ -225,26 +227,40 @@ export async function startProject(project: Project, options: { unattended?: boo
             env: { ...launchEnv, AGENTHUB_STATE_DIR: project.stateDir, AGENTHUB_PROJECT_DIR: project.root,
               AGENTHUB_UNATTENDED: options.unattended ? "1" : "0" },
           });
-          child.on("error", () => {}); // bounded readiness below reports failure with the project's log path
+          startupChild = child;
+          child.on("error", () => { launchFailed = true; }); // The bound child is observed by the readiness wait, never stopped on timeout.
           child.unref();
         } finally { closeSync(log); }
       });
     }
-    const deadline = Date.now() + 12_000;
-    while (Date.now() < deadline) {
-      const observed = await inspectProject(registry.get(project.id) ?? project);
-      options.current?.();
-      if (observed.state === "running") {
+    const startupOwner = (): StartupOwner => {
+      if (!startupChild) return undefined; // A competing starter owns this claim; join without claiming its child.
+      const claim = registry.get(project.id);
+      if (!claim || claim.root !== project.root || claim.stateDir !== project.stateDir) throw new Error("project registration changed; refresh before starting");
+      const claimed = claim.instanceId !== null;
+      if (claimed && claim.pid !== startupChild.pid) return undefined;
+      if (launchFailed || startupChild.exitCode !== null || startupChild.signalCode !== null || startupChild.pid === undefined) return { state: "gone" };
+      // A still-unreaped owned child cannot have its PID reused. Capture the full identity once it is observable.
+      startupSignature ??= processSignature(startupChild.pid);
+      if (!startupSignature || claimed && claim.pidSignature !== startupSignature) return { state: "unknown" };
+      const state = processLiveness(startupChild.pid, startupSignature);
+      const fresh = registry.get(project.id);
+      if (!fresh || fresh.root !== project.root || fresh.stateDir !== project.stateDir || fresh.instanceId !== claim.instanceId || fresh.pid !== claim.pid || fresh.pidSignature !== claim.pidSignature) return undefined;
+      if (startupChild.exitCode !== null || startupChild.signalCode !== null || state === "gone") return { state: "gone" };
+      return state === "live" ? { state: "live", pid: startupChild.pid } : { state: "unknown" };
+    };
+    return await waitForStartupReadiness<any>({
+      now: () => performance.now(), sleep: ms => Bun.sleep(ms), current: () => { options.current?.(); }, owner: startupOwner,
+      inspect: timeoutMs => inspectProject(registry.get(project.id) ?? project, timeoutMs),
+      starting: options.starting,
+      confirm: status => {
+        options.current?.();
         admitRunningRuntime();
-        if (launchedRuntime) confirmProjectRuntime(project, launchedRuntime, observed.status, registry, runtimeAccess);
+        if (launchedRuntime) confirmProjectRuntime(project, launchedRuntime, status, registry, runtimeAccess);
         // Unknown references defer maintenance; cache cleanup never changes a confirmed startup outcome.
         try { scheduleRuntimeCapturePrune(); } catch { /* retain captures on unreadable inventory or cleanup failure */ }
-        return observed.status;
-      }
-      if (observed.state === "incompatible" || observed.state === "missing") throw new Error(observed.error ?? observed.state);
-      await Bun.sleep(100);
-    }
-    throw new Error(`hub readiness not confirmed; inspect ${join(project.stateDir, "hub.log")} before retrying`);
+      },
+    });
   } finally { registry.close(); }
 }
 
