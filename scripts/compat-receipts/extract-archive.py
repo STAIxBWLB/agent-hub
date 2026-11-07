@@ -34,7 +34,8 @@ def extract(archive, destination, entry_limit, byte_limit):
             for member in source:
                 raw = member.name
                 name = PurePosixPath(raw)
-                if "\\" in raw or name.is_absolute() or ".." in name.parts or not name.parts:
+                root_directory = raw in (".", "./") and member.isdir()
+                if "\\" in raw or name.is_absolute() or ".." in name.parts or (not name.parts and not root_directory):
                     raise ValueError("integrity")
                 if not (member.isfile() or member.isdir()) or member.issym() or member.islnk():
                     raise ValueError("integrity")

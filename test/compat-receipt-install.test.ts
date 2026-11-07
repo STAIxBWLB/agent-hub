@@ -67,12 +67,15 @@ test("installed package version mismatch refuses even after successful npm exit"
 });
 
 // Minimal tar fixtures are bytes, never an external archive or native package install.
-function archive(name: string, type = "0"): Buffer {
+function tarMember(name: string, type = "0"): Buffer {
   const header = Buffer.alloc(512); header.write(name); header.write("0000700\0", 100); header.write("0000000\0", 108); header.write("0000000\0", 116);
-  header.write("00000000001\0", 124); header.fill(32, 148, 156); header.write(type, 156); if (type === "2") header.write("outside", 157);
+  header.write(type === "5" ? "00000000000\0" : "00000000001\0", 124); header.fill(32, 148, 156); header.write(type, 156); if (type === "2") header.write("outside", 157);
   header.write("ustar\0", 257); header.write("00", 263);
   const checksum = header.reduce((sum, value) => sum + value, 0); header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148);
-  return gzipSync(Buffer.concat([header, Buffer.from("x"), Buffer.alloc(511 + 1024)]));
+  return type === "5" ? header : Buffer.concat([header, Buffer.from("x"), Buffer.alloc(511)]);
+}
+function archive(name: string, type = "0"): Buffer {
+  return gzipSync(Buffer.concat([tarMember(name, type), Buffer.alloc(1024)]));
 }
 async function releaseFixture(data: Buffer): Promise<{ context: ReceiptContext; releaseEntry: ManifestEntry; fetcher: ReceiptFetch }> {
   const context = await fixture(async (argv, options) => {
@@ -129,4 +132,30 @@ test("nonpublic install recipe refuses without fetch or command", async () => {
   const fetcher = (async () => { effects++; return new Response(); }) as ReceiptFetch;
   await expect(installCompatArtifact(context, { ...entry, install: { method: "unavailable" } }, fetcher)).rejects.toMatchObject({ causeCode: "install-unavailable" });
   expect(effects).toBe(0);
+});
+
+for (const rootName of [".", "./"]) {
+  test(`archive permits ${rootName} root directory with unique CLI`, async () => {
+    const data = gzipSync(Buffer.concat([tarMember(rootName, "5"), tarMember("./jcode"), Buffer.alloc(1024)]));
+    const { context, releaseEntry, fetcher } = await releaseFixture(data);
+    const installed = await installCompatArtifact(context, releaseEntry, fetcher);
+    expect(installed.command).toEqual([join(context.prefix, "jcode")]);
+  });
+}
+test("archive root directory still counts against entry ceiling", async () => {
+  const data = gzipSync(Buffer.concat([tarMember(".", "5"), tarMember("jcode"), Buffer.alloc(1024)]));
+  const { context, releaseEntry, fetcher } = await releaseFixture(data); context.limits.archiveEntries = 1;
+  await expect(installCompatArtifact(context, releaseEntry, fetcher)).rejects.toMatchObject({ causeCode: "integrity" });
+  expect(await readdir(context.prefix)).toEqual([]);
+});
+test("archive duplicate normalized root directories refuse before writes", async () => {
+  const data = gzipSync(Buffer.concat([tarMember(".", "5"), tarMember("./", "5"), tarMember("jcode"), Buffer.alloc(1024)]));
+  const { context, releaseEntry, fetcher } = await releaseFixture(data);
+  await expect(installCompatArtifact(context, releaseEntry, fetcher)).rejects.toMatchObject({ causeCode: "integrity" });
+  expect(await readdir(context.prefix)).toEqual([]);
+});
+test("archive root regular file remains refused", async () => {
+  const { context, releaseEntry, fetcher } = await releaseFixture(archive("."));
+  await expect(installCompatArtifact(context, releaseEntry, fetcher)).rejects.toMatchObject({ causeCode: "integrity" });
+  expect(await readdir(context.prefix)).toEqual([]);
 });
