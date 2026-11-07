@@ -362,3 +362,31 @@ test("recovery prepare ends a waiting hub_ask pending, so it never holds the pre
   expect(await f.person.request({ t: "answer", questionSet: set, answers: ANSWER })).toMatchObject({ ok: true });
   await until(() => f.peers.codex!.got.some(env => env.kind === "answer"), "the late envelope after recovery");
 });
+
+// #1278: a question is attributed once, when it is asked, by the rule `turn_end` uses; every later event of its set repeats that answer.
+test("a question is attributed to its peer's single open task when asked, and its answer repeats that task even after the task closes; with no open task it is unattributed", async () => {
+  const f = await rig({ wait: { codex: 600_000 } });
+  const asker = await f.asAgent("codex");
+  expect((await f.person.request({ t: "task", op: "hub_task_propose", args: { title: "a task for codex", class: "implement", owner: "codex" } })).ok).toBe(true);
+  // `single_open` is the peer's one in_progress task: the owner accepts it first.
+  expect((await asker.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  const waiting = f.ask(asker);
+  const set = await f.setOf();
+  const read = () => readFileSync(join(f.stateDir, "events.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+  const asked = read().find(e => e.type === "question" && e.event === "asked");
+  expect(asked).toMatchObject({ task: 1, attribution: "single_open" });
+  // The task closes before the person answers: the answer still belongs to the task the question was asked under.
+  expect((await f.person.request({ t: "task", op: "hub_task_cancel", args: { id: 1, reason: "closed while the question waits" } })).ok).toBe(true);
+  await f.person.request({ t: "answer", questionSet: set, answers: ANSWER });
+  await waiting;
+  const answered = read().find(e => e.type === "question" && e.event === "answered");
+  expect(answered).toMatchObject({ task: 1, attribution: "single_open", surface: "console" });
+  expect(typeof answered.latencyMs).toBe("number");
+  // A second question with no open task at all is unattributed, and holds no task id.
+  const again = f.ask(asker);
+  await until(() => read().filter(e => e.type === "question" && e.event === "asked").length === 2, "the second question");
+  const second = read().filter(e => e.type === "question" && e.event === "asked")[1];
+  expect(second).toMatchObject({ attribution: "unattributed" });
+  expect(second).not.toHaveProperty("task");
+  void again;
+});
