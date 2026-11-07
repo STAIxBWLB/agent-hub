@@ -721,3 +721,14 @@ test("Claude scoped permission replies withhold glob-readonly writes without lea
   expect((await rig.mode("claude", "never-ask", true)).permissionMode).toBe("never-ask");
   expect((await hook.request({ ...input, tool: "Edit", input: { file_path: "data/input.csv" } })).permission).toBe("never-ask");
 });
+
+test("GEMINI.md instruction files stay grantable by default and outside scoped grants when instruction protection is enabled (#1280)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-gemini-md-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  for (const name of ["GEMINI.md", "gemini.md", "ＧＥＭＩＮＩ.md", "sub/GEMINI.md"]) {
+    const target = join(root, name);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, "rules\n");
+    expect(grantablePath(root, target, name, false)).toBe(true);
+    expect(grantablePath(root, target, name, true)).toBe(false);
+  }
+});

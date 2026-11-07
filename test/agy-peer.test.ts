@@ -1,12 +1,13 @@
 import { FakeMemoryClient } from "./fakes/mem-worker.ts";
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ADAPTERS, definitionOf, isSupportedPeer } from "../src/adapters/registry.ts";
 import { assign, loadRouting } from "../src/hub/routing.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
+import { readEvents } from "../src/hub/events.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 
 async function until(condition: () => boolean) { const end = Date.now() + 3000; while (!condition() && Date.now() < end) await Bun.sleep(10); expect(condition()).toBe(true); }
@@ -81,6 +82,22 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
     writeFileSync(transcript, JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "complete" }) + "\n");
     expect((await facts("Stop", { fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
     await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    // #1280: terminal non-normal Stop reasons (USER_CANCELED, ERROR, MAX_INVOCATIONS) with fullyIdle=true return agy to idle without a new completion row.
+    for (const reason of ["USER_CANCELED", "ERROR", "MAX_INVOCATIONS"] as const) {
+      expect((await facts("PreInvocation", { invocationNum: 0 })).ok).toBe(true);
+      expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
+      expect((await facts("Stop", { fullyIdle: false, terminationReason: reason })).ok).toBe(false);
+      expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
+      expect((await facts("Stop", { fullyIdle: true, terminationReason: reason })).ok).toBe(true);
+      expect(daemon.bus.peers.get("agy")?.state).toBe("idle");
+    }
+    const ended = readEvents(join(stateDir, "events.jsonl")).filter((ev: any) => ev.type === "native_turn_end" && ev.peer === "agy");
+    expect(ended.map((ev: any) => [typeof ev.id === "string", ev.reason ?? null])).toEqual([
+      [true, null],
+      [false, "user_canceled"],
+      [false, "error"],
+      [false, "max_invocations"],
+    ]);
     const removed = await person.request({ t: "settings_set", key: "roster.agy", value: false, confirm: "agy" });
     expect(removed).toMatchObject({ ok: true });
     expect((await person.request({ t: "native_hook_launch", op: "end", peer: "agy", launchId: admission.launchId })).ok).toBe(true);
@@ -134,6 +151,57 @@ for (const [version, name, args] of [["1.4.2", "view_file", (file: string) => ({
     expect(next.ok).toBe(true);
     expect(next.text).toContain("b.txt");
     expect(next.text).toContain("+TWO");
+    const firstFactId = /^agent-hub facts \[([^\]]+)\]:/.exec(next.text)![1]!;
+    // #1280: even when a > 64 KiB step follows the injected fact row before PreToolUse, incremental scan widens back to sinceOffset and acknowledges the fact.
+    appendFileSync(transcript, [
+      JSON.stringify({ step_index: 6, source: "SYSTEM_SDK", type: "EPHEMERAL_MESSAGE", status: "DONE", content: next.text }),
+      JSON.stringify({ step_index: 7, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "x".repeat(70 * 1024), tool_calls: [{ name }] }),
+    ].join("\n") + "\n");
+    expect((await hook("PreToolUse", { invocationNum: 1, toolCall: call, stepIdx: 7 })).ok).toBe(true);
+    expect(readEvents(join(stateDir, "events.jsonl")).some((ev: any) => ev.type === "fact_ack" && ev.peer === "agy" && ev.id === firstFactId && ev.via === "native-hook")).toBe(true);
+    // #1280: a fact row that lands in transcript_full.jsonl during the 2 s Stop poll wait is acknowledged before launch.transcriptOffset advances.
+    writeFileSync(file, "one\nTWO\nTHREE\n");
+    const next2 = await hook("PreInvocation", { invocationNum: 2 });
+    expect(next2.ok).toBe(true);
+    const secondFactId = /^agent-hub facts \[([^\]]+)\]:/.exec(next2.text)![1]!;
+    const stopping = hook("Stop", { invocationNum: 2, fullyIdle: true, terminationReason: "NO_TOOL_CALL" });
+    await Bun.sleep(15);
+    appendFileSync(transcript, [
+      JSON.stringify({ step_index: 8, source: "SYSTEM_SDK", type: "EPHEMERAL_MESSAGE", status: "DONE", content: next2.text }),
+      JSON.stringify({ step_index: 9, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "complete 2" }),
+    ].join("\n") + "\n");
+    expect((await stopping).ok).toBe(true);
+    await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    expect(readEvents(join(stateDir, "events.jsonl")).some((ev: any) => ev.type === "fact_ack" && ev.peer === "agy" && ev.id === secondFactId && ev.via === "native-hook")).toBe(true);
+    // #1280 P1: native write_file and edit_file credit agy as author, advance agy's view, acknowledge 1.5.x SYSTEM_MESSAGE facts, bind nativeSession, and emit agy_transcript usage events.
+    expect((daemon.bus.peers.get("agy") as any)?.nativeSession).toBe(session);
+    const writeCall = { name: "write_file", args: { Path: file, Content: "alpha\nbeta\n" } };
+    expect((await hook("PreInvocation", { invocationNum: 3 })).text).toBeUndefined();
+    expect((await hook("PreToolUse", { invocationNum: 3, toolCall: writeCall, stepIdx: 10 })).ok).toBe(true);
+    writeFileSync(file, "alpha\nbeta\n");
+    expect((await hook("PostToolUse", { invocationNum: 3, toolCall: writeCall, stepIdx: 10 })).ok).toBe(true);
+    const editCall = { name: "edit_file", args: { Path: file, Target: "beta", Replacement: "BETA" } };
+    expect((await hook("PreToolUse", { invocationNum: 3, toolCall: editCall, stepIdx: 11 })).ok).toBe(true);
+    writeFileSync(file, "alpha\nBETA\n");
+    expect((await hook("PostToolUse", { invocationNum: 3, toolCall: editCall, stepIdx: 11 })).ok).toBe(true);
+    // agy's own credited write_file and edit_file moved its view, so its next invocation offers no self-diff.
+    expect((await hook("PreInvocation", { invocationNum: 4 })).text).toBeUndefined();
+    writeFileSync(file, "alpha\nBETA\ngamma\n");
+    const next3 = await hook("PreInvocation", { invocationNum: 5 });
+    expect(next3.text).toContain("+gamma");
+    const thirdFactId = /^agent-hub facts \[([^\]]+)\]:/.exec(next3.text)![1]!;
+    appendFileSync(transcript, [
+      JSON.stringify({ step_index: 12, source: "SYSTEM_SDK", type: "SYSTEM_MESSAGE", status: "DONE", content: next3.text }),
+      JSON.stringify({ step_index: 13, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-07T12:05:00Z", input_tokens: 400, output_tokens: 50, cache_read_tokens: 1000, content: "complete 3" }),
+    ].join("\n") + "\n");
+    expect((await hook("Stop", { invocationNum: 5, fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
+    await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    const eventsAfter = readEvents(join(stateDir, "events.jsonl"));
+    expect(eventsAfter.some((ev: any) => ev.type === "fact_ack" && ev.peer === "agy" && ev.id === thirdFactId && ev.via === "native-hook")).toBe(true);
+    expect(eventsAfter.filter((ev: any) => ev.type === "usage" && ev.peer === "agy" && ev.source === "agy_transcript")).toMatchObject([
+      { type: "usage", peer: "agy", source: "agy_transcript", inputTokens: 400, outputTokens: 50, cacheReadTokens: 1000, totalTokens: 1450, measuredAt: "2026-11-07T12:05:00Z" },
+    ]);
+    expect(eventsAfter.some((ev: any) => ev.type === "tokens" && ev.peer === "agy" && ev.n === 1450)).toBe(true);
   } finally {
     for (const close of cleanup) close();
     peer?.close(); tools.close(); person.close(); await daemon.stop();

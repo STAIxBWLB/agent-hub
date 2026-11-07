@@ -12,7 +12,7 @@ export interface OperationalViewPorts {
 }
 /** Closed metadata receipts only. Unsupported nested records are withheld until given their own projection. */
 const EVENT_FIELDS: Record<string,readonly string[]>={
-  state:["peer","state"],hub_start:["instance"],native_thread:["peer","thread","fresh"],turn_start:["peer","turn"],native_turn_end:["peer","id"],
+  state:["peer","state"],hub_start:["instance"],native_thread:["peer","thread","fresh"],turn_start:["peer","turn"],native_turn_end:["peer","id","reason"],
   task:["id","event","by","state","owner","reviewer","class","profile","profileClass","role","pii","reason","release","priority","plannedStart","due"],
   tokens:["peer","n","task","attribution","pii"],
   usage:["peer","source","id","task","attribution","pii","reasoningTokens","measuredAt","inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens"],
@@ -67,7 +67,7 @@ function metadataValue(type:string,key:string,value:unknown):boolean {
   if(key==="item")return oneOf(value,["task","summary","review note","handoff","note"]);
   if(key==="category")return oneOf(value,["name","student_id","phone","address","grade","health","other"]);
   if(key==="miss")return oneOf(value,["too long","off campus","timeout","unreadable","failed"]);
-  if(key==="source")return type==="pii_screen"?oneOf(value,["regex","screen","unknown","inherited"]):type==="usage"?oneOf(value,["omniroute","claude_transcript","claude_result","codex_appserver","kimi_wire","jcode_acp"]):identifier(value);
+  if(key==="source")return type==="pii_screen"?oneOf(value,["regex","screen","unknown","inherited"]):type==="usage"?oneOf(value,["omniroute","claude_transcript","claude_result","codex_appserver","kimi_wire","jcode_acp","agy_transcript"]):identifier(value);
   if(key==="measuredAt")return type==="context_pressure" || type==="quota_reset"?typeof value==="number"&&Number.isFinite(value):typeof value==="string"&&Number.isFinite(Date.parse(value));
   if(key==="window")return value===null || typeof value==="number"&&Number.isFinite(value)&&value>=0 || identifier(value);
   if(key==="priority")return value===null || typeof value==="number"&&Number.isFinite(value) || oneOf(value,["status","important","fyi"]);
