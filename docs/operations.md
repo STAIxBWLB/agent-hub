@@ -3532,6 +3532,25 @@ Agent CLIs update themselves often, and a hub release cannot follow every one. O
   - **Maintenance loop (#843):** the daily upstream watch is the trigger; `ahub doctor` is the local drift notice for versions installed on a machine, and the hub itself tells the planner (below). The planner files one receipt task per (id, version): the implementer repeats the procedure in the entry's last `docs/verification/` receipt, writes a new one, and adds the version to `verified` in that same PR; the next release ships the bump. A person's `ahub agents trust` stays the stopgap that keeps a machine running meanwhile, and the person may revoke it once the bump lands.
   - **Local drift notice (#843 AC3):** at hub start and once a day the daemon reads each gated CLI's installed version with the probe `ahub agents` uses (no network, no install). For every installed CLI on a version that is not `verified` (in-line, trusted or refused) the effective planner gets one notice per (id, version): the id, the version, the state and the last receipt path, nothing the CLI printed. A CLI that is not installed, or whose version cannot be read, is not drift. The marker is kept per (id, version, planner) in `hub.db` (`agent_drift_notices`), so a restart repeats nothing, a planner whose notice could not be queued (or who joins later) is retried alone without telling the others again, and a new version is a new notice; with no rostered planner nothing is recorded. `ahub status` shows one `agent CLI drift` attention line per drifted id until the installed version is verified.
 
+### Receipt automation audit (#1248 T0)
+
+The data-only [manifest](../scripts/compat-receipts/manifest.json) and [per-leg audit](verification/2026-11-07-compat-receipt-audit-1248.md) classify all current COMPAT receipts. Every leg carries a source section and exact excerpt. `autoAdmit` is policy eligibility after every required check and artifact binding passes, not a runnable harness or a version admission. Native Mac arm64 requirements remain; Linux fixture/source-check feasibility does not replace native platform evidence. Changed security-source regions require human review rather than an automatic diff-only pass.
+
+| COMPAT id | CI repeat and other required scope | Install method | autoAdmit |
+| --- | --- | --- | --- |
+| `pi` | Linux host permission/version fixtures; Mac RPC extension, SDK and tool receipts; Mac arm64 native | npm exact | `true` |
+| `claude-implementer` | Mac Write/Bash/rewrite transport and wrapper controls, synthetic provider; Mac arm64 native | npm exact; native-installer receipt boundary | `true` |
+| `codex-review` | Linux source comparison; Mac production metadata and native sandbox controls; Person-authorized model-backed tool call | npm exact | `false` |
+| `kimi-review` | Linux source comparison; Mac private config/broker/native allowlist controls; Mac arm64 native | GitHub asset + SHA-256 | `true` |
+| `jcode` | Linux source comparison; Mac serve/ACP/MCP and fixed-stream steering; Mac arm64 native | GitHub asset + SHA256SUMS | `true` |
+| `agy` | Mac CLI, synthetic MCP/hooks and Seatbelt controls; Interactive TUI/launcher nonce; no public install source | Unavailable | `false` |
+| `qwen` | Mac ACP/permission and install replay; recorded Linux run is additional; Mac arm64 repetition required | npm exact | `true` |
+| `qwen-dual` | Version/file-source checks are partial only; Real gateway model and PTY; OS not recorded | npm exact; historical artifact gap | `false` |
+
+Optional model/TUI behavior explicitly left unverified by a model-free receipt is not a new admission leg. `codex-review` requires its separately authorized model-backed tool-call proof. `agy` has no public install source. `qwen-dual` requires real-model and TUI work and its current receipt does not name the OS. The manifest records acquisition metadata separately from historical native-binary evidence; no CLI installation or COMPAT change is made by this audit.
+
+For CI-opened PRs, the person still chooses between explicit `check.yml` dispatch with GITHUB_TOKEN and a GitHub App installation token. Dispatch avoids an additional App secret but needs Actions write permission in the publisher and exact-head evidence; it does not run the separate PR-only closing-refs/routing-receipt workflows. An App token lets normal PR events start checks, with person-owned scoped credentials confined to the publisher. Neither route is enabled here. Current [GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) also describes approval-required PR runs for GITHUB_TOKEN automation; that is not unattended CI. See the audit for permissions, queue and gate trade-offs.
+
 ## Upgrade and crash recovery
 
 ### Side by side project versions (#1039)
