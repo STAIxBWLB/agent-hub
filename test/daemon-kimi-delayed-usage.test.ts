@@ -59,7 +59,7 @@ async function rig(options: { realTimers?: boolean } = {}) {
   const row = (at: number, inputOther: number, output: number, extra: object = {}) => appendFileSync(wire, `${JSON.stringify({ type: "usage.record", agentId: "main", model: "kimi-code/k3", usage: { inputOther, output, inputCacheRead: 100, inputCacheCreation: 0 }, usageScope: "turn", time: at, ...extra })}\n`);
   const turn = async (text: string, options: { task?: number; supervision?: boolean; during?: () => void | Promise<void> } = {}) => {
     const beforeStart = events(file, "turn_start").length, beforeEnd = events(file, "turn_end").length;
-    const refs = { ...(options.task ? { task: String(options.task) } : {}), ...(options.supervision ? { supervision: "fixture" } : {}) };
+    const refs = { ...(options.task ? { task: String(options.task) } : {}), ...(options.supervision ? { supervision: true } : {}) };
     daemon.bus.publish(newEnvelope(options.supervision ? HUB : USER, text, { to: ["kimi"], ...(Object.keys(refs).length ? { refs } : {}) }));
     await until(() => events(file, "turn_start").length > beforeStart, `turn start ${text}`);
     await options.during?.();
