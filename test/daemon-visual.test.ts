@@ -12,7 +12,7 @@ import { reviewCaptureExcluded } from "../src/hub/memory-policy.ts";
 import { ownerToolEffect } from "../src/hub/no-writes.ts";
 import { validateRawConfig, configApply } from "../src/hub/config-apply.ts";
 import { settingDef } from "../src/hub/settings.ts";
-import { VisualStore } from "../src/hub/visual.ts";
+import { VisualStore, validateVisualInput } from "../src/hub/visual.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -60,6 +60,17 @@ test("ordinary and readonly visual publication is shared; input/result capture i
     expect(reviewCaptureExcluded(name, "not even valid JSON")).toBe(true);
   expect(reviewCaptureExcluded("hub_task_show", "{}")).toBe(false);
   expect(ownerToolEffect("hub_visual", {})).toBe(true); expect(ownerToolEffect("hub_visual_show", {})).toBe(false);
+});
+
+test("published table column minimum accepts the runtime's empty table boundary", () => {
+  const schema = TASK_TOOLS.find(tool => tool.name === "hub_visual")!.inputSchema.properties.payload as {
+    oneOf: { properties: { kind: { const: string }; columns?: { minItems?: number } } }[];
+  };
+  const columns = schema.oneOf.find(shape => shape.properties.kind.const === "table")!.properties.columns!;
+  const accepted = validateVisualInput({ kind: "table", columns: [], rows: [] }, () => true);
+  expect(accepted.kind).toBe("table");
+  if (accepted.kind !== "table") throw new Error("table validation returned another kind");
+  expect(accepted.columns.length).toBeGreaterThanOrEqual(columns.minItems ?? 0);
 });
 
 test("four payloads round-trip locally; ordinary snapshot and observer files contain metadata/stubs only", async () => {

@@ -34,7 +34,7 @@ const visualInputSchema = { oneOf: [
     type: "object", properties: { title: visualTitle, summary: { type: "string", maxLength: 4000 }, recommended: { type: "boolean" },
       pros: { type: "array", maxItems: 10, items: { type: "string", maxLength: 2000 } }, cons: { type: "array", maxItems: 10, items: { type: "string", maxLength: 2000 } } }, required: ["title"], additionalProperties: false,
   } } }, required: ["kind", "options"], additionalProperties: false },
-  { type: "object", properties: { kind: { const: "table" }, caption: visualCaption, columns: { type: "array", minItems: 1, maxItems: 12, items: {
+  { type: "object", properties: { kind: { const: "table" }, caption: visualCaption, columns: { type: "array", maxItems: 12, items: {
     type: "object", properties: { key: { type: "string", minLength: 1, maxLength: 128 }, label: visualTitle, align: { enum: ["start", "end"] }, format: { enum: ["text", "number", "percent"] } }, required: ["key", "label"], additionalProperties: false,
   } }, rows: { type: "array", maxItems: 500, items: { type: "object", additionalProperties: { oneOf: [{ type: "string", maxLength: 4000 }, { type: "number" }] } } } }, required: ["kind", "columns", "rows"], additionalProperties: false },
   { type: "object", properties: { kind: { const: "beforeAfter" }, caption: visualCaption, before: visualSideSchema, after: visualSideSchema }, required: ["kind", "before", "after"], additionalProperties: false },
