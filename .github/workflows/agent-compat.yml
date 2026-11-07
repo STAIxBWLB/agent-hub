@@ -195,7 +195,7 @@ jobs:
           number=$(gh issue list --state open --limit 1000 --json number,title | node --experimental-strip-types scripts/agent-compat-issue.ts)
           if [ "$AHEAD" = "true" ]; then
             if [ -n "${COMPAT_PREPARED:-}" ]; then
-              node --experimental-strip-types scripts/compat-publish-run.ts --prepared "$COMPAT_PREPARED" --repo "$GITHUB_REPOSITORY" --source-base "$SOURCE_BASE_SHA" --retain-rows report.md
+              node --experimental-strip-types scripts/compat-publish-run.ts --repo "$GITHUB_REPOSITORY" --retain-rows report.md
             fi
             gh label create agent-compat --color FBCA04 --description "agent CLI version drift (#691)" 2>/dev/null || true
             if [ -n "$number" ]; then gh issue edit "$number" --body-file report.md
