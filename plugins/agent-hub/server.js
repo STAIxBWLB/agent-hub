@@ -24666,7 +24666,7 @@ init_project();
 // src/hub/instance-config.ts
 init_registry();
 import { readFileSync as readFileSync16 } from "fs";
-import { join as join31 } from "path";
+import { join as join30 } from "path";
 
 // src/adapters/external-metadata.ts
 import { types as types3 } from "util";
@@ -25274,11 +25274,6 @@ init_research_experiments();
 init_research_experiments();
 init_research_campaign();
 
-// src/cli/install-paths.ts
-init_project();
-import { dirname as dirname13, isAbsolute as isAbsolute8, join as join30, relative as relative6, resolve as resolve18, sep as sep3 } from "path";
-var packageRoot = resolve18(import.meta.dir, "../..");
-
 // src/hub/handoff.ts
 init_board();
 var HANDOFF_LIMITS = Object.freeze({ title: 300, detail: 4000, paths: 16, path: 512, issue: 2000000000, bodyBytes: 8 * 1024, duplicateOk: 300 });
@@ -25452,7 +25447,7 @@ import { types as types4 } from "util";
 init_project();
 init_registry();
 init_permission_mode();
-import { dirname as dirname14, isAbsolute as isAbsolute9, sep as sep4 } from "path";
+import { dirname as dirname13, isAbsolute as isAbsolute8, sep as sep3 } from "path";
 var JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile"];
 var MAX_JCODE_INSTANCES = 8;
 var NATIVE_WORD = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
@@ -25489,7 +25484,7 @@ function roles(value, field) {
 }
 function jcodeInstanceFields(entry, path) {
   const home = entry.jcode_home?.value;
-  if (typeof home !== "string" || !isAbsolute9(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
+  if (typeof home !== "string" || !isAbsolute8(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
     return fail4(`${path}.jcode_home`, "is required: a nonempty control-free absolute path of at most 4096 UTF-8 bytes, other than the base Jcode's home");
   const out = { jcode_home: home };
   for (const key of ["provider", "model", "provider_profile"]) {
@@ -25686,7 +25681,7 @@ var INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"];
 function readInstanceConfigLayers(cwd) {
   return INSTANCE_CONFIG_FILES.flatMap((name) => {
     try {
-      return [{ name, raw: JSON.parse(readFileSync16(join31(cwd, ".agenthub", name), "utf8")) }];
+      return [{ name, raw: JSON.parse(readFileSync16(join30(cwd, ".agenthub", name), "utf8")) }];
     } catch (error) {
       if (error.code === "ENOENT")
         return [];
@@ -34079,7 +34074,7 @@ class StdioServerTransport {
 
 // src/adapters/claude-channel.ts
 import { readFileSync as readFileSync17 } from "fs";
-import { join as join34 } from "path";
+import { join as join33 } from "path";
 
 // src/hub/channel-project.ts
 init_registry();
@@ -34088,7 +34083,7 @@ init_registry();
 init_git();
 init_project();
 import { lstatSync as lstatSync17 } from "fs";
-import { join as join32, resolve as resolve20 } from "path";
+import { join as join31, resolve as resolve19 } from "path";
 var refuse = (reason) => {
   throw new Error(`instance execution workspace refused: ${reason}`);
 };
@@ -34129,13 +34124,13 @@ function resolveInstanceExecutionCwd(projectRoot, id, declarations, roles, adapt
   let root, cwd;
   try {
     root = realPath(projectRoot);
-    cwd = realPath(resolve20(root, declaration.worktree));
+    cwd = realPath(resolve19(root, declaration.worktree));
     if (!lstatSync17(root).isDirectory() || !lstatSync17(cwd).isDirectory())
       return refuse("workspace is not a directory");
   } catch {
     return refuse("workspace paths are unavailable");
   }
-  const expected = join32(root, ".worktrees", id);
+  const expected = join31(root, ".worktrees", id);
   if (cwd !== expected)
     return refuse("worktree must be the exact managed instance directory");
   const inventory = git(root, ["worktree", "list", "--porcelain", "-z"]);
@@ -34165,7 +34160,7 @@ function resolveInstanceExecutionCwd(projectRoot, id, declarations, roles, adapt
 // src/hub/channel-project.ts
 init_project();
 import { existsSync as existsSync9 } from "fs";
-import { join as join33 } from "path";
+import { join as join32 } from "path";
 function channelProject(cwd, env, policyRoles) {
   const override = env.AGENTHUB_STATE_DIR?.trim(), declared = env.AGENTHUB_PROJECT_DIR?.trim();
   if (env.AGENTHUB_MODE === "tools" && override && declared)
@@ -34195,7 +34190,7 @@ function channelProject(cwd, env, policyRoles) {
   const inherited = inheritedStateDir(own.root, env);
   if (inherited)
     return { root: own.root, stateDir: inherited, inherited: true };
-  if (override && !existsSync9(join33(own.root, ".agenthub", "config.json")))
+  if (override && !existsSync9(join32(own.root, ".agenthub", "config.json")))
     return asSession();
   return { root: own.root, stateDir: own.stateDir, inherited: false };
 }
@@ -34366,7 +34361,7 @@ function currentClaudeChannelEvidence() {
 var own3 = channelProject(process.cwd(), process.env, (root) => {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync17(join34(root, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync17(join33(root, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -34392,7 +34387,7 @@ var channel = !toolsMode && channelEvidence === "development-channel-launch";
 function roles2() {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync17(join34(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync17(join33(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -34411,7 +34406,7 @@ function sessionProfile() {
     for (const name of ["config.json", "config.local.json"]) {
       let data;
       try {
-        data = JSON.parse(readFileSync17(join34(projectRoot2, ".agenthub", name), "utf8"));
+        data = JSON.parse(readFileSync17(join33(projectRoot2, ".agenthub", name), "utf8"));
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -34438,7 +34433,7 @@ function sessionRoles() {
     const read = (name) => {
       let raw;
       try {
-        raw = JSON.parse(readFileSync17(join34(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
+        raw = JSON.parse(readFileSync17(join33(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
       } catch {
         return {};
       }
@@ -34469,14 +34464,14 @@ var HELD = `another session is attached to the hub as "${peerId}"; this one is s
 var INBOX_CAP = 200;
 function sessionSupported() {
   try {
-    return (JSON.parse(readFileSync17(join34(stateDir, "status.json"), "utf8")).features ?? []).includes("session_identity");
+    return (JSON.parse(readFileSync17(join33(stateDir, "status.json"), "utf8")).features ?? []).includes("session_identity");
   } catch {
     return false;
   }
 }
 function peerHeld() {
   try {
-    const status = JSON.parse(readFileSync17(join34(stateDir, "status.json"), "utf8"));
+    const status = JSON.parse(readFileSync17(join33(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
     if (channel && peer?.toolsOnly && !peer.claiming)
       return false;
