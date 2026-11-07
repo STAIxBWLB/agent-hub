@@ -5,6 +5,7 @@ import type { RoleIdentity, StampedEvent } from "./events.ts";
 import { hubHome } from "./project.ts";
 import { ADDONS, addonState, type Addon, type AddonName } from "./tooling.ts";
 import { MIN_ATTEMPTS, mulberry32 } from "./bench.ts";
+import { UNKNOWN_MEMORY_FIGURES } from "./research-memory.ts";
 import { closedId, journalFigures, mergeBlock, NO_EVIDENCE, reviewBlock, specsBlock, type CancelCause, type CohortKind, type DeliveryBlock, type HandoffsBlock, type MemoryBlock, type MergeBlock, type PersonBlock, type ResearchEvidence, type ReviewBlock, type SpecsBlock, cancelCauseOf } from "./research-record.ts";
 export type { CancelCause, CohortKind, DeliveryBlock, HandoffsBlock, MemoryBlock, MergeBlock, PersonBlock, ResearchEvidence, ReviewBlock, SpecsBlock } from "./research-record.ts";
 
@@ -132,6 +133,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const tasks = new Map<number, Acc>(), earlier: Acc[] = [];
   const acc = (id: number) => { let a = tasks.get(id); if (!a) tasks.set(id, a = blank(id)); return a; };
   const seenUsage = new Set<string>();
+  let briefReporting = false;
   // A fingerprint belongs to one attachment of its peer: from a state event that brings it online to the next offline.
   // Detection settles in the background, so it can arrive after the peer's first work in that attachment.
   const attach = new Map<string, number>(), online = new Set<string>();
@@ -222,7 +224,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     }
     else if (e.type === "route") a.models.add(e.route);
     else if (e.type === "route_outcome") { if (e.next?.tests === "pass") a.tests.pass++; if (e.next?.tests === "fail") a.tests.fail++; }
-    else if (e.type === "memory_brief") { a.briefs.delivered++; if (e.fails > 0) a.briefs.withFail++; a.briefNotes += (Number.isSafeInteger(e.native) ? e.native : 0) + (Number.isSafeInteger(e.claudeMem) ? e.claudeMem : 0); a.briefFails += Number.isSafeInteger(e.fails) ? e.fails : 0; }
+    else if (e.type === "memory_brief") { briefReporting = true; a.briefs.delivered++; if (e.fails > 0) a.briefs.withFail++; a.briefNotes += (Number.isSafeInteger(e.native) ? e.native : 0) + (Number.isSafeInteger(e.claudeMem) ? e.claudeMem : 0); a.briefFails += Number.isSafeInteger(e.fails) ? e.fails : 0; }
     else if (e.type === "stuck") a.stuck++;
     else if (e.type === "overlap") a.overlaps++;
     else if (e.type === "conflict") a.conflicts++;
@@ -251,7 +253,8 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       delivery: { count: envelopes, ...journal, dropped: { fyi: dropped.fyi, hop: dropped.hop } },
       merge: mergeBlock(task, lastDoneMs, approvedMs),
       specs: specsBlock(task, a.pii),
-      memory: { briefs: briefs.delivered || null, briefNotes: briefs.delivered ? briefNotes : null, fails: briefs.delivered ? briefFails : null, rendered: null, delivered: null, cited: null },
+      // A task with no brief is a known 0 only when the log shows briefs were being reported at all (memory on); otherwise nothing says whether one was built.
+      memory: { briefs: briefs.delivered || (briefReporting ? 0 : null), briefNotes: briefs.delivered ? briefNotes : briefReporting ? 0 : null, fails: briefs.delivered ? briefFails : briefReporting ? 0 : null, ...(evidence.memory?.(a.task) ?? UNKNOWN_MEMORY_FIGURES) },
       person: { permissions: null, questions: null, completions: null, cliRefusals: null, latencyMs: null },
       stalls: task && board ? task.history.filter(entry => entry.sweep).length : null,
       handoffs: task?.handoffs ? { in: task.handoffs.in, out: task.handoffs.out } : { in: null, out: null },
