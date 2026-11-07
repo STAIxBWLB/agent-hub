@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openReceiptOutput, RECEIPT_OUTPUT_MS } from "../scripts/compat-receipts/output.ts";
+import { shellQuote } from "../src/cli/shell-quote.ts";
 import type { ReceiptSummary } from "../scripts/compat-receipts/types.ts";
 
 const roots: string[] = [];
@@ -53,7 +54,7 @@ test("a late occupied output is never overwritten and a closed handle cannot wri
   finally { output.close(); }
   expect(() => output.write(summary, "after-close")).toThrow();
   expect(readdirSync(out)).toEqual(["receipt.md"]);
-  expect(RECEIPT_OUTPUT_MS).toBe(4000);
+  expect(RECEIPT_OUTPUT_MS).toBe(16000);
 });
 
 
@@ -62,3 +63,25 @@ test("missing trusted Python refuses before creating the output directory", () =
   expect(() => openReceiptOutput(out, () => null)).toThrow();
   expect(existsSync(out)).toBe(false);
 });
+
+
+test("a bounded helper startup beyond the old two-second allowance can finish", () => {
+  const root = fixture(), out = join(root, "out"), python = join(root, "slow-python");
+  // exec preserves the owned helper PID: no background or forked sleep survives.
+  writeFileSync(python, "#!/bin/sh\nexec /bin/sleep 3\n", { mode: 0o700 });
+  const output = openReceiptOutput(out, () => python);
+  try { expect(readdirSync(out)).toEqual([]); expect(RECEIPT_OUTPUT_MS).toBe(16000); }
+  finally { output.close(); }
+}, 20_000);
+
+test("a hanging owned helper is killed at its finite allowance and publishes no output", () => {
+  const root = fixture(), out = join(root, "out"), python = join(root, "hung-python"), marker = join(root, "owned-helper.pid");
+  writeFileSync(python, `#!/bin/sh\nprintf '%s\n' "$$" > ${shellQuote(marker)}\nexec /bin/sleep 60\n`, { mode: 0o700 });
+  let failed: unknown;
+  try { openReceiptOutput(out, () => python); } catch (error) { failed = error; }
+  expect(failed).toMatchObject({ causeCode: "timeout" });
+  const pid = Number(readFileSync(marker, "utf8").trim());
+  expect(Number.isSafeInteger(pid) && pid > 1).toBe(true);
+  expect(() => process.kill(pid, 0)).toThrow();
+  expect(readdirSync(out)).toEqual([]); expect(RECEIPT_OUTPUT_MS).toBe(16000);
+}, 20_000);
