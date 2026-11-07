@@ -56,6 +56,13 @@ There are no GitHub App credentials. The replacement PR and check dispatch must
 succeed before an older same-ID PR is closed. Separate PR-only checks remain
 normal review gates rather than being claimed as dispatched by `check.yml`.
 
+The candidate CLI runs as the same user and in the same job as the harness that
+writes its receipt. A malicious release could replace `summary.json` with a
+well-formed eligible forgery before upload, which preparation's validation cannot
+detect. Eligibility is a compatibility signal, not a security attestation of the
+release. The person's PR and release review is the real admission gate; opening
+an automated PR is not permission to merge it.
+
 An exact-title tracker is selected through the existing fail-closed identity
 helper. Closed-cause per-ID blocks preserve other drift/unknown evidence and
 remove confirmed verified IDs. `dry: true` still runs the isolated proof and
@@ -77,3 +84,11 @@ No mocking library or real token is required by these fixtures.
 Exact committed-head dgx02 results, hosted CI, workflow dry-run results and review
 threads are recorded in the PR/task. Unrun live/native/platform behavior stays
 unverified; no real token value, account path or model prose is committed.
+
+The real dry run [42359014165](https://github.com/STAIxBWLB/agent-hub/actions/runs/42359014165)
+completed watch, three macOS harness jobs, prepare and publish at
+`36d9059a35abeb22fd1b72423072e3bd90bebd9a`. It printed drift updates only: no
+candidate was eligible. The current implementation's PR-open, update and
+supersede write paths have not run against real GitHub; their evidence is the
+fake REST suite. Scheduled live drift writes are not claimed as exercised by
+this dry run.

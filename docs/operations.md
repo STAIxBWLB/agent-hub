@@ -3567,6 +3567,13 @@ source. It never imports candidate JS or Markdown. The publisher downloads that
 job's immutable artifact ID and validates descriptors, byte hashes, identities,
 complete leg sets and trusted manifest policy again.
 
+The candidate CLI and receipt writer share a job and OS user. A malicious release
+could overwrite its own `summary.json` before upload with a well-formed eligible
+forgery; preparation cannot detect that forgery from the data alone. An eligible
+receipt is a compatibility signal, not a security attestation of the release.
+The person's PR and release review is the real admission gate; the automation
+never merges its verification PR.
+
 Only the publisher has contents/PR/issues write and Actions dispatch permission.
 It executes first-party Node code and `gh` REST calls, with no package install,
 build or candidate execution. All required legs must pass and trusted `autoAdmit`
