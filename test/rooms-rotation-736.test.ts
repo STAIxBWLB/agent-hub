@@ -12,7 +12,7 @@ import { RoomCommands, RoomRotationHoldError } from "../src/rooms/commands.ts";
 import { RoomChat } from "../src/rooms/service.ts";
 import { RoomStore } from "../src/rooms/store.ts";
 import { encodeRoomMessage, type RoomMessage } from "../src/rooms/application.ts";
-import { decodeFrame, openFrame, roomMembers, sealFrame } from "../src/rooms/wire.ts";
+import { decodeFrame, decodeRoster, openFrame, roomMembers, sealFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, sha256 } from "../src/rooms/crypto.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
