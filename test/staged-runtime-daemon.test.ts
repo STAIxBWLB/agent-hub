@@ -12,12 +12,14 @@ import { Registry, type Project } from "../src/hub/registry.ts";
 import { packageDigest, preserveRuntimePackage, verifyPackage } from "../src/cli/recovery-package.ts";
 import { VERSION } from "../src/version.ts";
 import type { DaemonOptions } from "../src/hub/daemon.ts";
+import { cleanEnvironment, restoreEnvironment, restoreOnTestEnd, useEnvironmentScope } from "./helpers/env-scope.ts";
+useEnvironmentScope();   // #1262: registers the afterEach in THIS file's scope; an import by an earlier file would bind it to that file
 
 const PACKAGE_ROOT = resolve(import.meta.dir, "..");
 
 /** Every subprocess and imported lifecycle uses only this fixture's homes and native discovery path. */
 function isolated(root: string): { env: NodeJS.ProcessEnv; restore(): void } {
-  const before = { ...process.env }, env = { ...process.env };
+  const before = cleanEnvironment(), env = cleanEnvironment();   // #1262: the file's clean snapshot, never an environment another test's abandoned body still holds
   for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("OMNIROUTE_") || key.startsWith("CF_ACCESS_")
     || /(?:_API_KEY|_ACCESS_TOKEN|_SECRET|_TOKEN)$/.test(key)) delete env[key];
   for (const key of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) delete env[key];
@@ -33,10 +35,8 @@ function isolated(root: string): { env: NodeJS.ProcessEnv; restore(): void } {
     mkdirSync(env[key]!, { recursive: true });
   for (const key of Object.keys(process.env)) if (!Object.hasOwn(env, key)) delete process.env[key];
   Object.assign(process.env, env);
-  return { env, restore() {
-    for (const key of Object.keys(process.env)) if (!Object.hasOwn(before, key)) delete process.env[key];
-    Object.assign(process.env, before);
-  } };
+  const restore = restoreOnTestEnd(() => restoreEnvironment(before));   // #1262: also at Bun's timeout, before the next test or file starts
+  return { env, restore };
 }
 async function command(argv: string[], env: NodeJS.ProcessEnv): Promise<string> {
   const child = Bun.spawn(argv, { env, stdout: "pipe", stderr: "pipe" });
