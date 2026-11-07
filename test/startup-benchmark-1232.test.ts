@@ -124,15 +124,16 @@ test("normal Bun script observes production readers and named/default effect den
 
 test("rollup IO wrapper delegates real poll results, counts all actual reads and restores its descriptor", async () => {
   const root = directory(), file = join(root, "events.jsonl"), line = JSON.stringify({ at: "2026-01-01T00:00:00Z", type: "state", peer: "claude", state: "offline" }) + "\n";
-  writeFileSync(file, line);
+  writeFileSync(file, line.slice(0, -1) + " ");
   const descriptor = Object.getOwnPropertyDescriptor(UsageRollup.prototype, "poll");
   const observer = await installStartupReadObserver(root);
   const rollupObserver = await installStartupRollupReadObserver(() => observer.counts.eventReadBytes);
   const rollup = new UsageRollup(join(root, "hub.db"), file);
   try {
-    // A zero-time slice consumes no records but really reads the file. poll.bytes cannot stand in for IO.
+    // An unterminated record is read but not consumed. Complete it at the same byte width afterward.
     expect(rollup.poll(0).bytes).toBe(0);
     expect(rollupObserver.counts).toEqual({ usageRollupCalls: 1, usageRollupReadBytes: Buffer.byteLength(line) });
+    writeFileSync(file, line);
     expect(rollup.poll().bytes).toBe(Buffer.byteLength(line));
     expect(rollup.poll().bytes).toBe(0);
     expect(rollupObserver.counts.usageRollupCalls).toBe(3);
