@@ -110,7 +110,7 @@ import { QuestionDesk } from "./question-desk.ts";
 import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
-import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
+import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateRawConfig, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSourceTexts, type ConfigSources } from "./config-reload.ts";
 import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
@@ -4834,13 +4834,46 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify({ invocation: row.id, state: "queued", note: "the result arrives later as one message from the hub, addressed to you only; do not wait for it in this turn" });
   }
   const visualUnavailable = () => new PreEffectToolRefusal("visual unavailable under the current privacy or project policy; use a public visual in an ordinary context and retry");
-  const visualTaskPublic = (task?: number): boolean => task === undefined || (() => {
-    const current = board.get(task);
-    return !!current && !tasks.isPii(current) && [...(current.refs.paths ?? []), ...(current.plan?.paths ?? [])].every(path =>
-      !matchesPolicy(opts.cwd, path, [...config.pii?.paths ?? [], ...config.local.deny], true) && boundedSafe(path));
-  })();
-  const visualPorts = (): DeliverablePorts => ({ cwd: opts.cwd, deny: [...config.local.deny], private: path =>
-    !boundedSafe(path) || !tasks.publicMetadataText(path) || matchesPolicy(opts.cwd, path, config.pii?.paths ?? [], true) });
+  // Visual files are new host reads: pending stricter file policy applies now, while a raw weakening cannot
+  // relax the accepted runtime policy or grant any native permission. Unknown raw policy closes this path only.
+  const visualFilePolicy = (): { pii: string[]; deny: string[] } => {
+    try {
+      const pii = [...config.pii?.paths ?? []], deny = [...config.local.deny], texts = configSourceTexts(opts.cwd);
+      for (const name of CONFIG_FILES) {
+        if (texts[name] === null) continue;
+        const raw: unknown = JSON.parse(texts[name]!);
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw visualUnavailable();
+        const input = raw as Record<string, unknown>;
+        const policies = { ...(Object.hasOwn(input, "pii") ? { pii: input.pii } : {}), ...(Object.hasOwn(input, "local") ? { local: input.local } : {}) };
+        validateRawConfig(policies, declarations, adapterCatalog);
+        if (Object.hasOwn(input, "pii")) {
+          const value = input.pii;
+          if (!value || typeof value !== "object" || Array.isArray(value)) throw visualUnavailable();
+          pii.push(...policyPaths((value as Record<string, unknown>).paths, "pii.paths"));
+        }
+        if (Object.hasOwn(input, "local")) {
+          const value = input.local;
+          if (!value || typeof value !== "object" || Array.isArray(value)) throw visualUnavailable();
+          const paths = (value as Record<string, unknown>).deny;
+          if (paths !== undefined) deny.push(...paths as string[]); // bounded strings were checked by the shared config validator
+        }
+      }
+      return { pii: [...new Set(pii)], deny: [...new Set(deny)] };
+    } catch { throw visualUnavailable(); }
+  };
+  const visualTaskPublic = (task?: number): boolean => {
+    try {
+      const policy = visualFilePolicy();
+      if (task === undefined) return true;
+      const current = board.get(task);
+      return !!current && !tasks.isPii(current) && [...(current.refs.paths ?? []), ...(current.plan?.paths ?? [])].every(path =>
+        !isDenied(path, policy.deny) && !matchesPolicy(opts.cwd, path, policy.pii, true) && boundedSafe(path));
+    } catch { return false; }
+  };
+  const visualPorts = (): DeliverablePorts => ({ cwd: opts.cwd, deny: visualFilePolicy().deny, private: path => {
+    const policy = visualFilePolicy();
+    return isDenied(path, policy.deny) || !boundedSafe(path) || !tasks.publicMetadataText(path) || matchesPolicy(opts.cwd, path, policy.pii, true);
+  } });
   const visualPublic = (record: VisualRecord | VisualSummary): boolean => {
     try {
       return !stopping && (record.task !== undefined || record.created >= Date.now() - config.visuals.retention_days * 86_400_000) && !turns.get(record.from)?.private && !contextPii(record.from) && visualTaskPublic(record.task)
@@ -4883,7 +4916,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (a.task !== undefined && (!Number.isSafeInteger(a.task) || Number(a.task) < 1)) throw new PreEffectToolRefusal("visual task must be a positive integer; retry with a task id");
     const task = a.task as number | undefined, before = task === undefined ? undefined : board.get(task);
     const generation = connectionGeneration(by), turn = turns.get(by);
-    const policyVersion = () => JSON.stringify({ revision: configRevision, pii: config.pii, deny: config.local.deny, signals: activeRouting().signals, constraints: activeRouting().constraints, mlx: config.mlx, model: activeRouting().local.fixed_model });
+    const policyVersion = () => JSON.stringify({ revision: configRevision, filePolicy: visualFilePolicy(), pii: config.pii, deny: config.local.deny, signals: activeRouting().signals, constraints: activeRouting().constraints, mlx: config.mlx, model: activeRouting().local.fixed_model });
     const policy = policyVersion();
     const valid = () => authorityCurrent() && bus.deliveryJournalAvailable() && !stopping && !recoveryActive() && policyVersion() === policy && connectionGeneration(by) === generation && turns.get(by) === turn
       && !turns.get(by)?.private && !contextPii(by) && membershipAllowed(by) && !readOnlyPeer(by) && may(by, "remember")

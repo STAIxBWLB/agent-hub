@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +23,7 @@ class FakeVisualPeer extends BasePeer {
   async deliver(envs: Envelope[]) { this.received.push(...envs); }
 }
 const payload = { kind: "mermaid", title: "Flow", source: "flowchart LR\nA-->BODY-ONLY-MARKER" };
-async function rig(screen?: Parameters<typeof startDaemon>[0]["piiScreen"]) {
+async function rig(screen?: Parameters<typeof startDaemon>[0]["piiScreen"], runningPii?: string[]) {
   const root = mkdtempSync(join(tmpdir(), "ahub-visual-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, ".agenthub"));
@@ -33,7 +33,7 @@ async function rig(screen?: Parameters<typeof startDaemon>[0]["piiScreen"]) {
   writeFileSync(join(root, ".agenthub/routing.toml"), routing);
   const stateDir = join(root, "state");
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
-    ...(screen ? { piiScreen: screen } : {}), config: { ...DEFAULT_CONFIG, batch_ms: 0, specs: { ...DEFAULT_CONFIG.specs, enabled: false },
+    ...(screen ? { piiScreen: screen } : {}), config: { ...DEFAULT_CONFIG, ...(runningPii ? { pii: { paths: runningPii } } : {}), batch_ms: 0, specs: { ...DEFAULT_CONFIG.specs, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false },
       snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, local: { ...DEFAULT_CONFIG.local, deny: ["secret"] } } });
   cleanup.push(() => daemon.stop());
@@ -144,6 +144,38 @@ test("asset selectors return only host-recorded metadata, then fail after curren
   expect((await r.op("hub_visual_show", { id })).ok).toBe(false);
   expect((await r.snapshot()).visuals).toEqual([]);
   expect((await r.tools.request({ t: "ui_snapshot", visual: id })).ok).toBe(false);
+});
+
+test("pending weaker raw file policy cannot release an accepted runtime restriction", async () => {
+  const r = await rig(undefined, ["image.png"]), id = randomUUID();
+  const bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]); writeFileSync(join(r.root, "image.png"), bytes);
+  // A retained public visual predating the current runtime classification, not a bypass of the posting tool.
+  r.store.insert({ id, from: "codex", kind: "beforeAfter", title: "", created: Date.now(),
+    payload: { kind: "beforeAfter", before: { asset: `${id}:before`, alt: "before" }, after: { text: "new" } },
+    files: [{ asset: `${id}:before`, path: "image.png", sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length, mime: "image/png" }] });
+  expect((await r.snapshot({ visualAsset: `${id}:before` })).visualAsset).toBeNull();
+  writeFileSync(join(r.root, ".agenthub/config.local.json"), JSON.stringify({ pii: { paths: [] }, local: { deny: [] } }));
+  expect((await r.snapshot({ visualAsset: `${id}:before` })).visualAsset).toBeNull();
+  expect((await r.snapshot({ visual: id })).visual).toBeNull();
+  expect((await r.op("hub_visual_show", { id })).ok).toBe(false);
+  expect((await r.op("hub_visual", { payload: { kind: "beforeAfter", before: { path: "image.png", alt: "before" }, after: { text: "new" } } })).ok).toBe(false);
+  expect(r.store.list()).toHaveLength(1);
+});
+
+test("new raw deny policy and malformed file policy close visual metadata and new file reads", async () => {
+  const r = await rig();
+  writeFileSync(join(r.root, "image.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const image = { kind: "beforeAfter", before: { path: "image.png", alt: "before" }, after: { text: "new" } };
+  const id = await r.post(image);
+  for (const raw of [JSON.stringify({ local: { deny: ["image.png"] } }), JSON.stringify({ pii: { paths: "image.png" } }), "invalid-json"]) {
+    writeFileSync(join(r.root, ".agenthub/config.local.json"), raw);
+    expect((await r.snapshot({ visualAsset: `${id}:before` })).visualAsset).toBeNull();
+    expect((await r.snapshot({ visual: id })).visual).toBeNull();
+    expect((await r.op("hub_visual_show", { id })).ok).toBe(false);
+    const refused = await r.op("hub_visual", { payload: image });
+    expect(refused.ok).toBe(false); expect(refused.error).not.toContain("image.png");
+    expect(r.store.list()).toHaveLength(1);
+  }
 });
 
 test("closed bus refuses before a visual row is written", async () => {
