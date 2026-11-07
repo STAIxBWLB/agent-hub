@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryFigures } from "./research-memory.ts";
+import type { PersonFigures } from "./person-figures.ts";
 import { cleanMergeCost } from "./cost-governance.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import { taskSample, type MetricTask } from "./sdlc-metrics.ts";
@@ -53,8 +54,8 @@ export interface MemoryBlock {
   /** #1279: fail notes among the entries rendered for the task, how many of them were cited, and the exposed ones the plan touches that were not cited. A signal to read, never an outcome. */
   failsExposed: number | null; failsCited: number | null; failRetrySignal: number | null;
 }
-/** All null until #1278 attributes person interventions to a task. */
-export interface PersonBlock { permissions: number | null; questions: number | null; completions: number | null; cliRefusals: number | null; latencyMs: number | null }
+/** #1278: what the person was asked and did for the task (docs/research.md); every part is null when the log does not cover the task, never 0. Shape and rules: `src/hub/person-figures.ts`. */
+export type PersonBlock = PersonFigures;
 export interface HandoffsBlock { in: number | null; out: number | null }
 export type CohortKind = "silent" | "advisory" | "none";
 export const CANCEL_CAUSES = ["cancelled", "declined", "escalated", "stale", "unknown"] as const;

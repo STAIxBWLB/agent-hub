@@ -6,6 +6,7 @@ import { hubHome } from "./project.ts";
 import { ADDONS, addonState, type Addon, type AddonName } from "./tooling.ts";
 import { MIN_ATTEMPTS, mulberry32 } from "./bench.ts";
 import { UNKNOWN_MEMORY_FIGURES } from "./research-memory.ts";
+import { addPersonEvent, emptyPersonCounts, isPersonEvent, personCoverage, personFigures, personTask, startsAttribution, type PersonCounts } from "./person-figures.ts";
 import { closedId, journalFigures, mergeBlock, NO_EVIDENCE, reviewBlock, specsBlock, type CancelCause, type CohortKind, type DeliveryBlock, type HandoffsBlock, type MemoryBlock, type MergeBlock, type PersonBlock, type ResearchEvidence, type ReviewBlock, type SpecsBlock, cancelCauseOf } from "./research-record.ts";
 export type { CancelCause, CohortKind, DeliveryBlock, HandoffsBlock, MemoryBlock, MergeBlock, PersonBlock, ResearchEvidence, ReviewBlock, SpecsBlock } from "./research-record.ts";
 
@@ -106,8 +107,10 @@ export const recordKey = (r: { project: string; task: number; createdAt: string 
 export const closedAtOf = (r: TaskRecord): string | null => r.closedAt ?? r.approvedAt;
 
 type V2Fields = "closedAt" | "cancelCause" | "declines" | "escalations" | "review" | "delivery" | "merge" | "specs" | "memory" | "person" | "stalls" | "handoffs" | "cohort";
-type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers" | "briefs" | V2Fields> & {
+type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers" | "briefs" | "person" | V2Fields> & {
   models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Map<string, number>; briefs: { delivered: number; withFail: number };
+  /** #1278: the counts of the four attributed person events; joined with whether the log covers the task at the end. */
+  person: PersonCounts;
   /** #1277: what the events alone say; the board and journal evidence is joined at the end. */
   cancelledAt: string | null; declines: number; escalations: number; lastDoneMs: number | null; envelopes: number; dropped: { fyi: number; hop: number };
   briefNotes: number; briefFails: number; cohort: "silent" | "advisory" | null;
@@ -117,7 +120,7 @@ const keyed = <T>(): Record<string, T> => Object.create(null) as Record<string, 
 const blank = (task: number): Acc => ({ task, class: null, pii: false, createdAt: null, startedAt: null, activeMs: 0, owners: [], reviewer: null,
   reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: keyed(), stuck: 0, overlaps: 0, conflicts: 0,
   tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(),
-  approvedAt: null, lastState: null, tooling: keyed(), peers: new Map(), briefs: { delivered: 0, withFail: 0 },
+  approvedAt: null, lastState: null, tooling: keyed(), peers: new Map(), briefs: { delivered: 0, withFail: 0 }, person: emptyPersonCounts(),
   cancelledAt: null, declines: 0, escalations: 0, lastDoneMs: null, envelopes: 0, dropped: { fyi: 0, hop: 0 }, briefNotes: 0, briefFails: 0, cohort: null });
 const add = (current: number | null, value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? (current ?? 0) + value : current;
 const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[key] = (counts[key] ?? 0) + n; };
@@ -134,6 +137,8 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   const acc = (id: number) => { let a = tasks.get(id); if (!a) tasks.set(id, a = blank(id)); return a; };
   const seenUsage = new Set<string>();
   let briefReporting = false;
+  // #1278: the time of the first hub run that attributes person events. A task that began before it has an unknown person block (see `startsAttribution`).
+  let personReportingSince: number | null = null;
   // A fingerprint belongs to one attachment of its peer: from a state event that brings it online to the next offline.
   // Detection settles in the background, so it can arrive after the peer's first work in that attachment.
   const attach = new Map<string, number>(), online = new Set<string>();
@@ -153,7 +158,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
   };
   for (const e of events) {
     // A crash writes no offline: a new run is a new attachment, and no fingerprint from before it describes later work.
-    if (e.type === "hub_start") { online.clear(); tooling.clear(); continue; }
+    if (e.type === "hub_start") { online.clear(); tooling.clear(); if (startsAttribution(e)) personReportingSince ??= Date.parse(e.at); continue; }
     if (e.type === "state") {
       if (e.state === "offline") online.delete(e.peer);
       else if (!online.has(e.peer)) { online.add(e.peer); attach.set(e.peer, (attach.get(e.peer) ?? 0) + 1); }
@@ -202,6 +207,12 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       involve(a, e.by); involve(a, e.owner, false); involve(a, e.reviewer, false);
       continue;
     }
+    if (isPersonEvent(e)) {
+      // Before the generic path on purpose: a permission or a question does not make its peer a worker on the task (`peers`, `tooling`).
+      const owner = personTask(e);
+      if (owner !== undefined) { const a = acc(owner); if (e.pii) a.pii = true; addPersonEvent(a.person, e); }
+      continue;
+    }
     const task = "task" in e && typeof e.task === "number" ? e.task : undefined;
     if (task === undefined) continue;
     const a = acc(task);
@@ -234,10 +245,12 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     // Approved wins over a later reopening (the record the live writer stored at the approval); otherwise the task must end cancelled.
     const outcome: "approved" | "cancelled" | undefined = a.approvedAt ? "approved" : a.lastState === "cancelled" && a.cancelledAt ? "cancelled" : undefined;
     if (!outcome) continue;
-    const { approvedAt, lastState: _state, models, tooling: fingerprints, peers, briefs, cancelledAt, declines, escalations, lastDoneMs, envelopes, dropped, briefNotes, briefFails, cohort, ...rest } = a;
+    const { person, approvedAt, lastState: _state, models, tooling: fingerprints, peers, briefs, cancelledAt, declines, escalations, lastDoneMs, envelopes, dropped, briefNotes, briefFails, cohort, ...rest } = a;
     const closedAt = (outcome === "approved" ? approvedAt : cancelledAt)!;
     const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(closedAt);
     const task = evidence.tasks.get(a.task), board = evidence.board;
+    const began = a.createdAt ? Date.parse(a.createdAt) : a.startedAt ? Date.parse(a.startedAt) : NaN;
+    const covered = personCoverage(personReportingSince, began);
     const ownerFamily = closedId(a.owners.at(-1) ? evidence.familyOf?.(a.owners.at(-1)!) : undefined);
     const approvedMs = outcome === "approved" ? Date.parse(approvedAt!) : null;
     const created = a.createdAt ? Date.parse(a.createdAt) : NaN;
@@ -255,7 +268,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       specs: specsBlock(task, a.pii),
       // A task with no brief is a known 0 only when the log shows briefs were being reported at all (memory on); otherwise nothing says whether one was built.
       memory: { briefs: briefs.delivered || (briefReporting ? 0 : null), briefNotes: briefs.delivered ? briefNotes : briefReporting ? 0 : null, fails: briefs.delivered ? briefFails : briefReporting ? 0 : null, ...(evidence.memory?.(a.task) ?? UNKNOWN_MEMORY_FIGURES) },
-      person: { permissions: null, questions: null, completions: null, cliRefusals: null, latencyMs: null },
+      person: personFigures(person, covered),
       stalls: task && board ? task.history.filter(entry => entry.sweep).length : null,
       handoffs: task?.handoffs ? { in: task.handoffs.in, out: task.handoffs.out } : { in: null, out: null },
       cohort: cohort ?? "none" });

@@ -1669,6 +1669,7 @@ token counts, never message bodies or task titles.
 ahub report --since 7d          # turns, busy time and tokens per peer, messages, overlaps, task events
 ahub report --since 7d --json   # the same numbers as JSON
 ahub report --by task           # tokens, turns and wall time per task and class, with the unattributed share
+                                # and, from #1278, what the person was asked per task (permissions, questions, completions, CLI refusals, minutes from recorded latencies only), with the unattributed remainder apart
 ahub export --since 24h         # the raw events as JSON lines, for your own analysis
 ahub report --dogfood [--since 7d|<iso>] [--json]   # read-only scorecard: flow, quality, cost, delivery, performance, adoption
 ```
