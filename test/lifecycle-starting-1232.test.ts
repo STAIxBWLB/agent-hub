@@ -67,12 +67,14 @@ test("actual startup owner proof binds the registry signature to the signed owne
       child.stdout!.once("data", chunk => { if (String(chunk).includes("owned-ready")) done(); else reject(new Error("owned fake child handshake changed; inspect its fixture")); });
     });
     clearTimeout(timer);
-    const signature = processSignature(child.pid!);
+    const pid = child.pid;
+    if (pid === undefined) throw new Error("owned fake child has no PID after handshake; inspect the public fixture before retrying");
+    const signature = processSignature(pid);
     expect(typeof signature).toBe("string");
-    expect(processLiveness(child.pid!, signature)).toBe("live");
+    expect(processLiveness(pid, signature)).toBe("live");
     const project = { id: "owned-fixture", root, stateDir: join(root, "state") };
     let claim: typeof project & { instanceId: string | null; pid: number | null; pidSignature: string | null | undefined } = {
-      ...project, instanceId: "owned-instance", pid: child.pid!, pidSignature: signature,
+      ...project, instanceId: "owned-instance", pid, pidSignature: signature,
     };
     const source = readFileSync(join(import.meta.dir, "../src/hub/lifecycle.ts"), "utf8");
     const begin = source.indexOf("    const startupOwner ="), end = source.indexOf("\n    return await waitForStartupReadiness", begin);
@@ -81,7 +83,7 @@ test("actual startup owner proof binds the registry signature to the signed owne
     const make = new Function(`${compiled}; return make;`)() as (ports: Record<string, unknown>) => () => StartupOwner;
     const owner = make({ startupChild: child, project, processSignature, processLiveness,
       registry: { get: (id: string) => { expect(id).toBe(project.id); return { ...claim }; } } });
-    expect(owner()).toEqual({ state: "live", pid: child.pid });
+    expect(owner()).toEqual({ state: "live", pid });
     for (const pidSignature of [undefined, null, `${signature}:mismatch`]) {
       claim = { ...claim, pidSignature };
       expect(owner()).toEqual({ state: "unknown" });
@@ -94,9 +96,9 @@ test("actual startup owner proof binds the registry signature to the signed owne
     expect(f.notices).toHaveLength(0);
     expect(f.confirmations).toHaveLength(0);
     claim = { ...claim, pidSignature: signature };
-    expect(owner()).toEqual({ state: "live", pid: child.pid });
+    expect(owner()).toEqual({ state: "live", pid });
     claim = { ...claim, instanceId: null, pid: null, pidSignature: null };
-    expect(owner()).toEqual({ state: "live", pid: child.pid });
+    expect(owner()).toEqual({ state: "live", pid });
     claim = { ...claim, instanceId: "competing-instance", pid: process.pid, pidSignature: processSignature(process.pid) };
     expect(owner()).toBeUndefined();
   } finally {
