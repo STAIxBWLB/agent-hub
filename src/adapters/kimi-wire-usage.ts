@@ -43,6 +43,10 @@ export type KimiWireRead =
   | { status: "ok"; rows: KimiWireRow[]; /** bytes remain unread because of the per-call bound: read again */ more: boolean }
   | { status: "unknown"; reason: KimiWireReason };
 
+export type KimiWireSlice =
+  | { status: "ok"; rows: KimiWireRow[]; more: boolean; commit(): void }
+  | { status: "unknown"; reason: KimiWireReason };
+
 /** What counts against `budget.kimi_tokens_5h`: new input, cache writes and output. Cache reads are recorded and shown, never counted. */
 export function kimiCountedTokens(row: Pick<KimiWireRow, "inputOther" | "inputCacheCreation" | "output">): number {
   return row.inputOther + row.inputCacheCreation + row.output;
@@ -97,6 +101,15 @@ export class KimiWireReader {
 
   /** The rows written since the last successful read, sub-agents included. */
   read(): KimiWireRead {
+    const slice = this.readSlice();
+    if (slice.status === "unknown") return slice;
+    const { commit, ...read } = slice;
+    commit();
+    return read;
+  }
+
+  /** A successful slice commits its offsets only after the caller has committed every row it returned. */
+  readSlice(): KimiWireSlice {
     if (this.broken) return { status: "unknown", reason: this.broken };
     try {
       const dir = this.resolve();
@@ -114,8 +127,8 @@ export class KimiWireReader {
         budget -= result.read;
         more ||= result.more;
       }
-      this.files = next;
-      return { status: "ok", rows, more };
+      let committed = false;
+      return { status: "ok", rows, more, commit: () => { if (!committed) { this.files = next; committed = true; } } };
     } catch (error) {
       const reason: KimiWireReason = error instanceof Unknown ? error.reason : "io-error";
       if (!TRANSIENT.has(reason)) this.broken = reason; // the log no longer matches what was counted: stays unknown for this session

@@ -118,7 +118,7 @@ import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
 import { SpecTaskInspector } from "./specs-task.ts";
-import { KimiUsage, kimiSeedRows } from "./kimi-usage.ts";
+import { KimiUsage, kimiSeedRows, type KimiRowAttribution, type KimiUsageScheduler } from "./kimi-usage.ts";
 import { TokenWindow } from "./token-window.ts";
 import { budgetNotes, type BudgetPeerNote } from "./budget-notes.ts";
 import { kimiRowTotal } from "../adapters/kimi-wire-usage.ts";
@@ -710,6 +710,8 @@ export interface DaemonOptions {
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
   /** Host-only (#285): Kimi's data home for its wire-log usage reader; default `KIMI_CODE_HOME`, else `~/.kimi-code`. Never read from config or tools. */
   kimiHome?: string;
+  /** Host-only delayed-drain scheduler; tests fire it explicitly. Production leaves it unset and uses unreferenced timers. */
+  kimiUsageScheduler?: KimiUsageScheduler;
   /** Host-only replay-window test ceiling (1..512); never read from project config or a tool. */
   toolWriteReplayMaxEntries?: number;
   /** Host-only evidence seam; never supplied by project config or control messages. */
@@ -3411,16 +3413,21 @@ export async function startDaemon(opts: DaemonOptions) {
     now: () => Date.now(),
     ceiling: () => config.budget.kimi_tokens_5h,
     session: peer => contextSession(peer),
-    record: (peer, row, counted) => {
-      addTokens(peer, counted);
+    schedule: opts.kimiUsageScheduler ?? ((delay, run) => {
+      const timer = setTimeout(run, delay); timer.unref?.();
+      return () => clearTimeout(timer);
+    }),
+    record: (peer, row, counted, attributed) => {
+      addTokens(peer, counted, undefined, attributed);
       event({ type: "usage", peer, source: "kimi_wire", id: row.id, measuredAt: new Date(row.at).toISOString(), inputTokens: row.inputOther, outputTokens: row.output,
         cacheReadTokens: row.inputCacheRead, cacheWriteTokens: row.inputCacheCreation, totalTokens: kimiRowTotal(row),
-        ...taskAttribution(peer), ...(row.model ? { servedModel: row.model } : {}) });
+        ...attributed.attribution, ...(row.model ? { servedModel: row.model } : {}) });
     },
     report: (peer, window) => budget.report(peer, [{ id: "tokens", kind: "count", used: window.used, resetsAt: window.resetsAt, source: `hub count, kimi wire log, of kimi_tokens_5h ${window.ceiling}` }]),
     forget: peer => budget.forget(peer, "tokens", "count"),
     notice: line => notify(line),
   });
+  startupCleanup.push(() => kimiUsage.stop());
   kimiUsage.seed(kimiSeedRows(startupEvents, Math.max(0, ...startupEvents.flatMap(e => e.type === "budget_resume" && definitionOf(e.peer)?.budget?.resetSoftTokensOnResume ? [Date.parse(e.at)] : []).filter(Number.isFinite))));
   /** Why a peer shows no number (no quota, nothing read yet): one line each, from the definition and the counters, never from a log's text. */
   const budgetPeerNotes = (): BudgetPeerNote[] => {
@@ -3429,7 +3436,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return budgetNotes({ peers, windows: peer => quota[accountOf(peer)]?.windows.length ?? 0, definition: peer => definitionOf(peer), softTokens: () => kimiUsage.status(),
       hubTokens5h: peer => hubTokenWindows.get(peer)?.sum(Date.now()) });
   };
-  /** A peer whose definition keeps host-owned soft token accounting (Kimi): its rows are read at a turn start (the floor), a turn end and a usage_update. */
+  /** A peer whose definition keeps host-owned soft token accounting (Kimi): its rows are read at a turn start (the floor), a turn end, a usage_update and a bounded delayed drain. */
   const softTokenPeer = (peer: PeerId): boolean => !!definitionOf(peer)?.budget?.resetSoftTokensOnResume;
   const collectKimiUsage = (peer: PeerId): void => { if (!softTokenPeer(peer)) return; try { kimiUsage.collect(peer); } catch (error) { log(`kimi usage: ${(error as Error).name}`); } };
   startupCleanup.push(() => budget.close());
@@ -4017,14 +4024,14 @@ export async function startDaemon(opts: DaemonOptions) {
   const seedNow = Date.now(), seedRows = new Map<PeerId, { at: number; n: number }[]>();
   for (const e of startupEvents) if (e.type === "tokens" && noQuotaPeer(e.peer)) (seedRows.get(e.peer) ?? seedRows.set(e.peer, []).get(e.peer)!).push({ at: Date.parse(e.at), n: e.n });
   for (const [peer, rows] of seedRows) hubTokenWindow(peer).seed(rows, seedNow);
-  const addTokens = (peer: PeerId, n: number, task?: number): number => {
+  const addTokens = (peer: PeerId, n: number, task?: number, attributed?: KimiRowAttribution): number => {
     if (n > 0 && noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(n));
     const supervisionTurn = supervisionTurns.get(peer);
-    if (supervisionTurn && Number.isFinite(n) && n >= 0) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
+    if (supervisionTurn && Number.isFinite(n) && n >= 0 && (!attributed || supervisionTurn.id === attributed.turn)) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
     if (n > 0) {
-      event({ type: "tokens", peer, n, ...taskAttribution(peer, task) });
+      event({ type: "tokens", peer, n, ...(attributed?.attribution ?? taskAttribution(peer, task)) });
       const turn = turns.get(peer);
-      if (turn) turn.tokens += n;
+      if (turn && (!attributed || turn.id === attributed.turn)) turn.tokens += n;
     }
     return n;
   };
@@ -6483,7 +6490,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const delivery = pendingDeliveryTask.get(e.peer);
         pendingDeliveryTask.delete(e.peer);
         const attribution = taskAttribution(e.peer, delivery);
-        const id = `${e.peer}#${runId}.${++turnSeq}`;
+        const id = `${e.peer}#${runId}.${++turnSeq}`, startedAt = Date.now();
         // A turn of a peer with a PII task open is not snapshotted: what it writes would stay in git's object store until
         // gc. It is still recorded, without trees, so an overlapping turn's undo knows its changes are unknown.
         const pii = holdsPii(e.peer);
@@ -6499,7 +6506,7 @@ export async function startDaemon(opts: DaemonOptions) {
           writeScope = ownerWriteRoot(e.peer) === opts.cwd ? canonicalWriteScope(start.repo, start.budget) : true;
         } catch (error) { snapshotFailure(`the write scope of ${id}`, error); }
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
-        turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        turns.set(e.peer, { id, capture, start: startedAt, tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         const pendingReviewInput = pendingReviewObserverInputs.get(e.peer);
         if (pendingReviewInput) {
           pendingReviewInput.turnId = id; delete pendingReviewInput.awaitingTurn;
@@ -6526,9 +6533,10 @@ export async function startDaemon(opts: DaemonOptions) {
             if (run) { if (run.runTurn === id) completionStore.openRun(run); else completionStore.touchRun(run); }
           }
         } catch { log(`completion run start for ${e.peer} failed; no completion for this turn`); }
-        if (softTokenPeer(e.peer)) try { kimiUsage.turnStarted(e.peer); } catch { /* counting never costs a turn */ }
+        if (softTokenPeer(e.peer)) try { kimiUsage.turnStarted(e.peer, { id, startedAt, attribution }); } catch { /* counting never costs a turn */ }
       } else if (!busy && open) {
         collectKimiUsage(e.peer); // before the turn closes: its rows count toward the turn's tokens
+        if (softTokenPeer(e.peer)) try { kimiUsage.turnEnded(e.peer, open.id, Date.now()); } catch { /* counting never costs a turn */ }
         turns.delete(e.peer);
         let afterTurn: (() => void) | undefined;
         let files: number | undefined;
@@ -11322,6 +11330,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    kimiUsage.stop();
     controlWriteTelemetry?.stop();
     const roomsStopped = roomCommands.stop().catch(() => { log("room shutdown failed; inspect ahub room status after restart"); });
     tasks.stopQueuePressureRechecks();
