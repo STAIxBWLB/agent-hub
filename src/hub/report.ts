@@ -1,5 +1,6 @@
 import { definitionOf } from "../adapters/registry.ts";
 import type { StampedEvent } from "./events.ts";
+import { addPersonEvent, emptyPersonCounts, isPersonEvent, personFigures, personTask, startsAttribution, UNKNOWN_PERSON_FIGURES, type PersonCounts, type PersonFigures } from "./person-figures.ts";
 
 export interface Report {
   from?: string;
@@ -256,7 +257,9 @@ const usageCounts = ["inputRecords", "outputRecords", "cacheReadRecords", "cache
 type TaskUsage = Omit<UsageCoverage, typeof usageCounters[number]> & Record<typeof usageCounters[number], number | null>;
 export interface TaskPeerReport { tokens: number | null; usage: TaskUsage }
 export interface TaskTotals { turns: number; peers: Record<string, TaskPeerReport> }
-export interface TaskSummary extends TaskTotals { class: string | null; outcome: string | null; wallMs: number | null; pii?: true }
+export interface TaskSummary extends TaskTotals { class: string | null; outcome: string | null; wallMs: number | null; pii?: true;
+  /** #1278: the person's interactions with the task (`src/hub/person-figures.ts`), null parts when the log does not cover it. A PII task counts here without any text, as everywhere. */
+  person: PersonFigures }
 export interface TaskReport {
   from?: string;
   to?: string;
@@ -265,6 +268,8 @@ export interface TaskReport {
   totals: { tokens: number; usageRecords: number };
   unattributed: TaskTotals & { tokens: number; usageRecords: number; tokenShare: number | null; usageShare: number | null };
   beforeAttribution: TaskTotals & { tokens: number; usageRecords: number };
+  /** #1278: person events by peer, and the remainder no task owns. Both are counts over the whole slice; `unattributed` is never folded into a task. */
+  person: { byPeer: Record<string, PersonCounts>; unattributed: PersonCounts; beforeAttribution: PersonCounts };
 }
 
 const taskTotals = (): TaskTotals => ({ turns: 0, peers: {} });
@@ -288,19 +293,26 @@ function addTaskUsage(peer: TaskPeerReport, e: Extract<StampedEvent, { type: "us
 export function summarizeByTask(events: StampedEvent[]): TaskReport {
   const r: TaskReport = { tasks: {}, classes: {}, totals: { tokens: 0, usageRecords: 0 },
     unattributed: { ...taskTotals(), tokens: 0, usageRecords: 0, tokenShare: null, usageShare: null },
-    beforeAttribution: { ...taskTotals(), tokens: 0, usageRecords: 0 } };
-  const task = (id: number) => r.tasks[String(id)] ??= { ...taskTotals(), class: null, outcome: null, wallMs: null };
+    beforeAttribution: { ...taskTotals(), tokens: 0, usageRecords: 0 },
+    person: { byPeer: {}, unattributed: emptyPersonCounts(), beforeAttribution: emptyPersonCounts() } };
+  const counts = new Map<number, PersonCounts>();
+  // #1278: a task is covered when it began at or after the first hub run that attributes person events (the research record's rule too); earlier ones are unknown, never 0.
+  let reportingSince: number | null = null;
+  const began = new Map<number, number>();
+  const task = (id: number) => r.tasks[String(id)] ??= { ...taskTotals(), class: null, outcome: null, wallMs: null, person: { ...UNKNOWN_PERSON_FIGURES } };
   const starts = new Map<number, number>(), approvals = new Map<number, number>();
   const seenUsage = new Set<string>();
   // Resolve latest class/outcome before rolling usage up: usage may precede the task's history in a slice.
   for (const e of events) {
     r.from ??= e.at; r.to = e.at;
+    if (startsAttribution(e) && reportingSince === null) reportingSince = Date.parse(e.at);
     if (e.type !== "task") continue;
     const t = task(e.id);
     t.class = e.class; t.outcome = e.state;
     if (e.pii) t.pii = true;
     const at = Date.parse(e.at);
     if (!Number.isFinite(at)) continue;
+    if (!began.has(e.id)) began.set(e.id, at);
     if (e.state === "in_progress" && !starts.has(e.id)) starts.set(e.id, at);
     if (e.state === "approved" && !approvals.has(e.id)) approvals.set(e.id, at);
   }
@@ -310,6 +322,16 @@ export function summarizeByTask(events: StampedEvent[]): TaskReport {
     r.classes[t.class ?? "unknown"] ??= taskTotals();
   }
   for (const e of events) {
+    if (isPersonEvent(e)) {
+      // The same accumulator as the research record, so `report --by task` and the record show the same numbers.
+      const owner = personTask(e);
+      const group = owner !== undefined ? counts.get(owner) ?? counts.set(owner, emptyPersonCounts()).get(owner)! : e.attribution === undefined ? r.person.beforeAttribution : r.person.unattributed;
+      addPersonEvent(group, e);
+      addPersonEvent(r.person.byPeer[e.peer] ??= emptyPersonCounts(), e);
+      if (owner !== undefined && e.pii) task(owner).pii = true;
+      if (owner !== undefined) task(owner);
+      continue;
+    }
     if (e.type !== "tokens" && e.type !== "usage" && e.type !== "turn_end") continue;
     if (e.type === "usage") {
       const key = `${e.peer}\0${e.source}\0${e.id}`;
@@ -338,9 +360,17 @@ export function summarizeByTask(events: StampedEvent[]): TaskReport {
       else addTaskUsage(p, e);
     }
   }
+  for (const [id, t] of Object.entries(r.tasks)) { const first = began.get(Number(id)); t.person = personFigures(counts.get(Number(id)), reportingSince !== null && first !== undefined && first >= reportingSince); }
   r.unattributed.tokenShare = r.totals.tokens ? r.unattributed.tokens / r.totals.tokens : null;
   r.unattributed.usageShare = r.totals.usageRecords ? r.unattributed.usageRecords / r.totals.usageRecords : null;
   return r;
+}
+
+/** One line of a person's interactions, `unknown` where the log does not cover them; counts and minutes only. */
+export function formatPerson(p: PersonFigures): string {
+  if (p.permissions === null || p.questions === null || p.latencyMs === null) return "person unknown";
+  const l = p.latencyMs, mins = l.n === 0 ? "none answered" : `${(l.sum / 60_000).toFixed(1)} min over ${l.n - l.unknown}/${l.n} recorded`;
+  return `person: permissions ${p.permissions.asked} asked (${p.permissions.allowed} allowed, ${p.permissions.denied} denied, ${p.permissions.expired} expired), questions ${p.questions.asked} asked (${p.questions.answered} answered, ${p.questions.expired} expired), completions ${p.completions ?? "unknown"}, CLI refusals ${p.cliRefusals ?? "unknown"}, ${mins}`;
 }
 
 export function formatTaskReport(r: TaskReport): string[] {
@@ -351,11 +381,14 @@ export function formatTaskReport(r: TaskReport): string[] {
     return `  peer ${id}: tokens ${p.tokens ?? "unknown"}; ${counts}`;
   });
   for (const [id, t] of Object.entries(r.tasks).sort(([a], [b]) => Number(a) - Number(b))) {
-    lines.push(`task #${id}${t.pii ? " [pii]" : ""}: class ${t.class ?? "unknown"}, outcome ${t.outcome ?? "unknown"}, turns ${t.turns}, wall ${t.wallMs === null ? "unknown" : `${t.wallMs} ms`}`, ...peers(t));
+    lines.push(`task #${id}${t.pii ? " [pii]" : ""}: class ${t.class ?? "unknown"}, outcome ${t.outcome ?? "unknown"}, turns ${t.turns}, wall ${t.wallMs === null ? "unknown" : `${t.wallMs} ms`}`, `  ${formatPerson(t.person)}`, ...peers(t));
   }
   for (const [name, group] of Object.entries(r.classes).sort(([a], [b]) => a.localeCompare(b))) lines.push(`class ${name}: turns ${group.turns}`, ...peers(group));
   const share = (value: number | null) => value === null ? "unknown" : `${(value * 100).toFixed(1)}%`;
   lines.push(`unattributed: tokens ${r.unattributed.tokens}/${r.totals.tokens} (${share(r.unattributed.tokenShare)}), usage records ${r.unattributed.usageRecords}/${r.totals.usageRecords} (${share(r.unattributed.usageShare)}), turns ${r.unattributed.turns}`, ...peers(r.unattributed));
+  const total = r.person.unattributed;
+  lines.push(`person unattributed: ${total.permissions.asked} permissions asked, ${total.questions.asked} questions asked, ${total.completions} completions, ${total.cliRefusals} CLI refusals, never counted for a task`);
+  for (const [id, p] of Object.entries(r.person.byPeer).sort(([a], [b]) => a.localeCompare(b))) lines.push(`person peer ${id}: ${p.permissions.asked} permissions asked, ${p.questions.asked} questions asked, ${p.completions} completions, ${p.cliRefusals} CLI refusals`);
   lines.push(`before attribution: tokens ${r.beforeAttribution.tokens}, usage records ${r.beforeAttribution.usageRecords}, turns ${r.beforeAttribution.turns}`, ...peers(r.beforeAttribution));
   return lines;
 }
