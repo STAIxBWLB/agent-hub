@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abandonedSizes, backupStartupDatabase, benchmarkFailureStage, BENCHMARK_STAGES, copyEventPrefix, databaseProfile, installStartupReadObserver, installStartupRollupReadObserver, isolatedStartupEnvironment, numericProfile, privateStartupSandboxProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, startupSeedCounter, startupReadBreakdown, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { abandonedSizes, backupStartupDatabase, benchmarkFailureStage, BENCHMARK_STAGES, copyEventPrefix, databaseProfile, installStartupReadObserver, installStartupRollupReadObserver, isolatedStartupEnvironment, numericProfile, privateStartupSandboxProfile, reservePrivateAttempt, runStartupBenchmark, runStartupPublicProbe, seedStartupFixture, settleStartupMeasurement, syntheticDeliveryPayload, startupReadOnlyProcessAllowed, startupSeedCounter, startupReadBreakdown, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
 import { UsageRollup, DEFAULT_MAX_BYTES } from "../src/hub/usage-rollup.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { STARTUP_PHASES } from "../src/hub/startup-timing.ts";
@@ -14,6 +14,23 @@ function directory(): string { const root = mkdtempSync(join(tmpdir(), "startup-
 const PROFILE: StartupProfile = { dbBytes: 4096, taskRows: 1, taskHistoryEntries: 1, taskTextBytes: 9, deliveryRows: 0, deliveryPayloadBytes: 0,
   eventBytes: 100, eventLines: 1, abandonedFiles: 1, abandonedBytes: 20, abandonedMaxBytes: 20 };
 const TIMING = "startup timings ms: " + [...STARTUP_PHASES.map(phase => `${phase}=0`), "total=0"].join(" ");
+
+test("a rejected daemon stop still restores every isolated hook and preserves its error", async () => {
+  const calls: string[] = [], error = new Error("fixture stop rejected");
+  await expect(settleStartupMeasurement(async () => { calls.push("stop"); throw error; },
+    [() => { calls.push("rollup"); }, () => { calls.push("reader"); }, () => { calls.push("effects"); }])).rejects.toBe(error);
+  expect(calls).toEqual(["stop", "rollup", "reader", "effects"]);
+});
+
+test("one failed restorer cannot skip later hooks or replace the first cleanup error", async () => {
+  const calls: string[] = [], error = new Error("fixture rollup restore rejected");
+  await expect(settleStartupMeasurement(async () => { calls.push("stop"); }, [
+    () => { calls.push("rollup"); throw error; },
+    () => { calls.push("reader"); throw new Error("fixture reader restore rejected"); },
+    () => { calls.push("effects"); },
+  ])).rejects.toBe(error);
+  expect(calls).toEqual(["stop", "rollup", "reader", "effects"]);
+});
 
 test("benchmark environment contains only isolated homes and fixed metadata variables", () => {
   const root = directory(), env = isolatedStartupEnvironment(root);

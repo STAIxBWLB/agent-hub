@@ -591,6 +591,16 @@ export function startupReadBreakdown(observation: Pick<ChildObservation, "eventR
   return { auxiliaryReadBytes, residualExtraReadBytes };
 }
 
+/** A failed stop or restorer must not skip the remaining isolated hooks. */
+export async function settleStartupMeasurement(stop: () => Promise<void>, restorers: readonly (() => void)[]): Promise<void> {
+  let failed = false, firstError: unknown;
+  try { await stop(); } catch (error) { failed = true; firstError = error; }
+  for (const restore of restorers) {
+    try { restore(); } catch (error) { if (!failed) { failed = true; firstError = error; } }
+  }
+  if (failed) throw firstError;
+}
+
 /** Sum every invocation; overwriting the last observation would hide a second seed pass. */
 export function startupSeedCounter(): { metrics: { seedPasses: number; seedReadBytes: number }; observed(value: { readPasses: number; readBytes: number }): void } {
   const metrics = { seedPasses: 0, seedReadBytes: 0 };
@@ -641,8 +651,8 @@ async function measure(root: string): Promise<void> {
     if (guards.effects() !== 0) return refuse();
     process.stdout.write(JSON.stringify({ stopped: 1, effects: guards.effects() }) + "\n");
   } finally {
-    try { await daemon?.stop(); } finally { rollupObserver.restore(); }
-    observer.restore(); guards.restore();
+    await settleStartupMeasurement(async () => { await daemon?.stop(); },
+      [() => rollupObserver.restore(), () => observer.restore(), () => guards.restore()]);
   }
 }
 

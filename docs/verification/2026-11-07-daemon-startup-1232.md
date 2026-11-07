@@ -116,6 +116,16 @@ synthetic auxiliary I/O is 8 MiB plus that byte; the warm private copy reads a
 small remaining tail. Those reads are shown explicitly rather than claimed to
 be part of a single physical read of every consumer.
 
+The later benchmark-only review correction independently attributes bytes around
+the real synchronous `UsageRollup.poll` method and restores its original
+descriptor. Acceptance caps that actual rollup I/O at its existing 8 MiB budget
+and permits at most the appender's one extra byte outside the seed and rollup
+scopes. A second streaming descriptor pass outside either scope, or a full-log
+poll inside the rollup scope, is rejected. Private attempt 3 predates these scoped
+counters: its 297 auxiliary bytes are retained as an aggregate observation, not
+retroactively assigned to `usageRollupReadBytes` or `residualExtraReadBytes`.
+There was no fourth private run. The underlying daemon change is unchanged.
+
 The shared line predicate preserves measured-time handling, malformed-line
 skipping and a complete final JSON record without a newline. Streaming UTF-8
 decoding has no line-size or history ceiling. Native-stop IDs and Claude usage
