@@ -37,8 +37,8 @@ export function summarize(verdicts: readonly PrVerdict[]): Summary {
 /** A window bound as an exact instant. A date without a time is midnight UTC: git would read it as that date at the current time of day, so the window would move with the clock. */
 export function windowInstant(value: string): string {
   const instant = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value;
-  // A time without Z or an offset would be read in the local timezone, so the same command would mean different windows on different machines.
-  if (Number.isNaN(Date.parse(instant)) || instant.includes("T") && !/(?:Z|[+-]\d{2}:?\d{2})$/.test(instant)) throw new Error(`not a date or an ISO instant with Z or an offset: ${value}`);
+  // Only these two shapes: a date, or an ISO instant with Z or an offset. Anything else (a space instead of T, a free-form date, a time with no zone) would be read in the local timezone, so the same command would mean different windows on different machines.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/.test(instant) || Number.isNaN(Date.parse(instant))) throw new Error(`not a date (YYYY-MM-DD) or an ISO instant with Z or an offset: ${value}`);
   return new Date(instant).toISOString();
 }
 

@@ -35,6 +35,6 @@ test("#1064 T6 a date-only window bound is midnight UTC, an explicit instant or 
   expect(windowInstant("2026-10-05")).toBe("2026-10-05T00:00:00.000Z");
   expect(windowInstant("2026-11-02T19:41:16Z")).toBe("2026-11-02T19:41:16.000Z");
   expect(windowInstant("2026-11-02T19:41:16+09:00")).toBe("2026-11-02T10:41:16.000Z");
-  expect(() => windowInstant("last week")).toThrow("not a date or an ISO instant");
-  expect(() => windowInstant("2026-11-02T19:41:16")).toThrow("with Z or an offset");   // no zone: would be read in the local timezone
+  expect(windowInstant("2026-11-02T19:41:16.5-0700")).toBe("2026-11-03T02:41:16.500Z");
+  for (const bad of ["last week", "Nov 2 2026", "2026-11-02 19:41:16", "2026-11-02T19:41:16"]) expect(() => windowInstant(bad), bad).toThrow("with Z or an offset");   // every other shape would be read in the local timezone
 });
