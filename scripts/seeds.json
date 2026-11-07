@@ -3419,9 +3419,9 @@
     },
     {
       "id": "kimi-review-current-ancestor",
-      "file": "src/adapters/kimi-review.ts",
-      "search": "assertCleanCwdAncestors(join(lexicalRoot,\"workspace\"),cwd);",
-      "replacement": "void lexicalRoot;",
+      "file": "src/adapters/kimi-review-policy.ts",
+      "search": "assertCleanCwdAncestors(binding.lexicalCwd, binding.physicalCwd);",
+      "replacement": "void binding.lexicalCwd;",
       "testFile": "test/kimi-review.test.ts",
       "testName": "Kimi current fence refuses an ambient ancestor created after preparation"
     },

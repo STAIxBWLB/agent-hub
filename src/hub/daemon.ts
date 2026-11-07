@@ -118,7 +118,7 @@ import { planFingerprint, registeredProjects, type UpgradePlan } from "../cli/up
 import { conductorRecoveryBinding } from "../cli/conductor-recovery.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
-import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
+import { eventLog, readEvents, type HubEvent, type RoleIdentity } from "./events.ts";
 import { SpecTaskInspector } from "./specs-task.ts";
 import { KimiUsage, kimiSeedRows, type KimiRowAttribution, type KimiUsageScheduler } from "./kimi-usage.ts";
 import { KimiEventWriter } from "./kimi-events.ts";
@@ -209,6 +209,8 @@ import { ClaudeTodoSource, DoingTracker, readAiTitle, DOING_STUB, SESSION_TITLE_
 import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
+import { readEvidence } from "./research-record.ts";
+import { memoryFigures, onlyTaskMemory, UNKNOWN_MEMORY_FIGURES, type MemoryFigures } from "./research-memory.ts";
 import { parseResearchRunners, type RegisteredRunnerV1 } from "./research-runner.ts";
 import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
 import { projectChain } from "@staix/agent-mem";
@@ -1253,12 +1255,42 @@ export async function startDaemon(opts: DaemonOptions) {
   // first writes once its peers have stopped and their turns ended.
   const researchGraceMs = opts.researchGraceMs ?? 10_000;
   const researchPending = new Map<number, { since: number; timer: ReturnType<typeof setTimeout> }>();
+  /**
+   * #1279: the counter figures of one task, read from agent-mem's sidecar at the moment the record is written (the sidecar, the store and the memory project are bound further down, and exist by
+   * then). Undefined when memory or the sidecar is off, so the record's counters stay unknown; a task that is private reports none, whatever the sidecar holds.
+   */
+  const memoryFiguresFor = (taskId: number): MemoryFigures => {
+    const row = board.get(taskId);
+    if (!candidates || !memoryStore || !row || tasks.isPii(row)) return { ...UNKNOWN_MEMORY_FIGURES };
+    try {
+      const store = memoryStore, project = memoryProject;
+      const planContext = { cwd: opts.cwd, project, repo: memoryRepo, deny: config.local.deny };
+      const briefTask = { id: row.id, created: row.created, title: "", refs: { paths: row.refs.paths ?? [] }, plan: { paths: row.plan?.paths ?? [], symbols: row.plan?.symbols ?? [] } };
+      // The store has no read by id (`get` and `list` each rebuild the whole live view), so it is listed at most once per record, and only when the task has a rendered counter at all: a task with
+      // none never touches it. Only the rendered entries are screened, not the store. A hidden or unreadable entry is simply absent, and the figures then call their fail counts unknown.
+      let listed: Map<string, ReturnType<MemoryStore["list"]>[number]> | undefined;
+      const view = (id: string) => {
+        listed ??= new Map(store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true }).map(v => [v.id, v]));
+        const found = listed.get(id);
+        return found ? screenMemory([found])[0] : undefined;
+      };
+      return memoryFigures({
+        counters: candidates.counters(project),
+        taskKey: taskKey(project, row),
+        view,
+        matchingPlan: fails => matchingPlanFails(briefTask, fails, planContext),
+      });
+    } catch { return { ...UNKNOWN_MEMORY_FIGURES }; }
+  };
   const writeResearch = (taskId: number) => {
     const pending = researchPending.get(taskId);
     if (pending) clearTimeout(pending.timer);
     researchPending.delete(taskId);
     try {
-      appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }).filter((r) => r.task === taskId));
+      // #1277: the board and journal are read through a read-only handle, so the record carries its v2 blocks; the family lookup is the project's own (instances resolve there).
+      // Scoped to the one task: the live writer runs on the daemon thread and must not parse every task's history and the whole journal for one record (a backfill reads them all).
+      const evidence = { ...readEvidence(opts.stateDir, projectId, taskId), familyOf: (peer: string) => adapterCatalog.familyOf(peer, declarations), memory: onlyTaskMemory(taskId, memoryFiguresFor) };
+      appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }, evidence).filter((r) => r.task === taskId));
     } catch (error) {
       if (!researchLogged) log(`research record not written: ${(error as Error).message}`);
       researchLogged = true;
@@ -1332,7 +1364,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }), opts.controlPort === 0 ? [opts.codexAppPort, opts.codexProxyPort] : []);
   // Written once this run owns the port, before any connection can attach a peer: a daemon that fails to bind (another
   // is running) never marks a run boundary in the live one's events.
-  event({ type: "hub_start", instance: instanceId });
+  event({ type: "hub_start", instance: instanceId, personAttribution: true });
   startupCleanup.push(() => server.stop(true));
   startupTimings.mark("control");
 
@@ -3162,8 +3194,19 @@ export async function startDaemon(opts: DaemonOptions) {
   const nativeTurnStart = new Map<PeerId, NativeTurnStart>();
   const stopUnconfirmedNoticed = new WeakSet<NativeTurnStart>();
   const nativeStopWaits = new Map<PeerId, { start: NativeTurnStart; wait: ReturnType<typeof waitForClaudeCompletion> }>();
-  /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
+  /** Every Claude or managed native hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
   const hookStats = new Map<PeerId, { n: number; startupMs: number; hubMs: number; maxStartupMs: number }>();
+  const tallyHook = (peer: PeerId, callStarted: number, startedMs: unknown) => {
+    const st = hookStats.get(peer) ?? { n: 0, startupMs: 0, hubMs: 0, maxStartupMs: 0 };
+    const startup = typeof startedMs === "number" && Number.isFinite(startedMs) ? Math.max(0, startedMs) : 0;
+    hookStats.set(peer, { n: st.n + 1, startupMs: st.startupMs + startup, hubMs: st.hubMs + (performance.now() - callStarted), maxStartupMs: Math.max(st.maxStartupMs, startup) });
+  };
+  const emitHookStats = (peer: PeerId) => {
+    const st = hookStats.get(peer);
+    if (!st) return;
+    event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
+    hookStats.delete(peer);
+  };
   /**
    * Between native turns now: Claude stopped after its last tool call began (its channel going offline says nothing
    * about its session, whose hooks may still run); any other peer's adapter is not in a turn. The adapter's own state,
@@ -3190,7 +3233,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if ((h.event === "proposed" || h.event === "backlog pulled" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(t.planningRevision ? { release: t.release ?? null, priority: t.priority ?? null, plannedStart: t.plannedStart ?? null, due: t.due ?? null } : {}), ...(h.reason ? { reason: h.reason } : {}) });
-    if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
+    // #1277 AC6: a cancelled task is a terminal task too, and the guarded merge writes its receipt after the approval, so its result completes the record's merge block.
+    if (config.research.enabled && ((t.state === "approved" && (h.event === "approved" || h.event === "done" || h.event === "merge result")) || (t.state === "cancelled" && h.event === "cancelled"))) recordResearch(t.id);
     if (memoryStore && (t.state === "in_progress" || h.event === "done") && !tasks.isPii(t)) renewLeases(t);
     if ((h.event === "proposed" || h.event === "backlog pulled") && projections.enabled && turnLog) {
       const created = taskProposalAt(t);
@@ -4073,11 +4117,21 @@ export async function startDaemon(opts: DaemonOptions) {
   const claudeContextSeen = new Map<string, string>();
   const contextTailSeen = new Map<PeerId, string>();
   const retainedCliAudits = new Set<string>();
+  /**
+   * The period of the sweep that drains the CLI audit outbox (the interval below runs `drainCliAuditsNow` on it). A row is attributed to the peer's task only when it is at most this many
+   * periods old at the drain: an ordinary row is drained within one period, so fifteen leaves room for a slow sweep, while a row left by a stalled hub or an unreadable outbox is not matched to
+   * whatever task is open when it is finally read. The bound is derived from the period, so the two cannot drift apart.
+   */
+  const CLI_AUDIT_SWEEP_MS = 1000;
+  const CLI_AUDIT_FRESH_MS = 15 * CLI_AUDIT_SWEEP_MS;
   function drainCliAuditsNow(): void {
     for (const audit of drainCliAudits(opts.stateDir)) {
       const delegated = audit.outcome === "delegated";
       const refused = audit.outcome !== "run" && !delegated;
-      if (!event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) })) {
+      // #1278: the audit row is written when the command runs and read here on a later sweep, so the peer's open tasks now may not be the ones then. A row older than the drain's own
+      // freshness bound is `unattributed` (what is known), never matched to whatever is open at drain time; a fresh one uses the rule `turn_end` uses.
+      const fresh = Date.now() - audit.at <= CLI_AUDIT_FRESH_MS && Date.now() >= audit.at;
+      if (!event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}), ...(fresh ? taskAttribution(audit.peer) : { attribution: "unattributed" as const }) })) {
         throw new Error("CLI audit event was not retained");
       }
       retainedCliAudits.add(audit.id); // Only after the event append succeeded.
@@ -4173,7 +4227,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const reading = bound ? readNativeContext(definitionOf(claudePeer), c.context, bound, c.at) : undefined;
         if (reading) contexts.report(claudePeer, reading, bound);
       } catch { /* absent or unreadable native telemetry is unknown */ }
-    }, 1000),
+    }, CLI_AUDIT_SWEEP_MS),
     setInterval(() => budget.tick(), 30_000),
     setInterval(pollUsageRollup, 10_000),
     // #481 S7: band tiers are evaluated every five minutes, and only when the board changed since the last evaluation (the status
@@ -5123,6 +5177,9 @@ export async function startDaemon(opts: DaemonOptions) {
         const completion = t.history.findLast(h => h.by === by && (h.event === "done" || h.event === "done (checking)"));
         if (!piiTurn && !reviewTurn && !tasks.isPii(t) && completion && !completion.withheld && typeof a.summary === "string" && completion.note?.startsWith(a.summary)) {
           citeMemory(by, a.summary, `summary:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
+          // #1279: the reasons of a spec acknowledgement are hub-screened text too, and one key per task keeps a repeat idempotent.
+          const reasons = Array.isArray(a.spec_ack) ? a.spec_ack.flatMap((row: unknown) => typeof (row as { reason?: unknown })?.reason === "string" ? [(row as { reason: string }).reason] : []).join("\n") : "";
+          if (reasons) citeMemory(by, reasons, `spec_ack:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
         }
         // A silent cohort (issue #107): the member that integrates is asked to check its work first; no done yet.
         const last = t.history.at(-1);
@@ -5136,10 +5193,24 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_sdlc_record":
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(await tasks.recordSdlc(by, a.id, a.receipt));
-      case "hub_review":
-        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings));
-      case "hub_remember":
-        return tasks.remember(by, a);
+      case "hub_review": {
+        const reviewed = await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings);
+        // #1279: a verdict note that names a brief entry is a citation. The same exclusions as a done summary apply (a PII or review-observer turn, withheld text), and the key binds it to this verdict.
+        const verdict = reviewed.history.findLast(h => h.by === by && (h.event === "approved" || h.event === "changes_requested"));
+        if (!piiTurn && !reviewTurn && !tasks.isPii(reviewed) && verdict && !verdict.withheld && typeof a.note === "string" && a.note && verdict.note?.startsWith(a.note)) {
+          citeMemory(by, a.note, `review:${reviewed.id}:${reviewed.history.indexOf(verdict)}`, [newEnvelope(by, "", { refs: { task: String(reviewed.id) } })]);
+        }
+        return line(reviewed);
+      }
+      case "hub_remember": {
+        const saved = await tasks.remember(by, a);
+        // #1279: a saved note that names another entry cites it. `tasks.remember` already refused a PII task, a private path and a secret, so only a note it saved gets here.
+        if (!piiTurn && !reviewTurn && typeof a.text === "string" && a.text && !/not saved|nothing saved/.test(saved)) {
+          const task = a.task !== undefined && Number.isSafeInteger(Number(a.task)) ? Number(a.task) : undefined;
+          citeMemory(by, a.text, `remember:${task ?? "none"}:${createHash("sha256").update(a.text).digest("hex").slice(0, 16)}`, task !== undefined ? [newEnvelope(by, "", { refs: { task: String(task) } })] : []);
+        }
+        return saved;
+      }
       case "hub_checkpoint": {
         const summary = String(a.summary ?? "").trim();
         if (!summary) throw new Error("summary is required");
@@ -5547,6 +5618,24 @@ export async function startDaemon(opts: DaemonOptions) {
   // Question text lives in hub.db and the envelope to the asking peer only: never a log line, an event, a notice or memory capture.
   const questionStore = new QuestionStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => questionStore.close());
+  const questionAttributions = new Map<string, TaskAttribution>();
+  /**
+   * The attribution of a question event. It is resolved ONLY when the question opens (`asked`, or `unavailable`, which has no set), by the rule `turn_end` uses, and cached by set. Every later event
+   * of a set repeats the cached answer. A set with no cached answer (the hub restarted while the question was open, which `QuestionDesk.repair` leaves answerable, or the bounded map evicted it)
+   * is `unattributed`: re-resolving it would put the person's answer, with its full latency, on whatever task the peer works on NOW, which is the read-time attribution this exists to prevent.
+   */
+  const withQuestionAttribution = (e: Extract<HubEvent, { type: "question" }>): HubEvent => {
+    let attribution = questionAttributions.get(e.set);
+    if (!attribution) {
+      if (e.event === "asked" || e.event === "unavailable") {
+        attribution = taskAttribution(e.peer);
+        if (e.set !== "-") { questionAttributions.set(e.set, attribution); if (questionAttributions.size > 512) questionAttributions.delete(questionAttributions.keys().next().value!); }
+      } else attribution = { attribution: "unattributed" };
+    }
+    // A closed question's entry is released; a pending one keeps it for its answer.
+    if (e.event === "answered" || e.event === "superseded" || e.event === "cancelled" || e.event === "expired") questionAttributions.delete(e.set);
+    return { ...e, ...attribution };
+  };
   const questionDesk = new QuestionDesk({
     store: questionStore, now: () => Date.now(),
     waitMs: peer => config.questions.wait_ms[definitionOf(peer)?.kind ?? peer] ?? definitionOf(peer)?.questionWaitMs ?? 45_000,
@@ -5557,7 +5646,10 @@ export async function startDaemon(opts: DaemonOptions) {
     isPrivate: (peer, task, piiTurn) => piiTurn === true || contextPii(peer) || (task !== undefined && (() => { const row = board.get(task); return !row || tasks.isPii(row); })()),
     held: () => stopping || recoveryActive() || bus.isRecoveryHeld,
     publish: env => { bus.publish(env); },
-    event: e => { event(e); if (e.type === "question" && e.event !== "asked" && e.event !== "pending" && e.event !== "unavailable") queueMicrotask(() => settleCheck(e.peer)); }, // #1054: a closed question may be the last thing a run waited on
+    // #1278: a question is attributed once, when it is asked, by the rule `turn_end` uses (the task of the delivery the peer is working on, else its single open task, else unattributed), and
+    // every later event of the same set carries that same answer: the person answers minutes later, when the peer's open tasks may have changed. The task a question names for itself is the
+    // peer's claim and is not used. An `unavailable` question has no set and is attributed on the spot.
+    event: e => { event(e.type === "question" ? withQuestionAttribution(e) : e); if (e.type === "question" && e.event !== "asked" && e.event !== "pending" && e.event !== "unavailable") queueMicrotask(() => settleCheck(e.peer)); }, // #1054: a closed question may be the last thing a run waited on
     peerKnown: peer => bus.peers.has(peer) || (bus.knownPeers().includes(peer) && membershipAllowed(peer)),
   });
   // #1053: expiry (`questions.ttl_s`), a changed native session, an envelope a refused publish still owes, and old settled rows. Pushed here, after the desk exists, like the other late timers.
@@ -5600,10 +5692,17 @@ export async function startDaemon(opts: DaemonOptions) {
   const checksOwnedBy = (peer: PeerId): number => (checkOwners.get(peer) ?? 0) + tasks.checksOwnedBy(peer);
   // The peer's OWN adapter state, not the displayed one (a pause shows a busy peer as paused, and its work goes on): an owned child or a continuation the adapter still runs keeps it busy.
   const ownedChildrenOf = (peer: PeerId): number => (bus.peers.get(peer)?.state === "busy" ? 1 : 0);
+  /**
+   * #1278: the task a run's completion belongs to, resolved when the run opens (its first turn) by the rule `turn_end` uses and read when it settles, by which time the peer's open tasks have
+   * moved on. In memory only: a run that a restart settles `interrupted` has lost it and reads `unattributed`, which is what is known.
+   */
+  const runAttributions = new Map<string, TaskAttribution>();
   const completionDone = (peer: PeerId, run: Run, outcome: "done" | "failed" | "limit" | "interrupted"): void => {
     const made = completionStore.settle({ peer, runTurn: run.runTurn, lastTurn: run.lastTurn, startedAt: run.startedAt, ...(run.promptEnvelope ? { promptEnvelope: run.promptEnvelope } : {}), ...(run.replyEnvelope ? { replyEnvelope: run.replyEnvelope } : {}), private: run.private }, outcome, Date.now(), `cmp-${randomUUID().replaceAll("-", "").slice(0, 12)}`);
     if (!made) return;
-    event({ type: "completion", id: made.id, peer, outcome, ms: made.settledAt - made.startedAt });
+    const attribution = runAttributions.get(run.runTurn) ?? { attribution: "unattributed" as const };
+    runAttributions.delete(run.runTurn);
+    event({ type: "completion", id: made.id, peer, outcome, ms: made.settledAt - made.startedAt, ...attribution });
   };
   /**
    * The one settle check. It runs at every point the pending-work facts can change: a turn end, a queue change, a permission or question closing, a check ending. A run settles
@@ -5927,6 +6026,8 @@ export async function startDaemon(opts: DaemonOptions) {
   startupTimings.mark("services");
   const claudeNativeUsageSeen = startupSeeds.claudeNativeUsageSeen;
   startupTimings.mark("transcript_usage_seed");
+  const agyNativeUsageSeen = new Set(startupEvents.filter(e => e.type === "usage" && e.source === "agy_transcript").map(e => (e as { id: string }).id));
+  const agyTurnContext = new WeakMap<object, { hubTurnId?: string; baseline: number; attribution: TaskAttribution }>();
   const collectClaudeUsage = () => { for (const peer of channelPeers) {
     const session = claudeSession(peer);
     if (!session.sessionId || !session.transcriptPath) continue;
@@ -6565,7 +6666,11 @@ export async function startDaemon(opts: DaemonOptions) {
             const person = pendingPersonDelivery.get(e.peer);
             pendingPersonDelivery.delete(e.peer);
             const run = runs.turnStarted({ peer: e.peer, turn: id, at: Date.now(), personOriginated: person !== undefined, ...(person ? { promptEnvelope: person.envelope } : {}), private: person?.private === true || pii || holdsPii(e.peer) });
-            if (run) { if (run.runTurn === id) completionStore.openRun(run); else completionStore.touchRun(run); }
+            if (run) {
+              if (run.runTurn === id) { completionStore.openRun(run); runAttributions.set(id, attribution); } else completionStore.touchRun(run);
+              // A run that never settles in this process would keep its entry; the table only ever holds the open runs, one per settling peer.
+              if (runAttributions.size > 256) runAttributions.delete(runAttributions.keys().next().value!);
+            }
           }
         } catch { log(`completion run start for ${e.peer} failed; no completion for this turn`); }
         if (softTokenPeer(e.peer)) try { kimiUsage.turnStarted(e.peer, { id, startedAt, attribution }); } catch { /* counting never costs a turn */ }
@@ -6796,6 +6901,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const timeoutMs = opts.permissionTimeoutMs ?? approvalTimeoutS * 1000;
     const createdAt = Date.now();
     const expiresAt = createdAt + timeoutMs;
+    // #1278: the task this request belongs to, resolved once when it opens by the rule `turn_end` and `tokens` use. The settle event reuses it, because the turn can have ended by then and the
+    // peer's open tasks changed. Ids and a closed rule name only; unattributed stays unattributed.
+    const requestAttribution = taskAttribution(req.peer);
     const publicTool = typeof req.tool === "string" && /^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(req.tool) && !/\s/.test(req.tool) ? req.tool : undefined;
     log(`permission ${id} requested by ${req.peer} (${title.length} chars, shown on the console; cancelled after ${timeoutMs / 1000}s)`);
     // The tool name is for the desktop notice only: the console push keeps its shape.
@@ -6824,7 +6932,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (outcome === "expired") { try { notify(`permission ${id} from ${req.peer} was not answered within ${Math.round(timeoutMs / 1000)}s and was cancelled`); } catch { /* registry withdrawal already completed */ } }
         const latencyMs = Math.max(0, Date.now() - createdAt);
         const optionKind = option?.kind === "allow_once" || option?.kind === "allow_always" || option?.kind === "reject_once" || option?.kind === "reject_always" ? option.kind : undefined;
-        try { event({ type: "permission", id, peer: req.peer, event: outcome, latencyMs, ...(surface ? { surface } : {}), ...(optionKind ? { option: optionKind } : {}) }); } catch { try { log(`permission event recording failed at settlement for ${req.peer}`); } catch { /* settlement remains authoritative */ } }
+        try { event({ type: "permission", id, peer: req.peer, event: outcome, latencyMs, ...(surface ? { surface } : {}), ...(optionKind ? { option: optionKind } : {}), ...requestAttribution }); } catch { try { log(`permission event recording failed at settlement for ${req.peer}`); } catch { /* settlement remains authoritative */ } }
         try { notify(`permission ${id} from ${req.peer} ${outcome} option ${optionKind ?? "none"} by ${surface ?? "hub"} (${latencyMs}ms)`); } catch { /* no reporting failure strands the caller */ }
         for (const c of consoles) if (c.data.tail) { try { c.send(JSON.stringify({ t: "permission_closed", id, peer: req.peer, outcome: outcome === "expired" ? "cancelled" : outcome, ...(outcome === "expired" ? { reason: "expired" } : {}), latencyMs })); } catch { /* another surface can still observe the closure */ } }
         resolve({ outcome, ...(option ? { optionId: option.optionId, ...(surface ? { approvalId: id } : {}) } : {}) });
@@ -6836,7 +6944,7 @@ export async function startDaemon(opts: DaemonOptions) {
       timer = setTimeout(() => done(undefined, undefined, "expired"), timeoutMs);
       signal?.addEventListener("abort", aborted, { once: true });
       if (signal?.aborted) { aborted(); return; }
-      try { event({ type: "permission", id, peer: req.peer, event: "requested" }); } catch { /* optional observer */ }
+      try { event({ type: "permission", id, peer: req.peer, event: "requested", ...requestAttribution }); } catch { /* optional observer */ }
       for (const c of consoles) if (c.data.tail) { try { c.send(push); } catch { /* next tail gets the registered request */ } }
       if (config.approvals.notify) { try { desktop("agent-hub", `${req.peer} asks for approval${req.tool ? `: ${req.tool}` : ""} (ahub tail)`); } catch { /* optional desktop */ } }
     });
@@ -10331,7 +10439,7 @@ export async function startDaemon(opts: DaemonOptions) {
             }
             if (!sourcePackageDigest || plan.sourceDigest !== sourcePackageDigest && (plan.kind !== "upgrade" || plan.sourceDigest !== raw.targetDigest)) throw new RecoveryAuthorityError();
             current();
-            if (!event({ type: "agent_cli", peer: c.peer!, command: raw.kind, refused: false })) throw new RecoveryAuthorityError();
+            if (!event({ type: "agent_cli", peer: c.peer!, command: raw.kind, refused: false, ...taskAttribution(c.peer!) })) throw new RecoveryAuthorityError();
             current();
             issueConductorRecoveryAuthority(opts.stateDir, expected, fresh);
           } else {
@@ -10440,42 +10548,125 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!isWsPeer(owner) || owner.state === "offline" && !owner.claiming) return void reply({ ok: false });
         if (launch.generation && launch.generation !== owner.sessionGeneration) return void reply({ ok: false });
         launch.generation = owner.sessionGeneration;
+        const callStarted = performance.now();
+        const tally = () => tallyHook(peer, callStarted, msg.startedMs);
         const current = () => !stopping && nativeHookLaunches.get(peer, msg.nativeLaunchId) === launch && bus.peers.get(peer) === owner && owner.sessionGeneration === launch.generation && owner.state !== "offline";
         // Preserve the start baseline at observation, even if native output is flushed before recall allows attach.
-        const readback = port.read(native.sessionId, native.transcriptPath);
+        // Skip transcript I/O on PostToolUse, PostInvocation, Stop, and active-turn PreToolUse with no pending fact offers (#1280).
+        const needsBaseline = (native.event === "PreInvocation" || native.event === "PreToolUse") && (!launch.active || native.event === "PreInvocation" && native.invocation === 0);
+        const needsAck = factsOn() && (native.event === "SessionStart" || native.event === "PreInvocation" || native.event === "PreToolUse" && factsFor(peer).pending(peer).length > 0);
+        const since = launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
+        const readback: ReturnType<typeof port.read> = needsBaseline
+          ? port.read(native.sessionId, native.transcriptPath, since)
+          : needsAck
+            ? port.read(native.sessionId, native.transcriptPath, { completion: false, ...since })
+            : { factIds: [] };
+        // ponytail: an unacknowledged fact row followed by >4 MiB of output before the next readback hits the 4 MiB lookback cap in readAgyTranscript.
+        const acknowledge = (read: ReturnType<typeof port.read>, turnCtx?: { hubTurnId?: string; baseline: number; attribution: TaskAttribution }) => {
+          for (const u of read.usage ?? []) {
+            if (agyNativeUsageSeen.has(u.id)) continue;
+            agyNativeUsageSeen.add(u.id);
+            const producedByTurn = !!turnCtx && u.index > turnCtx.baseline;
+            const attr: TaskAttribution = producedByTurn ? turnCtx.attribution : { attribution: "unattributed" };
+            if (u.totalTokens > 0) {
+              if (noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(u.totalTokens));
+              const supervisionTurn = supervisionTurns.get(peer);
+              if (producedByTurn && supervisionTurn && turnCtx.hubTurnId && supervisionTurn.id === turnCtx.hubTurnId) {
+                supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + u.totalTokens;
+              }
+              event({ type: "tokens", peer, n: u.totalTokens, ...attr });
+              const openTurn = turns.get(peer);
+              if (producedByTurn && openTurn && turnCtx.hubTurnId && openTurn.id === turnCtx.hubTurnId) {
+                openTurn.tokens += u.totalTokens;
+              }
+            }
+            event({ type: "usage", peer, source: "agy_transcript", id: u.id, inputTokens: u.inputTokens, outputTokens: u.outputTokens, cacheReadTokens: u.cacheReadTokens, totalTokens: u.totalTokens, ...attr, ...(u.at ? { measuredAt: u.at } : {}) });
+          }
+          if (factsOn()) {
+            factSession(peer, native.sessionId);
+            for (const id of read.factIds) acked(peer, id, "native-hook");
+          }
+          if (read.size !== undefined && read.scannedFrom !== undefined) {
+            const prev = launch.transcriptPath === native.transcriptPath ? (launch.transcriptOffset ?? 0) : 0;
+            if (read.scannedFrom <= prev) {
+              launch.transcriptPath = native.transcriptPath;
+              launch.transcriptOffset = read.size;
+            }
+          }
+        };
         const apply = () => {
           if (!current()) return void reply({ ok: false });
-          if (factsOn()) { factSession(peer, native.sessionId); for (const id of readback.factIds) acked(peer, id, "native-hook"); }
+          owner.bindNativeSession(native.sessionId);
+          const startsTurn = (native.event === "PreInvocation" || native.event === "PreToolUse") && (!launch.active || native.event === "PreInvocation" && native.invocation === 0);
           if (native.event === "PreInvocation" || native.event === "PreToolUse") {
-            if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
-            activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+            if (startsTurn) {
+              // Credit any leftover rows read at turn start to the preceding turn that produced them, never the new turn.
+              acknowledge(readback, agyTurnContext.get(launch));
+              launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1;
+              activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+              agyTurnContext.set(launch, { hubTurnId: turns.get(peer)?.id, baseline: launch.baseline, attribution: taskAttribution(peer) });
+            } else {
+              activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+              const activeCtx = { hubTurnId: turns.get(peer)?.id ?? agyTurnContext.get(launch)?.hubTurnId, baseline: launch.baseline ?? -1, attribution: taskAttribution(peer) };
+              agyTurnContext.set(launch, activeCtx);
+              acknowledge(readback, activeCtx);
+            }
+          } else if (native.event !== "Stop") {
+            const activeCtx = launch.active ? { hubTurnId: turns.get(peer)?.id ?? agyTurnContext.get(launch)?.hubTurnId, baseline: launch.baseline ?? -1, attribution: taskAttribution(peer) } : agyTurnContext.get(launch);
+            if (launch.active && activeCtx) agyTurnContext.set(launch, activeCtx);
+            acknowledge(readback, activeCtx);
           }
           if (native.event === "Stop") {
-            if (!launch.active || !native.fullyIdle || native.terminationReason !== "NO_TOOL_CALL") return void reply({ ok: false });
+            if (!launch.active || !native.fullyIdle) return void reply({ ok: false });
+            const stopCtx = { hubTurnId: turns.get(peer)?.id ?? agyTurnContext.get(launch)?.hubTurnId, baseline: launch.baseline ?? -1, attribution: taskAttribution(peer) };
+            agyTurnContext.set(launch, stopCtx);
+            const terminalReason = ({ USER_CANCELED: "user_canceled", ERROR: "error", MAX_INVOCATIONS: "max_invocations", MAX_FORCED_INVOCATIONS: "max_forced_invocations", MAX_TOKEN_BUDGET_EXCEEDED: "max_token_budget_exceeded", TERMINAL_STEP_TYPE: "terminal_step_type", TERMINAL_CUSTOM_HOOK: "terminal_custom_hook" } as const)[native.terminationReason ?? ""];
+            if (terminalReason) {
+              acknowledge(port.read(native.sessionId, native.transcriptPath, { completion: false, ...since }), stopCtx);
+              launch.active = false; turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
+              tally(); emitHookStats(peer);
+              event({ type: "native_turn_end", peer, reason: terminalReason }); owner.nativeStopped(native.sessionId);
+              // #1054: pull-only agy opens no run (`settles(peer)` is false); if a future native-hook peer does, settle an open run by its closed reason.
+              try {
+                const run = runs.get(peer);
+                if (run) {
+                  if (terminalReason === "user_canceled") { completionDone(peer, run, "interrupted"); runs.close(peer); }
+                  else { runs.note(peer, terminalReason === "error" || terminalReason === "terminal_step_type" || terminalReason === "terminal_custom_hook" ? { failed: true } : { limit: true }); runs.signalled(peer); settleCheck(peer); }
+                }
+              } catch { log(`completion settle for ${peer} failed`); }
+              return void reply({ ok: true });
+            }
+            if (native.terminationReason !== "NO_TOOL_CALL") return void reply({ ok: false });
             // Native output can be flushed after its Stop command returns. Acknowledge observation, then wait for
             // a fresh completion row while the same launcher/session/socket generation still owns the turn.
             const turn = launch.turn, baseline = launch.baseline ?? -1;
+            tally();
             reply({ ok: true, pending: true });
             void (async () => {
               const deadline = Date.now() + 2000;
               let delay = 5;
-              // ponytail: an unverified Stop may re-read up to 4 MiB per poll within this 2 s wait.
-              // Upgrade: cache unchanged transcript evidence within the wait.
+              let lastStat: { size: number; mtimeMs: number } | undefined;
               while (current() && launch.active && launch.turn === turn) {
-                const completion = port.read(native.sessionId, native.transcriptPath).completion;
+                const pollSince = launch.transcriptPath === native.transcriptPath && launch.transcriptOffset !== undefined ? { sinceOffset: launch.transcriptOffset } : {};
+                const polled = port.read(native.sessionId, native.transcriptPath, { ...(lastStat ? { unchanged: lastStat } : {}), ...pollSince });
+                if (polled.size !== undefined && polled.mtimeMs !== undefined) lastStat = { size: polled.size, mtimeMs: polled.mtimeMs };
+                acknowledge(polled, stopCtx);
+                const completion = polled.completion;
                 if (completion && completion.index > baseline && completion.id !== launch.completed) {
                   launch.completed = completion.id; launch.active = false;
                   turnEnded.set(peer, Date.now()); nativeCompletedAt.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
+                  emitHookStats(peer);
                   event({ type: "native_turn_end", peer, id: completion.id }); owner.nativeStopped(native.sessionId);
                   try { if (runs.get(peer)) { runs.signalled(peer); settleCheck(peer); } } catch { log(`completion settle for ${peer} failed`); } // #1054: the verified native Stop
                   return;
                 }
-                if (Date.now() >= deadline) { notify(`${peer}: native completion could not be verified; it stays busy until a verified turn end or detach`); return; }
+                if (Date.now() >= deadline) { emitHookStats(peer); notify(`${peer}: native completion could not be verified; it stays busy until a verified turn end or detach`); return; }
                 await Bun.sleep(delay); delay = Math.min(50, delay * 2);
               }
             })().catch(() => log("managed native completion unavailable"));
             return;
           }
+          queueMicrotask(tally);
           const offered = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
           // The decoded native read (agy view_file or read_file, as `Read`) is a peer fact: its target is observed before it runs and the
           // view moves after it. Nothing is offered here: agy's hook encodes an offer only on SessionStart/PreInvocation.
@@ -10503,11 +10694,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const toolUseId = typeof msg.toolUseId === "string" && msg.toolUseId ? msg.toolUseId.slice(0, 128) : undefined;
         const sessionId = typeof msg.sessionId === "string" && msg.sessionId ? msg.sessionId.slice(0, 128) : undefined;
         const callStarted = performance.now();
-        const tally = (peer: PeerId) => {
-          const st = hookStats.get(peer) ?? { n: 0, startupMs: 0, hubMs: 0, maxStartupMs: 0 };
-          const startup = typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? Math.max(0, msg.startedMs) : 0;
-          hookStats.set(peer, { n: st.n + 1, startupMs: st.startupMs + startup, hubMs: st.hubMs + (performance.now() - callStarted), maxStartupMs: Math.max(st.maxStartupMs, startup) });
-        };
+        const tally = (peer: PeerId) => tallyHook(peer, callStarted, msg.startedMs);
         try {
           const peer = c.peer;
           if (definitionOf(peer)?.start.daemonPort === "claude-implementer") {
@@ -10582,10 +10769,7 @@ export async function startDaemon(opts: DaemonOptions) {
                 event({ type: "native_turn_end", peer, id });
                 try { if (runs.get(peer)) { runs.signalled(peer); settleCheck(peer); } } catch { log(`completion settle for ${peer} failed`); } // #1054: the verified native Stop
               }
-              turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer); tally(peer);
-              const st = hookStats.get(peer)!;
-              event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
-              hookStats.delete(peer);
+              turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer); tally(peer); emitHookStats(peer);
               if (id && nativePeer) nativePeer.nativeStopped(sessionId!);
               if (factsOn()) { factSession(peer, sessionId); readbacks(peer, claudeTranscript(sessionId, msg.transcriptPath, peer)); }
             };

@@ -362,3 +362,60 @@ test("recovery prepare ends a waiting hub_ask pending, so it never holds the pre
   expect(await f.person.request({ t: "answer", questionSet: set, answers: ANSWER })).toMatchObject({ ok: true });
   await until(() => f.peers.codex!.got.some(env => env.kind === "answer"), "the late envelope after recovery");
 });
+
+// #1278: a question is attributed once, when it is asked, by the rule `turn_end` uses; every later event of its set repeats that answer.
+test("a question is attributed to its peer's single open task when asked, and its answer repeats that task even after the task closes; with no open task it is unattributed", async () => {
+  const f = await rig({ wait: { codex: 600_000 } });
+  const asker = await f.asAgent("codex");
+  expect((await f.person.request({ t: "task", op: "hub_task_propose", args: { title: "a task for codex", class: "implement", owner: "codex" } })).ok).toBe(true);
+  // `single_open` is the peer's one in_progress task: the owner accepts it first.
+  expect((await asker.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  const waiting = f.ask(asker);
+  const set = await f.setOf();
+  const read = () => readFileSync(join(f.stateDir, "events.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+  const asked = read().find(e => e.type === "question" && e.event === "asked");
+  expect(asked).toMatchObject({ task: 1, attribution: "single_open" });
+  // The task closes before the person answers: the answer still belongs to the task the question was asked under.
+  expect((await f.person.request({ t: "task", op: "hub_task_cancel", args: { id: 1, reason: "closed while the question waits" } })).ok).toBe(true);
+  await f.person.request({ t: "answer", questionSet: set, answers: ANSWER });
+  await waiting;
+  const answered = read().find(e => e.type === "question" && e.event === "answered");
+  expect(answered).toMatchObject({ task: 1, attribution: "single_open", surface: "console" });
+  expect(typeof answered.latencyMs).toBe("number");
+  // A second question with no open task at all is unattributed, and holds no task id.
+  const again = f.ask(asker);
+  await until(() => read().filter(e => e.type === "question" && e.event === "asked").length === 2, "the second question");
+  const second = read().filter(e => e.type === "question" && e.event === "asked")[1];
+  expect(second).toMatchObject({ attribution: "unattributed" });
+  expect(second).not.toHaveProperty("task");
+  void again;
+});
+
+// #1298 review: a question whose opening attribution is gone (a restart while it was open) is answered as unattributed, never on the peer's task of the moment.
+test("a question answered after a restart is unattributed, even when the peer has since taken another task", async () => {
+  const f1 = await rig({ wait: { codex: 600_000 } });
+  const asker1 = await f1.asAgent("codex");
+  expect((await f1.person.request({ t: "task", op: "hub_task_propose", args: { title: "the task it was asked under", class: "implement", owner: "codex" } })).ok).toBe(true);
+  expect((await asker1.request({ t: "task", op: "hub_task_accept", args: { id: 1 } })).ok).toBe(true);
+  const waiting = f1.ask(asker1);
+  const set = await f1.setOf();
+  const log = () => readFileSync(join(f1.stateDir, "events.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+  expect(log().find(e => e.type === "question" && e.event === "asked")).toMatchObject({ set, task: 1, attribution: "single_open" });
+  await f1.close();
+  await waiting;
+  cleanup.length = 0;
+  const f2 = await rig({ keep: { cwd: f1.cwd }, wait: { codex: 600_000 } });
+  // After the restart the peer is working on a different task: the board still holds #1 in progress, so propose and accept a second one is refused by WIP; cancel #1 first.
+  expect((await f2.person.request({ t: "task", op: "hub_task_cancel", args: { id: 1, reason: "replaced" } })).ok).toBe(true);
+  expect((await f2.person.request({ t: "task", op: "hub_task_propose", args: { title: "a task it has now", class: "implement", owner: "codex" } })).ok).toBe(true);
+  const asker2 = await f2.asAgent("codex");
+  expect((await asker2.request({ t: "task", op: "hub_task_accept", args: { id: 2 } })).ok).toBe(true);
+  expect(await f2.person.request({ t: "answer", questionSet: set, answers: ANSWER, surface: "dashboard" })).toMatchObject({ ok: true, state: "answered" });
+  await until(() => f2.peers.codex!.got.some(env => env.kind === "answer"), "the late answer after the restart");
+  const answered = readFileSync(join(f1.stateDir, "events.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(e => e.type === "question" && e.set === set && e.event === "answered").at(-1);
+  // Task 2 is the peer's single open task now: the old read-time rule would have put this answer, with its latency, on it.
+  expect(answered).toMatchObject({ attribution: "unattributed", surface: "dashboard" });
+  expect(answered).not.toHaveProperty("task");
+  expect(typeof answered.latencyMs).toBe("number");
+  cleanup.push(() => rmSync(f1.cwd, { recursive: true, force: true }));
+});

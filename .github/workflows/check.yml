@@ -151,7 +151,9 @@ jobs:
     # exactly one shard). Shard 1 also runs typecheck, roles, bundle freshness, package contents and docs once; the others install and test. Each shard stays under 15 minutes.
     name: check (macos-latest) shard ${{ matrix.shard }}/4
     needs: decision
-    if: needs.decision.outputs.run_gate == 'true'
+    # #1307: GitHub runs at most 5 macOS jobs at once on this account. A stacked PR (base not the default branch) is rebased and rerun once it targets main, so its shards wait;
+    # the aggregator below fails for it rather than letting a skipped required check pass.
+    if: needs.decision.outputs.run_gate == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.base.ref == github.event.repository.default_branch)
     runs-on: macos-latest
     timeout-minutes: 25
     strategy:
@@ -229,6 +231,14 @@ jobs:
         run: |
           test -n "$VERIFIED_RUN" || { echo "missing verified full-gate proof"; exit 1; }
           echo "Reused identical-tree full gate run $VERIFIED_RUN"
+      - name: macOS shards deferred for a stacked PR
+        if: needs.decision.outputs.run_gate == 'true' && github.event_name == 'pull_request' && github.event.pull_request.base.ref != github.event.repository.default_branch
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+        run: |
+          echo "::error title=macOS shards deferred::this PR targets $BASE, not $DEFAULT (#1307). They run on the next run after it targets $DEFAULT: push a commit, or close and reopen the PR."
+          exit 1
       - name: Every macOS shard passed
         if: needs.decision.outputs.run_gate == 'true'
         env:

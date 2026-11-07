@@ -215,7 +215,12 @@ test("AC6 a private question (asked about a PII task) is private in its row, in 
   const events = readEvents(join(f.stateDir, "events.jsonl")).filter(e => e.type === "question");
   expect(events.map(e => e.event)).toEqual(["asked", "pending", "answered"]);
   expect(events.every(e => e.private === true)).toBe(true);
-  for (const event of events) expect(Object.keys(event).every(key => ["v", "at", "type", "set", "peer", "event", "latencyMs", "surface", "reason", "questions", "private"].includes(key)), JSON.stringify(Object.keys(event))).toBe(true);
+  // #1278 added `attribution`, a closed word (delivery, single_open or unattributed), to every question event. It carries no text, so it is the one key allowed beyond the original list. Every other key stays pinned,
+  // so a text field would still fail here. In THIS scenario the asking peer owns no open task, so the attribution rule has none to name and no private event carries a `task` key. A peer that owns one
+  // open task does get that task's id on its question events (the rule names the peer's own task, never the one the question names for itself); that case is not pinned by this test.
+  for (const event of events) expect(Object.keys(event).every(key => ["v", "at", "type", "set", "peer", "event", "latencyMs", "surface", "reason", "questions", "private", "attribution"].includes(key)), JSON.stringify(Object.keys(event))).toBe(true);
+  for (const event of events) expect("task" in event, `a private question event must not carry a task key: ${JSON.stringify(Object.keys(event))}`).toBe(false);
+  for (const event of events) expect(["delivery", "single_open", "unattributed"], JSON.stringify(event)).toContain((event as { attribution?: string }).attribution ?? "(missing)");
 });
 
 test("AC6 memory capture drops a hub_ask call and its answer whatever the paths say, while an ordinary tool call is still captured", async () => {

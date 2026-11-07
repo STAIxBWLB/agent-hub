@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // #787 P3b: release preparation as an agent task. The mechanical half of AGENTS.md "Releasing" steps 1 and 2: the version bump, the README
-// Status line, the bundle, the CHANGELOG section and a verification report skeleton, on a release/<version> branch. It restamps nothing
+// Status line, the generated doc facts (the install tag and pins, #1273), the bundle, the CHANGELOG section and a verification report skeleton, on a release/<version> branch. It restamps nothing
 // on its own, tags nothing, and never touches the person's release consent (`ahub sdlc authorize-release`, person only).
 //
 //   bun scripts/release-prepare.ts [--version X.Y.Z] [--dry-run]     bump and write the files (refuses on main, a dirty tree or a wrong version)
@@ -31,6 +31,7 @@ if (args[0] === "restamp") {
     const { plan } = result;
     console.log(`release-prepare: ${plan.current} -> ${plan.version} (${plan.bump}; ${plan.subjects.length} commits since ${plan.lastTag}, PRs ${plan.prs.map(pr => `#${pr}`).join(" ") || "none named"})`);
     console.log(`release-prepare: native acceptance receipts since ${plan.lastTag}: ${plan.receipts.length ? plan.receipts.join(", ") : "none"}`);
+    console.log(`release-prepare: generated doc facts ${result.wrote ? "rendered" : "that would change"} (${result.facts.length}): ${result.facts.join(", ") || "none, they already match"}`);
     if (!result.wrote) console.log("release-prepare: dry run, nothing written");
     else {
       console.log(`release-prepare: wrote package.json, README.md, CHANGELOG.md, docs/quickstart.md (the Upgrading to ${plan.version} note, with the global CLI and plugin step), the bundle and docs/verification/*-${plan.version}.md`);
