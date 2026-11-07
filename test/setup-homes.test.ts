@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupClaudeHomes, type SetupHomesPorts } from "../src/cli/setup-homes.ts";
@@ -7,6 +7,7 @@ import { PLUGIN, type InstalledPlugin } from "../src/cli/setup.ts";
 import { discoverClaudeHomes } from "../src/cli/claude-homes.ts";
 import { checkClaudeProfileHook } from "../src/cli/claude-profile-hook.ts";
 import type { ClaudeHome, ClaudeHomeProbe } from "../src/cli/claude-homes.ts";
+import { stablePackageRoot } from "../src/cli/install-paths.ts";
 import { VERSION } from "../src/version.ts";
 
 const roots: string[] = [];
@@ -270,4 +271,100 @@ test("fresh default home is previewed without creating it, then configured after
   await setupClaudeHomes(f.ports);
   expect(f.runs.map(call => call.env.CLAUDE_CONFIG_DIR)).toEqual([defaultHome, defaultHome]);
   expect(checkClaudeProfileHook({ path: defaultHome, exists: true, sources: ["default"] }).state).toBe("installed");
+});
+
+
+function nativeSetupFixture() {
+  const root = mkdtempSync(join(tmpdir(), "ahub-install-aware-setup-")); roots.push(root);
+  const user = join(root, "user"), profile = join(user, "profile"), bin = join(root, "bin"), tools = join(root, "tools/ahub");
+  for (const directory of [user, profile, bin, tools]) mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const packageAt = (version: string) => join(tools, version, "lib/node_modules/@staix/agent-hub");
+  const packages = [packageAt("A"), packageAt("B")];
+  for (const packageRoot of packages) {
+    mkdirSync(join(packageRoot, "src/cli"), { recursive: true }); mkdirSync(join(packageRoot, "plugins/agent-hub"), { recursive: true });
+    writeFileSync(join(packageRoot, "src/cli/main.js"), "// fake installed CLI operand, never executed\n", { mode: 0o755 });
+    writeFileSync(join(packageRoot, "src/cli/claude-profile-hook.ts"), "// fake hook path, never executed\n");
+    writeFileSync(join(packageRoot, "plugins/agent-hub/server.js"), "fixture bundle");
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version: VERSION }));
+  }
+  const current = join(tools, "current"); symlinkSync("A", current);
+  symlinkSync("../tools/ahub/current/lib/node_modules/@staix/agent-hub/src/cli/main.js", join(bin, "ahub"));
+  const stateFile = join(profile, "native-state.json"), callsFile = join(profile, "native-calls.jsonl"), settings = join(profile, "settings.json");
+  const preserved = { id: PLUGIN, scope: "project", projectPath: user, version: "0.23.1", installPath: join(profile, "old-cache") };
+  writeFileSync(stateFile, JSON.stringify({ marketplacePath: null, plugins: [preserved] }));
+  writeFileSync(settings, JSON.stringify({ statusLine: { command: "preserve-status" }, hooks: { PreToolUse: [{ matcher: "Read", hooks: [{ type: "command", command: "preserve-foreign-hook" }] }] } }), { mode: 0o600 });
+  const fake = join(bin, "fake-claude.ts");
+  writeFileSync(fake, `import { readFileSync, writeFileSync, appendFileSync, mkdirSync, copyFileSync } from "node:fs";
+import { join } from "node:path";
+const args = process.argv.slice(2), file = process.env.FIXTURE_STATE!, state = JSON.parse(readFileSync(file, "utf8"));
+appendFileSync(process.env.FIXTURE_CALLS!, JSON.stringify(args) + "\\n");
+if (args.join(" ") === "plugin list --json") console.log(JSON.stringify(state.plugins));
+else if (args.join(" ") === "plugin marketplace list --json") console.log(JSON.stringify(state.marketplacePath ? [{ name: "agent-hub", path: state.marketplacePath }] : []));
+else {
+  if (args[0] !== "plugin") throw Error("unexpected fake command");
+  if (args[1] === "marketplace" && args[2] === "add") state.marketplacePath = args[3];
+  else if (args[1] === "marketplace" && args[2] === "remove") throw Error("marketplace removal must not run");
+  else if (args[1] === "install" && args.slice(-2).join(" ") === "--scope user") {
+    const cache = join(process.env.CLAUDE_CONFIG_DIR!, "plugin-cache"); mkdirSync(cache, { recursive: true });
+    copyFileSync(join(process.env.FIXTURE_PACKAGE_ROOT!, "plugins/agent-hub/server.js"), join(cache, "server.js"));
+    state.plugins = [...state.plugins.filter((row: any) => row.id !== ${JSON.stringify(PLUGIN)} || row.scope !== "user"), { id: ${JSON.stringify(PLUGIN)}, scope: "user", version: ${JSON.stringify(VERSION)}, installPath: cache }];
+  } else if (args[1] === "uninstall" && args.slice(-2).join(" ") === "--scope user") state.plugins = state.plugins.filter((row: any) => row.id !== ${JSON.stringify(PLUGIN)} || row.scope !== "user");
+  else throw Error("unexpected fake mutation");
+  writeFileSync(file, JSON.stringify(state));
+}
+`);
+  const env = { ...process.env, HOME: user, CLAUDE_CONFIG_DIR: profile, AGENTHUB_HOME: join(root, "hub"), AMEM_HOME: join(root, "amem"),
+    FIXTURE_STATE: stateFile, FIXTURE_CALLS: callsFile, FIXTURE_PACKAGE_ROOT: packages[0]!, PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` };
+  const home: ClaudeHome = { path: profile, exists: true, sources: ["environment"] }, printed: string[] = [];
+  const native = (argv: readonly string[], scoped: NodeJS.ProcessEnv) => Bun.spawnSync([process.execPath, fake, ...argv.slice(1)], { env: scoped, stdin: "ignore" });
+  const ports: SetupHomesPorts = { env, packageRoot: packages[0]!, homes: [home], yes: true,
+    probe: (argv, options) => { const result = native(argv, options.env); return { status: result.exitCode, stdout: result.stdout.toString() }; },
+    run: async (argv, scoped) => native(argv, scoped).exitCode, ask: async () => { throw new Error("yes mode must not prompt"); }, print: line => printed.push(line) };
+  const readState = (): { marketplacePath: string | null; plugins: InstalledPlugin[] } => JSON.parse(readFileSync(stateFile, "utf8"));
+  const calls = (): string[][] => existsSync(callsFile) ? readFileSync(callsFile, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+  return { root, user, profile, packages, current, env, home, ports, preserved, settings, stateFile, readState, calls };
+}
+
+test("fake Claude setup retains a verified current alias across A to B without marketplace removal or duplicate hooks", async () => {
+  const f = nativeSetupFixture(), previousPath = process.env.PATH;
+  try {
+    process.env.PATH = f.env.PATH;
+    const stable = stablePackageRoot(f.packages[0]!);
+    expect(stable).toContain("/current/");
+    f.ports.hook = { script: join(stable, "src/cli/claude-profile-hook.ts"), runtime: process.execPath };
+    await setupClaudeHomes(f.ports);
+    const first = readFileSync(f.settings, "utf8");
+    expect(f.readState().marketplacePath).toBe(stable);
+    expect(f.readState().plugins).toContainEqual(f.preserved);
+    rmSync(f.current); symlinkSync("B", f.current);
+    f.ports.packageRoot = f.packages[1]!; f.env.FIXTURE_PACKAGE_ROOT = f.packages[1]!;
+    f.ports.hook = { script: join(stablePackageRoot(f.packages[1]!), "src/cli/claude-profile-hook.ts"), runtime: process.execPath };
+    await setupClaudeHomes(f.ports);
+    expect(f.readState().marketplacePath).toBe(stable);
+    expect(f.readState().plugins).toContainEqual(f.preserved);
+    expect(f.calls().filter(call => call[1] === "marketplace" && call[2] === "add")).toHaveLength(1);
+    expect(f.calls().some(call => call[1] === "marketplace" && call[2] === "remove")).toBe(false);
+    expect(readFileSync(f.settings, "utf8")).toBe(first);
+    const settings = JSON.parse(first), entries = settings.hooks.PreToolUse;
+    expect(entries.filter((entry: { hooks: { command: string }[] }) => entry.hooks.some(hook => hook.command.includes("claude-profile-hook.ts")))).toHaveLength(1);
+    expect(entries[0]).toEqual({ matcher: "Read", hooks: [{ type: "command", command: "preserve-foreign-hook" }] });
+    expect(settings.statusLine).toEqual({ command: "preserve-status" });
+    expect(checkClaudeProfileHook(f.home, f.ports.hook).state).toBe("installed");
+  } finally { if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath; }
+});
+
+test("fake Claude refusal names every blocking field and exact inventory without running any mutation", async () => {
+  const f = nativeSetupFixture(), future = { id: PLUGIN, scope: "future-scope", projectPath: join(f.root, "future-project"), version: "0.22.0", installPath: join(f.profile, "future-cache") };
+  writeFileSync(f.stateFile, JSON.stringify({ marketplacePath: join(f.root, "old-package"), plugins: [f.preserved, future] }));
+  const before = readFileSync(f.stateFile, "utf8"), settings = readFileSync(f.settings, "utf8");
+  let failure = "";
+  try { await setupClaudeHomes(f.ports); } catch (error) { failure = (error as Error).message; }
+  expect(failure).toContain("Claude setup refused marketplace removal");
+  for (const row of [f.preserved, future]) for (const field of ["scope", "projectPath", "version", "installPath"] as const) expect(failure).toContain(`${field}=${JSON.stringify(row[field])}`);
+  expect(failure).toContain("~/.agenthub/releases"); expect(failure).toContain(join(f.user, ".agenthub/releases"));
+  expect(failure).toContain("Do not run 'claude plugin uninstall --scope project' from $HOME");
+  expect(failure).toContain("~/.claude/settings.json"); expect(failure).toContain("Next: back up"); expect(failure).toContain("manually remove only rows confirmed stale and unused");
+  expect(failure).toContain(join(f.profile, "plugins/installed_plugins.json"));
+  expect(f.calls()).toEqual([["plugin", "list", "--json"], ["plugin", "marketplace", "list", "--json"]]);
+  expect(readFileSync(f.stateFile, "utf8")).toBe(before); expect(readFileSync(f.settings, "utf8")).toBe(settings);
 });

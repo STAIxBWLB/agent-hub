@@ -1,3 +1,4 @@
+import { globalCliUpdateStep, type InstallPathOptions } from "./install-paths.ts";
 import type { DoctorCheck } from "./output.ts";
 import { parseList, pluginState, type InstalledPlugin } from "./setup.ts";
 
@@ -5,7 +6,7 @@ const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(
 const version = (value: unknown): string | undefined => typeof value === "string" && value.length <= 64 && VERSION.exec(value)?.[0] === value ? value : undefined;
 
 /** Authenticated daemon status and the existing plugin inventory only. Suggestions never run an update. */
-export function runtimeVersionWarnings(daemonVersion: unknown, cliVersion: unknown, pluginVersion: unknown): DoctorCheck[] {
+export function runtimeVersionWarnings(daemonVersion: unknown, cliVersion: unknown, pluginVersion: unknown, install: InstallPathOptions = {}): DoctorCheck[] {
   const running = version(daemonVersion), cli = version(cliVersion), plugin = version(pluginVersion);
   const rows: DoctorCheck[] = [];
   const unknown = (name: string, detail: string) => rows.push({ section: "Hub", level: "unknown", name, detail });
@@ -18,7 +19,7 @@ export function runtimeVersionWarnings(daemonVersion: unknown, cliVersion: unkno
   else try {
     cliOlder = Bun.semver.order(cli, running) < 0;
     if (cliOlder) rows.push({ section: "Hub", level: "warn", name: "CLI versus daemon",
-      detail: `running daemon ${running} is newer than this CLI ${cli}; update separately: bun add --global @staix/agent-hub@${running}` });
+      detail: `running daemon ${running} is newer than this CLI ${cli}; update separately: ${globalCliUpdateStep(running, { ...install, globalFlag: "--global" })}` });
   } catch { unknown("CLI versus daemon", "CLI and daemon versions could not be compared"); }
   if (!plugin) unknown("plugin versus daemon", "installed plugin version unavailable; run ahub setup with an updated CLI to inspect it");
   else try {
@@ -36,16 +37,16 @@ export function runtimeVersionWarnings(daemonVersion: unknown, cliVersion: unkno
  * target release's own coordinator (`AGENTHUB_UPGRADE_HANDOVER=1`, set by every release since #272), the process that prints is the target itself and cannot see the CLI that started it, but that
  * CLI is older by construction (it handed over because the target was newer), so `handedOver` stands for it. An unknown plugin (no `claude`, unreadable inventory) is never a claim.
  */
-export function globalUpdateAfterUpgrade(target: unknown, cli: unknown, plugin: unknown, handedOver = false): string[] {
+export function globalUpdateAfterUpgrade(target: unknown, cli: unknown, plugin: unknown, handedOver = false, install: InstallPathOptions = {}): string[] {
   const running = version(target);
   if (!running) return [];
-  const warned = new Set(runtimeVersionWarnings(running, handedOver ? undefined : cli, plugin).filter(row => row.level === "warn").map(row => row.name));
+  const warned = new Set(runtimeVersionWarnings(running, handedOver ? undefined : cli, plugin, install).filter(row => row.level === "warn").map(row => row.name));
   const cliOlder = handedOver || warned.has("CLI versus daemon"), pluginOlder = warned.has("plugin versus daemon");
   if (!cliOlder && !pluginOlder) return [];
   return [
     "ahub upgrade does not update the global CLI or the shared Claude plugin.",
     cliOlder
-      ? `${handedOver ? "The CLI that started this upgrade is older than the daemon this upgrade installs" : "The global CLI is older than the daemon this upgrade installs"} (${running}): run \`bun add -g @staix/agent-hub@${running}\` and then \`ahub setup\` yourself.`
+      ? `${handedOver ? "The CLI that started this upgrade is older than the daemon this upgrade installs" : "The global CLI is older than the daemon this upgrade installs"} (${running}): ${globalCliUpdateStep(running, install)} and then \`ahub setup\` yourself.`
       : `The installed plugin is older than the daemon this upgrade installs (${running}): run \`ahub setup\` yourself.`,
   ];
 }
@@ -59,6 +60,7 @@ export interface GlobalUpdateInputs {
   handedOver: boolean;
   /** Where this release's shipped plugin bundle lives, for `pluginState`. */
   packageRoot: string;
+  install?: InstallPathOptions;
   /** The same `claude plugin list --json` probe `ahub doctor` runs. */
   probe: () => { status: number | null; stdout?: string | null };
 }
@@ -74,5 +76,5 @@ export function globalUpdateAdvice(input: GlobalUpdateInputs): string[] {
     const state = pluginState(parseList<InstalledPlugin>(probed.status === 0 ? probed.stdout ?? "" : ""), input.packageRoot);
     plugin = state.state === "missing" ? undefined : state.version;
   } catch { /* an unknown plugin: the CLI half below does not depend on it */ }
-  try { return globalUpdateAfterUpgrade(input.target, input.cli, plugin, input.handedOver); } catch { return []; }
+  try { return globalUpdateAfterUpgrade(input.target, input.cli, plugin, input.handedOver, input.install); } catch { return []; }
 }

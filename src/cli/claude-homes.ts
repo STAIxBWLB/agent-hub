@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 import { realPath } from "../hub/project.ts";
 import { launcherOf, recordPath, MAX_COMMAND_MS, type ProcessIdentity } from "./terminal-recovery.ts";
 import { CLAUDE_PLUGIN_INVENTORY, PLUGIN, nextStep, pluginState, type InstalledPlugin, type Marketplace, type PluginState, type SetupStep } from "./setup.ts";
-import { checkClaudeProfileHook, type ClaudeProfileHookCheck } from "./claude-profile-hook.ts";
+import { checkClaudeProfileHook, type ClaudeProfileHookCheck, type ClaudeProfileHookOptions } from "./claude-profile-hook.ts";
 
 export type ClaudeHomeSource = "environment" | "default" | "recorded-launch";
 export interface ClaudeHome { path: string; exists: boolean; sources: ClaudeHomeSource[] }
@@ -93,12 +93,12 @@ export interface ClaudeHomeCheck {
 }
 
 /** Read-only per-home plugin inspection. Installation never proves that a live permission hook is present. */
-export async function checkClaudeHome(home: ClaudeHome, packageRoot: string, env: NodeJS.ProcessEnv, probe: ClaudeHomeProbe, timeoutMs = MAX_COMMAND_MS, probeMissingDefault = false): Promise<ClaudeHomeCheck> {
+export async function checkClaudeHome(home: ClaudeHome, packageRoot: string, env: NodeJS.ProcessEnv, probe: ClaudeHomeProbe, timeoutMs = MAX_COMMAND_MS, probeMissingDefault = false, hookOptions?: ClaudeProfileHookOptions): Promise<ClaudeHomeCheck> {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_COMMAND_MS) throw new Error("invalid Claude plugin probe time bound");
-  const hook = checkClaudeProfileHook(home);
+  const hook = checkClaudeProfileHook(home, hookOptions);
   const unknown = (): ClaudeHomeCheck => ({ home, plugin: { state: "unknown", reason: "Claude plugin inventory is unavailable or invalid for this home." }, hook });
   if (hook.state === "refused") return unknown();
-  if (!home.exists && !(probeMissingDefault && home.sources.includes("default"))) return { home, plugin: { state: "missing" }, next: nextStep([], [], packageRoot), hook };
+  if (!home.exists && !(probeMissingDefault && home.sources.includes("default"))) return { home, plugin: { state: "missing" }, next: nextStep([], [], packageRoot, validPath(env.HOME) ? env.HOME : undefined), hook };
   const scoped = claudeHomeEnvironment(home, env), deadline = performance.now() + timeoutMs;
   const read = async (argv: readonly string[]): Promise<unknown[] | undefined> => {
     const remaining = Math.floor(deadline - performance.now());
@@ -118,6 +118,6 @@ export async function checkClaudeHome(home: ClaudeHome, packageRoot: string, env
       (row.version === undefined || typeof row.version === "string" && row.version.length <= 64 && (row.id !== PLUGIN ? !/[\u0000-\u001f\u007f-\u009f]/.test(row.version) : /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(row.version))) &&
       (row.installPath === undefined || validPath(row.installPath))) ||
       !marketplaces.every(row => object(row) && typeof row.name === "string" && row.name.length <= 256 && (row.path === undefined || validPath(row.path)))) return unknown();
-    return { home, plugin: pluginState(plugins as InstalledPlugin[], packageRoot), next: nextStep(plugins as InstalledPlugin[], marketplaces as Marketplace[], packageRoot), hook };
+    return { home, plugin: pluginState(plugins as InstalledPlugin[], packageRoot), next: nextStep(plugins as InstalledPlugin[], marketplaces as Marketplace[], packageRoot, validPath(env.HOME) ? env.HOME : undefined), hook };
   } catch { return unknown(); }
 }

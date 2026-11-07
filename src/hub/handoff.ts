@@ -130,7 +130,7 @@ export function resolveTarget(name: string, projects: readonly RegisteredProject
 export function handoffConnectFailure(error: unknown, target: { id: string; root: string }): { code: HandoffRefusalCode; reach: "unreachable"; cause: string; message: string } {
   const code = typeof (error as { code?: unknown })?.code === "number" || typeof (error as { code?: unknown })?.code === "string" ? (error as { code: number | string }).code : undefined;
   if (code === 4426) return { code: "older_target", reach: "unreachable", cause: "wire version differs",
-    message: `the hub of ${target.id} speaks another wire version than this one: upgrade whichever is older (\`ahub upgrade\` in ${target.root}, and the global CLI with \`bun add -g @staix/agent-hub\`), then hand the task off again` };
+    message: `the hub of ${target.id} speaks another wire version than this one: upgrade whichever is older (\`ahub upgrade\` in ${target.root}, and the global CLI the way it was installed; \`ahub doctor\` names the exact step), then hand the task off again` };
   if (code === 4404) return { code: "mismatch", reach: "unreachable", cause: "another hub or instance answered",
     message: `the hub answering for ${target.root} is not the instance this project's registry names (it was restarted, or another project took its port): run \`ahub projects\` to see what is registered, and \`ahub up\` in ${target.root} if it is not running` };
   if (code === "AHUB_CONNECT_TIMEOUT") return { code: "not_running", reach: "unreachable", cause: "no answer in time",

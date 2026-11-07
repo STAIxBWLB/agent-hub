@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { planFingerprint, type NextChoice, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
@@ -42,7 +42,35 @@ test("renderUpgradePlan: a pipe or dry run shows each peer, its blocker, reconne
   }
   const clean = renderUpgradePlan(planWith({ blockers: [], reconnectOnly: [], freshStart: [] }), "0.17.0", options(80)).join("\n");
   expect(clean).toContain("Apply with `--yes`"); expect(clean).not.toContain("Blocked:");
-  expect(renderUpgradePlan({ ...planWith(), projects: [], blockers: ["no running registered projects in scope"] }, "0.17.0", options(80)).join("\n")).toContain("No hub is running");
+  const install = mkdtempSync(join(tmpdir(), "ahub-upgrade-install-1245-"));
+  cleanup.push(() => rmSync(install, { recursive: true, force: true }));
+  mkdirSync(join(install, "install/global/node_modules"), { recursive: true });
+  const versioned = join(install, "tools/ahub/A/lib/node_modules/@staix/agent-hub");
+  const current = join(install, "tools/ahub/current"), alias = join(current, "lib/node_modules/@staix/agent-hub"), bin = join(install, "bin");
+  mkdirSync(join(versioned, "src/cli"), { recursive: true }); mkdirSync(bin);
+  writeFileSync(join(versioned, "src/cli/main.js"), "// fixture CLI\n", { mode: 0o755 });
+  symlinkSync("A", current);
+  symlinkSync(relative(bin, join(alias, "src/cli/main.js")), join(bin, "ahub"));
+  const previous = process.env.BUN_INSTALL, previousPath = process.env.PATH;
+  try {
+    process.env.BUN_INSTALL = install; process.env.PATH = bin;
+    const noHub = renderUpgradePlan({ ...planWith(), projects: [], blockers: ["no running registered projects in scope"] }, "0.17.0", options(80)).join("\n");
+    expect(noHub).toContain("No hub is running");
+    expect(flat(noHub)).toContain("update the global CLI to 0.18.0 the way it was installed");
+    expect(noHub).not.toContain("bun add");
+    const wideNoHub = renderUpgradePlan({ ...planWith(), projects: [], blockers: ["no running registered projects in scope"] }, "0.17.0", options(200)).join("\n");
+    expect(flat(wideNoHub)).toContain(alias);
+    expect(wideNoHub).not.toContain("bun add");
+    expect(flat(wideNoHub)).not.toContain(join(import.meta.dir, ".."));
+    process.env.PATH = "";
+    const unknown = renderUpgradePlan({ ...planWith(), projects: [], blockers: ["no running registered projects in scope"] }, "0.17.0", options(200)).join("\n");
+    expect(flat(unknown)).toContain("the way it was installed");
+    expect(unknown).not.toContain("bun add"); expect(unknown).not.toContain(alias);
+    expect(unknown).not.toContain(join(import.meta.dir, ".."));
+  } finally {
+    if (previous === undefined) delete process.env.BUN_INSTALL; else process.env.BUN_INSTALL = previous;
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+  }
 });
 
 test("renderRecoveryStatus: completed, running, blocked and unknown-runner receipts each say what the person can do", () => {

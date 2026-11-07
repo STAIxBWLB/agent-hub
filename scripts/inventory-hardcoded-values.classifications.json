@@ -448,6 +448,8 @@
   "src/cli/init.ts:timeout:inline:timeout=3000#2": "operational",
   "src/cli/init.ts:timeout:inline:timeout=3000#3": "operational",
   "src/cli/init.ts:timeout:inline:timeout=3000#4": "operational",
+  "src/cli/install-paths.ts:MAX_LINK_HOPS:constant:MAX_LINK_HOPS=8#0": "contract",
+  "src/cli/install-paths.ts:hops:inline:hops=0#0": "contract",
   "src/cli/kimi-mcp.ts:timeout:inline:timeout=3000#0": "operational",
   "src/cli/launch.ts:<anonymous>:inline:setTimeout=25#0": "operational",
   "src/cli/launch.ts:bytes:inline:Buffer.alloc=4#0": "contract",

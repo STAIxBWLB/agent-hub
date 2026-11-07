@@ -22,12 +22,21 @@ export async function usedClaudeHomes(registry: Registry, home: string, env: Nod
   return { ...found, complete: found.complete && !notices.length, notices: [...notices, ...found.notices] };
 }
 export async function autonomyHomeStatus(registry: Registry, home: string, env: NodeJS.ProcessEnv, packageRoot: string, probe: ClaudeHomeProbe) {
-  const found = await usedClaudeHomes(registry, home, env), deadline = performance.now() + 6000;
+  const found = await usedClaudeHomes(registry, home, env);
+  // Doctor also inspects the existing default home; setup's selected write inventory stays unchanged.
+  const defaults = await discoverClaudeHomes({ home, env: { ...env, CLAUDE_CONFIG_DIR: undefined } });
+  // Discovery canonicalizes existing homes through realPath, so lexical aliases share one inspection.
+  const inspected = new Map(found.homes.map(selected => [selected.path, selected]));
+  for (const selected of defaults.homes.filter(selected => selected.exists)) {
+    const previous = inspected.get(selected.path);
+    inspected.set(selected.path, previous ? { ...previous, sources: [...new Set([...previous.sources, ...selected.sources])] } : selected);
+  }
+  const notices = [...new Set([...found.notices, ...defaults.notices])], deadline = performance.now() + 6000;
   const homes = [];
-  for (const selected of found.homes) {
+  for (const selected of inspected.values()) {
     const remaining = Math.floor(deadline - performance.now());
     if (remaining < 1) homes.push({ home: selected, plugin: { state: "unknown", reason: "The machine profile inventory time bound was reached." }, hook: checkClaudeProfileHook(selected) });
     else homes.push(await checkClaudeHome(selected, packageRoot, env, probe, Math.min(remaining, 6000)));
   }
-  return { homes, notices: found.notices, complete: found.complete && performance.now() <= deadline };
+  return { homes, notices, complete: found.complete && defaults.complete && performance.now() <= deadline };
 }
