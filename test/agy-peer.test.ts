@@ -75,7 +75,13 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
     const otherRoot = join(root, "other-workspace"); mkdirSync(otherRoot);
     expect((await facts("PreInvocation", { workspacePaths: [root, otherRoot] })).ok).toBe(false);
     expect(daemon.bus.peers.get("agy")?.state).toBe("idle");
-    expect((await facts("PreInvocation")).ok).toBe(true); expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
+    // #1280 P2: a model boundary tells the pull-only peer that mail waits (counts only, never the body), and says nothing when the queue is empty.
+    daemon.bus.publish(newEnvelope("user", "secret body must not leak", { to: ["agy"] }));
+    const hinted = await facts("PreInvocation");
+    expect(hinted.ok).toBe(true); expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
+    expect(hinted.text).toContain("[agent-hub: 1 message(s) waiting"); expect(hinted.text).toContain("hub_inbox"); expect(hinted.text).not.toContain("secret body");
+    expect((await peer.request({ t: "inbox" })).envs.some((env: any) => env.body === "secret body must not leak")).toBe(true);
+    expect((await facts("PreInvocation", { invocationNum: 1 })).text).toBeUndefined();
     for (const phase of ["stop", "start", "session", "pre", "post"]) expect((await tools.request({ t: "facts", phase })).ok).toBe(false);
     expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
     expect((await facts("Stop", { fullyIdle: false, terminationReason: "NO_TOOL_CALL" })).ok).toBe(false);
@@ -143,6 +149,7 @@ for (const [version, name, args] of [["1.4.2", "view_file", (file: string) => ({
       payload: { conversationId: session, transcriptPath: transcript, workspacePaths: [root], invocationNum: 0, ...extra },
       nativeInstanceId: admission.instanceId, nativeLaunchId: admission.launchId });
     const call = { name, args: args(file) };
+    await peer.request({ t: "inbox" }); // the task notices queued so far are read, so no inbox hint rides on the fact assertions below
     expect((await hook("PreInvocation")).ok).toBe(true);
     expect((await hook("PreToolUse", { toolCall: call, stepIdx: 5 })).ok).toBe(true);
     expect((await hook("PostToolUse", { toolCall: call, stepIdx: 5 })).ok).toBe(true);
