@@ -34,9 +34,16 @@ export function summarize(verdicts: readonly PrVerdict[]): Summary {
   return { prs: verdicts.length, touching: touching.length, coChanged, share: touching.length ? coChanged / touching.length : null };
 }
 
-function git(root: string, args: string[]): string {
+/** A window bound as an exact instant. A date without a time is midnight UTC: git would read it as that date at the current time of day, so the window would move with the clock. */
+export function windowInstant(value: string): string {
+  const instant = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value;
+  if (Number.isNaN(Date.parse(instant))) throw new Error(`not a date or ISO instant: ${value}`);
+  return new Date(instant).toISOString();
+}
+
+function git(root: string, args: string[], ref?: string): string {
   const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim() || `status ${result.status}`}`);
+  if (result.status !== 0) throw new Error(`git ${args[0]} failed (${result.stderr.trim() || `status ${result.status}`})${ref ? `; the report reads ${ref}: run \`git fetch origin main\` first` : ""}`);
   return result.stdout;
 }
 
@@ -44,23 +51,26 @@ function git(root: string, args: string[]): string {
 export function isReleaseMerge(subject: string): boolean { return /^Merge pull request #\d+ from \S+\/release\//.test(subject); }
 
 /** First-parent commits of `ref` in the window, each with the files it changed against its first parent. Release merges are left out. */
-export function prCommits(root: string, since: string, until: string, ref = "origin/main"): PrCommit[] {
+export function prCommits(root: string, since: string, until: string, ref = "origin/main"): { prs: PrCommit[]; releaseMerges: number } {
   const out: PrCommit[] = [];
-  for (const line of git(root, ["log", "--first-parent", `--since=${since}`, `--until=${until}`, "--format=%H%x09%cI%x09%s", ref]).split("\n")) {
+  let releaseMerges = 0;
+  for (const line of git(root, ["log", "--first-parent", `--since=${since}`, `--until=${until}`, "--format=%H%x09%cI%x09%s", ref], ref).split("\n")) {
     if (!line.trim()) continue;
     const [sha, date, ...subject] = line.split("\t");
-    if (isReleaseMerge(subject.join("\t"))) continue;
+    if (isReleaseMerge(subject.join("\t"))) { releaseMerges++; continue; }
     const files = git(root, ["diff-tree", "--no-commit-id", "-r", "--name-only", "-m", "--first-parent", sha!]).split("\n").filter(Boolean);
     out.push({ sha: sha!, date: date!, subject: subject.join("\t"), files });
   }
-  return out;
+  return { prs: out, releaseMerges };
 }
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const option = (name: string) => { const at = args.indexOf(name); return at >= 0 ? args[at + 1] : undefined; };
-  const since = option("--since"), until = option("--until"), baseline = args.includes("--baseline"), json = args.includes("--json");
-  if (!since || !until || Number.isNaN(Date.parse(since)) || Number.isNaN(Date.parse(until))) {
+  const rawSince = option("--since"), rawUntil = option("--until"), baseline = args.includes("--baseline"), json = args.includes("--json");
+  let since = "", until = "";
+  try { since = windowInstant(rawSince ?? ""); until = windowInstant(rawUntil ?? ""); } catch { since = ""; }
+  if (!since || !until) {
     console.error("usage: bun scripts/spec-dogfood-report.ts --since <ISO date> --until <ISO date> [--baseline] [--json]");
     process.exit(2);
   }
@@ -68,7 +78,8 @@ if (import.meta.main) {
   const engine = new SpecsEngine(root, loadConfig(root).specs);
   const dogfood = engine.list().specs.filter(spec => spec.path.startsWith("docs/design/"));
   const dogfoodIds = new Set(dogfood.map(spec => spec.id));
-  const rows = prCommits(root, since, until).map(pr => {
+  const commits = prCommits(root, since, until);
+  const rows = commits.prs.map(pr => {
     const touched = pr.files.filter(file => !file.startsWith("docs/design/") && file !== MONOLITH);
     const covering = touched.length ? engine.covers(touched).specs.filter(spec => dogfoodIds.has(spec.id)) : [];
     return { ...pr, verdict: classifyPr(pr.files, covering, baseline ? MONOLITH : undefined) };
@@ -76,7 +87,7 @@ if (import.meta.main) {
   const summary = summarize(rows.map(row => row.verdict));
   const check = engine.check();
   const report = {
-    window: { since, until, baseline, owning: baseline ? MONOLITH : "the covering docs/design spec" },
+    window: { since, until, baseline, owning: baseline ? MONOLITH : "the covering docs/design spec", releaseMergesExcluded: commits.releaseMerges },
     dogfoodSpecs: dogfood.map(spec => ({ id: spec.id, status: spec.status })),
     ...summary,
     schemaErrors: check.errors,
@@ -88,8 +99,8 @@ if (import.meta.main) {
   else {
     const pct = summary.share === null ? "n/a" : `${Math.round(summary.share * 100)}%`;
     console.log([
-      `Window ${since} .. ${until}${baseline ? " (baseline: owning document is the design monolith)" : ""}`,
-      `PRs on main: ${summary.prs}; touching dogfood paths: ${summary.touching}; also changed the owning spec: ${summary.coChanged} (${pct})`,
+      `Window ${since} .. ${until} (resolved instants)${baseline ? "; baseline: the owning document is the design monolith" : ""}`,
+      `PRs on main: ${summary.prs} (release merges excluded: ${commits.releaseMerges}); touching dogfood paths: ${summary.touching}; also changed the owning spec: ${summary.coChanged} (${pct})`,
       `Schema errors on HEAD: ${check.errors}; stale documents: ${check.stale}`,
       "Reviewer-assessed (not git facts): `spec not updated` noise share, agent contradictions of a dogfood spec.",
       "",

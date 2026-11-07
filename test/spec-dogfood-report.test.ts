@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { classifyPr, isReleaseMerge, MONOLITH, summarize } from "../scripts/spec-dogfood-report.ts";
+import { classifyPr, isReleaseMerge, MONOLITH, summarize, windowInstant } from "../scripts/spec-dogfood-report.ts";
 
 // #1064 T6: the co-change share is the AC11 metric, so its classification is pinned here.
 const bus = { id: "bus", path: "docs/design/bus.md" }, board = { id: "task-board", path: "docs/design/task-board.md" };
@@ -29,4 +29,11 @@ test("#1064 T6 a release PR's merge commit is not a PR of its own, an ordinary s
   expect(isReleaseMerge("Merge pull request #1252 from STAIxBWLB/release/0.34.0")).toBe(true);
   expect(isReleaseMerge("feat(upgrade): confirmed reattach of orphaned-but-connected Orca terminals (#1249)")).toBe(false);
   expect(isReleaseMerge("Merge pull request #900 from STAIxBWLB/feat/rooms")).toBe(false);
+});
+
+test("#1064 T6 a date-only window bound is midnight UTC, an explicit instant or offset is kept, and garbage is refused", () => {
+  expect(windowInstant("2026-10-05")).toBe("2026-10-05T00:00:00.000Z");
+  expect(windowInstant("2026-11-02T19:41:16Z")).toBe("2026-11-02T19:41:16.000Z");
+  expect(windowInstant("2026-11-02T19:41:16+09:00")).toBe("2026-11-02T10:41:16.000Z");
+  expect(() => windowInstant("last week")).toThrow("not a date or ISO instant");
 });
