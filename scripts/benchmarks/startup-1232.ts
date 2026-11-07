@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { spawn } from "node:child_process";
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { hubGitSync } from "../../src/hub/git.ts";
@@ -27,6 +27,14 @@ export interface BenchmarkPorts {
   project?: (root: string, env: NodeJS.ProcessEnv) => void;
 }
 
+let publicStage = "input";
+function publicDebug(enabled: boolean, details: Record<string, unknown>): void {
+  if (enabled) process.stderr.write(JSON.stringify({ publicSyntheticDebug: 1, stage: publicStage, ...details }) + "\n");
+}
+function publicError(error: unknown): Record<string, unknown> {
+  return error instanceof Error ? { error: error.message, stack: error.stack, code: (error as Error & { code?: unknown }).code } : { error: "non-Error public fixture failure" };
+}
+
 function refuse(): never { throw new Error("startup benchmark refused; review the isolated fixture configuration and numeric profile before retrying"); }
 export function numericProfile(value: unknown): StartupProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) return refuse();
@@ -45,8 +53,9 @@ export function numericProfile(value: unknown): StartupProfile {
     || profile.abandonedFiles === 1 && profile.abandonedBytes !== profile.abandonedMaxBytes) return refuse();
   return profile;
 }
-export function isolatedStartupEnvironment(root: string): NodeJS.ProcessEnv {
+export function isolatedStartupEnvironment(root: string, mode: "synthetic" | "private" = "private"): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { AHUB_STARTUP_BENCHMARK_CHILD: "1", PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", TZ: "UTC", TERM: "dumb", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+  if (mode === "synthetic") env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG = "1";
   for (const name of ["HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "AGENTHUB_HOME", "AMEM_HOME", "CODEX_HOME", "KIMI_CODE_HOME", "CLAUDE_CONFIG_DIR"]) {
     const folder = join(root, name.toLowerCase()); mkdirSync(folder, { mode: 0o700 }); env[name] = folder;
   }
@@ -99,14 +108,18 @@ export function timingLine(value: unknown): string {
 }
 
 async function ownedCommand(argv: string[], cwd: string, env: NodeJS.ProcessEnv, input?: string, onLine?: (line: string) => void, timeoutMs = SAMPLE_TIMEOUT_MS): Promise<string> {
-  const child = spawn(argv[0]!, argv.slice(1), { cwd, env, detached: true, stdio: ["pipe", "pipe", "ignore"] }); trackGroup(child);
+  const debug = env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1";
+  const child = spawn(argv[0]!, argv.slice(1), { cwd, env, detached: true, stdio: ["pipe", "pipe", debug ? "pipe" : "ignore"] }); trackGroup(child);
+  let stderr = "";
+  child.stderr?.on("data", chunk => { if (Buffer.byteLength(stderr) + chunk.length <= OUTPUT_BYTES) stderr += String(chunk); });
   let output = "", pending = "", overflow = false;
   child.stdout!.on("data", chunk => {
     if (Buffer.byteLength(output) + chunk.length > OUTPUT_BYTES) { overflow = true; return; }
     output += String(chunk); pending += String(chunk);
     while (pending.includes("\n")) { const cut = pending.indexOf("\n"); onLine?.(pending.slice(0, cut)); pending = pending.slice(cut + 1); }
   });
-  const drained = new Promise<void>(done => child.stdout!.once("end", done));
+  const drained = Promise.all([new Promise<void>(done => child.stdout!.once("end", done)),
+    child.stderr ? new Promise<void>(done => child.stderr!.once("end", done)) : Promise.resolve()]);
   const exited = new Promise<number | null>((done, reject) => {
     if (child.exitCode !== null || child.signalCode !== null) done(child.exitCode);
     else { child.once("exit", done); child.once("error", reject); }
@@ -119,9 +132,9 @@ async function ownedCommand(argv: string[], cwd: string, env: NodeJS.ProcessEnv,
     const code = await Promise.race([exited, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("bounded benchmark child did not finish; inspect its numeric stage before retrying")), timeoutMs); })]);
     clearTimeout(timer);
     await Promise.race([drained, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("benchmark output did not settle; retain the fixture and inspect process ownership")), timeoutMs); })]);
-    if (code !== 0 || overflow) return refuse();
+    if (code !== 0 || overflow) { publicDebug(debug, { boundary: "command-exit", executable: basename(argv[0]!), exitCode: code, overflow: Number(overflow), stderr }); return refuse(); }
     return output;
-  } finally {
+  } catch (error) { publicDebug(debug, { boundary: "command-failed", executable: basename(argv[0]!), stderr, ...publicError(error) }); throw error; } finally {
     clearTimeout(timer);
     await stopOwnedProcess(child, { group: true });
   }
@@ -186,7 +199,8 @@ async function prepareState(source: string | undefined, destination: string, pro
 
 function project(root: string, env: NodeJS.ProcessEnv): void {
   for (const args of [["init", "-q"], ["-c", "user.name=fixture", "-c", "user.email=fixture@localhost", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "fixture"]]) {
-    const run = hubGitSync(["-C", root, ...args], { env, encoding: "utf8", timeout: SAMPLE_TIMEOUT_MS }); if (run.status !== 0) return refuse();
+    const run = hubGitSync(["-C", root, ...args], { env, encoding: "utf8", timeout: SAMPLE_TIMEOUT_MS });
+    if (run.status !== 0) { publicDebug(env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1", { boundary: "project-git", executable: "git", exitCode: run.status, stderr: run.stderr }); return refuse(); }
   }
 }
 async function child(root: string, env: NodeJS.ProcessEnv): Promise<ChildObservation> {
@@ -212,7 +226,8 @@ export async function runStartupBenchmark(options: BenchmarkOptions, ports: Benc
   let baselineStopped = false;
   try {
     if (baseline) {
-      chmodSync(baseline, 0o700); const env = isolatedStartupEnvironment(baseline), state = join(baseline, "state"); mkdirSync(state, { mode: 0o700 });
+      chmodSync(baseline, 0o700); const env = isolatedStartupEnvironment(baseline, "synthetic"), state = join(baseline, "state"); mkdirSync(state, { mode: 0o700 });
+      publicStage = "seed";
       await (ports.prepare ?? prepareState)(undefined, state, profile, env); baselineStopped = true;
     }
     for (let sample = 0; sample < options.samples; sample++) {
@@ -220,12 +235,15 @@ export async function runStartupBenchmark(options: BenchmarkOptions, ports: Benc
       const root = mkdtempSync(join(tmpdir(), "ahub-startup-1232-")); chmodSync(root, 0o700);
       let stopped = true;
       try {
-        const env = isolatedStartupEnvironment(root), cwd = join(root, "project"), state = join(root, "state");
+        const env = isolatedStartupEnvironment(root, options.mode), cwd = join(root, "project"), state = join(root, "state");
         mkdirSync(cwd, { mode: 0o700 }); mkdirSync(state, { mode: 0o700 });
         stopped = false;
+        publicStage = "project";
         (ports.project ?? project)(cwd, env);
+        publicStage = "copy";
         const sizes = numericProfile(await (ports.prepare ?? prepareState)(baseline ? join(baseline, "state") : options.privateState, state, profile, env));
         stopped = false;
+        publicStage = "child";
         const observation = await (ports.child ?? child)(root, env); stopped = observation.stopped;
         if (!stopped || observation.effects !== 0) return refuse();
         if (options.acceptance && (observation.wallMs >= 5000 || observation.abandonedReadBytes > 0 || sizes.eventBytes > 0 && observation.eventReadBytes >= sizes.eventBytes)) return refuse();
@@ -264,8 +282,10 @@ export function abandonedSizes(profile: StartupProfile): number[] {
 
 export async function seedStartupFixture(file: string): Promise<void> {
   const { destination, profile: input } = JSON.parse(readFileSync(file, "utf8")) as { destination: string; profile: unknown }, profile = numericProfile(input);
+  publicStage = "seed-imports";
   const { Board } = await import("../../src/hub/board.ts");
   const { DeliveryJournal } = await import("../../src/hub/delivery-journal.ts");
+  publicStage = "seed-board";
   const dbFile = join(destination, "hub.db"), board = new Board(dbFile);
   for (let n = 0; n < profile.taskRows; n++) {
     const bytes = Math.floor(profile.taskTextBytes / profile.taskRows) + Number(n < profile.taskTextBytes % profile.taskRows);
@@ -273,7 +293,9 @@ export async function seedStartupFixture(file: string): Promise<void> {
     board.propose("hub", { title, detail: "x".repeat(bytes - title.length), class: "implement", backlog: true });
   }
   board.close();
+  publicStage = "seed-journal";
   const journal = new DeliveryJournal({ file: dbFile, projectRoot: join(dirname(destination), "project"), projectId: "synthetic-startup", instanceId: "synthetic-seed" }); journal.close();
+  publicStage = "seed-payload";
   const db = new Database(dbFile); db.run(`PRAGMA busy_timeout = ${LEDGER_BUSY_TIMEOUT_MS}`);
   try {
     const updateHistory = db.query("UPDATE tasks SET history=? WHERE id=?");
@@ -295,6 +317,7 @@ export async function seedStartupFixture(file: string): Promise<void> {
     db.query("INSERT INTO startup_fixture_padding VALUES(zeroblob(?))").run(Math.max(0, profile.dbBytes - pages * 4096 - 3 * 4096));
     db.run("PRAGMA wal_checkpoint(TRUNCATE)");
   } finally { db.close(); }
+  publicStage = "seed-events";
   const events = openSync(join(destination, "events.jsonl"), "wx", 0o600);
   try {
     let written = 0;
@@ -304,6 +327,7 @@ export async function seedStartupFixture(file: string): Promise<void> {
       writeFileSync(events, line); written += Buffer.byteLength(line);
     }
   } finally { closeSync(events); }
+  publicStage = "seed-abandoned";
   for (const [n, bytes] of abandonedSizes(profile).entries()) {
     const content = bytes >= 3 ? "{}" + " ".repeat(bytes - 3) + "\n" : bytes === 2 ? "{}" : "\n".repeat(bytes);
     writeFileSync(join(destination, `restart.abandoned.synthetic-${n}.json`), content, { mode: 0o600 });
@@ -348,7 +372,7 @@ export async function installStartupReadObserver(stateDir: string): Promise<{ co
 
 async function installStartupEffectDenials(): Promise<{ deny(): never; effects(): number; restore(): void }> {
   let effects = 0;
-  const deny = () => { effects++; return refuse(); }, restorers: (() => void)[] = [];
+  const deny = () => { effects++; publicDebug(process.env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1", { boundary: "effect-denied", ...publicError(new Error("public fixture effect was refused")) }); return refuse(); }, restorers: (() => void)[] = [];
   const originalFetch = globalThis.fetch, originalWebSocket = globalThis.WebSocket, originalConnect = Bun.connect;
   globalThis.fetch = Object.assign(deny, { preconnect: deny });
   globalThis.WebSocket = class { constructor() { deny(); } } as unknown as typeof WebSocket;
@@ -368,7 +392,10 @@ async function installStartupEffectDenials(): Promise<{ deny(): never; effects()
   };
   restorers.push(await interceptBuiltins(["child_process", "node:child_process"], real => {
     const replacements: Record<string, unknown> = { exec: deny, execSync: deny, fork: deny };
-    for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"]) replacements[name] = (command: unknown, args: unknown, ...rest: unknown[]) => allowed(command, args) ? real[name](command, args, ...rest) : deny();
+    for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"]) replacements[name] = (command: unknown, args: unknown, ...rest: unknown[]) => {
+      if (allowed(command, args)) return real[name](command, args, ...rest);
+      publicDebug(process.env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1", { boundary: "process-refused", executable: typeof command === "string" ? basename(command) : "unknown" }); return deny();
+    };
     return replacements;
   }));
   for (const name of ["http", "https", "net", "tls", "dgram", "dns"]) restorers.push(await interceptBuiltins([name, `node:${name}`], real => {
@@ -379,8 +406,12 @@ async function installStartupEffectDenials(): Promise<{ deny(): never; effects()
   }));
   const nativeSpawn = Bun.spawn, nativeSpawnSync = Bun.spawnSync;
   const bunAllowed = (value: any) => { const argv = Array.isArray(value) ? value : value?.cmd; return Array.isArray(argv) && allowed(argv[0], argv.slice(1)); };
-  Bun.spawn = ((value: any, options: any) => bunAllowed(value) ? nativeSpawn(value, options) : deny()) as typeof Bun.spawn;
-  Bun.spawnSync = ((value: any, options: any) => bunAllowed(value) ? nativeSpawnSync(value, options) : deny()) as typeof Bun.spawnSync;
+  const refuseBun = (value: any) => {
+    const argv = Array.isArray(value) ? value : value?.cmd;
+    publicDebug(process.env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1", { boundary: "bun-process-refused", executable: typeof argv?.[0] === "string" ? basename(argv[0]) : "unknown" }); return deny();
+  };
+  Bun.spawn = ((value: any, options: any) => bunAllowed(value) ? nativeSpawn(value, options) : refuseBun(value)) as typeof Bun.spawn;
+  Bun.spawnSync = ((value: any, options: any) => bunAllowed(value) ? nativeSpawnSync(value, options) : refuseBun(value)) as typeof Bun.spawnSync;
   restorers.push(() => { Bun.spawn = nativeSpawn; Bun.spawnSync = nativeSpawnSync; });
   return { deny, effects: () => effects, restore: () => { for (const restore of restorers.reverse()) restore(); } };
 }
@@ -455,16 +486,20 @@ async function publicProbeChild(root: string): Promise<void> {
 async function measure(root: string): Promise<void> {
   const importedAt = performance.now(), cwd = join(root, "project"), stateDir = join(root, "state");
   if (process.env.AHUB_STARTUP_BENCHMARK_CHILD !== "1" || process.env.HOME !== join(root, "home") || process.env.AGENTHUB_HOME !== join(root, "agenthub_home")) return refuse();
+  publicStage = "effect-guards";
   const guards = await installStartupEffectDenials(), deny = guards.deny;
   const observer = await installStartupReadObserver(stateDir), io = observer.counts;
+  publicStage = "daemon-import";
   const { startDaemon, DEFAULT_CONFIG } = await import("../../src/hub/daemon.ts");
   const { ADAPTERS } = await import("../../src/adapters/registry.ts");
+  publicStage = "copy-rebind";
   const db = new Database(join(stateDir, "hub.db")); db.run(`PRAGMA busy_timeout = ${LEDGER_BUSY_TIMEOUT_MS}`);
   const rows = db.query("SELECT project_id FROM delivery_meta LIMIT 2").all() as { project_id: string }[];
   if (rows.length > 1) { db.close(); return refuse(); }
   const row = rows[0];
   // Rebind only the disposable copy's project path; no live descriptor/leadership file is copied or read.
   db.query("UPDATE delivery_meta SET project_root=?").run(cwd); db.close();
+  publicStage = "daemon-start";
   const daemon = await startDaemon({ cwd, stateDir, projectId: row?.project_id ?? "synthetic-startup", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false,
     agentDrift: async () => [], terminal: () => ({ available: () => ({ ok: false, why: "benchmark effects are refused" }), open: deny }), notifier: deny,
     memorySync: deny, memorySyncTrigger: () => {}, piiScreen: async () => deny(), webFetchTransport: deny,
@@ -477,11 +512,14 @@ async function measure(root: string): Promise<void> {
     } });
   const importAndStartupMs = performance.now() - importedAt;
   try {
+    publicStage = "ready-check";
     if (daemon.bus.peers.size !== 0 || guards.effects() !== 0) return refuse();
+    publicStage = "timing-read";
     const lines = readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter(line => line.includes("startup timings ms: "));
     if (lines.length !== 1) return refuse();
     const timing = timingLine(lines[0]!.slice(lines[0]!.indexOf("startup timings ms: ")));
     await new Promise<void>(done => process.stdout.write(JSON.stringify({ timing, importAndStartupMs, ready: 1, effects: guards.effects(), ...io }) + "\n", () => done()));
+    publicStage = "daemon-stop";
     await daemon.stop();
     if (guards.effects() !== 0) return refuse();
     process.stdout.write(JSON.stringify({ stopped: 1, effects: guards.effects() }) + "\n");
@@ -508,5 +546,8 @@ if (import.meta.main) {
         acceptance: args.includes("--acceptance"), samples: Number(value("--samples") ?? 1), profile: profileFile ? numericProfile(JSON.parse(readFileSync(profileFile, "utf8"))) : undefined });
       for (const result of results) process.stdout.write(JSON.stringify(result) + "\n");
     }
-  } catch { process.stderr.write("startup benchmark did not complete; inspect its isolated configuration and numeric profile before another authorized attempt\n"); process.exitCode = 1; }
+  } catch (error) {
+    const publicOnly = args.includes("--synthetic") && !args.includes("--private-state") || ["--seed", "--child", "--probe-child"].includes(args[0] ?? "") && process.env.AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG === "1";
+    publicDebug(publicOnly, publicError(error));
+    process.stderr.write("startup benchmark did not complete; inspect its isolated configuration and numeric profile before another authorized attempt\n"); process.exitCode = 1; }
 }

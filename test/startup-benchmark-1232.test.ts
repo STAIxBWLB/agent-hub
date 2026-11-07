@@ -24,6 +24,11 @@ test("benchmark environment contains only isolated homes and fixed metadata vari
   for (const key of ["HOME", "TMPDIR", "AGENTHUB_HOME", "AMEM_HOME", "CODEX_HOME", "KIMI_CODE_HOME", "CLAUDE_CONFIG_DIR"]) expect(statSync(env[key]!).mode & 0o777).toBe(0o700);
 });
 
+test("public debug is derived only from the synthetic mode and absent from private child environments", () => {
+  expect(isolatedStartupEnvironment(directory(), "synthetic").AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG).toBe("1");
+  expect(isolatedStartupEnvironment(directory(), "private").AHUB_STARTUP_BENCHMARK_PUBLIC_DEBUG).toBeUndefined();
+});
+
 test("event snapshot keeps the complete append-only prefix and rejects source symlinks", () => {
   const root = directory(), source = join(root, "events.jsonl"), output = join(root, "copy.jsonl");
   const complete = '{"fixture":"' + "x".repeat(70_000) + '"}\n';
