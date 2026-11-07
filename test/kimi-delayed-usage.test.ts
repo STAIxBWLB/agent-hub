@@ -44,8 +44,8 @@ function scheduler() {
   };
 }
 
-function rig(h: ReturnType<typeof fixture>, options: { failFirstRecord?: boolean } = {}) {
-  let now = 1_790_000_100_000, current: string | undefined, fail = options.failFirstRecord === true;
+function rig(h: ReturnType<typeof fixture>, options: { failFirstRecord?: boolean; failSecondRecord?: boolean } = {}) {
+  let now = 1_790_000_100_000, current: string | undefined, failFirst = options.failFirstRecord === true, failSecond = options.failSecondRecord === true, calls = 0;
   const log = {
     recorded: [] as { id: string; counted: number; attribution: TaskAttribution; turn?: string }[],
     reports: [] as { used: number }[],
@@ -60,7 +60,8 @@ function rig(h: ReturnType<typeof fixture>, options: { failFirstRecord?: boolean
     session: () => current,
     schedule: timers.schedule,
     record: (_peer, row, counted, attributed) => {
-      if (fail) { fail = false; throw new Error("injected event commit failure"); }
+      calls++;
+      if (failFirst && calls === 1 || failSecond && calls === 2) throw new Error("injected event commit failure");
       log.recorded.push({ id: row.id, counted, attribution: attributed.attribution, ...(attributed.turn ? { turn: attributed.turn } : {}) });
     },
     report: (_peer, window) => log.reports.push({ used: window.used }),
@@ -196,4 +197,19 @@ test("#1281 AC4: a fresh cue during the last pending follow-up gets its own boun
   expect(r.log.recorded).toEqual([{ id: r.log.recorded[0]!.id, counted: 7, attribution: { task: 2, attribution: "delivery" }, turn: "turn-b" }]);
   expect(r.timers.delays()).toEqual([1000]);
   r.usage.stop();
+});
+
+test("#1281 AC6: a retry after a cache-only row failure still reports earlier positive usage", () => {
+  const h = fixture(), s = h.makeSession(), r = rig(h, { failSecondRecord: true }), t = r.now();
+  r.bind(s.id); r.turn("turn-a", 8, t - 10);
+  appendFileSync(s.wire, wireRow(t - 5, 7, 3) + wireRow(t - 4, 0, 0));
+  expect(() => r.usage.collect("kimi")).toThrow("injected event commit failure");
+  expect(r.log.recorded.map(row => row.counted)).toEqual([10]);
+  expect(r.log.reports).toHaveLength(0);
+  r.usage.stop();
+  r.usage.collect("kimi");
+  expect(r.log.recorded.map(row => row.counted)).toEqual([10, 0]);
+  expect(r.log.reports).toEqual([{ used: 0.01 }]);
+  r.usage.collect("kimi");
+  expect(r.log.reports).toHaveLength(1);
 });

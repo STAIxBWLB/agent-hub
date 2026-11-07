@@ -50,6 +50,7 @@ interface Bound {
   turns: KimiTurnInterval[];
   followUp: number;
   burst: boolean;
+  reportPending: boolean;
   pending?: () => void;
   unknown?: KimiWireReason;
   noticed?: KimiWireReason;
@@ -133,7 +134,7 @@ export class KimiUsage {
       session,
       reader: new KimiWireReader({ home: this.ports.home, sessionId: session, ...(this.ports.maxBytes ? { maxBytes: this.ports.maxBytes } : {}) }),
       floor: this.ports.now() - FLOOR_SLACK_MS,
-      turns: [], followUp: 0, burst: false,
+      turns: [], followUp: 0, burst: false, reportPending: false,
     };
     this.bound.set(peer, next);
     return next;
@@ -158,7 +159,7 @@ export class KimiUsage {
       bound.unknown = undefined;
       // ponytail: PASSES x the reader's per-call bound. A longer unread backlog (a resumed session with a huge log) is finished by the next
       // call, and no figure is reported until it is: a window that is still catching up would be short. Upgrade: seek to the end at bind.
-      if (!more && (added > 0 || recovered)) this.report(peer);
+      if (!more && (added > 0 || recovered || bound.reportPending)) { this.report(peer); bound.reportPending = false; }
     } finally {
       if (this.bound.get(peer) === bound) this.schedule(peer, bound, scheduled);
     }
@@ -190,6 +191,7 @@ export class KimiUsage {
       this.ports.record(peer, row, counted, attributed);
       this.seen.add(row.id);
       this.window.add(Math.min(row.at, now), counted);
+      if (counted > 0) bound.reportPending = true;
       added += counted;
     }
     return added;
