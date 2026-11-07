@@ -1,0 +1,76 @@
+# agent-hub entry for Herdr (optional)
+
+Task H1 of [#1199](https://github.com/STAIxBWLB/agent-hub/issues/1199), on the frozen
+[H0 contract](host-contract-v1.md). **Optional and removable.** Herdr and ahub keep working exactly as they do
+today with this folder absent. It is not an ahub dependency and ahub is not its dependency: nothing in `src/`,
+`scripts/` or `package.json` mentions it.
+
+## What it does
+
+A dialog you open on purpose. It shows the **machine and folder** of the focused space, lists that machine's
+registered ahub projects (`ahub projects --json`, read on that machine), marks the ones that contain the folder, and
+waits. Nothing runs on open except that one bounded read, and nothing opens until you **select a row**. A single
+matching project is only a default you still select.
+
+For the selected project:
+
+- **Open console** opens one new tab in that space running `ahub console` with the project root as the tab's
+  folder, so Herdr starts it on that space's machine. The hub must already be running.
+- **Open dashboard** (this computer only) runs the existing `ahub ui` from the project folder. Its output is dropped:
+  a printed link or one-time ticket is never kept, shown or rewritten. If ahub printed one, the entry says so.
+- **Copy command** puts `ahub --project '<root>' console` on the clipboard, quoted as one shell word, for you to run
+  on the machine named in the dialog. It runs nothing. This is the route for a remote project's dashboard too.
+
+Before every effect it re-reads the space, the machine, the registrations, and runs `ahub status --json` from the
+project folder to prove that folder still resolves to the selected project id with a running hub. A changed,
+replaced, moved, duplicate or unknown project, an unready machine or a hub that is not running each refuse with a
+fixed sentence and open nothing. It never starts, stops, restarts or upgrades anything, and never touches tasks,
+reviews, approvals, roles, budget or memory. There is no polling and it keeps no state.
+
+## What it will not do
+
+Run anything on this Mac for a remote space. Put a project path in a command line. Resolve a remote path locally.
+Open or convert a remote loopback link. Focus, replace, restart or close an existing terminal (existing-terminal
+focus is unbuilt until a Herdr terminal can be mapped to an ahub console, see the contract). Raise the `exec`
+limits (30 s, 8 MiB). Edit your layout, settings, keys or other mods.
+
+## Install (additive, by you)
+
+Herdr has no install command: a mod is a folder. Use a scratch home first.
+
+1. `HERDR_APP_HOME=/some/scratch/dir` with `mods/` inside it, copy this `mod/` folder to `mods/ahub`, and run
+   `herdr-app check <scratch>/mods/ahub`. It must print `check passed`.
+2. For your real profile: copy `mod/` to `~/.config/herdr-app/mods/ahub`. Never overwrite a folder that already has
+   that name, and read the three files first, because the mod runs programs (`ahub`) with your environment.
+3. It declares `"place": "none"`, so Herdr docks it nowhere and your layout is unchanged. To open it, add a key to
+   your own `keys.json` (merge, do not replace the file), for example `"global": { "alt-a": "mod.open:ahub" }`, or
+   run `mod.open` with name `ahub` from the command palette. Pick a key you do not already use.
+
+## Disable and remove
+
+Delete `mods/ahub`. Nothing else was written: no layout, settings, program or other-mod file was changed, and
+`installed.json`, `seen.json` and `shared.json` are Herdr's own bookkeeping. If you added a key, remove that line
+from `keys.json`. Terminals, tabs opened earlier, ahub agents and hub state are not affected, because the mod owns
+none of them. What removal does to a copy that is already shown was **not observed** and is part of the
+person-run [native receipt](native-receipt.md).
+
+## Platforms
+
+macOS and Linux paths only. On a Windows window every action refuses (`unsupported_platform`) and nothing runs,
+because the folder and quoting rules here are POSIX and no Windows leg exists. A remote space needs a machine that
+Herdr lists as ready and a native receipt (H3). Mobile is not claimed and is never inferred from SSH reachability.
+
+## What is and is not proven
+
+Proven by tests against the H0 fake host (`test/herdr-companion-entry.test.ts`): the selection and refusal rules,
+fixed argv only, the special-character and remote cases, output handling, rapid switches, no retry, no link kept, no
+runtime mention. Proven with the real host: `herdr-app check` accepts the files in a scratch home (it caught a
+`structuredClone` the host runtime lacks). **Not proven:** that the dialog opens and looks right in a window, that
+`mod.open` opens it, that `tab.new` with `argv` starts `ahub console` as intended, any remote machine, and what
+disabling does to a shown copy. Those are the person-run receipt, and the action count below is a procedure count.
+
+| | Baseline (no mod) | With the entry | Observed |
+| --- | --- | --- | --- |
+| Local console, after the project is chosen | 2: new tab, submit `ahub console` | 1 click on Open console (plus 1 to open the dialog and 1 to select, counted separately) | not run |
+| Local dashboard | 2: new tab, submit `ahub ui` | 1 click on Open dashboard (same separate steps) | not run |
+| Remote console | 2 on that machine's space | 1 click, or Copy command and paste | not run, no machine configured |
