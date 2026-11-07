@@ -27,7 +27,13 @@ export class GitHubApi {
 
   /** A job log, read only up to `maxBytes` (the stream is cancelled after that). An expired or missing log reads as empty. */
   async log(jobId: number, maxBytes: number): Promise<string> {
-    const response = await this.fetchFn(`${API}/repos/${this.repo}/actions/jobs/${jobId}/logs`, { headers: this.headers(), redirect: "follow" });
+    // The logs endpoint answers with a redirect to a signed blob URL that needs no credential: follow it by hand so the token is sent to api.github.com only.
+    let response = await this.fetchFn(`${API}/repos/${this.repo}/actions/jobs/${jobId}/logs`, { headers: this.headers(), redirect: "manual" });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location || !/^https:\/\//.test(location)) throw new Error(`GitHub job log ${jobId} answered a redirect with no https location`);
+      response = await this.fetchFn(location, { redirect: "follow" });
+    }
     if (response.status === 404 || response.status === 410) return "";
     if (!response.ok || !response.body) throw new Error(`GitHub job log ${jobId} answered ${response.status}`);
     const reader = response.body.getReader();

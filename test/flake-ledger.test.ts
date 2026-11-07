@@ -119,21 +119,40 @@ function fakeFetch(handlers: Record<string, (init: RequestInit | undefined) => u
   }) as typeof fetch;
 }
 
-test("#1257 upsertIssue creates the ledger issue once, then edits it and never opens a second", async () => {
+test("#1257 upsertIssue finds the ledger issue by search even when the repository has far more issues than any listing shows, and never opens a second", async () => {
   const calls: string[] = [];
-  let issues: object[] = [];
+  const urls: string[] = [];
+  let existing: object[] = [];
   const handlers = {
-    "GET /repos/o/r/issues": () => issues,
-    "POST /repos/o/r/issues": (init: RequestInit | undefined) => { const made = { number: 42, ...JSON.parse(String(init!.body)), state: "open" }; issues = [made]; return made; },
-    "PATCH /repos/o/r/issues/42": () => ({}),
+    // The old version paged this listing (the 500 oldest items, pull requests included) and so never saw an issue created after #1259; it must not be read at all.
+    "GET /repos/o/r/issues": () => Array.from({ length: 100 }, (_, i) => ({ number: i + 1, title: "unrelated", body: "", state: "open" })),
+    "GET /search/issues": () => ({ items: existing }),
+    "POST /repos/o/r/issues": (init: RequestInit | undefined) => { const made = { number: 4242, ...JSON.parse(String(init!.body)), state: "open" }; existing = [made]; return made; },
+    "PATCH /repos/o/r/issues/4242": () => ({}),
   };
-  const api = new GitHubApi("o/r", "token", fakeFetch(handlers, calls));
-  const body = `${LEDGER_MARKER}\nfirst`;
-  expect(await upsertIssue(api, body)).toEqual({ number: 42, created: true });
-  expect(await upsertIssue(api, `${LEDGER_MARKER}\nsecond`)).toEqual({ number: 42, created: false });
+  const spy = fakeFetch(handlers, calls);
+  const api = new GitHubApi("o/r", "token", (async (url: string | URL | Request, init?: RequestInit) => { urls.push(String(url)); return spy(url, init); }) as typeof fetch);
+  expect(await upsertIssue(api, `${LEDGER_MARKER}\nfirst`)).toEqual({ number: 4242, created: true });
+  expect(await upsertIssue(api, `${LEDGER_MARKER}\nsecond`)).toEqual({ number: 4242, created: false });
+  expect(await upsertIssue(api, `${LEDGER_MARKER}\nthird`)).toEqual({ number: 4242, created: false });
   expect(calls.filter((c) => c.startsWith("POST"))).toHaveLength(1);
-  expect(calls.filter((c) => c.startsWith("PATCH"))).toHaveLength(1);
+  expect(calls.filter((c) => c.startsWith("PATCH"))).toHaveLength(2);
+  expect(calls.some((c) => c === "GET /repos/o/r/issues")).toBe(false);
+  expect(decodeURIComponent(urls[0]!)).toContain(`repo:o/r is:issue in:title "${LEDGER_TITLE}"`);
+  // a search hit that is a twin (no marker) or a pull request is not the ledger issue: a new one is created
+  existing = [{ number: 7, title: LEDGER_TITLE, body: "no marker", state: "open" }, { number: 8, title: LEDGER_TITLE, body: LEDGER_MARKER, state: "open", pull_request: {} }];
+  expect((await upsertIssue(api, `${LEDGER_MARKER}\nfourth`)).created).toBe(true);
 });
+
+test("#1257 test names reach the issue body inside code spans, so @mentions and #links in PR-head test names do not ping or link", () => {
+  const evil = "ping @someone and link #123 `tick` | pipe";
+  const classes = aggregateFlakes([job(MAC1, "h1", "failure", "1T01")], new Map([[nextId - 1, [{ file: "test/x.test.ts", test: evil }]]]));
+  const body = renderLedger(classes, { repo: "o/r", days: 28, generatedAt: "2026-11-07T00:00:00Z", runsExamined: 1, flakyJobs: 1, truncated: false });
+  const row = body.split("\n").find((line) => line.startsWith("| `test/x.test.ts`"))!;
+  expect(row).toContain("`ping @someone and link #123 'tick' \\| pipe`");
+  expect(body.replace(/`[^`]*`/g, "")).not.toMatch(/@someone|#123/);
+});
+
 
 test("#1257 GitHubApi.log stops reading at the byte bound, treats an expired log as empty and never prints the token", async () => {
   const chunk = "x".repeat(1000);
@@ -144,6 +163,18 @@ test("#1257 GitHubApi.log stops reading at the byte bound, treats an expired log
   expect(pulled).toBeLessThan(100);
   const gone = (async () => new Response("", { status: 410 })) as unknown as typeof fetch;
   expect(await new GitHubApi("o/r", "secret-token", gone).log(1, 100)).toBe("");
+  // the logs endpoint's redirect goes to a signed blob URL: it is followed by hand, and the token goes to the API host only
+  const hops: { url: string; auth: string | null }[] = [];
+  const redirecting = (async (url: string | URL | Request, init?: RequestInit) => {
+    hops.push({ url: String(url), auth: new Headers(init?.headers).get("authorization") });
+    return hops.length === 1 ? new Response(null, { status: 302, headers: { location: "https://blob.example/logs/1?sig=abc" } }) : new Response("log text", { status: 200 });
+  }) as unknown as typeof fetch;
+  expect(await new GitHubApi("o/r", "secret-token", redirecting).log(1, 1000)).toBe("log text");
+  expect(hops.map((hop) => hop.url)).toEqual(["https://api.github.com/repos/o/r/actions/jobs/1/logs", "https://blob.example/logs/1?sig=abc"]);
+  expect(hops[0]!.auth).toBe("Bearer secret-token");
+  expect(hops[1]!.auth).toBeNull();
+  const plain = (async () => new Response(null, { status: 302, headers: { location: "http://insecure.example/x" } })) as unknown as typeof fetch;
+  await expect(new GitHubApi("o/r", "secret-token", plain).log(1, 10)).rejects.toThrow(/no https location/);
   const denied = (async () => new Response("{}", { status: 403 })) as unknown as typeof fetch;
   await expect(new GitHubApi("o/r", "secret-token", denied).json("/repos/o/r/issues?per_page=1")).rejects.toThrow(/403.*token's permissions/);
   await expect(new GitHubApi("o/r", "secret-token", denied).json("/x")).rejects.not.toThrow(/secret-token/);

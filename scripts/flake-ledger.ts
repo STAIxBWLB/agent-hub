@@ -11,7 +11,7 @@ export const MAX_RUN_PAGES = 5;
 export const MAX_RUNS_EXAMINED = 60;
 export const MAX_LOGS = 40;
 export const MAX_LOG_BYTES = 8 * 1024 * 1024;
-export const MAX_ISSUE_PAGES = 5;
+export const MAX_SEARCH_RESULTS = 20;
 /** GitHub refuses an issue body past 65536 characters. */
 export const MAX_BODY_CHARS = 60_000;
 export const TOP_CLASSES = 3;
@@ -133,6 +133,8 @@ export function rollupByFile(classes: readonly FlakeClass[]): FileRollup[] {
 }
 
 const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\r?\n/g, " ").slice(0, 160);
+/** Text from a test name is PR-head code (a fork's too): in a code span, so an `@user` or `#123` in it neither pings nor links. A backtick would end the span, so it becomes an apostrophe. */
+const code = (text: string) => `\`${cell(text).replace(/`/g, "'")}\``;
 
 /** The issue body: a marker, the window, the top classes, then every class by OS split. Cut at `MAX_BODY_CHARS` with a note. */
 export function renderLedger(classes: readonly FlakeClass[], meta: LedgerMeta, top = TOP_CLASSES): string {
@@ -145,11 +147,11 @@ export function renderLedger(classes: readonly FlakeClass[], meta: LedgerMeta, t
   ];
   if (!classes.length) lines.push("No flaky job in the window.", "");
   else {
-    lines.push(`## Top ${Math.min(top, rollupByFile(classes).length)} files`, "", ...rollupByFile(classes).slice(0, top).map((r, i) => `${i + 1}. \`${cell(r.file)}\` (${r.os}, ${r.heads} head${r.heads === 1 ? "" : "s"}, ${r.tests} failing test${r.tests === 1 ? "" : "s"})`), "");
+    lines.push(`## Top ${Math.min(top, rollupByFile(classes).length)} files`, "", ...rollupByFile(classes).slice(0, top).map((r, i) => `${i + 1}. ${code(r.file)} (${r.os}, ${r.heads} head${r.heads === 1 ? "" : "s"}, ${r.tests} failing test${r.tests === 1 ? "" : "s"})`), "");
     for (const [os, title] of [["macos-only", "macOS only"], ["both", "Both OSes"], ["ubuntu-only", "Ubuntu only"]] as const) {
       const rows = classes.filter((c) => c.os === os);
       if (!rows.length) continue;
-      lines.push(`## ${title}`, "", "| File | Test | Heads | Jobs |", "| --- | --- | ---: | --- |", ...rows.map((c) => `| \`${cell(c.file)}\` | ${cell(c.test)} | ${c.heads.length} | ${cell(c.jobs.join(", "))} |`), "");
+      lines.push(`## ${title}`, "", "| File | Test | Heads | Jobs |", "| --- | --- | ---: | --- |", ...rows.map((c) => `| ${code(c.file)} | ${code(c.test)} | ${c.heads.length} | ${cell(c.jobs.join(", "))} |`), "");
     }
   }
   lines.push("Each class needs an owner and a deadline: a fix, or a quarantine with its issue (rerun policy: docs/agent-notes/tests.md).", "");
@@ -196,14 +198,15 @@ export async function collect(api: GitHubApi, now: Date, days = LOOKBACK_DAYS): 
   return { flaky, failures, runsExamined: candidates.length, truncated };
 }
 
+/**
+ * The tracking issue is found by search (the title in the query, then `pickTrackingIssue`'s exact title and body marker), never by paging the repository's issues: a listing is bounded
+ * and includes pull requests, so a repository past that bound would not show the issue and every weekly run would open another one. The search index lags a new issue by seconds,
+ * which a weekly run never meets.
+ */
 export async function upsertIssue(api: GitHubApi, body: string): Promise<{ number: number; created: boolean }> {
-  const items: IssueItem[] = [];
-  for (let page = 1; page <= MAX_ISSUE_PAGES; page++) {
-    const data = await api.json<IssueItem[]>(`/repos/${api.repo}/issues?state=all&per_page=100&page=${page}&sort=created&direction=asc`);
-    items.push(...data);
-    if (data.length < 100) break;
-  }
-  const existing = pickTrackingIssue(items);
+  const query = encodeURIComponent(`repo:${api.repo} is:issue in:title "${LEDGER_TITLE}"`);
+  const found = await api.json<{ items?: IssueItem[] }>(`/search/issues?q=${query}&per_page=${MAX_SEARCH_RESULTS}&sort=created&order=asc`);
+  const existing = pickTrackingIssue(found.items ?? []);
   if (existing) {
     await api.json(`/repos/${api.repo}/issues/${existing.number}`, { method: "PATCH", body: { body, state: "open" } });
     return { number: existing.number, created: false };
