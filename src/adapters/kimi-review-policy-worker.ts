@@ -25,16 +25,18 @@ export function startKimiReviewPolicyWatch(binding: KimiReviewPolicyBinding, opt
   const fail = () => { failed = true; settle(false); };
   worker.on("error", fail);
   worker.on("exit", () => { exited = true; fail(); resolveExit(); });
-  // Never inherit/forward worker output. Unexpected output invalidates the proof.
-  worker.stdout?.on("data", fail); worker.stderr?.on("data", fail);
-  worker.on("message", (message: unknown) => {
-    if (stopping || failed) return;
-    if (!message || typeof message !== "object" || Array.isArray(message)) return fail();
-    const reply = message as Record<string, unknown>;
-    if (Object.keys(reply).sort().join() !== "current,id" || !pending || reply.id !== pending.id || typeof reply.current !== "boolean") return fail();
-    if (!reply.current) failed = true;
-    settle(reply.current);
-  });
+  try {
+    // Never inherit/forward worker output. Unexpected output invalidates the proof.
+    worker.stdout?.on("data", fail); worker.stderr?.on("data", fail);
+    worker.on("message", (message: unknown) => {
+      if (stopping || failed) return;
+      if (!message || typeof message !== "object" || Array.isArray(message)) return fail();
+      const reply = message as Record<string, unknown>;
+      if (Object.keys(reply).sort().join() !== "current,id" || !pending || reply.id !== pending.id || typeof reply.current !== "boolean") return fail();
+      if (!reply.current) failed = true;
+      settle(reply.current);
+    });
+  } catch { fail(); } // Return ownership even if runtime stream setup failed.
   return {
     check() {
       if (failed || stopping || exited) return Promise.resolve(false);
