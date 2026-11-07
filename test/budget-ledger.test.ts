@@ -3,6 +3,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Budget, DEFAULT_BUDGET, type BudgetHooks, type BudgetLedgerEntry, type UsageWindow } from "../src/hub/budget.ts";
+// #1292: these tests exercise the gate mechanism at an explicit 0.9; the product default (0.99) has its own test.
+const GATE_090 = { ...DEFAULT_BUDGET, gate: 0.9 };
 
 // #683 U1: the limit ledger. Pauses, resumes and derived resets reach `hooks.ledger`, ids and numbers only.
 const MIN = 60_000;
@@ -15,7 +17,7 @@ function setup(db = join(mkdtempSync(join(tmpdir(), "ahub-ledger-")), "hub.db"))
     canHandOff: () => true, attached: () => true, handoff: async () => [{ id: 7, title: "a private task title", to: "local", role: "owner" }], resumed: () => {}, notify: () => {},
     ledger: entry => ledger.push(entry),
   };
-  const budget = new Budget(db, DEFAULT_BUDGET, hooks, () => clock.now);
+  const budget = new Budget(db, GATE_090, hooks, () => clock.now);
   const settle = () => new Promise(resolve => setTimeout(resolve, 15));
   const reading = (id: UsageWindow["id"], used: number, resetsAt?: number): UsageWindow[] => [{ id, used, source: "codex rateLimits", ...(resetsAt !== undefined ? { resetsAt } : {}) }];
   return { budget, clock, ledger, settle, reading, db };
