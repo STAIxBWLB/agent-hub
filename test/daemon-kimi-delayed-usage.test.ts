@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
-import { newEnvelope, USER } from "../src/hub/envelope.ts";
+import { HUB, newEnvelope, USER } from "../src/hub/envelope.ts";
 import { readEvents } from "../src/hub/events.ts";
 import type { KimiUsageScheduler } from "../src/hub/kimi-usage.ts";
 
@@ -46,7 +46,7 @@ async function rig(options: { realTimers?: boolean } = {}) {
   const daemon = await startDaemon({
     cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, kimiHome, instanceId: "kimi-delayed-usage",
     ...(options.realTimers ? {} : { kimiUsageScheduler: timers.schedule }),
-    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, roles: { ...DEFAULT_CONFIG.roles, kimi: [...(DEFAULT_CONFIG.roles.kimi ?? []), "conductor"] }, conductor: { ...DEFAULT_CONFIG.conductor, feed: "all" }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 1_000_000, checkpoint_timeout_s: 1 },
       kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")] },
   });
@@ -57,9 +57,10 @@ async function rig(options: { realTimers?: boolean } = {}) {
   await until(() => daemon.bus.stateOf("kimi") === "idle", "kimi idle");
   const file = join(stateDir, "events.jsonl");
   const row = (at: number, inputOther: number, output: number, extra: object = {}) => appendFileSync(wire, `${JSON.stringify({ type: "usage.record", agentId: "main", model: "kimi-code/k3", usage: { inputOther, output, inputCacheRead: 100, inputCacheCreation: 0 }, usageScope: "turn", time: at, ...extra })}\n`);
-  const turn = async (text: string, options: { task?: number; during?: () => void | Promise<void> } = {}) => {
+  const turn = async (text: string, options: { task?: number; supervision?: boolean; during?: () => void | Promise<void> } = {}) => {
     const beforeStart = events(file, "turn_start").length, beforeEnd = events(file, "turn_end").length;
-    daemon.bus.publish(newEnvelope(USER, text, { to: ["kimi"], ...(options.task ? { refs: { task: String(options.task) } } : {}) }));
+    const refs = { ...(options.task ? { task: String(options.task) } : {}), ...(options.supervision ? { supervision: "fixture" } : {}) };
+    daemon.bus.publish(newEnvelope(options.supervision ? HUB : USER, text, { to: ["kimi"], ...(Object.keys(refs).length ? { refs } : {}) }));
     await until(() => events(file, "turn_start").length > beforeStart, `turn start ${text}`);
     await options.during?.();
     await until(() => events(file, "turn_end").length > beforeEnd, `turn end ${text}`);
@@ -93,12 +94,13 @@ test("#1281 AC2/AC4: a delayed row keeps task A while task B is open, never chan
   await r.turn("task A", { task: 101 });
   const aStart = events(r.file, "turn_start").at(-1)!, aEnd = events(r.file, "turn_end").at(-1)!;
   await until(() => Date.now() > Date.parse(aEnd.at), "A and B have distinct native-time intervals");
-  await r.turn("task B", { task: 202, during: () => {
+  await r.turn("task B", { task: 202, supervision: true, during: () => {
     r.row(Date.parse(aStart.at), 12, 3);
     r.timers.fire();
     expect(r.daemon.bus.stateOf("kimi")).toBe("busy");
   } });
   const bEnd = events(r.file, "turn_end").at(-1)!;
+  expect(events(r.file, "supervision_turn").at(-1)?.tokens).toBeUndefined();
   expect(events(r.file, "turn_end")).toEqual([aEnd, bEnd]);
   expect(aEnd.tokens).toBeUndefined(); expect(bEnd.tokens).toBeUndefined();
   expect(events(r.file, "usage")).toHaveLength(1);
@@ -109,7 +111,7 @@ test("#1281 AC2/AC4: a delayed row keeps task A while task B is open, never chan
   expect(byTask.usage.rows.find((row: any) => row.key === "101").counted).toEqual({ value: 15, source: "count" });
   expect(byTask.usage.rows.some((row: any) => row.key === "202")).toBe(false);
   await r.turn("task C", { task: 303, during: () => {
-    r.row(Date.parse(aStart.at) - 1, 2, 1);
+    r.row(Date.parse(aStart.at) - 100, 2, 1);
     r.timers.fire();
   } });
   expect(events(r.file, "usage").at(-1)).toMatchObject({ attribution: "unattributed" });
@@ -121,4 +123,11 @@ test("#1281 AC2/AC4: a delayed row keeps task A while task B is open, never chan
   await r.daemon.stop();
   expect(r.timers.size()).toBe(0);
   expect(events(r.file, "usage")).toHaveLength(2);
+});
+
+test("#1281 immediate Kimi tokens count in the supervision receipt opened before the native turn", async () => {
+  const r = await rig();
+  await r.turn("supervised ordinary turn", { supervision: true, during: () => r.row(Date.now(), 5, 2) });
+  await until(() => events(r.file, "supervision_turn").length === 1, "supervision receipt");
+  expect(events(r.file, "supervision_turn")[0]).toMatchObject({ peer: "kimi", tokens: 7 });
 });

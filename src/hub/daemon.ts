@@ -3454,7 +3454,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const task = result.task === undefined ? undefined : board.get(result.task);
     return { ...result, ...(task && tasks.isPii(task) ? { pii: true as const } : {}) };
   };
-  const supervisionTurns = new Map<PeerId, { id: string; at: number; tokens?: number; session?: string }>();
+  const supervisionTurns = new Map<PeerId, { id: string; at: number; tokens?: number; session?: string; nativeTurn?: string }>();
   /** #1054: who started the turn a delivery begins. The person's message (console, `ahub say`, an acon send: from `user`, never the hub's own `answer` envelope) opens a run; ids only. */
   const pendingPersonDelivery = new Map<PeerId, { envelope: string; private: boolean }>();
   bus.onDeliver = (peer, originals) => {
@@ -4027,7 +4027,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const applyKimiTokens = (peer: PeerId, n: number, attributed: KimiRowAttribution): void => {
     if (n > 0 && noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(n));
     const supervisionTurn = supervisionTurns.get(peer);
-    if (supervisionTurn && Number.isFinite(n) && n >= 0 && supervisionTurn.id === attributed.turn) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
+    if (supervisionTurn && Number.isFinite(n) && n >= 0 && (supervisionTurn.nativeTurn ?? supervisionTurn.id) === attributed.turn) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
     if (n > 0) {
       const turn = turns.get(peer);
       if (turn && turn.id === attributed.turn) turn.tokens += n;
@@ -6516,6 +6516,8 @@ export async function startDaemon(opts: DaemonOptions) {
         } catch (error) { snapshotFailure(`the write scope of ${id}`, error); }
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
         turns.set(e.peer, { id, capture, start: startedAt, tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        const supervised = supervisionTurns.get(e.peer);
+        if (supervised?.id.startsWith("supervision-")) supervised.nativeTurn = id;
         const pendingReviewInput = pendingReviewObserverInputs.get(e.peer);
         if (pendingReviewInput) {
           pendingReviewInput.turnId = id; delete pendingReviewInput.awaitingTurn;
