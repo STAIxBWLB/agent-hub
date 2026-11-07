@@ -6605,3 +6605,16 @@ that same machine, and a remote cwd is never resolved on this Mac. Herdr has no 
 a folder the person adds and removes, and what removal does to a shown copy is for the H1 native receipt. Existing
 terminal focus is unbuilt until a Herdr terminal can be mapped to an ahub console. The three baseline journeys are
 procedure counts that have not been run in a native window.
+
+### Herdr project and machine entry (#1199 H1)
+
+[`integrations/herdr/`](../integrations/herdr/README.md) is an optional mod: three files the person copies to
+`mods/ahub` in the Herdr app home, which Herdr reads live and which declares `place: none`, so no layout changes.
+It lists the focused space's machine and folder and that machine's registered projects, and opens nothing until a
+row is selected. Open console starts one new tab in the selected space running `ahub --project <id> console`, with the project root
+as the tab's folder. Before every effect it re-reads the space, the machine and the registrations and runs
+`ahub status --json` from the project folder, and refuses a changed, duplicate, offline or unready target. The local
+dashboard runs the existing `ahub ui` and keeps no link or ticket. A remote space gets the console tab or a copyable
+command, never a dashboard link. Remove it by deleting the folder. It starts, stops and upgrades nothing and is not an
+ahub dependency. `herdr-app check` accepts it in a scratch home; the native open and disable receipt is a person-run
+leg that has not been run.
