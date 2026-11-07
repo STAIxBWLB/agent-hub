@@ -12,7 +12,7 @@ async function controlProofs(context: ProofContext): Promise<ProofResults> {
   try {
     fd = openSync(join(context.root, "jcode-proof-observations.jsonl"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const before = fstatSync(fd);
-    if (!before.isFile() || before.nlink !== 1 || before.uid !== process.getuid?.() || before.size > Math.min(context.limits.outputBytes, 16 * 1024)) throw new Error("diagnostic refused");
+    if (!before.isFile() || before.nlink !== 1 || before.uid !== process.getuid?.() || (before.mode & 0o077) !== 0 || before.size > Math.min(context.limits.outputBytes, 16 * 1024)) throw new Error("diagnostic refused");
     const bytes = Buffer.alloc(before.size + 1); let size = 0;
     while (size < bytes.length) { const count = readSync(fd, bytes, size, bytes.length - size, size); if (!count) break; size += count; }
     const after = fstatSync(fd);
@@ -20,8 +20,8 @@ async function controlProofs(context: ProofContext): Promise<ProofResults> {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size));
     const lines = text.trim().split("\n");
     if (lines.length > 64) throw new Error("diagnostic bound");
-    const steps = new Set(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "telemetry-walk"]);
-    const causes = new Set(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io"]);
+    const steps = new Set(["steer-pong", "steer-subscribe", "steer-idle", "steer-stream-arrived", "steer-active", "steer-ack", "steer-end-turn", "steer-request-count", "steer-first-conversation", "steer-second-conversation", "first-shape", "second-shape", "telemetry-kind", "telemetry-walk"]);
+    const causes = new Set(["ok", "pending", "assertion", "telemetry-id", "milestone", "opt-out-marker", "other-telemetry-name", "symlink", "entry-budget", "io", "original", "steer", "head", "session-context", "system-reminder", "other", "directory", "regular", "identity-lock", "install-marker", "version-marker", "usage-outbox", "concurrency-dir", "active-sessions", "category-optout", "share-transcript-consent"]);
     const roots = new Set(["none", "home", "jcode-home"]);
     const records = lines.map(line => JSON.parse(line));
     for (const value of records) {
@@ -32,7 +32,7 @@ async function controlProofs(context: ProofContext): Promise<ProofResults> {
     process.stderr.write(JSON.stringify({ jcodeControlObservations: records }) + "\n");
   } catch {
     process.stderr.write("Jcode control diagnostics unavailable; next: inspect the closed checkpoint producer before another control.\n");
-  } finally { if (fd !== undefined) closeSync(fd); }
+  } finally { if (fd !== undefined) { try { closeSync(fd); } catch { /* Diagnostic cleanup cannot change a native verdict. */ } } }
   return result;
 }
 
