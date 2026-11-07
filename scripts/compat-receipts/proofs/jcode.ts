@@ -106,7 +106,7 @@ function environment(context: ProofContext, nativeHome: string, launch: string):
   }
   return env;
 }
-function hasTelemetry(directory: string, cap: number): boolean {
+function hasTelemetry(directories: readonly string[], cap: number): boolean {
   let count = 0;
   const walk = (dir: string): boolean => {
     for (const name of readdirSync(dir)) {
@@ -117,7 +117,7 @@ function hasTelemetry(directory: string, cap: number): boolean {
     }
     return false;
   };
-  return walk(directory);
+  return directories.some(walk);
 }
 function content(value: any): string {
   if (typeof value === "string") return value;
@@ -286,7 +286,7 @@ export async function runJcodeProofs(context: ProofContext): Promise<ProofResult
     }
     if (owned.length) {
       try {
-        const clean = !hasTelemetry(nativeHome, context.limits.archiveEntries);
+        const clean = !hasTelemetry([context.home, nativeHome], context.limits.archiveEntries);
         result.telemetry = { status: clean ? "pass" : "fail", cause: clean ? "ok" : "proof-failed" };
       } catch { result.telemetry = { status: "fail", cause: "proof-failed" }; }
     }

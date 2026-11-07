@@ -77,3 +77,9 @@ test("missing steer ack times out and still confirms owned original groups stopp
   expect(result["active-turn-soft-interrupt"]).toEqual({ status: "fail", cause: "timeout" });
   expect(result["serve-cleanup"]).toEqual({ status: "pass", cause: "ok" });
 }, 20000);
+
+test("telemetry in the private HOME fails even when JCODE_HOME and decoy configs stay clean", async () => {
+  const result = await run("home-telemetry");
+  expect(result.telemetry).toEqual({ status: "fail", cause: "proof-failed" });
+  expect(result.isolation).toEqual({ status: "pass", cause: "ok" });
+}, 20000);

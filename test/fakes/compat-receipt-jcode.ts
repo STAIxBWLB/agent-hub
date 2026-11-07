@@ -31,6 +31,7 @@ if (args[0] === "--proof-worker") {
     writeFileSync(config, JSON.stringify({ baseURL: value("--base-url"), model: value("--model") }));
   } else if (args.includes("serve")) {
     if (fault === "telemetry") writeFileSync(join(nativeHome, "telemetry_id"), "fixture");
+    if (fault === "home-telemetry") writeFileSync(join(peerHome, ".jcode/telemetry_id"), "fixture");
     const server = createServer(conn => {
       let buffer = "";
       conn.on("error", () => {});
