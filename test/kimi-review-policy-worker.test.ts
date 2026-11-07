@@ -22,6 +22,8 @@ function fixture() {
   for (const [index, name] of ["credentials", "oauth", "device_id"].entries()) symlinkSync(authTargets[index]!, join(tool, name), index < 2 ? "dir" : "file");
   const files = [join(tool, "config.toml"), join(tool, "mcp.json"), join(cwd, "reviewer.md")];
   for (const file of files) writeFileSync(file, "SYNTHETIC-PRIVATE-CONTENT");
+  const timestamp = new Date("2026-11-07T00:00:00Z");
+  for (const file of [join(source, "config.toml"), ...files]) utimesSync(file, timestamp, timestamp);
   const executable = join(root, "native-command"); writeFileSync(executable, "synthetic-binary");
   const stat = lstatSync(executable);
   const binding = projectKimiReviewPolicyBinding({ lexicalCwd: cwd, physicalCwd: cwd, sourcePath: source, source,
