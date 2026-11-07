@@ -5,13 +5,19 @@ import type { RoleIdentity, StampedEvent } from "./events.ts";
 import { hubHome } from "./project.ts";
 import { ADDONS, addonState, type Addon, type AddonName } from "./tooling.ts";
 import { MIN_ATTEMPTS, mulberry32 } from "./bench.ts";
+import { closedId, journalFigures, mergeBlock, NO_EVIDENCE, reviewBlock, specsBlock, type CancelCause, type CohortKind, type DeliveryBlock, type HandoffsBlock, type MemoryBlock, type MergeBlock, type PersonBlock, type ResearchEvidence, type ReviewBlock, type SpecsBlock, cancelCauseOf } from "./research-record.ts";
+export type { CancelCause, CohortKind, DeliveryBlock, HandoffsBlock, MemoryBlock, MergeBlock, PersonBlock, ResearchEvidence, ReviewBlock, SpecsBlock } from "./research-record.ts";
 
 /**
  * #247: opt-in research records of how tasks went, built only from `events.jsonl` (ids, states, counts, tokens), so the
  * live writer and `ahub research backfill` produce the same records. Never a title, detail, plan, note, path, message
  * body or check output: the events carry none of those.
  */
-export const RESEARCH_SCHEMA = "agent-hub.research/v1";
+/** v1 rows (approved tasks only, no review, delivery, merge, specs, memory or person block) stay readable; every row written now is v2 (#1277). */
+export const RESEARCH_SCHEMA_V1 = "agent-hub.research/v1";
+export const RESEARCH_SCHEMA = "agent-hub.research/v2";
+export type ResearchSchema = typeof RESEARCH_SCHEMA | typeof RESEARCH_SCHEMA_V1;
+const SCHEMAS: readonly string[] = [RESEARCH_SCHEMA_V1, RESEARCH_SCHEMA];
 export const LABELS = ["ok", "regressed", "reverted", "incomplete", "wrong", "abandoned"] as const;
 export type Label = (typeof LABELS)[number];
 /** A person's later verdict that turns an approved task into a failure. */
@@ -19,16 +25,22 @@ const FAILED: ReadonlySet<string> = new Set(["regressed", "reverted", "incomplet
 
 export interface PeerUsage { input: number | null; output: number | null; cacheRead: number | null; total: number | null }
 export interface TaskRecord {
-  schema: typeof RESEARCH_SCHEMA; kind: "task"; project: string; task: number;
+  schema: ResearchSchema; kind: "task"; project: string; task: number;
   profile?: string; profileClass?: string;
   release?: number | null; priority?: number | null; plannedStart?: number | null; due?: number | null;
   role?: string; roleIdentity?: { id: string; layer: "shipped" | "project"; hash: string };
   /** Native preamble preparations frozen at each attributed turn's start, never proof of model consumption. */
   sessionRoles?: { peer: string; turn: string; roles: RoleIdentity[] | null }[];
-  class: string | null; pii: boolean; outcome: "approved";
+  class: string | null; pii: boolean;
+  /** #1277 AC6: every task in a terminal board state has a record. A v1 row is always `approved`. Statistics about approved tasks filter on this. */
+  outcome: "approved" | "cancelled";
   /** The proposal time also tells a task from an earlier one with the same id after `ahub reset --all`. */
-  createdAt: string | null; startedAt: string | null; approvedAt: string;
-  /** From the first `in_progress` to the approval; null when the start is not in the events. */
+  createdAt: string | null; startedAt: string | null;
+  /** Null on a cancelled record. */
+  approvedAt: string | null;
+  /** When the task reached its terminal state (v2); a v1 row reads as its `approvedAt`. */
+  closedAt?: string;
+  /** From the first `in_progress` to the terminal state; null when the start is not in the events. */
   wallMs: number | null;
   /** Sum of the attributed turns' durations, the turns still open at the approval included. */
   activeMs: number;
@@ -57,9 +69,30 @@ export interface TaskRecord {
   peers?: string[];
   /** #258 AC11: task briefs handed over for it, and how many of them carried a hub-memory fail note; absent without briefs. */
   briefs?: { delivered: number; withFail: number };
+  /** #1277 (v2). Every block is a count, a duration or a closed value; a value that cannot be derived is null and counted as unknown by the quality report, never 0. */
+  /** Only on a cancelled record: an explicit closed cause the board retains, else `unknown`. Never inferred from a decline, an escalation or the cancellation note. */
+  cancelCause?: CancelCause;
+  /** Intermediate declines and escalations (history events, not terminal), counted on every record next to `reassignments`. */
+  declines?: number; escalations?: number;
+  review?: ReviewBlock; delivery?: DeliveryBlock; merge?: MergeBlock; specs?: SpecsBlock; memory?: MemoryBlock; person?: PersonBlock;
+  /** Persisted idle-ladder entries on the task's board history (the stall table itself is cleared when a task closes); null without the board. */
+  stalls?: number | null;
+  handoffs?: HandoffsBlock; cohort?: CohortKind;
 }
+/** A record carries merge figures when any of them is known. */
+const mergeKnown = (r: TaskRecord): boolean => !!r.merge && (r.merge.ciRuns !== null || r.merge.ciReruns !== null || r.merge.githubReviews !== null || r.merge.approvedToMergedMs !== null);
+/** True when `next` has merge figures the held record of the same task lacks. */
+export const fillsMerge = (held: TaskRecord, next: TaskRecord): boolean => next.schema === RESEARCH_SCHEMA && !mergeKnown(held) && mergeKnown(next);
+
+/** The latest record of each task (a later row of the same task replaces an earlier one), in order of first appearance. */
+export function latestTaskRecords(records: readonly ResearchRecord[]): TaskRecord[] {
+  const latest = new Map<string, TaskRecord>();
+  for (const r of records) if (r.kind === "task") latest.set(recordKey(r), r);
+  return [...latest.values()];
+}
+
 /** A person's later verdict on one task record: `createdAt` binds it to that task, not a later one with the same id. `by`: the agent that labelled its own task (#933); absent for the person. */
-export interface LabelRecord { schema: typeof RESEARCH_SCHEMA; kind: "label"; project: string; task: number; createdAt: string; label: Label; at: string; by?: string }
+export interface LabelRecord { schema: ResearchSchema; kind: "label"; project: string; task: number; createdAt: string; label: Label; at: string; by?: string }
 export type ResearchRecord = TaskRecord | LabelRecord;
 
 /** The store name for a project: a hash of its id, never its path. */
@@ -67,26 +100,35 @@ export const projectKey = (projectId: string): string => createHash("sha256").up
 export const researchDir = (home = hubHome()): string => join(home, "research");
 export const researchFile = (projectId: string, home = hubHome()): string => join(researchDir(home), `${projectKey(projectId)}.jsonl`);
 /** One task across every record about it: a task id is reused after `ahub reset --all`, its proposal time is not. */
-export const recordKey = (r: { project: string; task: number; createdAt: string | null; approvedAt?: string }): string => `${r.project}#${r.task}@${r.createdAt ?? r.approvedAt ?? ""}`;
+export const recordKey = (r: { project: string; task: number; createdAt: string | null; approvedAt?: string | null; closedAt?: string }): string => `${r.project}#${r.task}@${r.createdAt ?? r.approvedAt ?? r.closedAt ?? ""}`;
+/** When a record's task closed: v2 says so, a v1 row is approved-only and closed at its approval. */
+export const closedAtOf = (r: TaskRecord): string | null => r.closedAt ?? r.approvedAt;
 
-type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers" | "briefs"> & {
+type V2Fields = "closedAt" | "cancelCause" | "declines" | "escalations" | "review" | "delivery" | "merge" | "specs" | "memory" | "person" | "stalls" | "handoffs" | "cohort";
+type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers" | "briefs" | V2Fields> & {
   models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Map<string, number>; briefs: { delivered: number; withFail: number };
+  /** #1277: what the events alone say; the board and journal evidence is joined at the end. */
+  cancelledAt: string | null; declines: number; escalations: number; lastDoneMs: number | null; envelopes: number; dropped: { fyi: number; hop: number };
+  briefNotes: number; briefFails: number; cohort: "silent" | "advisory" | null;
 };
 /** Keyed by peer ids, model names and reasons, any of which may be `constructor` or `__proto__`: no prototype to inherit from. */
 const keyed = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 const blank = (task: number): Acc => ({ task, class: null, pii: false, createdAt: null, startedAt: null, activeMs: 0, owners: [], reviewer: null,
   reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: keyed(), stuck: 0, overlaps: 0, conflicts: 0,
   tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(),
-  approvedAt: null, lastState: null, tooling: keyed(), peers: new Map(), briefs: { delivered: 0, withFail: 0 } });
+  approvedAt: null, lastState: null, tooling: keyed(), peers: new Map(), briefs: { delivered: 0, withFail: 0 },
+  cancelledAt: null, declines: 0, escalations: 0, lastDoneMs: null, envelopes: 0, dropped: { fyi: 0, hop: 0 }, briefNotes: 0, briefFails: 0, cohort: null });
 const add = (current: number | null, value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? (current ?? 0) + value : current;
 const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[key] = (counts[key] ?? 0) + n; };
 
 /**
- * One record per approved task in `events`. Approval is final on the board, so everything attributed to the task
+ * One record per task that reached a terminal board state in `events`: approved, or cancelled (#1277 AC6). Approval is final on the board, so everything attributed to the task
  * counts, also after the approval: the turn that approved it ends later, and its usage arrives after that. The live
- * writer therefore waits for those turns (daemon `recordResearch`); backfill reads to the end of the file.
+ * writer therefore waits for those turns (daemon `recordResearch`); backfill reads to the end of the file. `evidence` (the board's history and the delivery journal,
+ * read-only and closed fields only, `readEvidence`) fills the review, merge, spec and delivery-state blocks; without it those fields are null, not 0. A task that was approved
+ * and later reopened keeps its approved record, as before.
  */
-export function taskRecords(events: StampedEvent[], projectId: string, writer: TaskRecord["writer"]): TaskRecord[] {
+export function taskRecords(events: StampedEvent[], projectId: string, writer: TaskRecord["writer"], evidence: ResearchEvidence = NO_EVIDENCE): TaskRecord[] {
   const tasks = new Map<number, Acc>(), earlier: Acc[] = [];
   const acc = (id: number) => { let a = tasks.get(id); if (!a) tasks.set(id, a = blank(id)); return a; };
   const seenUsage = new Set<string>();
@@ -121,6 +163,15 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       for (const a of tasks.values()) if (a.peers.get(e.peer) === now) a.tooling[e.peer] = e.addons;
       continue;
     }
+    if (e.type === "envelope") {
+      // An envelope names its task as a string; a count of them, and of the ones the bus dropped, is all the record keeps.
+      if (typeof e.task === "string" && /^[1-9]\d{0,9}$/.test(e.task)) { const a = acc(Number(e.task)); a.envelopes++; if (e.dropped === "fyi" || e.dropped === "hop") a.dropped[e.dropped]++; }
+      continue;
+    }
+    if (e.type === "cohort") {
+      for (const id of e.tasks) if (Number.isSafeInteger(id) && id > 0) { const a = acc(id); if (e.silent) a.cohort = "silent"; else a.cohort ??= "advisory"; }
+      continue;
+    }
     if (e.type === "task") {
       const proposed = e.event === "proposed" || e.event === "backlog pulled";
       // Ids restart after `ahub reset --all` archives the events, but a file that kept both starts the task anew.
@@ -136,12 +187,15 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       if (e.reviewer) a.reviewer = e.reviewer;
       if (proposed) a.createdAt ??= e.at;
       if (e.state === "in_progress") a.startedAt ??= e.at;
-      if (e.event === "done") a.dones++;
+      if (e.event === "done") { a.dones++; if (a.approvedAt === null) a.lastDoneMs = Date.parse(e.at); }
+      if (e.event === "declined") a.declines++;
+      if (e.event === "escalated") a.escalations++;
       if (e.event === "check passed") a.checkPassed++;
       if (e.event === "check failed") a.checkFailed++;
       if (e.state === "in_review" && a.lastState !== "in_review") a.reviewRounds++;
       if (e.state === "changes_requested" && a.lastState !== "changes_requested") a.changesRequested++;
       if (e.state === "approved") a.approvedAt ??= e.at;
+      if (e.state === "cancelled" && a.lastState !== "cancelled") a.cancelledAt = e.at;
       a.lastState = e.state;
       involve(a, e.by); involve(a, e.owner, false); involve(a, e.reviewer, false);
       continue;
@@ -168,22 +222,42 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     }
     else if (e.type === "route") a.models.add(e.route);
     else if (e.type === "route_outcome") { if (e.next?.tests === "pass") a.tests.pass++; if (e.next?.tests === "fail") a.tests.fail++; }
-    else if (e.type === "memory_brief") { a.briefs.delivered++; if (e.fails > 0) a.briefs.withFail++; }
+    else if (e.type === "memory_brief") { a.briefs.delivered++; if (e.fails > 0) a.briefs.withFail++; a.briefNotes += (Number.isSafeInteger(e.native) ? e.native : 0) + (Number.isSafeInteger(e.claudeMem) ? e.claudeMem : 0); a.briefFails += Number.isSafeInteger(e.fails) ? e.fails : 0; }
     else if (e.type === "stuck") a.stuck++;
     else if (e.type === "overlap") a.overlaps++;
     else if (e.type === "conflict") a.conflicts++;
   }
   const out: TaskRecord[] = [];
   for (const a of [...earlier, ...tasks.values()]) {
-    if (!a.approvedAt) continue;
-    const { approvedAt, lastState: _state, models, tooling: fingerprints, peers, briefs, ...rest } = a;
-    const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(approvedAt);
-    out.push({ schema: RESEARCH_SCHEMA, kind: "task", project: projectKey(projectId), ...rest, outcome: "approved", approvedAt,
+    // Approved wins over a later reopening (the record the live writer stored at the approval); otherwise the task must end cancelled.
+    const outcome: "approved" | "cancelled" | undefined = a.approvedAt ? "approved" : a.lastState === "cancelled" && a.cancelledAt ? "cancelled" : undefined;
+    if (!outcome) continue;
+    const { approvedAt, lastState: _state, models, tooling: fingerprints, peers, briefs, cancelledAt, declines, escalations, lastDoneMs, envelopes, dropped, briefNotes, briefFails, cohort, ...rest } = a;
+    const closedAt = (outcome === "approved" ? approvedAt : cancelledAt)!;
+    const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(closedAt);
+    const task = evidence.tasks.get(a.task), board = evidence.board;
+    const ownerFamily = closedId(a.owners.at(-1) ? evidence.familyOf?.(a.owners.at(-1)!) : undefined);
+    const approvedMs = outcome === "approved" ? Date.parse(approvedAt!) : null;
+    const created = a.createdAt ? Date.parse(a.createdAt) : NaN;
+    const journal = journalFigures(evidence, a.task, Number.isFinite(created) ? created : null, Number.isFinite(end) ? end : 0);
+    const review = reviewBlock(task, board, ownerFamily, a.pii);
+    // The events say whether the task went to review at all; a board that cannot say leaves the round count unknown.
+    out.push({ schema: RESEARCH_SCHEMA, kind: "task", project: projectKey(projectId), ...rest, outcome, approvedAt: approvedAt ?? null, closedAt,
       wallMs: Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null,
-      firstPass: a.changesRequested === 0 && a.checkFailed === 0 && a.reviewRounds <= 1, models: [...models].sort(), writer,
-      ...(Object.keys(fingerprints).length ? { tooling: fingerprints, peers: [...peers.keys()].sort() } : {}), ...(briefs.delivered ? { briefs } : {}) });
+      firstPass: outcome === "approved" && a.changesRequested === 0 && a.checkFailed === 0 && a.reviewRounds <= 1, models: [...models].sort(), writer,
+      ...(Object.keys(fingerprints).length ? { tooling: fingerprints, peers: [...peers.keys()].sort() } : {}), ...(briefs.delivered ? { briefs } : {}),
+      ...(outcome === "cancelled" ? { cancelCause: task?.history.findLast(entry => entry.event === "cancelled")?.cause ?? "unknown" } : {}),
+      declines, escalations, review,
+      delivery: { count: envelopes, ...journal, dropped: { fyi: dropped.fyi, hop: dropped.hop } },
+      merge: mergeBlock(task, lastDoneMs, approvedMs),
+      specs: specsBlock(task, a.pii),
+      memory: { briefs: briefs.delivered || null, briefNotes: briefs.delivered ? briefNotes : null, fails: briefs.delivered ? briefFails : null, rendered: null, delivered: null, cited: null },
+      person: { permissions: null, questions: null, completions: null, cliRefusals: null, latencyMs: null },
+      stalls: task && board ? task.history.filter(entry => entry.sweep).length : null,
+      handoffs: task?.handoffs ? { in: task.handoffs.in, out: task.handoffs.out } : { in: null, out: null },
+      cohort: cohort ?? "none" });
   }
-  return out.sort((x, y) => x.approvedAt.localeCompare(y.approvedAt) || x.task - y.task);
+  return out.sort((x, y) => closedAtOf(x)!.localeCompare(closedAtOf(y)!) || x.task - y.task);
 }
 
 /** Every record in one store file; a line that does not parse is skipped. */
@@ -191,8 +265,12 @@ export function readStore(file: string): ResearchRecord[] {
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8").split("\n").flatMap((line) => {
     if (!line.trim()) return [];
-    try { const r = JSON.parse(line); return r?.schema === RESEARCH_SCHEMA ? [r as ResearchRecord] : []; } catch { return []; }
+    try { const r = JSON.parse(line); return SCHEMAS.includes(r?.schema) ? [normalize(r)] : []; } catch { return []; }
   });
+}
+/** A v1 task row predates `outcome` and was written only at an approval, so it reads as approved; the file itself is never rewritten. */
+function normalize(r: ResearchRecord): ResearchRecord {
+  return r.kind === "task" && r.schema === RESEARCH_SCHEMA_V1 && r.outcome === undefined ? { ...r, outcome: "approved" } : r;
 }
 /** This project's store, or every project's with `all`. */
 export function readStores(projectId: string | undefined, home = hubHome()): ResearchRecord[] {
@@ -208,8 +286,10 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
   const file = researchFile(projectId, home);
   mkdirSync(researchDir(home), { recursive: true, mode: 0o700 });
   chmodSync(researchDir(home), 0o700); // mkdir's mode applies only when it creates the directory
-  const held = new Set(readStore(file).flatMap((r) => r.kind === "task" ? [recordKey(r)] : []));
-  const added = records.filter((r) => r.kind === "label" || !held.has(recordKey(r)));
+  // A v2 row replaces a held v1 row of the same task (readers keep the latest per task). A held v2 row is final, as a held row always was, with one exception: the live writer
+  // records a task at its approval and the guarded merge writes its receipt later, so a later pass may append the same task with the merge figures it could not know then.
+  const held = new Map(readStore(file).flatMap((r) => r.kind === "task" && r.schema === RESEARCH_SCHEMA ? [[recordKey(r), r] as const] : []));
+  const added = records.filter((r) => r.kind === "label" || r.schema !== RESEARCH_SCHEMA || !held.has(recordKey(r)) || fillsMerge(held.get(recordKey(r))!, r));
   if (!added.length) return 0;
   appendFileSync(file, added.map((r) => JSON.stringify(r)).join("\n") + "\n", { mode: 0o600 });
   chmodSync(file, 0o600);
@@ -224,7 +304,9 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
  */
 export function labelTarget(records: ResearchRecord[], events: StampedEvent[], task: number, created?: string): TaskRecord {
   // A record without a proposal time (its proposal was not in the events) cannot be told apart, so it takes no label.
-  const mine = records.filter((r): r is TaskRecord => r.kind === "task" && r.task === task && r.createdAt !== null);
+  // A label is a verdict on an approved task: a cancelled record takes none.
+  // One candidate per task: a later revision of a record (the merge figures filled in, or a v2 row over a v1 one) is the same task, and listing it twice would refuse an unambiguous historical label.
+  const mine = latestTaskRecords(records).filter((r) => r.outcome === "approved" && r.task === task && r.createdAt !== null);
   if (created !== undefined) {
     return mine.find((r) => r.createdAt === created) ?? fail(`no research record for task #${task} proposed at ${created}${mine.length ? ` (it has: ${mine.map((r) => r.createdAt).join(", ")})` : ""}`);
   }
@@ -311,7 +393,8 @@ const labelValues = (labels: Map<string, LabelRecord>): Map<string, Label> => ne
 /** Each approved task once, its last record, and every task's effective label: what both reports count. */
 function latestRecords(records: ResearchRecord[], since: number): { all: TaskRecord[]; labels: Map<string, Label> } {
   const latest = new Map<string, TaskRecord>();
-  for (const r of records) if (r.kind === "task" && Date.parse(r.approvedAt) >= since) latest.set(recordKey(r), r);
+  // Statistics about approved tasks: a cancelled record (#1277) is another outcome and never counts here.
+  for (const r of records) if (r.kind === "task" && r.outcome === "approved" && Date.parse(r.approvedAt!) >= since) latest.set(recordKey(r), r);
   return { all: [...latest.values()], labels: labelValues(effectiveLabels(records)) };
 }
 
