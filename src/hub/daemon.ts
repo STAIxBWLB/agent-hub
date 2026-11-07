@@ -4090,8 +4090,13 @@ export async function startDaemon(opts: DaemonOptions) {
   const claudeContextSeen = new Map<string, string>();
   const contextTailSeen = new Map<PeerId, string>();
   const retainedCliAudits = new Set<string>();
-  /** A CLI audit row is attributed to the peer's task only when it is this fresh at the drain; the sweep runs every few seconds, so an ordinary row is. */
-  const CLI_AUDIT_FRESH_MS = 15_000;
+  /**
+   * The period of the sweep that drains the CLI audit outbox (the interval below runs `drainCliAuditsNow` on it). A row is attributed to the peer's task only when it is at most this many
+   * periods old at the drain: an ordinary row is drained within one period, so fifteen leaves room for a slow sweep, while a row left by a stalled hub or an unreadable outbox is not matched to
+   * whatever task is open when it is finally read. The bound is derived from the period, so the two cannot drift apart.
+   */
+  const CLI_AUDIT_SWEEP_MS = 1000;
+  const CLI_AUDIT_FRESH_MS = 15 * CLI_AUDIT_SWEEP_MS;
   function drainCliAuditsNow(): void {
     for (const audit of drainCliAudits(opts.stateDir)) {
       const delegated = audit.outcome === "delegated";
@@ -4195,7 +4200,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const reading = bound ? readNativeContext(definitionOf(claudePeer), c.context, bound, c.at) : undefined;
         if (reading) contexts.report(claudePeer, reading, bound);
       } catch { /* absent or unreadable native telemetry is unknown */ }
-    }, 1000),
+    }, CLI_AUDIT_SWEEP_MS),
     setInterval(() => budget.tick(), 30_000),
     setInterval(pollUsageRollup, 10_000),
     // #481 S7: band tiers are evaluated every five minutes, and only when the board changed since the last evaluation (the status
