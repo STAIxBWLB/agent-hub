@@ -26,6 +26,10 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 function exact(row: Record<string, unknown>, names: readonly string[]): void { if (Object.keys(row).length !== names.length || names.some(key => !Object.hasOwn(row, key))) fail("shape"); }
+function array(value: unknown, maximum: number, cause: string): unknown[] {
+  if (!Array.isArray(value) || value.length > maximum) return fail(cause);
+  return value;
+}
 function string(value: unknown, cap = JSON_CAP): string { if (typeof value !== "string" || Buffer.byteLength(value) > cap) return fail("shape"); return value; }
 function sha(value: unknown): string { const result = string(value, 40); if (!SHA.test(result)) fail("sha"); return result; }
 function identity(id: unknown, version: unknown): void {
@@ -77,7 +81,7 @@ function load(input: CompatPublisherInput): { index: PreparedCompatArtifact; bun
   const header = watch.code === 0 ? "Every watched agent CLI's latest published version is verified." : "Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).";
   if (report.split("\n")[0] !== header || /[<>]|```|[\p{Cc}\p{Cf}]/u.test(report.replaceAll("\n", ""))) fail("watch-report");
   const bundles = new Map<string, Bundle>(); let total = 0;
-  for (const raw of index.bundles) {
+  for (const raw of array(index.bundles, 8, "index")) {
     const row = object(raw); exact(row, ["id", "version", "directory", "descriptorSha256", "descriptorSize"]); identity(row.id, row.version);
     const key = `${row.id}-${row.version}`;
     if (row.directory !== key || bundles.has(key)) fail("bundle");
@@ -106,8 +110,8 @@ async function optional(api: GithubAPI, route: string): Promise<unknown | undefi
 async function inventory(api: GithubAPI, route: string): Promise<unknown[]> {
   const all: unknown[] = [];
   for (let page = 1; page <= 10; page++) {
-    const rows = await api.request("GET", `${route}${route.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
-    if (!Array.isArray(rows) || rows.length > 100) fail("inventory"); all.push(...rows);
+    const rows = array(await api.request("GET", `${route}${route.includes("?") ? "&" : "?"}per_page=100&page=${page}`), 100, "inventory");
+    all.push(...rows);
     if (rows.length < 100) return all;
   }
   return fail("inventory-ceiling");
@@ -118,7 +122,7 @@ async function snapshot(api: GithubAPI, base: string, head: string): Promise<Sna
   const response = object(await api.request("GET", `${base}/git/trees/${tree}?recursive=1`));
   if (response.sha !== tree || response.truncated !== false || !Array.isArray(response.tree) || response.tree.length > 100_000) fail("tree");
   const leaves = new Map<string, Leaf>();
-  for (const value of response.tree) {
+  for (const value of array(response.tree, 100_000, "tree")) {
     const leaf = object(value), name = safePath(leaf.path);
     if (leaf.type === "tree") continue;
     if (leaves.has(name) || !["blob", "commit"].includes(string(leaf.type)) || !["100644", "100755", "120000", "160000"].includes(string(leaf.mode))) fail("tree-leaf");
