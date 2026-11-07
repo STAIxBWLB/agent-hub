@@ -44,7 +44,7 @@ test("all text is screened both raw and sanitized; screen failure exposes neithe
 test("tool file paths are screened without renaming them; asset references belong only to stored payloads", () => {
   const path = "[agent-hub image with 한글.png", seen: string[] = [];
   const input = { kind: "beforeAfter", before: { path, alt: "old" }, after: { text: "new" } };
-  expect(validateVisualInput(input, text => { seen.push(text); return true; })).toEqual(input);
+  expect<unknown>(validateVisualInput(input, text => { seen.push(text); return true; })).toEqual(input);
   expect(seen).toContain(path); expect(seen).toContain("> " + path);
   expect(() => validateVisualPayload(input, allow)).toThrow();
   expect(() => validateVisualInput({ kind: "beforeAfter", before: { asset: "x", alt: "x" }, after: { text: "x" } }, allow)).toThrow();

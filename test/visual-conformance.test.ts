@@ -11,7 +11,7 @@ import { validateVisualPayload, VISUAL_LIMITS } from "../src/hub/visual.ts";
 // Candidate hub fixtures, with actual upstream provenance. The package has no shared visual producer yet.
 for (const value of cases.valid) test(`acon contract candidate round-trip: ${value.id}`, () => {
   const payload: VisualPayload = validateVisualPayload(value.payload, () => true);
-  expect(payload).toEqual(value.payload);
+  expect<unknown>(payload).toEqual(value.payload);
   if (payload.kind === "table") expect(tableColumnProblems(payload.columns)).toEqual([]);
 });
 for (const value of cases.invalid) test(`visual candidate refusal: ${value.id}`, () => {
