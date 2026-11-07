@@ -1,8 +1,10 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { copyEventPrefix, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, reservePrivateAttempt, runStartupBenchmark, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { abandonedSizes, copyEventPrefix, databaseProfile, installStartupReadObserver, isolatedStartupEnvironment, numericProfile, reservePrivateAttempt, runStartupBenchmark, seedStartupFixture, syntheticDeliveryPayload, timingLine, type BenchmarkPorts, type StartupProfile } from "../scripts/benchmarks/startup-1232.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { STARTUP_PHASES } from "../src/hub/startup-timing.ts";
 
 const cleanup: string[] = [];
@@ -69,6 +71,58 @@ test("numeric profile and timing projection reject content or missing fields", (
   expect(timingLine(TIMING)).toBe(TIMING);
   expect(() => timingLine(TIMING + " private=1")).toThrow();
   expect(() => timingLine(TIMING.replace("schema=0", "schema=private"))).toThrow();
+});
+
+test("database aggregates count every non-NULL field independently and empty tables as zero", () => {
+  const file = join(directory(), "public.sqlite"), db = new Database(file);
+  try {
+    db.run("CREATE TABLE tasks(title TEXT, detail TEXT, history TEXT)");
+    db.run("CREATE TABLE deliveries(originals TEXT, out_json TEXT)");
+    expect(databaseProfile(file)).toMatchObject({ taskRows: 0, taskHistoryEntries: 0, taskTextBytes: 0, deliveryRows: 0, deliveryPayloadBytes: 0 });
+    // Defensive aggregate coverage only, not a claim these legacy NULL rows satisfy current delivery DDL.
+    db.run("INSERT INTO tasks VALUES ('abc',NULL,'[]'),(NULL,'xy','[{}]'),(NULL,NULL,NULL)");
+    db.run("INSERT INTO deliveries VALUES ('[]',NULL),(NULL,' [] '),('[]','[]'),(NULL,NULL)");
+    expect(databaseProfile(file)).toMatchObject({ taskRows: 3, taskHistoryEntries: 1, taskTextBytes: 5, deliveryRows: 4, deliveryPayloadBytes: 10 });
+  } finally { db.close(); }
+});
+
+for (const bytes of [4, 5, 7, 100, 1000]) test(`completed payload fixture preserves valid arrays and exactly ${bytes} bytes`, () => {
+  const row = syntheticDeliveryPayload(bytes, 1);
+  expect(Array.isArray(JSON.parse(row.originals))).toBe(true);
+  expect(Array.isArray(JSON.parse(row.out))).toBe(true);
+  expect(Buffer.byteLength(row.originals) + Buffer.byteLength(row.out)).toBe(bytes);
+});
+
+test("profile consistency refuses impossible aggregates and distributes abandoned remainder exactly", () => {
+  for (const change of [
+    { dbBytes: 0 }, { taskRows: 0 }, { taskTextBytes: 0 }, { taskHistoryEntries: 0 }, { deliveryRows: 2, deliveryPayloadBytes: 7 },
+    { eventLines: 0 }, { eventBytes: 0 }, { abandonedFiles: 0 }, { abandonedFiles: 2, abandonedBytes: 5, abandonedMaxBytes: 2 },
+    { abandonedFiles: 1, abandonedBytes: 21 },
+  ]) expect(() => numericProfile({ ...PROFILE, ...change })).toThrow();
+  const value = { ...PROFILE, abandonedFiles: 4, abandonedBytes: 18, abandonedMaxBytes: 8 };
+  expect(abandonedSizes(value)).toEqual([8, 4, 3, 3]);
+});
+
+for (const deliveryRows of [0, 32]) test(`small public synthetic database handles ${deliveryRows} mostly empty completed rows`, async () => {
+  const root = directory(), state = join(root, "state"); mkdirSync(state); mkdirSync(join(root, "project"));
+  const profile: StartupProfile = { dbBytes: 1024 * 1024, taskRows: 0, taskHistoryEntries: 0, taskTextBytes: 0, deliveryRows,
+    deliveryPayloadBytes: deliveryRows ? deliveryRows * 4 + 1 : 0, eventBytes: 3, eventLines: 2, abandonedFiles: 4, abandonedBytes: 18, abandonedMaxBytes: 8 };
+  const request = join(root, "request.json"); writeFileSync(request, JSON.stringify({ destination: state, profile }));
+  await seedStartupFixture(request);
+  expect(databaseProfile(join(state, "hub.db"))).toMatchObject({ taskRows: 0, taskHistoryEntries: 0, taskTextBytes: 0, deliveryRows, deliveryPayloadBytes: profile.deliveryPayloadBytes });
+  const db = new Database(join(state, "hub.db"), { readonly: true });
+  try {
+    const rows = db.query("SELECT originals,out_json FROM deliveries").all() as { originals: string; out_json: string }[];
+    expect(rows.every(row => Array.isArray(JSON.parse(row.originals)) && Array.isArray(JSON.parse(row.out_json)))).toBe(true);
+  } finally { db.close(); }
+  const journal = new DeliveryJournal({ file: join(state, "hub.db"), projectRoot: join(root, "project"), projectId: "synthetic-startup", instanceId: "synthetic-shape-check" });
+  try { expect(journal.list()).toHaveLength(deliveryRows); } finally { journal.close(); }
+  const sizes = Array.from({ length: profile.abandonedFiles }, (_, n) => statSync(join(state, `restart.abandoned.synthetic-${n}.json`)).size);
+  expect(sizes.reduce((a, b) => a + b, 0)).toBe(profile.abandonedBytes);
+  expect(Math.max(...sizes)).toBe(profile.abandonedMaxBytes);
+  const events = readFileSync(join(state, "events.jsonl"));
+  expect(events.length).toBe(profile.eventBytes);
+  expect(events.filter(byte => byte === 10).length).toBe(profile.eventLines);
 });
 
 function fakePorts(observed: { roots: string[]; sources: (string | undefined)[] }, changes: { stopped?: boolean; eventReadBytes?: number; abandonedReadBytes?: number } = {}): BenchmarkPorts {

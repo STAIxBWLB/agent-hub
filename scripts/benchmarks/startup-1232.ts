@@ -31,7 +31,18 @@ export function numericProfile(value: unknown): StartupProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) return refuse();
   const row = value as Record<string, unknown>;
   if (Object.keys(row).sort().join() !== [...PROFILE_KEYS].sort().join() || PROFILE_KEYS.some(key => !Number.isSafeInteger(row[key]) || Number(row[key]) < 0 || Number(row[key]) > 2_000_000_000)) return refuse();
-  return Object.fromEntries(PROFILE_KEYS.map(key => [key, row[key]])) as StartupProfile;
+  const profile = Object.fromEntries(PROFILE_KEYS.map(key => [key, row[key]])) as StartupProfile;
+  if (profile.dbBytes < profile.taskTextBytes + profile.deliveryPayloadBytes
+    || profile.dbBytes === 0 && (profile.taskRows > 0 || profile.deliveryRows > 0)
+    || profile.taskRows === 0 && (profile.taskHistoryEntries !== 0 || profile.taskTextBytes !== 0)
+    || profile.taskTextBytes < profile.taskRows || profile.taskHistoryEntries < profile.taskRows
+    || profile.deliveryRows === 0 && profile.deliveryPayloadBytes !== 0
+    || profile.deliveryPayloadBytes < 4 * profile.deliveryRows
+    || profile.eventLines === 0 && profile.eventBytes !== 0 || profile.eventBytes < profile.eventLines
+    || profile.abandonedFiles === 0 && (profile.abandonedBytes !== 0 || profile.abandonedMaxBytes !== 0)
+    || profile.abandonedMaxBytes > profile.abandonedBytes || profile.abandonedBytes > profile.abandonedFiles * profile.abandonedMaxBytes
+    || profile.abandonedFiles === 1 && profile.abandonedBytes !== profile.abandonedMaxBytes) return refuse();
+  return profile;
 }
 export function isolatedStartupEnvironment(root: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { AHUB_STARTUP_BENCHMARK_CHILD: "1", PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", TZ: "UTC", TERM: "dumb", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
@@ -127,7 +138,7 @@ async function backup(source: string, destination: string, env: NodeJS.ProcessEn
   await ownedCommand([python, "-I", "-c", BACKUP, source, destination], dirname(destination), env);
   chmodSync(destination, 0o600);
 }
-function databaseProfile(file: string): Pick<StartupProfile, "dbBytes" | "taskRows" | "taskHistoryEntries" | "taskTextBytes" | "deliveryRows" | "deliveryPayloadBytes"> {
+export function databaseProfile(file: string): Pick<StartupProfile, "dbBytes" | "taskRows" | "taskHistoryEntries" | "taskTextBytes" | "deliveryRows" | "deliveryPayloadBytes"> {
   const db = new Database(file, { readonly: true }); db.run(`PRAGMA busy_timeout = ${LEDGER_BUSY_TIMEOUT_MS}`);
   try {
     const exists = (table: string) => !!db.query("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(table);
@@ -135,9 +146,9 @@ function databaseProfile(file: string): Pick<StartupProfile, "dbBytes" | "taskRo
     return { dbBytes: statSync(file).size,
       taskRows: exists("tasks") ? count("SELECT COUNT(*) AS n FROM tasks") : 0,
       taskHistoryEntries: exists("tasks") ? count("SELECT SUM(CASE WHEN json_valid(history) THEN json_array_length(history) ELSE 0 END) AS n FROM tasks") : 0,
-      taskTextBytes: exists("tasks") ? count("SELECT SUM(length(CAST(title AS BLOB))+length(CAST(detail AS BLOB))) AS n FROM tasks") : 0,
+      taskTextBytes: exists("tasks") ? count("SELECT SUM(COALESCE(length(CAST(title AS BLOB)),0)+COALESCE(length(CAST(detail AS BLOB)),0)) AS n FROM tasks") : 0,
       deliveryRows: exists("deliveries") ? count("SELECT COUNT(*) AS n FROM deliveries") : 0,
-      deliveryPayloadBytes: exists("deliveries") ? count("SELECT SUM(length(CAST(originals AS BLOB))+length(CAST(out_json AS BLOB))) AS n FROM deliveries") : 0 };
+      deliveryPayloadBytes: exists("deliveries") ? count("SELECT SUM(COALESCE(length(CAST(originals AS BLOB)),0)+COALESCE(length(CAST(out_json AS BLOB)),0)) AS n FROM deliveries") : 0 };
   } finally { db.close(); }
 }
 async function prepareState(source: string | undefined, destination: string, profile: StartupProfile, env: NodeJS.ProcessEnv): Promise<StartupProfile> {
@@ -228,15 +239,37 @@ export async function runStartupBenchmark(options: BenchmarkOptions, ports: Benc
   } finally { if (baseline && baselineStopped) rmSync(baseline, { recursive: true, force: true }); }
 }
 
-async function seed(file: string): Promise<void> {
+/** Empty arrays are valid completed rows; padding is JSON whitespace, never invented delivery content. */
+export function syntheticDeliveryPayload(bytes: number, n: number): { originals: string; out: string } {
+  if (!Number.isSafeInteger(bytes) || bytes < 4) return refuse();
+  const envelope = { id: `synthetic-${n}`, trace: `synthetic-${n}`, from: "hub", to: ["claude"], body: "", hop: 0, ts: 1, kind: "chat", priority: "status" };
+  const baseBytes = Buffer.byteLength(JSON.stringify([envelope])), extra = bytes - 2 * baseBytes;
+  if (extra < 0) return { originals: "[]" + " ".repeat(bytes - 4), out: "[]" };
+  return { originals: JSON.stringify([{ ...envelope, body: "x".repeat(Math.floor(extra / 2)) }]), out: JSON.stringify([{ ...envelope, body: "x".repeat(Math.ceil(extra / 2)) }]) };
+}
+export function syntheticEventLine(bytes: number, n: number): string {
+  if (!Number.isSafeInteger(bytes) || bytes < 1) return refuse();
+  const base = JSON.stringify({ v: 1, at: "2026-01-01T00:00:00.000Z", type: "native_turn_end", peer: "claude", id: `synthetic-${n}` });
+  // A short/blank original line contributes to line count too; it is not fabricated as a native event.
+  if (bytes < base.length + 1) return " ".repeat(bytes - 1) + "\n";
+  return base + " ".repeat(bytes - base.length - 1) + "\n";
+}
+export function abandonedSizes(profile: StartupProfile): number[] {
+  numericProfile(profile);
+  if (!profile.abandonedFiles) return [];
+  const rest = profile.abandonedBytes - profile.abandonedMaxBytes, count = profile.abandonedFiles - 1;
+  return [profile.abandonedMaxBytes, ...Array.from({ length: count }, (_, n) => Math.floor(rest / count) + Number(n < rest % count))];
+}
+
+export async function seedStartupFixture(file: string): Promise<void> {
   const { destination, profile: input } = JSON.parse(readFileSync(file, "utf8")) as { destination: string; profile: unknown }, profile = numericProfile(input);
   const { Board } = await import("../../src/hub/board.ts");
   const { DeliveryJournal } = await import("../../src/hub/delivery-journal.ts");
   const dbFile = join(destination, "hub.db"), board = new Board(dbFile);
   for (let n = 0; n < profile.taskRows; n++) {
     const bytes = Math.floor(profile.taskTextBytes / profile.taskRows) + Number(n < profile.taskTextBytes % profile.taskRows);
-    if (bytes < 9) return refuse();
-    board.propose("hub", { title: "synthetic", detail: "x".repeat(bytes - 9), class: "implement", backlog: true });
+    const title = "synthetic".slice(0, bytes);
+    board.propose("hub", { title, detail: "x".repeat(bytes - title.length), class: "implement", backlog: true });
   }
   board.close();
   const journal = new DeliveryJournal({ file: dbFile, projectRoot: join(dirname(destination), "project"), projectId: "synthetic-startup", instanceId: "synthetic-seed" }); journal.close();
@@ -245,16 +278,14 @@ async function seed(file: string): Promise<void> {
     const updateHistory = db.query("UPDATE tasks SET history=? WHERE id=?");
     db.transaction(() => { for (let n = 0; n < profile.taskRows; n++) {
       const count = Math.floor(profile.taskHistoryEntries / profile.taskRows) + Number(n < profile.taskHistoryEntries % profile.taskRows);
-      updateHistory.run(JSON.stringify(Array.from({ length: count }, () => ({ at: 1, by: "hub", event: "fixture" }))), n + 1);
+      updateHistory.run(JSON.stringify(Array.from({ length: count }, (_, index) => ({ at: 1, by: "hub", event: index === 0 ? "backlogged" : "fixture" }))), n + 1);
     } })();
     const add = db.query("INSERT INTO deliveries(id,project_id,peer,state,revision,created_at,updated_at,originals,out_json) VALUES(?,?,?,'completed',1,1,1,?,?)");
     db.transaction(() => {
       let remainingBytes = profile.deliveryPayloadBytes;
       for (let n = 0; n < profile.deliveryRows; n++) {
-        const envelope = { id: `synthetic-${n}`, trace: `synthetic-${n}`, from: "hub", to: ["claude"], body: "", hop: 0, ts: 1, kind: "chat", priority: "status" };
-        const baseBytes = Buffer.byteLength(JSON.stringify([envelope])), target = Math.floor(remainingBytes / (profile.deliveryRows - n)), extra = target - 2 * baseBytes;
-        if (extra < 0) return refuse();
-        const originals = JSON.stringify([{ ...envelope, body: "x".repeat(Math.floor(extra / 2)) }]), out = JSON.stringify([{ ...envelope, body: "x".repeat(Math.ceil(extra / 2)) }]);
+        const target = Math.floor(remainingBytes / (profile.deliveryRows - n));
+        const { originals, out } = syntheticDeliveryPayload(target, n);
         add.run(`delivery-${n}`, "synthetic-startup", "claude", originals, out); remainingBytes -= Buffer.byteLength(originals) + Buffer.byteLength(out);
       }
     })();
@@ -267,16 +298,14 @@ async function seed(file: string): Promise<void> {
   try {
     let written = 0;
     for (let n = 0; n < profile.eventLines; n++) {
-      const base = JSON.stringify({ v: 1, at: "2026-01-01T00:00:00.000Z", type: "native_turn_end", peer: "claude", id: `synthetic-${n}`, fixture: "" });
       const target = Math.floor((profile.eventBytes - written) / (profile.eventLines - n));
-      if (target < Buffer.byteLength(base) + 1) return refuse();
-      const line = base.slice(0, -2) + "x".repeat(target - Buffer.byteLength(base) - 1) + '"}\n';
+      const line = syntheticEventLine(target, n);
       writeFileSync(events, line); written += Buffer.byteLength(line);
     }
   } finally { closeSync(events); }
-  for (let n = 0; n < profile.abandonedFiles; n++) {
-    const bytes = n === 0 ? profile.abandonedMaxBytes : Math.floor((profile.abandonedBytes - profile.abandonedMaxBytes) / Math.max(1, profile.abandonedFiles - 1));
-    writeFileSync(join(destination, `restart.abandoned.synthetic-${n}.json`), '{"fixture":"' + "x".repeat(Math.max(0, bytes - 15)) + '"}\n', { mode: 0o600 });
+  for (const [n, bytes] of abandonedSizes(profile).entries()) {
+    const content = bytes >= 3 ? "{}" + " ".repeat(bytes - 3) + "\n" : bytes === 2 ? "{}" : "\n".repeat(bytes);
+    writeFileSync(join(destination, `restart.abandoned.synthetic-${n}.json`), content, { mode: 0o600 });
   }
 }
 
@@ -376,7 +405,7 @@ async function measure(root: string): Promise<void> {
 if (import.meta.main) {
   const args = process.argv.slice(2);
   try {
-    if (args[0] === "--seed" && process.env.AHUB_STARTUP_BENCHMARK_CHILD === "1") await seed(args[1]!);
+    if (args[0] === "--seed" && process.env.AHUB_STARTUP_BENCHMARK_CHILD === "1") await seedStartupFixture(args[1]!);
     else if (args[0] === "--child") await measure(args[1]!);
     else {
       if ((!args.includes("--synthetic") && !args.includes("--private-state")) || args.includes("--synthetic") && args.includes("--private-state")) refuse();
