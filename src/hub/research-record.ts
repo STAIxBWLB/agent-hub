@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { MemoryFigures } from "./research-memory.ts";
 import { cleanMergeCost } from "./cost-governance.ts";
 import { openHubDatabase } from "./db-schema.ts";
 import { taskSample, type MetricTask } from "./sdlc-metrics.ts";
@@ -47,7 +48,11 @@ export interface DeliveryBlock {
 export interface MergeBlock { ciRuns: number | null; ciReruns: number | null; githubReviews: number | null; doneToApprovedMs: number | null; approvedToMergedMs: number | null }
 export interface SpecsBlock { covering: number | null; unchanged: number | null; acked: number | null; errors: number | null }
 /** `rendered`, `delivered` and `cited` stay null until #1279 reports them. */
-export interface MemoryBlock { briefs: number | null; briefNotes: number | null; fails: number | null; rendered: number | null; delivered: number | null; cited: number | null }
+export interface MemoryBlock {
+  briefs: number | null; briefNotes: number | null; fails: number | null; rendered: number | null; delivered: number | null; cited: number | null;
+  /** #1279: fail notes among the entries rendered for the task, how many of them were cited, and the exposed ones the plan touches that were not cited. A signal to read, never an outcome. */
+  failsExposed: number | null; failsCited: number | null; failRetrySignal: number | null;
+}
 /** All null until #1278 attributes person interventions to a task. */
 export interface PersonBlock { permissions: number | null; questions: number | null; completions: number | null; cliRefusals: number | null; latencyMs: number | null }
 export interface HandoffsBlock { in: number | null; out: number | null }
@@ -80,6 +85,8 @@ export interface ResearchEvidence {
   /** Whether the board was read at all: without it every board-derived field is unknown, also for a task the map lacks. */
   board: boolean;
   familyOf?: (peer: string) => string | undefined;
+  /** #1279: the counter figures of one task from agent-mem's sidecar; absent (backfill, no sidecar) leaves every counter figure unknown. */
+  memory?: (task: number) => MemoryFigures;
 }
 export const NO_EVIDENCE: ResearchEvidence = { tasks: new Map(), board: false };
 
@@ -152,26 +159,28 @@ export function journalRow(task: unknown, state: unknown, createdAt: unknown, up
  * The board and journal of one project, read without writing: `hub.db` opens read-only through the same compatibility check the hub uses, and the journal's envelope bodies are
  * never decoded (SQLite hands back only each original's task reference). A store that cannot be read leaves its part unknown, never an empty one.
  */
-export function readEvidence(stateDir: string, projectId: string): ResearchEvidence {
+export function readEvidence(stateDir: string, projectId: string, only?: number): ResearchEvidence {
   const file = join(stateDir, "hub.db");
   if (!existsSync(file)) return NO_EVIDENCE;
   let db: ReturnType<typeof openHubDatabase> | undefined;
   try { db = openHubDatabase(file, { readonly: true }); } catch { return NO_EVIDENCE; }
   try {
     const handoffIn = new Set<number>(), handoffOut = new Map<number, number>();
-    try { for (const r of db.query("SELECT task_id FROM task_handoff_origin").all() as { task_id: number }[]) handoffIn.add(r.task_id); } catch { /* an older hub.db has no handoff table */ }
-    try { for (const r of db.query("SELECT local_task FROM task_handoff_outbound WHERE local_task IS NOT NULL").all() as { local_task: number }[]) handoffOut.set(r.local_task, (handoffOut.get(r.local_task) ?? 0) + 1); } catch { /* same */ }
+    // `only` (the live writer, one task) narrows each read to that task; a backfill reads them all.
+    const one = only === undefined ? "" : " WHERE task_id = " + Number(only);
+    try { for (const r of db.query("SELECT task_id FROM task_handoff_origin" + one).all() as { task_id: number }[]) handoffIn.add(r.task_id); } catch { /* an older hub.db has no handoff table */ }
+    try { for (const r of db.query("SELECT local_task FROM task_handoff_outbound WHERE local_task IS NOT NULL" + (only === undefined ? "" : " AND local_task = " + Number(only))).all() as { local_task: number }[]) handoffOut.set(r.local_task, (handoffOut.get(r.local_task) ?? 0) + 1); } catch { /* same */ }
     const tasks = new Map<number, EvidenceTask>();
     let board = true;
     try {
-      for (const row of db.query("SELECT id, history, sdlc FROM tasks").all() as { id: number; history: string | null; sdlc: string | null }[]) {
+      for (const row of db.query("SELECT id, history, sdlc FROM tasks" + (only === undefined ? "" : " WHERE id = " + Number(only))).all() as { id: number; history: string | null; sdlc: string | null }[]) {
         const parse = (s: string | null) => { try { return s ? JSON.parse(s) : undefined; } catch { return undefined; } };
         tasks.set(row.id, evidenceTask({ id: row.id, history: parse(row.history), sdlc: parse(row.sdlc) }, { in: handoffIn.has(row.id) ? 1 : 0, out: handoffOut.get(row.id) ?? 0 }));
       }
     } catch { board = false; }
     let journal: ResearchEvidence["journal"];
     try {
-      const rows = (db.query("SELECT d.state AS state, d.created_at AS createdAt, d.updated_at AS updatedAt, json_extract(e.value, '$.refs.task') AS task FROM deliveries d, json_each(d.originals) e WHERE d.project_id = ?").all(projectId) as Record<string, unknown>[])
+      const rows = (db.query("SELECT d.state AS state, d.created_at AS createdAt, d.updated_at AS updatedAt, json_extract(e.value, '$.refs.task') AS task FROM deliveries d, json_each(d.originals) e WHERE d.project_id = ?" + (only === undefined ? "" : " AND CAST(json_extract(e.value, '$.refs.task') AS TEXT) = '" + Number(only) + "'")).all(projectId) as Record<string, unknown>[])
         .flatMap(r => { const row = journalRow(r.task, r.state, r.createdAt, r.updatedAt); return row ? [row] : []; });
       journal = { rows, coveredAfter: journalCoveredAfter(db, projectId) };
     } catch { /* no journal table: delivery timing is unknown */ }
