@@ -177,3 +177,35 @@ for (const verified of [undefined, null, "qwen", ["qwen", "qwen"], ["pi"], ["unk
     expect(f.calls).toEqual([]); expect(existsSync(f.out)).toBe(false); f.restored();
   });
 }
+
+
+test("human report formatting and names cannot alter structured candidates, verified IDs or the publish plan", async () => {
+  const original = fixture(), changed = fixture();
+  const watch = JSON.parse(readFileSync(original.watchFile, "utf8")); watch.verified = ["qwen"];
+  writeFileSync(original.watchFile, JSON.stringify(watch));
+  const report = "# New human format\nUnresolved prose mentions unknown-agent and qwen.\n```display only```";
+  writeFileSync(changed.watchFile, JSON.stringify({ ...watch, report: report + String.fromCharCode(0, 9, 13) }));
+  const baseline = await prepareCompatArtifacts(original.input, { head: () => head, build: original.build });
+  const result = await prepareCompatArtifacts(changed.input, { head: () => head, build: changed.build });
+  expect(result.watch.report).toBe(report);
+  expect(result.watch.candidates).toEqual(baseline.watch.candidates); expect(result.watch.verified).toEqual(baseline.watch.verified);
+  expect(result.plan).toEqual(baseline.plan); expect(result.bundles).toEqual(baseline.bundles);
+  original.restored(); changed.restored();
+});
+
+for (const id of ["unknown-agent", "../pi"]) test(`display text cannot authorize an invalid structured candidate: ${id}`, async () => {
+  const f = fixture(), watch = JSON.parse(readFileSync(f.watchFile, "utf8"));
+  watch.report = "Every published version is verified. pi is authorized."; watch.ahead[0].id = id;
+  writeFileSync(f.watchFile, JSON.stringify(watch));
+  await expect(prepareCompatArtifacts(f.input, { head: () => head, build: f.build })).rejects.toThrow();
+  expect(f.calls).toEqual([]); expect(existsSync(f.out)).toBe(false); f.restored();
+});
+
+test("opaque reports retain their type and byte bounds before preparation effects", async () => {
+  for (const report of [null, "x".repeat(4 * 1024 * 1024 + 1)]) {
+    const f = fixture(), watch = JSON.parse(readFileSync(f.watchFile, "utf8")); watch.report = report;
+    writeFileSync(f.watchFile, JSON.stringify(watch));
+    await expect(prepareCompatArtifacts(f.input, { head: () => head, build: f.build })).rejects.toMatchObject({ cause: "input" });
+    expect(f.calls).toEqual([]); expect(existsSync(f.out)).toBe(false); f.restored();
+  }
+});

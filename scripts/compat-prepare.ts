@@ -60,15 +60,7 @@ function object(value: unknown): value is Record<string, unknown> { return !!val
 function watch(value: unknown, manifest: Record<string, PublishManifestEntry>): PreparedCompatArtifact["watch"] {
   if (!object(value) || value.schemaVersion !== 1 || value.code !== 0 && value.code !== 3 || typeof value.report !== "string" || value.report.length > JSON_CAP || !Array.isArray(value.ahead) || !Array.isArray(value.verified)) throw new CompatPrepareError("input");
   const report = value.report.replace(/\p{Cc}/gu, character => character === "\n" ? character : "");
-  const header = value.code === 0 ? "Every watched agent CLI's latest published version is verified." : "Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).";
-  if (report.split("\n")[0] !== header || report.includes("```")) throw new CompatPrepareError("input");
-  for (const line of report.split("\n")) {
-    if (!line || line === header || line === "Informational:" || line === "Informational (no public source, not drift):"
-      || /^Checked \d{4}-\d{2}-\d{2} by \.github\/workflows\/agent-compat\.yml\.$/.test(line)
-      || line.startsWith("Next step for each: a model-free receipt in `docs/verification/`, then add the version to `verified`")) continue;
-    const id = /^- \*\*([a-z][a-z0-9-]*)\*\*(?: \((?:npm @[a-z0-9._-]+\/[a-z0-9._-]+|GitHub releases [A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\)|: no public source; local drift only)/.exec(line)?.[1];
-    if (!id || !Object.hasOwn(manifest, id) || value.code === 0 && /^- \*\*[a-z][a-z0-9-]*\*\* \(/.test(line)) throw new CompatPrepareError("input");
-  }
+  // Trusted watcher display text is opaque; machine decisions use only structured fields.
   const candidates = value.ahead as PublishCandidate[];
   // Planner validates canonical identities, duplicate IDs and the eight-ID ceiling.
   planCompatPublish({ manifest, candidates, artifacts: [], existingPullRequests: [], dryRun: false });
