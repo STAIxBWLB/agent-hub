@@ -1405,6 +1405,7 @@
         "repository": "1jehuang/jcode",
         "tagTemplate": "v{version}",
         "asset": "jcode-macos-aarch64.tar.gz",
+        "executable": "jcode-macos-aarch64",
         "checksumAsset": "SHA256SUMS",
         "integrityPolicy": "verify SHA-256 against the versioned checksum asset and GitHub asset digest before bounded extraction",
         "referenceTag": "v0.99.1",
