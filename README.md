@@ -10,7 +10,7 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Quick start
 
-You need [Bun](https://bun.sh) 1.4.2 or later on PATH.
+You need [Bun](https://bun.sh) <!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor --> or later on PATH.
 
 ```bash
 bun add -g @staix/agent-hub && ahub setup
@@ -75,12 +75,15 @@ defaults. The
   creates one task per unit, and `ahub study show` reads coverage per unit and
   source. A unit is covered by its owner's `hub_study_handoff` with evidence, not by
   a done task. Experiment attempts are recorded with `hub_experiment_record` and read
-  with `ahub study experiments`, each value naming where it came from.
+  with `ahub study experiments`, each value naming where it came from. Covered by
+  source and fixture tests only so far: no real campaign has run on this repository
+  ([dogfood](docs/dogfood.md#operations)).
 - **Design specs.** Markdown specs with `id` and `type` frontmatter name the paths
   they govern. `ahub specs check` validates their links and reports specs that are
   stale against their covered sources, the hub names the specs covering a task, and
   agents read them with `hub_specs`. Only a person stamps a spec as reviewed
-  (`ahub specs stamp`).
+  (`ahub specs stamp`). Fixture-tested only so far: this repository's own specs in
+  `docs/design/` are unstamped drafts ([dogfood](docs/dogfood.md#operations)).
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,

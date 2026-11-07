@@ -56,6 +56,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/ci-reuse.mjs
+      # #1268: stale documentation stamps show on every PR, even when the gate is reused; the gate's own check-docs fails on manifest errors and release requires fresh stamps.
+      - name: Report stale documentation stamps
+        continue-on-error: true
+        run: |
+          node scripts/check-docs.mjs | sed -E 's/^docs: (.+): stale (.+)$/::warning file=\1,title=Stale documentation stamp::\1 is stale \2; recheck it against its covered paths and restamp it in the release PR/'
 
   prepare-bundle:
     if: github.event_name == 'workflow_dispatch' && inputs.prepare_bundle && inputs.timing_runs != '20'

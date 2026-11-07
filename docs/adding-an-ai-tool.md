@@ -42,7 +42,7 @@ agent-hub supports five transport architectures (`transport` in `AdapterDefiniti
 An adapter exports an object conforming to `AdapterDefinition` in `src/adapters/registry-types.ts`. Read that type as the source of truth: most blocks are declared inline there, so there are no separate `Adapter*Definition` types to import, and some members are required. Its top-level fields are:
 
 - Required: `api` (always `1`), `kind`, `displayName`, `family`, `transport`, `roles`, `trust` (`onPrem`, `hubSandboxed`), `start`, `identity` (`mcp`), `permission`, `session`, `turnEnd`, `cli`, `display`.
-- Optional: `optional`, `defaultOnRoster`, `enabledSwitchStartOnly`, `instances`, `attach`, `reporting`, `routing`, `budget`, `configuration`, `capabilities`, `hooks`, `reviewerVariant`, `reviewer`.
+- Optional: `optional`, `defaultOnRoster`, `enabledSwitchStartOnly`, `instances`, `attach`, `reporting`, `routing`, `budget`, `configuration`, `capabilities`, `hooks`, `reviewerVariant`, `reviewer`, `title`, `titlePersistence`, `questionWaitMs`, `settle`, `headlessInstances`, `headlessVariant`, `projection`.
 - Registry load runs `assertDefinitionCoherence` (`src/adapters/registry.ts`) on every definition and reviewer variant, so an incoherent combination fails at load, not at run time.
 
 ### Key Sub-Objects
