@@ -17,7 +17,7 @@ implementation and its fixture evidence; it is not a native CLI receipt.
   allowlisted environment. Receipt artifacts remain data, not publisher code.
 - Trusted read-only preparation validates native summaries against the manifest,
   strips untrusted prose, and retains only canonical statuses, identities, digests
-  and scalar observations. Bad or duplicate input makes the batch drift-only.
+  and scalar observations. Malformed or duplicate summary records make the batch drift-only; unreadable or oversized input refuses preparation.
   For an eligible candidate it patches one row, builds repository code with pinned
   Bun/frozen dependencies, binds fixed output files to the source SHA, then
   restores source, plugin assets and role notice. This job has no GitHub writes.
@@ -59,7 +59,7 @@ normal review gates rather than being claimed as dispatched by `check.yml`.
 An exact-title tracker is selected through the existing fail-closed identity
 helper. Closed-cause per-ID blocks preserve other drift/unknown evidence and
 remove confirmed verified IDs. `dry: true` still runs the isolated proof and
-read-only artifact preparation, then prints plans with zero GitHub mutations.
+read-only artifact preparation, then prints plans with zero branch, PR, issue, label or check-dispatch mutations.
 Live publication is restricted to the trusted current main source; feature-branch
 dispatch is usable for dry validation only.
 
