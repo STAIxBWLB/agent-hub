@@ -7,7 +7,7 @@
 // ticket (the output of `ahub ui` is dropped), start/stop/restart/upgrade anything, touch a task, review, approval, role, budget or memory, kill/park/close a terminal, retry,
 // poll, or persist anything. The pane's folder is a hint: authority is a registration read on the same machine.
 
-import { CARD_SENTENCES, classifyRun, projectStatus, ageCard } from "./card.js";
+import { CARD_SENTENCES, classifyRun, projectStatus, ageCard, formatCard } from "./card.js";
 import { MAX_TERMINALS, matchConsole, terminalRow } from "./focus.js";
 
 export const EXEC = Object.freeze({ timeoutMs: 30_000, maxOutputBytes: 8 * 1024 * 1024 });
@@ -224,6 +224,9 @@ export function createHerdrEntry({ host }) {
 
     /** The fixed sentence for a card state that is not a reading. */
     cardSentence(state) { return CARD_SENTENCES[state] ?? ""; },
+
+    /** The card's visible lines for a person, from the current reading (see formatCard). */
+    cardLines(now) { return formatCard(this.card(now), s => CARD_SENTENCES[s] ?? ""); },
 
     /** The card as of `now`: a running reading older than the stale bound is reported as stale, without asking the hub again. */
     card(now) { return view.card ? copy(ageCard(view.card, typeof now === "number" ? now : (typeof host.now === "function" ? host.now() : Date.now()))) : null; },

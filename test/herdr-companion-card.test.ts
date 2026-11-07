@@ -232,6 +232,63 @@ test("review thread (cwd proof): a reported folder that only starts with, or dif
   }
 });
 
+test("review thread (card text): the visible card shows the hub version and each peer's queue, and tells a queue of 0 from one that is unknown", async () => {
+  const s = setup({ stdout: JSON.stringify({ projectId: "p_a", cwd: "/work/a", version: "0.33.0", tasks: { approved: 690, in_progress: 1 },
+    peers: { claude: { state: "idle", queued: 0 }, codex: { state: "busy", queued: 7, pullOnly: false }, agy: { state: "idle", pullOnly: true }, kimi: { state: "paused", queued: -3 } } }) });
+  await ready(s);
+  await s.entry.refreshCard();
+  const lines = s.entry.cardLines();
+  const text = lines.join("\n");
+  // the version is shown
+  expect(lines[0]).toContain("hub 0.33.0");
+  // a peer with nothing waiting, a backed-up peer and peers whose count is missing or invalid are four different lines
+  expect(text).toContain("claude idle, queue 0");
+  expect(text).toContain("codex busy, queue 7");
+  expect(text).toContain("agy idle, queue ?, pull-only");
+  expect(text).toContain("kimi paused, queue ?");
+  expect(text).not.toMatch(/queue 0[^\n;]*agy|agy idle, queue 0/);
+  expect(text).not.toContain("queue -3");
+  expect(lines[0]).toContain("approved 690, in_progress 1");
+  // and the card is made of ids, counts and closed words only
+  expect(text).not.toMatch(/PII|SECRET|doing/);
+});
+
+test("review thread (card text): every state has its own visible text, and a missing version is said so rather than left blank", async () => {
+  const noVersion = setup({ stdout: JSON.stringify({ projectId: "p_a", cwd: "/work/a", tasks: { approved: 1 }, peers: { claude: { state: "idle", queued: 2 } } }) }); await ready(noVersion);
+  await noVersion.entry.refreshCard();
+  const partial = noVersion.entry.cardLines();
+  expect(partial[0]).toContain("Status (partial)"); expect(partial[0]).toContain("hub version unknown");
+  expect(partial.join("\n")).toContain("Missing from the reading: version");
+  expect(partial.join("\n")).toContain("claude idle, queue 2");
+  const fresh = setup({}); await ready(fresh);
+  expect(fresh.entry.cardLines()).toEqual(["Status: not read. Click Status."]);
+  for (const [name, run, word] of [["offline", { code: 1, stdout: "", stderr: "ahub: no hub running for /x (run: ahub up)\n" }, "offline"], ["timeout", { reject: true, ms: 30_000 }, "timeout"], ["failed", { code: 2, stdout: "", stderr: "x" }, "failed"], ["bad", { stdout: "nope" }, "bad_output"]] as const) {
+    const s = setup(run); await ready(s); await s.entry.refreshCard();
+    const out = s.entry.cardLines();
+    expect(out, name).toHaveLength(1);
+    expect(out[0], name).toContain(`Status (${word}): `);
+    expect(out[0], name).not.toMatch(/; hub |hub [0-9]|tasks:/); // a failure shows no reading: no version, no counts
+  }
+  // an old reading is shown as stale in the same line, with its numbers
+  const old = setup({}); await ready(old); await old.entry.refreshCard();
+  old.tick(card.STALE_AFTER_MS + 1000);
+  expect(old.entry.cardLines()[0]).toContain("Status (stale)");
+  expect(old.entry.cardLines()[0]).toContain("hub 0.33.0");
+});
+
+test("review thread (card text): the formatter is pure and the rendered glue holds no card formatting of its own", () => {
+  expect(card.formatCard(null, () => "")).toEqual(["Status: not read. Click Status."]);
+  expect(card.formatCard({ ok: false, state: "offline" }, (s: string) => `fixed ${s}`)).toEqual(["Status (offline): fixed offline"]);
+  const good = { ok: true, state: "running", version: "1.2.3", tasks: {}, peers: [], missing: [] };
+  expect(card.formatCard(good, () => "")).toEqual(["Status (running): hub 1.2.3; tasks: no task counts", "Peers: none reported"]);
+  expect(card.formatCard({ ...good, peers: [{ id: "a", state: "idle", queued: null, pullOnly: false }, { id: "b", state: "busy", queued: 0, pullOnly: false }] }, () => "")[1]).toBe("Peers: a idle, queue ?; b busy, queue 0");
+  const src = require("node:fs").readFileSync(require("node:path").join(import.meta.dir, "../integrations/herdr/mod/main.js"), "utf8").replace(/^\s*\/\/.*$/gm, "");
+  expect(src).toContain("this.entry.cardLines()");
+  // the glue never reaches into a reading, whatever it names the variable: no `.peers`, `.tasks`, `.queued`, `.version`, `.missing` or `.pullOnly` access, and no `this.entry.card(` call at all
+  expect(src).not.toMatch(/\.(peers|tasks|queued|version|missing|pullOnly)\b/);
+  expect(src).not.toMatch(/this\.entry\.card\(/);
+});
+
 test("the card projection bounds: too many task states or peers, an oversized count and an unknown peer state", () => {
   const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`s${i}`, 1]));
   expect(card.projectStatus({ ...OK, tasks: many }, 1, 1)).toMatchObject({ state: "partial", tasks: null });

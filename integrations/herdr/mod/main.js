@@ -63,8 +63,7 @@ export default class AhubEntry extends View {
       .child(div().flex_1().min_w(0).text_size(12).text_color(t.foreground).child(r.root))
       .child(div().text_size(11).text_color(r.state === "running" ? t.done : t.dim).child(r.state)));
     const sel = v.selection;
-    const card = this.entry.card();
-    const cardLine = !sel ? null : !card ? "Status: not read. Click Status." : card.ok ? `Status (${card.state}): ${Object.entries(card.tasks ?? {}).map(([k, n]) => `${k} ${n}`).join(", ") || "no task counts"}; ${(card.peers ?? []).map((p) => `${p.id} ${p.state}`).join(", ") || "no peers"}${card.missing.length ? `; missing ${card.missing.join(", ")}` : ""}` : `Status (${card.state}): ${this.entry.cardSentence(card.state)}`;
+    const cardLines = sel ? this.entry.cardLines() : [];
     return v_flex().id("ahub-entry").track_focus(this.handle).size_full().min_h(0).p(16).gap(10).bg(t.popover).text_size(13)
       .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(props().overlay); cx.stop_propagation(); } })
       .child(div().text_size(15).font_semibold().text_color(t.foreground).child("agent-hub"))
@@ -72,7 +71,7 @@ export default class AhubEntry extends View {
       .child(v.status === "refused" ? div().text_color(t.blocked).child(v.message) : v.status === "loading" ? div().text_color(t.dim).child("Reading registered projects...") : div().text_color(t.dim).child(
         v.rows.length === 0 ? "No ahub project is registered on this machine." : v.candidate === "ambiguous" ? "More than one registered project contains this folder. Pick one." : v.candidate === "single" ? "One registered project contains this folder. Select it to confirm." : "No registered project contains this folder. Pick one."))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().gap(2).children(rows))
-      .child(cardLine ? div().text_size(12).text_color(t.muted).child(cardLine) : div())
+      .child(cardLines.length ? v_flex().gap(2).text_size(12).text_color(t.muted).children(cardLines.map((line) => div().child(line))) : div())
       .child(h_flex().gap(8)
         .child(button("console", "Open console", !!sel, (_e, cx) => this.act("console", cx)))
         .child(button("dashboard", "Open dashboard", !!sel && sel.machine === null, (_e, cx) => this.act("dashboard", cx)))

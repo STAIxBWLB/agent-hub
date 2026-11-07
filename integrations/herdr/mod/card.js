@@ -86,3 +86,19 @@ export function ageCard(card, now) {
   const age = now - card.fetchedAt;
   return { ...card, state: card.state === "running" && age > STALE_AFTER_MS ? "stale" : card.state, ageMs: age };
 }
+
+/**
+ * The lines the card shows, as plain text: a pure function of the card this file projected, so a test can check exactly what a person reads. Only ids, counts, versions and closed words go in.
+ * A peer's queue is `queue N` when the hub reported a count (including `queue 0`) and `queue ?` when it did not, so a peer with nothing waiting is never confused with one whose queue is unknown.
+ * `sentence(state)` supplies the fixed sentence for a card that is not a reading.
+ */
+export function formatCard(card, sentence) {
+  if (!card) return ["Status: not read. Click Status."];
+  if (card.ok !== true) return [`Status (${card.state}): ${sentence(card.state)}`];
+  const tasks = Object.entries(card.tasks ?? {}).map(([state, n]) => `${state} ${n}`).join(", ") || "no task counts";
+  const peers = (card.peers ?? []).map(p => `${p.id} ${p.state}, queue ${p.queued === null || p.queued === undefined ? "?" : p.queued}${p.pullOnly ? ", pull-only" : ""}`);
+  const lines = [`Status (${card.state}): hub ${card.version ?? "version unknown"}; tasks: ${tasks}`];
+  lines.push(peers.length ? `Peers: ${peers.join("; ")}` : "Peers: none reported");
+  if (card.missing && card.missing.length) lines.push(`Missing from the reading: ${card.missing.join(", ")}`);
+  return lines;
+}

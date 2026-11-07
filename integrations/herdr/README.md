@@ -21,7 +21,8 @@ For the selected project:
 - **Copy command** puts `ahub --project '<root>' console` on the clipboard, quoted as one shell word, for you to run
   on the machine named in the dialog. It runs nothing. This is the route for a remote project's dashboard too.
 - **Status** (H2) reads `ahub --project <id> status --json` from the project folder on that machine, on your click only,
-  and shows a small card: task counts per state and each peer's state and queue length, plus the hub version. Nothing
+  and shows a small card of text: the hub version, task counts per state, and for each peer its state and queue length
+  (`queue 0` when the hub reported none waiting, `queue ?` when it gave no usable count, so the two are never confused). Nothing
   else from ahub's output is read, so no task title, note or private-task text can reach it, and the hub's reported
   folder must equal the selected root, as for the open actions. Missing CLI, timeout, exit error, no hub running,
   too-large output, unrecognized output, an old hub, a partial reading and a stale one (older than 60 s, judged on the
