@@ -39,9 +39,26 @@ test("AC2: a v2 record's review, delivery, merge, specs, memory, stall, handoff 
   // Last done 12, approved 20, merged 60.
   expect(one.merge).toEqual({ ciRuns: 3, ciReruns: 1, githubReviews: 2, doneToApprovedMs: 8 * 60_000, approvedToMergedMs: 40 * 60_000 });
   expect(one.specs).toEqual({ covering: 3, unchanged: 2, acked: 1, errors: 0 });
-  expect(one.memory).toEqual({ briefs: 1, briefNotes: 3, fails: 1, rendered: null, delivered: null, cited: null });
+  expect(one.memory).toEqual({ briefs: 1, briefNotes: 3, fails: 1, rendered: null, delivered: null, cited: null, failsExposed: null, failsCited: null, failRetrySignal: null });
   expect(one.handoffs).toEqual({ in: 1, out: 2 });
   expect(one.person).toEqual({ permissions: null, questions: null, completions: null, cliRefusals: null, latencyMs: null });
+});
+
+test("#778 nit: a task with no brief is a known 0 when briefs were being reported, and unknown when the log shows none at all", () => {
+  const { evidence } = fixture();
+  const two = byTask(taskRecords(scenarioEvents(), PROJECT, writer, evidence), 2);
+  expect(two.memory).toMatchObject({ briefs: 0, briefNotes: 0, fails: 0 });
+  const silent = scenarioEvents().filter(e => e.type !== "memory_brief");
+  expect(byTask(taskRecords(silent, PROJECT, writer, evidence), 1).memory).toMatchObject({ briefs: null, briefNotes: null, fails: null });
+});
+
+test("#778 nit: the live writer's scoped evidence read gives the same record as a full read, from one task's rows", () => {
+  const { stateDir, evidence } = fixture();
+  const scoped = { ...readEvidence(stateDir, PROJECT, 1), familyOf };
+  expect([...scoped.tasks.keys()]).toEqual([1]);
+  expect(scoped.journal!.rows.every(r => r.task === 1)).toBe(true);
+  const full = byTask(taskRecords(scenarioEvents(), PROJECT, writer, evidence), 1), narrow = byTask(taskRecords(scenarioEvents(), PROJECT, writer, scoped), 1);
+  expect(narrow).toEqual(full);
 });
 
 test("AC1: with no board or journal every board-derived field is null and counted, never zero", () => {

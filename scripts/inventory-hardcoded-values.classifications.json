@@ -1296,6 +1296,7 @@
   "src/hub/daemon.ts:taskOpBody:inline:a.reason.trim().length > 1000=1000#0": "contract",
   "src/hub/daemon.ts:taskOpBody:inline:a.release.length > 100=100#0": "contract",
   "src/hub/daemon.ts:taskOpBody:inline:a.superseded_by.length > 2000=2000#0": "contract",
+  "src/hub/daemon.ts:taskOpBody:inline:createHash(sha256).update(a.text).digest(hex).slice=16#0": "contract",
   "src/hub/daemon.ts:terminalLaunchTimer:inline:setInterval=1_000#0": "operational",
   "src/hub/daemon.ts:text:inline:String(msg.question).slice=300#0": "safety floor",
   "src/hub/daemon.ts:text:inline:max=200#0": "safety floor",
