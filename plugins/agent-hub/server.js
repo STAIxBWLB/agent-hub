@@ -44,7 +44,7 @@ var __esm = (fn, res, err) => () => {
   return res;
 };
 
-// ../../node_modules/@staix/agent-mem/src/memory/platform.ts
+// node_modules/@staix/agent-mem/src/memory/platform.ts
 import { realpathSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
 import { createRequire } from "module";
@@ -10825,30 +10825,30 @@ var init_review_comments = __esm(() => {
   init_review_anchor();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
+// node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
 var init_public_prune_view = __esm(() => {
   init_generation();
   init_platform();
 });
-// ../../node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
+// node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
 var MAX_LOG_BYTES;
 var init_lifecycle_log = __esm(() => {
   MAX_LOG_BYTES = 8 * 1024 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/aliases.ts
+// node_modules/@staix/agent-mem/src/memory/aliases.ts
 var init_aliases = __esm(() => {
   init_lifecycle_log();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/profile-lock-diagnostic.ts
+// node_modules/@staix/agent-mem/src/memory/profile-lock-diagnostic.ts
 var recognised;
 var init_profile_lock_diagnostic = __esm(() => {
   init_platform();
   recognised = new WeakMap;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/shard.ts
+// node_modules/@staix/agent-mem/src/memory/shard.ts
 var init_shard = __esm(() => {
   init_sync_placement_active();
   init_sync_placement_format();
@@ -10860,7 +10860,7 @@ var init_shard = __esm(() => {
   init_aliases();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-format.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-format.ts
 var METADATA_MAX, WIRE_MAX;
 var init_sync_placement_format = __esm(() => {
   init_generation();
@@ -10869,14 +10869,14 @@ var init_sync_placement_format = __esm(() => {
   WIRE_MAX = 64 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/mutation.ts
+// node_modules/@staix/agent-mem/src/memory/mutation.ts
 var mutations;
 var init_mutation = __esm(() => {
   init_platform();
   mutations = new WeakMap;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
+// node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
 var PUBLIC_PRUNE_REPLAY_MAX_BYTES;
 var init_public_prune_input_chain = __esm(() => {
   init_generation();
@@ -10884,7 +10884,7 @@ var init_public_prune_input_chain = __esm(() => {
   PUBLIC_PRUNE_REPLAY_MAX_BYTES = 256 * 1024 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/generation.ts
+// node_modules/@staix/agent-mem/src/memory/generation.ts
 var init_generation = __esm(() => {
   init_sync_placement_format();
   init_sync_placement_guard();
@@ -10896,21 +10896,21 @@ var init_generation = __esm(() => {
   init_profile_lock_diagnostic();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-plan.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-plan.ts
 var init_sync_placement_plan = __esm(() => {
   init_generation();
   init_sync_placement_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/screen.ts
+// node_modules/@staix/agent-mem/src/memory/screen.ts
 var init_screen = () => {};
 
-// ../../node_modules/@staix/agent-mem/src/memory/project.ts
+// node_modules/@staix/agent-mem/src/memory/project.ts
 var init_project2 = __esm(() => {
   init_platform();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/policy.ts
+// node_modules/@staix/agent-mem/src/memory/policy.ts
 var MAX_BYTES3, MAX_STRING_BYTES, flags;
 var init_policy = __esm(() => {
   init_screen();
@@ -10921,7 +10921,7 @@ var init_policy = __esm(() => {
   flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-journal-format.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-journal-format.ts
 var PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_ROOT_MAX_BYTES;
 var init_sync_placement_journal_format = __esm(() => {
   init_generation();
@@ -10931,7 +10931,7 @@ var init_sync_placement_journal_format = __esm(() => {
   PLACEMENT_JOURNAL_ROOT_MAX_BYTES = 256 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-active.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-active.ts
 var init_sync_placement_active = __esm(() => {
   init_generation();
   init_platform();
@@ -10942,7 +10942,7 @@ var init_sync_placement_active = __esm(() => {
   init_public_prune_input_chain();
   init_shard();
 });
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-guard.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-guard.ts
 var init_sync_placement_guard = __esm(() => {
   init_sync_placement_active();
   init_generation();
@@ -10951,7 +10951,7 @@ var init_sync_placement_guard = __esm(() => {
   init_profile_lock_diagnostic();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/formats.ts
+// node_modules/@staix/agent-mem/src/memory/formats.ts
 import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, openSync as openSync7, readFileSync as readFileSync8, readSync as readSync5 } from "fs";
 var MAX_BYTES4, SEMVER, READER_VERSION;
 var init_formats = __esm(() => {
@@ -10967,7 +10967,7 @@ var init_formats = __esm(() => {
   })();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/ops-contract.ts
+// node_modules/@staix/agent-mem/src/memory/ops-contract.ts
 function current(op, fields, required, placement, targets, precedence, legacyOptional = []) {
   const keys = [...Object.keys(base), ...required];
   return Object.freeze({
@@ -11141,7 +11141,7 @@ var init_ops_contract = __esm(() => {
   GENERATION_OP_CONTRACTS = Object.freeze({ prune: PRUNE_GENERATION_CONTRACT, vault_link: VAULT_LINK_GENERATION_CONTRACT });
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/bridge.ts
+// node_modules/@staix/agent-mem/src/memory/bridge.ts
 var init_bridge = __esm(() => {
   init_platform();
   init_generation();
@@ -11149,45 +11149,45 @@ var init_bridge = __esm(() => {
   init_store();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/shard-bridge.ts
+// node_modules/@staix/agent-mem/src/memory/shard-bridge.ts
 var init_shard_bridge = __esm(() => {
   init_bridge();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
+// node_modules/@staix/agent-mem/src/memory/cli-attribution.ts
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "async_hooks";
 var scope;
 var init_cli_attribution = __esm(() => {
   scope = new AsyncLocalStorage2;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/private-spans.ts
+// node_modules/@staix/agent-mem/src/memory/private-spans.ts
 var init_private_spans = () => {};
 
-// ../../node_modules/@staix/agent-mem/src/memory/config.ts
+// node_modules/@staix/agent-mem/src/memory/config.ts
 var MAX_CONFIG_BYTES2;
 var init_config = __esm(() => {
   init_policy();
   MAX_CONFIG_BYTES2 = 64 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/home.ts
+// node_modules/@staix/agent-mem/src/memory/home.ts
 var init_home = __esm(() => {
   init_platform();
   init_config();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/machine.ts
+// node_modules/@staix/agent-mem/src/memory/machine.ts
 var init_machine = () => {};
 
-// ../../node_modules/@staix/agent-mem/src/memory/lifecycle.ts
+// node_modules/@staix/agent-mem/src/memory/lifecycle.ts
 var init_lifecycle = __esm(() => {
   init_aliases();
   init_lifecycle_log();
   init_shard();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/search-score.ts
+// node_modules/@staix/agent-mem/src/memory/search-score.ts
 function sql(expr, rank) {
   const get = (part) => sql(part, rank);
   switch (expr.op) {
@@ -11223,7 +11223,7 @@ var init_search_score = __esm(() => {
   SCORE = { op: "multiply", left: { op: "multiply", left: { op: "negative", value: { op: "rank" } }, right: TIER_FACTOR }, right: RECENCY_FACTOR };
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/search-fts.ts
+// node_modules/@staix/agent-mem/src/memory/search-fts.ts
 var SCREENED_SCORE, SCREENED_SUBSTRING_SCORE;
 var init_search_fts = __esm(() => {
   init_search_score();
@@ -11231,7 +11231,7 @@ var init_search_fts = __esm(() => {
   SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/capture-input.ts
+// node_modules/@staix/agent-mem/src/memory/capture-input.ts
 var TOOL_INPUT_OMIT;
 var init_capture_input = __esm(() => {
   init_screen();
@@ -11240,7 +11240,7 @@ var init_capture_input = __esm(() => {
   TOOL_INPUT_OMIT = new Set(["content", "old_string", "new_string", "edits"]);
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/capture.ts
+// node_modules/@staix/agent-mem/src/memory/capture.ts
 var SPOOL_MAX_BYTES;
 var init_capture = __esm(() => {
   init_formats();
@@ -11257,7 +11257,7 @@ var init_capture = __esm(() => {
   SPOOL_MAX_BYTES = 256 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/style.ts
+// node_modules/@staix/agent-mem/src/memory/style.ts
 function style(color) {
   return { color, ok: wrap(color, 32, 39), attention: wrap(color, 33, 39), error: wrap(color, 31, 39), dim: wrap(color, 2, 22), bold: wrap(color, 1, 22) };
 }
@@ -11266,21 +11266,21 @@ var init_style = __esm(() => {
   PLAIN = style(false);
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/prune.ts
+// node_modules/@staix/agent-mem/src/memory/prune.ts
 var init_prune = __esm(() => {
   init_generation();
   init_store();
   init_style();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/public-prune-witness.ts
+// node_modules/@staix/agent-mem/src/memory/public-prune-witness.ts
 var init_public_prune_witness = __esm(() => {
   init_generation();
   init_prune();
   init_shard_sync_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/shard-sync-format.ts
+// node_modules/@staix/agent-mem/src/memory/shard-sync-format.ts
 var SHARD_PACK_MAX_BYTES;
 var init_shard_sync_format = __esm(() => {
   init_sync_placement_format();
@@ -11293,7 +11293,7 @@ var init_shard_sync_format = __esm(() => {
   SHARD_PACK_MAX_BYTES = 1024 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/public-prune-inputs.ts
+// node_modules/@staix/agent-mem/src/memory/public-prune-inputs.ts
 var PUBLIC_PRUNE_GRAPH_MAX_BYTES, OBJECT_MAX, plans, batches;
 var init_public_prune_inputs = __esm(() => {
   init_generation();
@@ -11311,7 +11311,7 @@ var init_public_prune_inputs = __esm(() => {
   batches = new WeakMap;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/generation-index.ts
+// node_modules/@staix/agent-mem/src/memory/generation-index.ts
 var init_generation_index = __esm(() => {
   init_public_prune_inputs();
   init_public_prune_view();
@@ -11323,7 +11323,7 @@ var init_generation_index = __esm(() => {
   init_store();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/migrate.ts
+// node_modules/@staix/agent-mem/src/memory/migrate.ts
 var init_migrate = __esm(() => {
   init_bridge();
   init_mutation();
@@ -11332,7 +11332,7 @@ var init_migrate = __esm(() => {
   init_style();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/reader-lease.ts
+// node_modules/@staix/agent-mem/src/memory/reader-lease.ts
 var open;
 var init_reader_lease = __esm(() => {
   init_generation();
@@ -11343,7 +11343,7 @@ var init_reader_lease = __esm(() => {
   open = new Map;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/store.ts
+// node_modules/@staix/agent-mem/src/memory/store.ts
 var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
 var init_store = __esm(() => {
   init_sync_placement_guard();
@@ -11375,7 +11375,7 @@ var init_store = __esm(() => {
   MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/catalog.ts
+// node_modules/@staix/agent-mem/src/memory/catalog.ts
 var init_catalog = __esm(() => {
   init_home();
   init_shard();
@@ -11385,13 +11385,13 @@ var init_catalog = __esm(() => {
   init_lifecycle();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/metrics.ts
+// node_modules/@staix/agent-mem/src/memory/metrics.ts
 var METRICS_MAX_BYTES;
 var init_metrics = __esm(() => {
   METRICS_MAX_BYTES = 64 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/capacity.ts
+// node_modules/@staix/agent-mem/src/memory/capacity.ts
 var init_capacity = __esm(() => {
   init_home();
   init_metrics();
@@ -11402,25 +11402,25 @@ var init_capacity = __esm(() => {
   init_style();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/usage.ts
+// node_modules/@staix/agent-mem/src/memory/usage.ts
 var init_usage = __esm(() => {
   init_catalog();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/gc.ts
+// node_modules/@staix/agent-mem/src/memory/gc.ts
 var init_gc = __esm(() => {
   init_capture();
   init_catalog();
   init_lifecycle();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/curated-read.ts
+// node_modules/@staix/agent-mem/src/memory/curated-read.ts
 var init_curated_read = __esm(() => {
   init_store();
   init_shard();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/work-lists.ts
+// node_modules/@staix/agent-mem/src/memory/work-lists.ts
 var forbidden;
 var init_work_lists = __esm(() => {
   init_formats();
@@ -11434,7 +11434,7 @@ var init_work_lists = __esm(() => {
   forbidden = new Set(["__proto__", "constructor", "prototype"]);
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/project-export.ts
+// node_modules/@staix/agent-mem/src/memory/project-export.ts
 var init_project_export = __esm(() => {
   init_catalog();
   init_curated_read();
@@ -11446,7 +11446,7 @@ var init_project_export = __esm(() => {
   init_work_lists();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/project-import.ts
+// node_modules/@staix/agent-mem/src/memory/project-import.ts
 var PROJECT_IMPORT_MAX_BYTES, PROJECT_IMPORT_MAX_LINE_BYTES, PROJECT_IMPORT_FUTURE_SKEW_MS, NOTE_KEYS;
 var init_project_import = __esm(() => {
   init_bridge();
@@ -11460,7 +11460,7 @@ var init_project_import = __esm(() => {
   NOTE_KEYS = new Set(["schema", "id", "at", "machine", "op", "project", "scope", "tier", "kind", "peer", "title", "text", "task", "about", "supersedes", "promotedFrom", "source", "expires"]);
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/candidate-pending.ts
+// node_modules/@staix/agent-mem/src/memory/candidate-pending.ts
 var CANDIDATE_AGE_MS, CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_DUE_MS;
 var init_candidate_pending = __esm(() => {
   CANDIDATE_AGE_MS = 30 * 86400000;
@@ -11468,13 +11468,13 @@ var init_candidate_pending = __esm(() => {
   CANDIDATE_DUE_MS = 7 * 86400000;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/note-add.ts
+// node_modules/@staix/agent-mem/src/memory/note-add.ts
 var init_note_add = __esm(() => {
   init_store();
   init_cli_attribution();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/candidates.ts
+// node_modules/@staix/agent-mem/src/memory/candidates.ts
 var CANDIDATE_RETENTION, COUNTER_RETENTION;
 var init_candidates = __esm(() => {
   init_formats();
@@ -11488,7 +11488,7 @@ var init_candidates = __esm(() => {
   COUNTER_RETENTION = { count: 1e4, ageMs: 90 * 86400000 };
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/external-import.ts
+// node_modules/@staix/agent-mem/src/memory/external-import.ts
 var EXTERNAL_IMPORT_LIMITS;
 var init_external_import = __esm(() => {
   init_aliases();
@@ -11500,7 +11500,7 @@ var init_external_import = __esm(() => {
   EXTERNAL_IMPORT_LIMITS = { maxFiles: 256, maxDirectories: 512, maxEntriesPerDirectory: 512, maxDepth: 16, maxFileBytes: 1024 * 1024, maxCandidatesPerRun: 100, candidateTextChars: 3000, titleChars: 200 };
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/vault.ts
+// node_modules/@staix/agent-mem/src/memory/vault.ts
 var init_vault = __esm(() => {
   init_generation();
   init_policy();
@@ -11508,7 +11508,7 @@ var init_vault = __esm(() => {
   init_generation();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/cross-project.ts
+// node_modules/@staix/agent-mem/src/memory/cross-project.ts
 var init_cross_project = __esm(() => {
   init_search_fts();
   init_capture();
@@ -11518,7 +11518,7 @@ var init_cross_project = __esm(() => {
   init_vault();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/generation-sync.ts
+// node_modules/@staix/agent-mem/src/memory/generation-sync.ts
 var zero;
 var init_generation_sync = __esm(() => {
   init_sync_placement_guard();
@@ -11531,7 +11531,7 @@ var init_generation_sync = __esm(() => {
   zero = "0".repeat(40);
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-screen.ts
+// node_modules/@staix/agent-mem/src/memory/sync-screen.ts
 var SYNC_SCREEN_MAX_BYTES, GENERATED;
 var init_sync_screen = __esm(() => {
   init_ops_contract();
@@ -11543,10 +11543,10 @@ var init_sync_screen = __esm(() => {
   GENERATED = new Set(["id", "schema", "op", "at", "machine", "actor", "promotedFrom", "supersedes", "expires", "tier", "scope", "kind", "source"]);
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-binding.ts
+// node_modules/@staix/agent-mem/src/memory/sync-binding.ts
 var init_sync_binding = () => {};
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync.ts
+// node_modules/@staix/agent-mem/src/memory/sync.ts
 var liveGroups;
 var init_sync = __esm(() => {
   init_sync_placement_guard();
@@ -11561,7 +11561,7 @@ var init_sync = __esm(() => {
   liveGroups = new Set;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/import.ts
+// node_modules/@staix/agent-mem/src/memory/import.ts
 var init_import = __esm(() => {
   init_platform();
   init_store();
@@ -11573,13 +11573,13 @@ var init_import = __esm(() => {
   init_policy();
   init_private_spans();
 });
-// ../../node_modules/@staix/agent-mem/src/memory/consolidation-clusters.ts
+// node_modules/@staix/agent-mem/src/memory/consolidation-clusters.ts
 var init_consolidation_clusters = __esm(() => {
   init_search_fts();
   init_candidates();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/forget-nearby.ts
+// node_modules/@staix/agent-mem/src/memory/forget-nearby.ts
 var init_forget_nearby = __esm(() => {
   init_machine();
   init_shard();
@@ -11589,7 +11589,7 @@ var init_forget_nearby = __esm(() => {
   init_work_lists();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/commands.ts
+// node_modules/@staix/agent-mem/src/memory/commands.ts
 var AMEM_NAMES, memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`, MEMORY_USAGE, goalUsage = (name = AMEM_NAMES.goal) => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`, GOAL_USAGE;
 var init_commands = __esm(() => {
   init_cli_attribution();
@@ -11604,7 +11604,7 @@ var init_commands = __esm(() => {
   GOAL_USAGE = goalUsage();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/shard-migration.ts
+// node_modules/@staix/agent-mem/src/memory/shard-migration.ts
 var USER2;
 var init_shard_migration = __esm(() => {
   init_bridge();
@@ -11621,7 +11621,7 @@ var init_shard_migration = __esm(() => {
   USER2 = Symbol("shared-user-shard");
 });
 
-// ../../node_modules/@staix/agent-mem/src/mcp.ts
+// node_modules/@staix/agent-mem/src/mcp.ts
 var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLength }), limit, object7 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false }), tool = (name, description, inputSchema, readOnlyHint = true) => ({
   name,
   description,
@@ -11660,30 +11660,30 @@ var init_mcp = __esm(() => {
   ];
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/evidence.ts
+// node_modules/@staix/agent-mem/src/memory/evidence.ts
 var init_evidence = __esm(() => {
   init_policy();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/plan-guard.ts
+// node_modules/@staix/agent-mem/src/memory/plan-guard.ts
 var init_plan_guard = __esm(() => {
   init_store();
   init_project2();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/intent-brief.ts
+// node_modules/@staix/agent-mem/src/memory/intent-brief.ts
 var init_intent_brief = __esm(() => {
   init_plan_guard();
   init_policy();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/recall-staleness.ts
+// node_modules/@staix/agent-mem/src/memory/recall-staleness.ts
 var init_recall_staleness = __esm(() => {
   init_platform();
   init_policy();
   init_project2();
 });
-// ../../node_modules/@staix/agent-mem/src/memory/candidate-overlaps.ts
+// node_modules/@staix/agent-mem/src/memory/candidate-overlaps.ts
 var init_candidate_overlaps = __esm(() => {
   init_consolidation_clusters();
   init_policy();
@@ -11691,12 +11691,12 @@ var init_candidate_overlaps = __esm(() => {
   init_shard();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/path-glob.ts
+// node_modules/@staix/agent-mem/src/memory/path-glob.ts
 var init_path_glob = __esm(() => {
   init_project2();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/repo-scope.ts
+// node_modules/@staix/agent-mem/src/memory/repo-scope.ts
 var REPO_DIR = ".amem", REPO_LOG = "log.jsonl", REPO_ATTRIBUTES_LINE, MAX_LINE_BYTES, MAX_FILE_BYTES, MAX_CONFIG_BYTES3;
 var init_repo_scope = __esm(() => {
   init_platform();
@@ -11710,7 +11710,7 @@ var init_repo_scope = __esm(() => {
   MAX_CONFIG_BYTES3 = 1024 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/mcp-memory.ts
+// node_modules/@staix/agent-mem/src/mcp-memory.ts
 var init_mcp_memory = __esm(() => {
   init_evidence();
   init_intent_brief();
@@ -11735,22 +11735,22 @@ var init_mcp_memory = __esm(() => {
   init_work_lists();
 });
 
-// ../../node_modules/@staix/agent-mem/src/hook-resources.ts
+// node_modules/@staix/agent-mem/src/hook-resources.ts
 var init_hook_resources = () => {};
 
-// ../../node_modules/@staix/agent-mem/src/hook-git.ts
+// node_modules/@staix/agent-mem/src/hook-git.ts
 var init_hook_git = __esm(() => {
   init_platform();
   init_platform();
 });
 
-// ../../node_modules/@staix/agent-mem/src/hook-contract.ts
+// node_modules/@staix/agent-mem/src/hook-contract.ts
 var HOOK_INPUT_BYTES;
 var init_hook_contract = __esm(() => {
   HOOK_INPUT_BYTES = 64 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/hook-spool.ts
+// node_modules/@staix/agent-mem/src/hook-spool.ts
 var RECORD_BYTES, MAX_BYTES5, HOOK_REPLAY_MAX_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
 var init_hook_spool = __esm(() => {
   init_formats();
@@ -11771,7 +11771,7 @@ var init_hook_spool = __esm(() => {
   RETIRE_AFTER_MS = 7 * 24 * 3600000;
 });
 
-// ../../node_modules/@staix/agent-mem/src/hook-native.ts
+// node_modules/@staix/agent-mem/src/hook-native.ts
 var SUPERVISOR;
 var init_hook_native = __esm(() => {
   init_hook_resources();
@@ -11790,7 +11790,7 @@ var init_hook_native = __esm(() => {
   ].join("; ");
 });
 
-// ../../node_modules/@staix/agent-mem/src/hook-project.ts
+// node_modules/@staix/agent-mem/src/hook-project.ts
 var init_hook_project = __esm(() => {
   init_hook_resources();
   init_hook_git();
@@ -11801,18 +11801,18 @@ var init_hook_project = __esm(() => {
   init_hook_native();
 });
 
-// ../../node_modules/@staix/agent-mem/src/hook-rss-wire.ts
+// node_modules/@staix/agent-mem/src/hook-rss-wire.ts
 var init_hook_rss_wire = __esm(() => {
   init_hook_resources();
 });
 
-// ../../node_modules/@staix/agent-mem/src/hook-jcode.ts
+// node_modules/@staix/agent-mem/src/hook-jcode.ts
 var FIELD_BYTES;
 var init_hook_jcode = __esm(() => {
   FIELD_BYTES = 16 * 1024 + 64;
 });
 
-// ../../node_modules/@staix/agent-mem/src/hooks.ts
+// node_modules/@staix/agent-mem/src/hooks.ts
 var hookStartedAt;
 var init_hooks = __esm(() => {
   init_hook_project();
@@ -11832,7 +11832,7 @@ var init_hooks = __esm(() => {
   hookStartedAt = performance.now();
 });
 
-// ../../node_modules/@staix/agent-mem/src/ingest.ts
+// node_modules/@staix/agent-mem/src/ingest.ts
 var MAX_BYTES6, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
 var init_ingest = __esm(() => {
   init_capture();
@@ -11849,7 +11849,7 @@ var init_ingest = __esm(() => {
   MAX_RECORD = 256 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/session-brief.ts
+// node_modules/@staix/agent-mem/src/session-brief.ts
 var init_session_brief = __esm(() => {
   init_generation();
   init_home();
@@ -11865,13 +11865,13 @@ var init_session_brief = __esm(() => {
   init_work_lists();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/decay-review.ts
+// node_modules/@staix/agent-mem/src/memory/decay-review.ts
 var init_decay_review = __esm(() => {
   init_generation();
   init_candidates();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/goal-promotion.ts
+// node_modules/@staix/agent-mem/src/memory/goal-promotion.ts
 var init_goal_promotion = __esm(() => {
   init_candidates();
   init_generation();
@@ -11880,14 +11880,14 @@ var init_goal_promotion = __esm(() => {
   init_shard();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/consolidation-model.ts
+// node_modules/@staix/agent-mem/src/memory/consolidation-model.ts
 var init_consolidation_model = __esm(() => {
   init_candidates();
   init_policy();
   init_platform();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/consolidate.ts
+// node_modules/@staix/agent-mem/src/memory/consolidate.ts
 var init_consolidate = __esm(() => {
   init_candidates();
   init_consolidation_clusters();
@@ -11896,7 +11896,7 @@ var init_consolidate = __esm(() => {
   init_consolidation_model();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-policy-inspection.ts
+// node_modules/@staix/agent-mem/src/memory/sync-policy-inspection.ts
 var init_sync_policy_inspection = __esm(() => {
   init_bridge();
   init_platform();
@@ -11908,7 +11908,7 @@ var init_sync_policy_inspection = __esm(() => {
   init_sync_screen();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/public-prune-activation.ts
+// node_modules/@staix/agent-mem/src/memory/public-prune-activation.ts
 var MAX;
 var init_public_prune_activation = __esm(() => {
   init_generation();
@@ -11923,7 +11923,7 @@ var init_public_prune_activation = __esm(() => {
   MAX = 1024 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-activation-storage.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-activation-storage.ts
 var MAX_BYTES7;
 var init_sync_placement_activation_storage = __esm(() => {
   init_generation();
@@ -11936,7 +11936,7 @@ var init_sync_placement_activation_storage = __esm(() => {
   MAX_BYTES7 = 1024 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-activation-proof.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-activation-proof.ts
 var owners, captures;
 var init_sync_placement_activation_proof = __esm(() => {
   init_generation();
@@ -11947,19 +11947,19 @@ var init_sync_placement_activation_proof = __esm(() => {
   captures = new WeakMap;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-publication-plan.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-publication-plan.ts
 var init_sync_placement_publication_plan = __esm(() => {
   init_generation();
   init_sync_placement_journal_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-projection.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-projection.ts
 var init_sync_placement_projection = __esm(() => {
   init_generation();
   init_sync_placement_journal_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-writers.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-writers.ts
 var MAX_BYTES8, MAX_PACKAGE;
 var init_sync_placement_writers = __esm(() => {
   init_generation();
@@ -11969,7 +11969,7 @@ var init_sync_placement_writers = __esm(() => {
   MAX_PACKAGE = 64 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-writer-revision-format.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-writer-revision-format.ts
 var WRITER_REVISION_MAX_BYTES, WRITER_COMMIT_MAX_BYTES, WRITER_RENEWAL_INTENT_MAX_BYTES;
 var init_sync_placement_writer_revision_format = __esm(() => {
   init_generation();
@@ -11980,7 +11980,7 @@ var init_sync_placement_writer_revision_format = __esm(() => {
   WRITER_RENEWAL_INTENT_MAX_BYTES = 1024 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-writer-history.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-writer-history.ts
 var init_sync_placement_writer_history = __esm(() => {
   init_generation();
   init_platform();
@@ -11988,7 +11988,7 @@ var init_sync_placement_writer_history = __esm(() => {
   init_sync_placement_writer_revision_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-journal-storage.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-journal-storage.ts
 var inflight, publicationDurability;
 var init_sync_placement_journal_storage = __esm(() => {
   init_generation();
@@ -12005,7 +12005,7 @@ var init_sync_placement_journal_storage = __esm(() => {
   publicationDurability = new WeakMap;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-writer-roots.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-writer-roots.ts
 var MAX_BYTES9;
 var init_sync_placement_writer_roots = __esm(() => {
   init_generation();
@@ -12021,7 +12021,7 @@ var init_sync_placement_writer_roots = __esm(() => {
   MAX_BYTES9 = 256 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-prerequisites.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-prerequisites.ts
 var init_sync_placement_prerequisites = __esm(() => {
   init_platform();
   init_generation();
@@ -12031,7 +12031,7 @@ var init_sync_placement_prerequisites = __esm(() => {
   init_sync_placement_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-effective-writers.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-effective-writers.ts
 var init_sync_placement_effective_writers = __esm(() => {
   init_generation();
   init_sync_placement_guard();
@@ -12043,7 +12043,7 @@ var init_sync_placement_effective_writers = __esm(() => {
   init_sync_placement_prerequisites();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-capture.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-capture.ts
 var init_sync_placement_capture = __esm(() => {
   init_sync_placement_journal_format();
   init_generation();
@@ -12065,7 +12065,7 @@ var init_sync_placement_capture = __esm(() => {
   init_sync_placement_writer_revision_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-dependencies.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-dependencies.ts
 var init_sync_placement_dependencies = __esm(() => {
   init_bridge();
   init_generation();
@@ -12075,7 +12075,7 @@ var init_sync_placement_dependencies = __esm(() => {
   init_sync_placement_journal_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-git.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-git.ts
 var typedArrayPrototype, getBuffer, getOffset, getLength, mapSize;
 var init_sync_placement_git = __esm(() => {
   init_public_prune_input_chain();
@@ -12087,7 +12087,7 @@ var init_sync_placement_git = __esm(() => {
   mapSize = Object.getOwnPropertyDescriptor(Map.prototype, "size").get;
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-materialize.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-materialize.ts
 var init_sync_placement_materialize = __esm(() => {
   init_generation();
   init_sync_screen();
@@ -12099,20 +12099,20 @@ var init_sync_placement_materialize = __esm(() => {
   init_public_prune_witness();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-cache.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-cache.ts
 var init_sync_placement_cache = __esm(() => {
   init_generation();
   init_sync_placement_journal_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/shard-sync-graph.ts
+// node_modules/@staix/agent-mem/src/memory/shard-sync-graph.ts
 var init_shard_sync_graph = __esm(() => {
   init_public_prune_inputs();
   init_shard_sync_format();
   init_public_prune_witness();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/shard-sync-history.ts
+// node_modules/@staix/agent-mem/src/memory/shard-sync-history.ts
 var init_shard_sync_history = __esm(() => {
   init_generation();
   init_prune();
@@ -12121,7 +12121,7 @@ var init_shard_sync_history = __esm(() => {
   init_shard_sync_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-evidence.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-evidence.ts
 var init_sync_placement_inspection_evidence = __esm(() => {
   init_sync_placement_journal_storage();
   init_sync_placement_projection();
@@ -12137,7 +12137,7 @@ var init_sync_placement_inspection_evidence = __esm(() => {
   init_sync_placement_journal_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/prune-publisher-lineage.ts
+// node_modules/@staix/agent-mem/src/memory/prune-publisher-lineage.ts
 var init_prune_publisher_lineage = __esm(() => {
   init_generation();
   init_mutation();
@@ -12147,7 +12147,7 @@ var init_prune_publisher_lineage = __esm(() => {
   init_sync_screen();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-pending.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-inspection-pending.ts
 var init_sync_placement_inspection_pending = __esm(() => {
   init_generation();
   init_platform();
@@ -12155,7 +12155,7 @@ var init_sync_placement_inspection_pending = __esm(() => {
   init_sync_placement_journal_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-inspection.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-inspection.ts
 var init_sync_placement_inspection = __esm(() => {
   init_bridge();
   init_generation();
@@ -12178,7 +12178,7 @@ var init_sync_placement_inspection = __esm(() => {
   init_sync_placement_writer_revision_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/memory/sync-placement-journal.ts
+// node_modules/@staix/agent-mem/src/memory/sync-placement-journal.ts
 var init_sync_placement_journal = __esm(() => {
   init_sync_placement_format();
   init_sync_placement_active();
@@ -12197,14 +12197,14 @@ var init_sync_placement_journal = __esm(() => {
   init_sync_placement_writer_revision_format();
 });
 
-// ../../node_modules/@staix/agent-mem/src/setup-toml.ts
+// node_modules/@staix/agent-mem/src/setup-toml.ts
 var SETUP_CONFIG_BYTES, temporal;
 var init_setup_toml = __esm(() => {
   SETUP_CONFIG_BYTES = 8 * 1024 * 1024;
   temporal = new Set(["[object Temporal.Instant]", "[object Temporal.PlainDate]", "[object Temporal.PlainTime]", "[object Temporal.PlainDateTime]"]);
 });
 
-// ../../node_modules/@staix/agent-mem/src/setup-json.ts
+// node_modules/@staix/agent-mem/src/setup-json.ts
 import { isDeepStrictEqual as isDeepStrictEqual2 } from "util";
 function createJsonMcpCodec(options) {
   const { canonicalKey, label } = options, keys = new Set([canonicalKey, ...options.aliases ?? []]);
@@ -12410,7 +12410,7 @@ var init_setup_json = __esm(() => {
   decode = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 });
 
-// ../../node_modules/@staix/agent-mem/src/setup-jcode.ts
+// node_modules/@staix/agent-mem/src/setup-jcode.ts
 var codec;
 var init_setup_jcode = __esm(() => {
   init_setup_json();
@@ -12418,21 +12418,21 @@ var init_setup_jcode = __esm(() => {
   codec = createJsonMcpCodec({ canonicalKey: "servers", aliases: ["mcpServers"], label: "Jcode" });
 });
 
-// ../../node_modules/@staix/agent-mem/src/setup-agy.ts
+// node_modules/@staix/agent-mem/src/setup-agy.ts
 var codec2;
 var init_setup_agy = __esm(() => {
   init_setup_json();
   codec2 = createJsonMcpCodec({ canonicalKey: "mcpServers", label: "Antigravity strict JSON" });
 });
 
-// ../../node_modules/@staix/agent-mem/src/setup-opencode.ts
+// node_modules/@staix/agent-mem/src/setup-opencode.ts
 var codec3;
 var init_setup_opencode = __esm(() => {
   init_setup_json();
   codec3 = createJsonMcpCodec({ canonicalKey: "mcp", label: "OpenCode strict JSON" });
 });
 
-// ../../node_modules/@staix/agent-mem/src/setup-owned.ts
+// node_modules/@staix/agent-mem/src/setup-owned.ts
 var qwenHookControls;
 var init_setup_owned = __esm(() => {
   init_setup_toml();
@@ -12442,16 +12442,16 @@ var init_setup_owned = __esm(() => {
   qwenHookControls = new Set(["enabled", "disabled", "notifications"]);
 });
 
-// ../../node_modules/@staix/agent-mem/src/setup-gemini.ts
+// node_modules/@staix/agent-mem/src/setup-gemini.ts
 var init_setup_gemini = () => {};
 
-// ../../node_modules/@staix/agent-mem/src/setup-paths.ts
+// node_modules/@staix/agent-mem/src/setup-paths.ts
 var init_setup_paths = __esm(() => {
   init_platform();
   init_setup_gemini();
 });
 
-// ../../node_modules/@staix/agent-mem/src/setup.ts
+// node_modules/@staix/agent-mem/src/setup.ts
 var SETUP_TARGETS, SETUP_ALL_TARGETS, MAX2, JOURNAL_MAX, PACKAGE_JSON_MAX;
 var init_setup = __esm(() => {
   init_cli_attribution();
@@ -12473,7 +12473,7 @@ var init_setup = __esm(() => {
   PACKAGE_JSON_MAX = 64 * 1024;
 });
 
-// ../../node_modules/@staix/agent-mem/src/index.ts
+// node_modules/@staix/agent-mem/src/index.ts
 var init_src = __esm(() => {
   init_search_fts();
   init_platform();
@@ -18597,7 +18597,7 @@ var init_registry = __esm(() => {
   }));
 });
 
-// ../../node_modules/ajv/dist/compile/codegen/code.js
+// node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = undefined;
@@ -18751,7 +18751,7 @@ var require_code = __commonJS(function(exports) {
   exports.regexpCode = regexpCode;
 });
 
-// ../../node_modules/ajv/dist/compile/codegen/scope.js
+// node_modules/ajv/dist/compile/codegen/scope.js
 var require_scope = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = undefined;
@@ -18897,7 +18897,7 @@ var require_scope = __commonJS(function(exports) {
   exports.ValueScope = ValueScope;
 });
 
-// ../../node_modules/ajv/dist/compile/codegen/index.js
+// node_modules/ajv/dist/compile/codegen/index.js
 var require_codegen = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = undefined;
@@ -19607,7 +19607,7 @@ var require_codegen = __commonJS(function(exports) {
   }
 });
 
-// ../../node_modules/ajv/dist/compile/util.js
+// node_modules/ajv/dist/compile/util.js
 var require_util = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = undefined;
@@ -19771,7 +19771,7 @@ var require_util = __commonJS(function(exports) {
   exports.checkStrictMode = checkStrictMode;
 });
 
-// ../../node_modules/ajv/dist/compile/names.js
+// node_modules/ajv/dist/compile/names.js
 var require_names = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -19796,7 +19796,7 @@ var require_names = __commonJS(function(exports) {
   exports.default = names;
 });
 
-// ../../node_modules/ajv/dist/compile/errors.js
+// node_modules/ajv/dist/compile/errors.js
 var require_errors = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = undefined;
@@ -19914,7 +19914,7 @@ var require_errors = __commonJS(function(exports) {
   }
 });
 
-// ../../node_modules/ajv/dist/compile/validate/boolSchema.js
+// node_modules/ajv/dist/compile/validate/boolSchema.js
 var require_boolSchema = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = undefined;
@@ -19962,7 +19962,7 @@ var require_boolSchema = __commonJS(function(exports) {
   }
 });
 
-// ../../node_modules/ajv/dist/compile/rules.js
+// node_modules/ajv/dist/compile/rules.js
 var require_rules = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getRules = exports.isJSONType = undefined;
@@ -19990,7 +19990,7 @@ var require_rules = __commonJS(function(exports) {
   exports.getRules = getRules;
 });
 
-// ../../node_modules/ajv/dist/compile/validate/applicability.js
+// node_modules/ajv/dist/compile/validate/applicability.js
 var require_applicability = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = undefined;
@@ -20010,7 +20010,7 @@ var require_applicability = __commonJS(function(exports) {
   exports.shouldUseRule = shouldUseRule;
 });
 
-// ../../node_modules/ajv/dist/compile/validate/dataType.js
+// node_modules/ajv/dist/compile/validate/dataType.js
 var require_dataType = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = undefined;
@@ -20191,7 +20191,7 @@ var require_dataType = __commonJS(function(exports) {
   }
 });
 
-// ../../node_modules/ajv/dist/compile/validate/defaults.js
+// node_modules/ajv/dist/compile/validate/defaults.js
 var require_defaults = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.assignDefaults = undefined;
@@ -20225,7 +20225,7 @@ var require_defaults = __commonJS(function(exports) {
   }
 });
 
-// ../../node_modules/ajv/dist/vocabularies/code.js
+// node_modules/ajv/dist/vocabularies/code.js
 var require_code2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = undefined;
@@ -20354,7 +20354,7 @@ var require_code2 = __commonJS(function(exports) {
   exports.validateUnion = validateUnion;
 });
 
-// ../../node_modules/ajv/dist/compile/validate/keyword.js
+// node_modules/ajv/dist/compile/validate/keyword.js
 var require_keyword = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = undefined;
@@ -20469,7 +20469,7 @@ var require_keyword = __commonJS(function(exports) {
   exports.validateKeywordUsage = validateKeywordUsage;
 });
 
-// ../../node_modules/ajv/dist/compile/validate/subschema.js
+// node_modules/ajv/dist/compile/validate/subschema.js
 var require_subschema = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = undefined;
@@ -20549,7 +20549,7 @@ var require_subschema = __commonJS(function(exports) {
   exports.extendSubschemaMode = extendSubschemaMode;
 });
 
-// ../../node_modules/fast-deep-equal/index.js
+// node_modules/fast-deep-equal/index.js
 var require_fast_deep_equal = __commonJS(function(exports, module) {
   module.exports = function equal(a, b) {
     if (a === b)
@@ -20591,7 +20591,7 @@ var require_fast_deep_equal = __commonJS(function(exports, module) {
   };
 });
 
-// ../../node_modules/json-schema-traverse/index.js
+// node_modules/json-schema-traverse/index.js
 var require_json_schema_traverse = __commonJS(function(exports, module) {
   var traverse = module.exports = function(schema, opts, cb) {
     if (typeof opts == "function") {
@@ -20674,7 +20674,7 @@ var require_json_schema_traverse = __commonJS(function(exports, module) {
   }
 });
 
-// ../../node_modules/ajv/dist/compile/resolve.js
+// node_modules/ajv/dist/compile/resolve.js
 var require_resolve = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = undefined;
@@ -20827,7 +20827,7 @@ var require_resolve = __commonJS(function(exports) {
   exports.getSchemaRefs = getSchemaRefs;
 });
 
-// ../../node_modules/ajv/dist/compile/validate/index.js
+// node_modules/ajv/dist/compile/validate/index.js
 var require_validate = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getData = exports.KeywordCxt = exports.validateFunctionCode = undefined;
@@ -21332,7 +21332,7 @@ var require_validate = __commonJS(function(exports) {
   exports.getData = getData;
 });
 
-// ../../node_modules/ajv/dist/runtime/validation_error.js
+// node_modules/ajv/dist/runtime/validation_error.js
 var require_validation_error = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
 
@@ -21346,7 +21346,7 @@ var require_validation_error = __commonJS(function(exports) {
   exports.default = ValidationError;
 });
 
-// ../../node_modules/ajv/dist/compile/ref_error.js
+// node_modules/ajv/dist/compile/ref_error.js
 var require_ref_error = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var resolve_1 = require_resolve();
@@ -21361,7 +21361,7 @@ var require_ref_error = __commonJS(function(exports) {
   exports.default = MissingRefError;
 });
 
-// ../../node_modules/ajv/dist/compile/index.js
+// node_modules/ajv/dist/compile/index.js
 var require_compile = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = undefined;
@@ -21582,7 +21582,7 @@ var require_compile = __commonJS(function(exports) {
   }
 });
 
-// ../../node_modules/ajv/dist/refs/data.json
+// node_modules/ajv/dist/refs/data.json
 var require_data = __commonJS(function(exports, module) {
   module.exports = {
     $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
@@ -21599,7 +21599,7 @@ var require_data = __commonJS(function(exports, module) {
   };
 });
 
-// ../../node_modules/fast-uri/lib/utils.js
+// node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS(function(exports, module) {
   var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
   var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
@@ -22116,7 +22116,7 @@ var require_utils = __commonJS(function(exports, module) {
   };
 });
 
-// ../../node_modules/fast-uri/lib/schemes.js
+// node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS(function(exports, module) {
   var { isUUID } = require_utils();
   var URN_REG = /^([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-./:;=@]|%[\da-f]{2})+)$/iu;
@@ -22291,7 +22291,7 @@ var require_schemes = __commonJS(function(exports, module) {
   };
 });
 
-// ../../node_modules/fast-uri/index.js
+// node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS(function(exports, module) {
   var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
   var { SCHEMES, getSchemeHandler } = require_schemes();
@@ -22694,7 +22694,7 @@ var require_fast_uri = __commonJS(function(exports, module) {
   module.exports.fastUri = fastUri;
 });
 
-// ../../node_modules/ajv/dist/runtime/uri.js
+// node_modules/ajv/dist/runtime/uri.js
 var require_uri = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var uri = require_fast_uri();
@@ -22702,7 +22702,7 @@ var require_uri = __commonJS(function(exports) {
   exports.default = uri;
 });
 
-// ../../node_modules/ajv/dist/core.js
+// node_modules/ajv/dist/core.js
 var require_core = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = undefined;
@@ -23295,7 +23295,7 @@ var require_core = __commonJS(function(exports) {
   }
 });
 
-// ../../node_modules/ajv/dist/vocabularies/core/id.js
+// node_modules/ajv/dist/vocabularies/core/id.js
 var require_id = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var def = {
@@ -23307,7 +23307,7 @@ var require_id = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/core/ref.js
+// node_modules/ajv/dist/vocabularies/core/ref.js
 var require_ref = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.callRef = exports.getValidate = undefined;
@@ -23426,7 +23426,7 @@ var require_ref = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/core/index.js
+// node_modules/ajv/dist/vocabularies/core/index.js
 var require_core2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var id_1 = require_id();
@@ -23444,7 +23444,7 @@ var require_core2 = __commonJS(function(exports) {
   exports.default = core;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/limitNumber.js
+// node_modules/ajv/dist/vocabularies/validation/limitNumber.js
 var require_limitNumber = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23473,7 +23473,7 @@ var require_limitNumber = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/multipleOf.js
+// node_modules/ajv/dist/vocabularies/validation/multipleOf.js
 var require_multipleOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23498,7 +23498,7 @@ var require_multipleOf = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/runtime/ucs2length.js
+// node_modules/ajv/dist/runtime/ucs2length.js
 var require_ucs2length = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   function ucs2length(str) {
@@ -23521,7 +23521,7 @@ var require_ucs2length = __commonJS(function(exports) {
   ucs2length.code = 'require("ajv/dist/runtime/ucs2length").default';
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/limitLength.js
+// node_modules/ajv/dist/vocabularies/validation/limitLength.js
 var require_limitLength = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23550,7 +23550,7 @@ var require_limitLength = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/pattern.js
+// node_modules/ajv/dist/vocabularies/validation/pattern.js
 var require_pattern = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -23584,7 +23584,7 @@ var require_pattern = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/limitProperties.js
+// node_modules/ajv/dist/vocabularies/validation/limitProperties.js
 var require_limitProperties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23610,7 +23610,7 @@ var require_limitProperties = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/required.js
+// node_modules/ajv/dist/vocabularies/validation/required.js
 var require_required = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -23689,7 +23689,7 @@ var require_required = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/limitItems.js
+// node_modules/ajv/dist/vocabularies/validation/limitItems.js
 var require_limitItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23715,7 +23715,7 @@ var require_limitItems = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/runtime/equal.js
+// node_modules/ajv/dist/runtime/equal.js
 var require_equal = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var equal = require_fast_deep_equal();
@@ -23723,7 +23723,7 @@ var require_equal = __commonJS(function(exports) {
   exports.default = equal;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
+// node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
 var require_uniqueItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var dataType_1 = require_dataType();
@@ -23787,7 +23787,7 @@ var require_uniqueItems = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/const.js
+// node_modules/ajv/dist/vocabularies/validation/const.js
 var require_const = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23813,7 +23813,7 @@ var require_const = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/enum.js
+// node_modules/ajv/dist/vocabularies/validation/enum.js
 var require_enum = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -23859,7 +23859,7 @@ var require_enum = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/validation/index.js
+// node_modules/ajv/dist/vocabularies/validation/index.js
 var require_validation = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var limitNumber_1 = require_limitNumber();
@@ -23889,7 +23889,7 @@ var require_validation = __commonJS(function(exports) {
   exports.default = validation;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
+// node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
 var require_additionalItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateAdditionalItems = undefined;
@@ -23939,7 +23939,7 @@ var require_additionalItems = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/items.js
+// node_modules/ajv/dist/vocabularies/applicator/items.js
 var require_items = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateTuple = undefined;
@@ -23993,7 +23993,7 @@ var require_items = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
+// node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
 var require_prefixItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var items_1 = require_items();
@@ -24007,7 +24007,7 @@ var require_prefixItems = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/items2020.js
+// node_modules/ajv/dist/vocabularies/applicator/items2020.js
 var require_items2020 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -24039,7 +24039,7 @@ var require_items2020 = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/contains.js
+// node_modules/ajv/dist/vocabularies/applicator/contains.js
 var require_contains = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -24130,7 +24130,7 @@ var require_contains = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/dependencies.js
+// node_modules/ajv/dist/vocabularies/applicator/dependencies.js
 var require_dependencies = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = undefined;
@@ -24215,7 +24215,7 @@ var require_dependencies = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
+// node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
 var require_propertyNames = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -24255,7 +24255,7 @@ var require_propertyNames = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
+// node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
 var require_additionalProperties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -24358,7 +24358,7 @@ var require_additionalProperties = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/properties.js
+// node_modules/ajv/dist/vocabularies/applicator/properties.js
 var require_properties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var validate_1 = require_validate();
@@ -24413,7 +24413,7 @@ var require_properties = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
+// node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
 var require_patternProperties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -24484,7 +24484,7 @@ var require_patternProperties = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/not.js
+// node_modules/ajv/dist/vocabularies/applicator/not.js
 var require_not = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var util_1 = require_util();
@@ -24512,7 +24512,7 @@ var require_not = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/anyOf.js
+// node_modules/ajv/dist/vocabularies/applicator/anyOf.js
 var require_anyOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
@@ -24526,7 +24526,7 @@ var require_anyOf = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/oneOf.js
+// node_modules/ajv/dist/vocabularies/applicator/oneOf.js
 var require_oneOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -24581,7 +24581,7 @@ var require_oneOf = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/allOf.js
+// node_modules/ajv/dist/vocabularies/applicator/allOf.js
 var require_allOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var util_1 = require_util();
@@ -24605,7 +24605,7 @@ var require_allOf = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/if.js
+// node_modules/ajv/dist/vocabularies/applicator/if.js
 var require_if = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -24671,7 +24671,7 @@ var require_if = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/thenElse.js
+// node_modules/ajv/dist/vocabularies/applicator/thenElse.js
 var require_thenElse = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var util_1 = require_util();
@@ -24686,7 +24686,7 @@ var require_thenElse = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/applicator/index.js
+// node_modules/ajv/dist/vocabularies/applicator/index.js
 var require_applicator = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var additionalItems_1 = require_additionalItems();
@@ -24729,7 +24729,7 @@ var require_applicator = __commonJS(function(exports) {
   exports.default = getApplicator;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/format/format.js
+// node_modules/ajv/dist/vocabularies/format/format.js
 var require_format = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -24816,7 +24816,7 @@ var require_format = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/format/index.js
+// node_modules/ajv/dist/vocabularies/format/index.js
 var require_format2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var format_1 = require_format();
@@ -24824,7 +24824,7 @@ var require_format2 = __commonJS(function(exports) {
   exports.default = format;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/metadata.js
+// node_modules/ajv/dist/vocabularies/metadata.js
 var require_metadata = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.contentVocabulary = exports.metadataVocabulary = undefined;
@@ -24844,7 +24844,7 @@ var require_metadata = __commonJS(function(exports) {
   ];
 });
 
-// ../../node_modules/ajv/dist/vocabularies/draft7.js
+// node_modules/ajv/dist/vocabularies/draft7.js
 var require_draft7 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var core_1 = require_core2();
@@ -24863,7 +24863,7 @@ var require_draft7 = __commonJS(function(exports) {
   exports.default = draft7Vocabularies;
 });
 
-// ../../node_modules/ajv/dist/vocabularies/discriminator/types.js
+// node_modules/ajv/dist/vocabularies/discriminator/types.js
 var require_types = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.DiscrError = undefined;
@@ -24874,7 +24874,7 @@ var require_types = __commonJS(function(exports) {
   })(DiscrError || (exports.DiscrError = DiscrError = {}));
 });
 
-// ../../node_modules/ajv/dist/vocabularies/discriminator/index.js
+// node_modules/ajv/dist/vocabularies/discriminator/index.js
 var require_discriminator = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
@@ -24976,7 +24976,7 @@ var require_discriminator = __commonJS(function(exports) {
   exports.default = def;
 });
 
-// ../../node_modules/ajv/dist/refs/json-schema-draft-07.json
+// node_modules/ajv/dist/refs/json-schema-draft-07.json
 var require_json_schema_draft_07 = __commonJS(function(exports, module) {
   module.exports = {
     $schema: "http://json-schema.org/draft-07/schema#",
@@ -25131,7 +25131,7 @@ var require_json_schema_draft_07 = __commonJS(function(exports, module) {
   };
 });
 
-// ../../node_modules/ajv/dist/ajv.js
+// node_modules/ajv/dist/ajv.js
 var require_ajv = __commonJS(function(exports, module) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = undefined;
@@ -25199,7 +25199,7 @@ var require_ajv = __commonJS(function(exports, module) {
   } });
 });
 
-// ../../node_modules/ajv-formats/dist/formats.js
+// node_modules/ajv-formats/dist/formats.js
 var require_formats = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.formatNames = exports.fastFormats = exports.fullFormats = undefined;
@@ -25376,7 +25376,7 @@ var require_formats = __commonJS(function(exports) {
   }
 });
 
-// ../../node_modules/ajv-formats/dist/limit.js
+// node_modules/ajv-formats/dist/limit.js
 var require_limit = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.formatLimitDefinition = undefined;
@@ -25445,7 +25445,7 @@ var require_limit = __commonJS(function(exports) {
   exports.default = formatLimitPlugin;
 });
 
-// ../../node_modules/ajv-formats/dist/index.js
+// node_modules/ajv-formats/dist/index.js
 var require_dist = __commonJS(function(exports, module) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var formats_1 = require_formats();
@@ -26612,7 +26612,7 @@ async function activeLifecycle(stateDir, peer, projectRoot, active) {
 init_profiles();
 init_roles();
 
-// ../../node_modules/zod/v4/core/util.js
+// node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
   const numericValues = Object.values(entries).filter((v) => typeof v === "number");
   const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
@@ -27155,7 +27155,7 @@ function constantCatch(value) {
   return fn;
 }
 
-// ../../node_modules/zod/v4/core/core.js
+// node_modules/zod/v4/core/core.js
 var _a;
 var _zodDesc = { value: undefined, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
@@ -27273,7 +27273,7 @@ function config(newConfig) {
     Object.assign(globalConfig, newConfig);
   return globalConfig;
 }
-// ../../node_modules/zod/v4/core/errors.js
+// node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -27388,7 +27388,7 @@ function formatError(error, mapper = (issue) => issue.message) {
   return fieldErrors;
 }
 
-// ../../node_modules/zod/v4/core/parse.js
+// node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params) {
   return { callee: params?.callee ?? callee, Err: params?.Err };
 }
@@ -27536,7 +27536,7 @@ var _safeEncodeAsync = (_Err) => async (schema, value, _ctx) => {
 var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync(_Err)(schema, value, _ctx);
 };
-// ../../node_modules/zod/v4/core/regexes.js
+// node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][0-9a-z]{6,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
@@ -27595,7 +27595,7 @@ var _null = /^null$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// ../../node_modules/zod/v4/core/checks.js
+// node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a;
   inst._zod ?? (inst._zod = {});
@@ -27911,7 +27911,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// ../../node_modules/zod/v4/core/doc.js
+// node_modules/zod/v4/core/doc.js
 class Doc {
   constructor(args = [], closed = {}) {
     this.content = [];
@@ -27953,14 +27953,14 @@ ${content.join(`
   }
 }
 
-// ../../node_modules/zod/v4/core/versions.js
+// node_modules/zod/v4/core/versions.js
 var version3 = {
   major: 4,
   minor: 6,
   patch: 5
 };
 
-// ../../node_modules/zod/v4/core/schemas.js
+// node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a;
   inst ?? (inst = {});
@@ -29592,7 +29592,7 @@ function handleRefineResult(result, payload, input, inst) {
     payload.issues.push(issue(_iss));
   }
 }
-// ../../node_modules/zod/v4/core/memoizer.js
+// node_modules/zod/v4/core/memoizer.js
 class $ZodCyclicError extends Error {
   constructor() {
     super(`Cannot parse a reference cycle that closes through a transform`);
@@ -29861,7 +29861,7 @@ function isBackEdge(ctx, value) {
   const backEdges = ctx[STATE]?.backEdges;
   return backEdges !== undefined && isRef(value) && backEdges.has(value);
 }
-// ../../node_modules/zod/v4/locales/en.js
+// node_modules/zod/v4/locales/en.js
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -29983,7 +29983,7 @@ function en_default() {
     localeError: error()
   };
 }
-// ../../node_modules/zod/v4/core/registries.js
+// node_modules/zod/v4/core/registries.js
 var _a2;
 class $ZodRegistry {
   constructor() {
@@ -30030,7 +30030,7 @@ function registry() {
 }
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
-// ../../node_modules/zod/v4/core/api.js
+// node_modules/zod/v4/core/api.js
 function snapshotChecks(def) {
   if (def.checks)
     def.checks = [...def.checks];
@@ -30495,7 +30495,7 @@ function _check(fn, params) {
   ch._zod.check = fn;
   return ch;
 }
-// ../../node_modules/zod/v4/core/to-json-schema.js
+// node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key of Reflect.ownKeys(source)) {
@@ -31018,7 +31018,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   extractDefs(ctx, schema);
   return finalize(ctx, schema);
 };
-// ../../node_modules/zod/v4/core/json-schema-processors.js
+// node_modules/zod/v4/core/json-schema-processors.js
 var narrowMin = (agg, key, value) => {
   if (agg[key] === undefined || value > agg[key])
     agg[key] = value;
@@ -31552,7 +31552,7 @@ var optionalProcessor = (schema, ctx, _json, params) => {
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
 };
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
 function isZ4Schema(s) {
   const schema = s;
   return !!schema._zod;
@@ -31614,7 +31614,7 @@ function getLiteralValue(schema) {
     return directValue;
   return;
 }
-// ../../node_modules/zod/v4/classic/errors.js
+// node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
@@ -31659,7 +31659,7 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, undefi
   Parent: Error
 });
 
-// ../../node_modules/zod/v4/classic/parse.js
+// node_modules/zod/v4/classic/parse.js
 var parse5 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse4 = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -31673,7 +31673,7 @@ var safeDecode2 = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync2 = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync2 = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// ../../node_modules/zod/v4/classic/schemas.js
+// node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
     config(en_default());
@@ -32603,11 +32603,11 @@ function preprocess(fn, schema) {
     out: schema
   });
 }
-// ../../node_modules/zod/v4/classic/iso.js
+// node_modules/zod/v4/classic/iso.js
 function datetime2(params) {
   return _isoDateTime(ZodISODateTime, params);
 }
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var LATEST_PROTOCOL_VERSION = "2025-11-25";
 var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
@@ -33442,16 +33442,16 @@ class UrlElicitationRequiredError extends McpError {
   }
 }
 
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
 function isTerminal(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-// ../../node_modules/zod-to-json-schema/dist/esm/Options.js
+// node_modules/zod-to-json-schema/dist/esm/Options.js
 var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use");
-// ../../node_modules/zod-to-json-schema/dist/esm/parsers/string.js
+// node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
 function getMethodLiteral(schema) {
   const shape = getObjectShape(schema);
   const methodSchema = shape?.method;
@@ -33472,7 +33472,7 @@ function parseWithCompat(schema, data) {
   return result.data;
 }
 
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
 var DEFAULT_REQUEST_TIMEOUT_MSEC = 60000;
 
 class Protocol {
@@ -34313,7 +34313,7 @@ function mergeCapabilities(base, additional) {
   return result;
 }
 
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
 var import_ajv = __toESM(require_ajv(), 1);
 var import_ajv_formats = __toESM(require_dist(), 1);
 function createDefaultAjvInstance() {
@@ -34353,7 +34353,7 @@ class AjvJsonSchemaValidator {
   }
 }
 
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
 class ExperimentalServerTasks {
   constructor(_server) {
     this._server = _server;
@@ -34431,7 +34431,7 @@ class ExperimentalServerTasks {
   }
 }
 
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
 function assertToolsCallTaskCapability(requests, method, entityName) {
   if (!requests) {
     throw new Error(`${entityName} does not support task creation (required for ${method})`);
@@ -34466,7 +34466,7 @@ function assertClientRequestTaskCapability(requests, method, entityName) {
   }
 }
 
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 class Server extends Protocol {
   constructor(_serverInfo, options) {
     super(options);
@@ -34790,10 +34790,10 @@ class Server extends Protocol {
   }
 }
 
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process2 from "process";
 
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 
 class ReadBuffer {
@@ -34833,7 +34833,7 @@ function serializeMessage(message) {
 `;
 }
 
-// ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 class StdioServerTransport {
   constructor(_stdin = process2.stdin, _stdout = process2.stdout, options) {
     this._stdin = _stdin;
