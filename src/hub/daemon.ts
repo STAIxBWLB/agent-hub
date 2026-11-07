@@ -3418,10 +3418,14 @@ export async function startDaemon(opts: DaemonOptions) {
       return () => clearTimeout(timer);
     }),
     record: (peer, row, counted, attributed) => {
-      addTokens(peer, counted, undefined, attributed);
-      event({ type: "usage", peer, source: "kimi_wire", id: row.id, measuredAt: new Date(row.at).toISOString(), inputTokens: row.inputOther, outputTokens: row.output,
-        cacheReadTokens: row.inputCacheRead, cacheWriteTokens: row.inputCacheCreation, totalTokens: kimiRowTotal(row),
-        ...attributed.attribution, ...(row.model ? { servedModel: row.model } : {}) });
+      const committed = event.batch([
+        { type: "tokens", peer, n: counted, ...attributed.attribution },
+        { type: "usage", peer, source: "kimi_wire", id: row.id, measuredAt: new Date(row.at).toISOString(), inputTokens: row.inputOther, outputTokens: row.output,
+          cacheReadTokens: row.inputCacheRead, cacheWriteTokens: row.inputCacheCreation, totalTokens: kimiRowTotal(row),
+          ...attributed.attribution, ...(row.model ? { servedModel: row.model } : {}) },
+      ]);
+      if (!committed) throw new Error("Kimi usage event commit failed");
+      applyKimiTokens(peer, counted, attributed);
     },
     report: (peer, window) => budget.report(peer, [{ id: "tokens", kind: "count", used: window.used, resetsAt: window.resetsAt, source: `hub count, kimi wire log, of kimi_tokens_5h ${window.ceiling}` }]),
     forget: peer => budget.forget(peer, "tokens", "count"),
@@ -4024,14 +4028,23 @@ export async function startDaemon(opts: DaemonOptions) {
   const seedNow = Date.now(), seedRows = new Map<PeerId, { at: number; n: number }[]>();
   for (const e of startupEvents) if (e.type === "tokens" && noQuotaPeer(e.peer)) (seedRows.get(e.peer) ?? seedRows.set(e.peer, []).get(e.peer)!).push({ at: Date.parse(e.at), n: e.n });
   for (const [peer, rows] of seedRows) hubTokenWindow(peer).seed(rows, seedNow);
-  const addTokens = (peer: PeerId, n: number, task?: number, attributed?: KimiRowAttribution): number => {
+  const applyKimiTokens = (peer: PeerId, n: number, attributed: KimiRowAttribution): void => {
     if (n > 0 && noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(n));
     const supervisionTurn = supervisionTurns.get(peer);
-    if (supervisionTurn && Number.isFinite(n) && n >= 0 && (!attributed || supervisionTurn.id === attributed.turn)) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
+    if (supervisionTurn && Number.isFinite(n) && n >= 0 && supervisionTurn.id === attributed.turn) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
     if (n > 0) {
-      event({ type: "tokens", peer, n, ...(attributed?.attribution ?? taskAttribution(peer, task)) });
       const turn = turns.get(peer);
-      if (turn && (!attributed || turn.id === attributed.turn)) turn.tokens += n;
+      if (turn && turn.id === attributed.turn) turn.tokens += n;
+    }
+  };
+  const addTokens = (peer: PeerId, n: number, task?: number): number => {
+    if (n > 0 && noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(n));
+    const supervisionTurn = supervisionTurns.get(peer);
+    if (supervisionTurn && Number.isFinite(n) && n >= 0) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
+    if (n > 0) {
+      event({ type: "tokens", peer, n, ...taskAttribution(peer, task) });
+      const turn = turns.get(peer);
+      if (turn) turn.tokens += n;
     }
     return n;
   };

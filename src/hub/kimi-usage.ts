@@ -139,7 +139,7 @@ export class KimiUsage {
     return next;
   }
 
-  collect(peer: string): void {
+  collect(peer: string, scheduled = false): void {
     const bound = this.bind(peer);
     if (!bound) return;
     try {
@@ -160,19 +160,24 @@ export class KimiUsage {
       // call, and no figure is reported until it is: a window that is still catching up would be short. Upgrade: seek to the end at bind.
       if (!more && (added > 0 || recovered)) this.report(peer);
     } finally {
-      if (this.bound.get(peer) === bound) this.schedule(peer, bound);
+      if (this.bound.get(peer) === bound) this.schedule(peer, bound, scheduled);
     }
   }
 
-  private schedule(peer: string, bound: Bound): void {
+  private schedule(peer: string, bound: Bound, scheduled: boolean): void {
     const schedule = this.ports.schedule;
-    if (!schedule || this.stopped || bound.pending) return;
+    if (!schedule || this.stopped) return;
+    if (bound.pending) {
+      // A fresh cue during the last pending follow-up still gets a complete bounded retry sequence, without adding another timer.
+      if (!scheduled && bound.followUp >= FOLLOW_UP_DELAYS_MS.length - 1) { bound.burst = true; bound.followUp = 0; }
+      return;
+    }
     if (!bound.burst) { bound.burst = true; bound.followUp = 0; }
     if (bound.followUp >= FOLLOW_UP_DELAYS_MS.length) { bound.burst = false; bound.followUp = 0; return; }
     const delay = FOLLOW_UP_DELAYS_MS[bound.followUp++]!;
     bound.pending = schedule(delay, () => {
       bound.pending = undefined;
-      if (this.bound.get(peer) === bound) this.collect(peer);
+      if (this.bound.get(peer) === bound) this.collect(peer, true);
     });
   }
 

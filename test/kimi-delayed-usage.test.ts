@@ -179,3 +179,21 @@ test("#1281 AC7: delayed recording copies counters and attribution only, never n
   expect(r.log.recorded).toHaveLength(1);
   r.usage.stop();
 });
+
+test("#1281 AC4: a fresh cue during the last pending follow-up gets its own bounded retry sequence", () => {
+  const h = fixture(), s = h.makeSession(), r = rig(h), t = r.now();
+  r.bind(s.id); r.turn("turn-a", 1, t - 10); r.end("turn-a", t);
+  r.usage.collect("kimi");
+  r.timers.fire(); r.timers.fire();
+  expect(r.timers.delays()).toEqual([2000]);
+  r.turn("turn-b", 2, t + 10);
+  r.usage.collect("kimi");
+  expect(r.timers.delays()).toEqual([2000]);
+  r.timers.fire();
+  expect(r.timers.delays()).toEqual([250]);
+  appendFileSync(s.wire, wireRow(t + 15, 5, 2));
+  r.timers.fire();
+  expect(r.log.recorded).toEqual([{ id: r.log.recorded[0]!.id, counted: 7, attribution: { task: 2, attribution: "delivery" }, turn: "turn-b" }]);
+  expect(r.timers.delays()).toEqual([1000]);
+  r.usage.stop();
+});

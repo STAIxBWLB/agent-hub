@@ -100,23 +100,27 @@ function cutShort(file: string): boolean {
   }
 }
 
-/** An appender that never throws: the state dir can vanish under a running hub, and telemetry must not take it down. */
-export function eventLog(file: string, onFailure?: (e: HubEvent) => void): (e: HubEvent) => boolean {
+/** An appender that never throws: the state dir can vanish under a running hub, and telemetry must not take it down. A batch is one append. */
+export function eventLog(file: string, onFailure?: (e: HubEvent) => void): ((e: HubEvent) => boolean) & { batch(events: HubEvent[]): boolean } {
   let first = true;
-  return (e) => {
+  const batch = (events: HubEvent[]): boolean => {
+    if (!events.length) return true;
     try {
       // After a crash the first line goes on a line of its own, so only the cut event is lost.
       const lead = first && cutShort(file) ? "\n" : "";
+      const text = events.map(e => JSON.stringify({ v: EVENTS_SCHEMA, at: new Date().toISOString(), ...e })).join("\n") + "\n";
+      appendFileSync(file, `${lead}${text}`);
       first = false;
-      appendFileSync(file, `${lead}${JSON.stringify({ v: EVENTS_SCHEMA, at: new Date().toISOString(), ...e })}\n`);
       return true;
     } catch {
       first = true; // A failed append may have left a partial row; recheck its newline before the next event.
-      try { onFailure?.(e); } catch { /* telemetry failure reporting is optional too */ }
+      for (const e of events) try { onFailure?.(e); } catch { /* telemetry failure reporting is optional too */ }
       // the state dir is gone; the watchdog is stopping the hub
       return false;
     }
   };
+  const append = (e: HubEvent): boolean => batch([e]);
+  return Object.assign(append, { batch });
 }
 
 /**
