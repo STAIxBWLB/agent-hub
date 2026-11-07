@@ -6654,7 +6654,11 @@ This feature adds no visual transport over the cross-network broker.
 
 Publication is refused in a private turn or on a PII task, including when policy
 or task privacy changes during an awaited image read. Current privacy also gates
-show, snapshots and assets after posting. The raw visual tool input/result is
+show, snapshots and assets after posting. Visual file access combines accepted
+runtime restrictions with the normally merged on-disk candidate policy. A pending
+stricter path rule protects new visual access immediately; a pending weaker file
+cannot remove the accepted restriction. Native sessions retain their existing
+configuration-adoption boundary. The raw visual tool input/result is
 excluded from observer capture even when the call is refused; amem/delivery
 capture retains only the sanitized stub. `events.jsonl` records only id, kind,
 payload byte count, image count and optional task id, never title/source/path or
