@@ -59,7 +59,7 @@ function json(file: string): unknown { try { return JSON.parse(read(file, JSON_C
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 function watch(value: unknown, manifest: Record<string, PublishManifestEntry>): PreparedCompatArtifact["watch"] {
   if (!object(value) || value.schemaVersion !== 1 || value.code !== 0 && value.code !== 3 || typeof value.report !== "string" || value.report.length > JSON_CAP || !Array.isArray(value.ahead)) throw new CompatPrepareError("input");
-  const report = value.report.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, "");
+  const report = value.report.replace(/\p{Cc}/gu, character => character === "\n" ? character : "");
   const header = value.code === 0 ? "Every watched agent CLI's latest published version is verified." : "Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).";
   if (report.split("\n")[0] !== header || report.includes("```")) throw new CompatPrepareError("input");
   for (const line of report.split("\n")) {
