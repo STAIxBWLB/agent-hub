@@ -7,6 +7,7 @@ import { GithubApiError, runCompatPublisher, retainManagedReceiptRows, type Gith
 import { planCompatPublish, type PublishManifestEntry } from "../scripts/compat-publish.ts";
 import { patchCompatSource, renderPublishedReceipt } from "../scripts/compat-publish-files.ts";
 import { AGENT_COMPAT_ISSUE_TITLE } from "../scripts/agent-compat-issue.ts";
+import { watch } from "../scripts/agent-compat-watch.ts";
 
 const SOURCE = "src/adapters/compat.ts", SERVER = "plugins/agent-hub/server.js", PLUGIN = "plugins/agent-hub/.claude-plugin/plugin.json";
 const BASE = "a".repeat(40), REPO = "example/agent-hub", PREFIX = `/repos/${REPO}`;
@@ -135,6 +136,19 @@ test("report headings are opaque to publication while unsafe report characters r
       p.index.watch.report = unsafe; writeFileSync(join(p.directory, "index.json"), JSON.stringify(p.index)); f.api.calls = [];
       await expect(runCompatPublisher({ ...p.input, dryRun: true }, f.api)).rejects.toThrow("watch-report"); expect(f.api.writes).toHaveLength(0);
     }
+  } finally { f.cleanup(); }
+});
+
+test("the actual watcher full report passes the privileged dry loader without deriving policy IDs from prose", async () => {
+  const f = fixture(); try {
+    const p = f.prepare(), baseline = await runCompatPublisher({ ...p.input, dryRun: true }, f.api);
+    const formatted = await watch(async url => ({ json: async () => url.includes("api.github.com") ? { tag_name: "v99.0.0" } : { version: "99.0.0" } }), new Date("2026-11-07T00:00:00.000Z"));
+    expect(formatted.code).toBe(3); expect(formatted.report).toContain("ahub agents trust ID VERSION");
+    expect(formatted.ahead.length).toBeGreaterThan(p.index.watch.candidates.length);
+    // Keep the source-bound fixture's canonical candidate/verified data. Rendered prose has no policy authority.
+    p.index.watch.report = formatted.report; writeFileSync(join(p.directory, "index.json"), JSON.stringify(p.index));
+    const result = await runCompatPublisher({ ...p.input, dryRun: true }, f.api);
+    expect(result.actions).toEqual(baseline.actions); expect(result.actions.map(action => action.id)).toEqual(["pi"]); expect(f.api.writes).toHaveLength(0);
   } finally { f.cleanup(); }
 });
 

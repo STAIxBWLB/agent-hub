@@ -104,7 +104,7 @@ export async function watch(fetchImpl: FetchLike = fetch, now = new Date()): Pro
   const report = ["Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).", "",
     ...drift.map(row => row.line),
     ...(notices.length ? ["", "Informational (no public source, not drift):", ...notices] : []), "",
-    "Next step for each: a model-free receipt in `docs/verification/`, then add the version to `verified` in the same PR. Until then a person may run `ahub agents trust <id> <version>` on their machine.",
+    "Next step for each: a model-free receipt in `docs/verification/`, then add the version to `verified` in the same PR. Until then a person may run `ahub agents trust ID VERSION` on their machine.",
     ...footer].join("\n");
   return { code: 3, report, ahead, verified };
 }
