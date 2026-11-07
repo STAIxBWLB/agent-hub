@@ -3995,10 +3995,11 @@ next action is `orca terminal switch --terminal <handle>`, then refresh in
 verified (peer, handle, incarnation, worktree and root) as `orphanedTerminals`, part
 of the plan fingerprint, and the interactive plan screen then offers `[t] reattach N
 orphaned terminals`. Choosing it reads each recorded pane again, requires the same
-identity, still orphaned and connected, and no recovery lock, runs
-`orca terminal switch --terminal <handle>` once for that handle, and polls
+identity, still orphaned and connected, and no recovery hold on this project (or the
+machine), runs `orca terminal switch --terminal <handle>` once for that handle, and polls
 `orca terminal show` for at most 5 s until `orphaned` is false (Orca can report `true`
-for a moment after the switch). Then the plan is made again. Nothing else is mutated:
+for a moment after the switch). Each Orca call is itself bounded by that time, so a hung
+`show` cannot hold the screen past it. Then the plan is made again. Nothing else is mutated:
 no session, launch record, terminal or hub changes. A pane whose identity changed, that
 disconnected, or that is still orphaned at the bound stays a blocker with the same next
 action, and `[t]` is offered again. `--dry-run`, a pipe and `--yes` never switch a pane.

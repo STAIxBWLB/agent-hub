@@ -376,7 +376,7 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
         if (!mine.length) continue;
         if (io.interrupted()) { human(io, "interrupted: no further terminal was switched"); break; }
         try { for (const line of await host.reattachTerminals!(p, mine)) human(io, `  ${line}`); }
-        catch (error) { human(io, `  ${p.project.id}: not reattached (${(error as Error).message})`); }
+        catch (error) { human(io, `  ${p.project.id}: not reattached (${(error as Error).message}). Next: inspect the terminal in Orca, then press [r] refresh`); }
       }
       // The loop plans again: a terminal that reads not orphaned is no blocker, one that does not stays one.
     }

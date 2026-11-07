@@ -691,15 +691,21 @@ export async function reattachOrphanedTerminal(terminal: OrphanedTerminal, optio
       && rootMatches(shown.worktreePath ?? shown.projectRoot, terminal.root);
     return same ? shown : undefined;
   };
+  // The runner is also bounded by its caller; this race keeps a runner that ignores its timeout from holding the screen past the bound.
+  const within = async <T>(work: Promise<T>, ms: number): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("reattach bound exceeded")), ms); })]); }
+    finally { if (timer) clearTimeout(timer); }
+  };
   try {
-    const before = await read();
+    const before = await within(read(), boundMs);
     if (!before) return "unavailable";
     if (before.orphaned === false) return "reattached";
     if (before.orphaned !== true || before.connected !== true) return "unavailable";
-    await run(config.runner, ["terminal", "switch", "--terminal", terminal.handle, "--json"]);
+    await within(run(config.runner, ["terminal", "switch", "--terminal", terminal.handle, "--json"]), boundMs);
     const deadline = Date.now() + boundMs;
     for (;;) {
-      const shown = await read();
+      const shown = await within(read(), deadline - Date.now());
       if (!shown) return "unavailable";
       if (shown.orphaned === false) return "reattached";
       if (Date.now() >= deadline) return "still-orphaned";

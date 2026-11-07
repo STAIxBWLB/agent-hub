@@ -596,7 +596,7 @@
   "src/cli/upgrade-runtime.ts:timeoutMs:inline:timeoutMs=180_000#0": "operational",
   "src/cli/upgrade-runtime.ts:timeoutMs:inline:timeoutMs=180_000#1": "operational",
   "src/cli/upgrade-runtime.ts:timeoutMs:inline:timeoutMs=3000#0": "operational",
-  "src/cli/upgrade-runtime.ts:timeoutMs:inline:timeoutMs=610_000#0": "operational",
+  "src/cli/upgrade-runtime.ts:terminalOptions:inline:timeoutMs=610_000#0": "operational",
   "src/cli/upgrade-runtime.ts:waiting:inline:(Array.isArray(response.recovery?.blockers) ? response.recovery.blockers : []).filter((b: unknown): b is string => typeof b === string).slice=20#0": "safety floor",
   "src/cli/upgrade.ts:MAX_RECOVERY_DELEGATIONS:constant:MAX_RECOVERY_DELEGATIONS=256#0": "safety floor",
   "src/cli/upgrade.ts:runRecovery:inline:idleTimeoutMs=600_000#0": "test seam",
