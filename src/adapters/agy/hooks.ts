@@ -47,7 +47,7 @@ export function decodeAgyHook(event: string, value: unknown): NativeFactsInput |
     : observedWrite
       ? { file_path: writePath, ...(typeof writeContent === "string" && native?.Append !== true ? { content: writeContent } : {}) }
       : observedEdit
-        ? { file_path: editPath, ...(typeof oldStr === "string" && typeof newStr === "string" ? { old_string: oldStr, new_string: newStr, replace_all: native?.AllowMultiple !== false } : {}) }
+        ? { file_path: editPath, ...(typeof oldStr === "string" && typeof newStr === "string" ? { old_string: oldStr, new_string: newStr, replace_all: native?.AllowMultiple === true } : {}) }
         : native ?? {};
   const phase = ({ SessionStart: "session", PreInvocation: "start", PostInvocation: "post", PreToolUse: "pre", PostToolUse: "post", Stop: "stop" } as const)[event as typeof EVENTS[number]];
   return { event: event as NativeFactsInput["event"], phase, sessionId: value.conversationId, transcriptPath: value.transcriptPath,

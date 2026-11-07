@@ -15442,7 +15442,7 @@ function decodeAgyHook(event, value) {
   const newStr = call?.name === "edit_file" ? native?.Replacement : call?.name === "replace_file_content" ? native?.ReplacementContent : undefined;
   const observedEdit = typeof editPath === "string";
   const tool = observedRead ? "Read" : observedWrite ? "Write" : observedEdit ? "Edit" : typeof call?.name === "string" ? call.name : "";
-  const input = observedRead ? { file_path: readPath, ...range } : observedWrite ? { file_path: writePath, ...typeof writeContent === "string" && native?.Append !== true ? { content: writeContent } : {} } : observedEdit ? { file_path: editPath, ...typeof oldStr === "string" && typeof newStr === "string" ? { old_string: oldStr, new_string: newStr, replace_all: native?.AllowMultiple !== false } : {} } : native ?? {};
+  const input = observedRead ? { file_path: readPath, ...range } : observedWrite ? { file_path: writePath, ...typeof writeContent === "string" && native?.Append !== true ? { content: writeContent } : {} } : observedEdit ? { file_path: editPath, ...typeof oldStr === "string" && typeof newStr === "string" ? { old_string: oldStr, new_string: newStr, replace_all: native?.AllowMultiple === true } : {} } : native ?? {};
   const phase = { SessionStart: "session", PreInvocation: "start", PostInvocation: "post", PreToolUse: "pre", PostToolUse: "post", Stop: "stop" }[event];
   return {
     event,
