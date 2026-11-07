@@ -392,6 +392,7 @@
   "src/adapters/agy/hooks.ts:decodeAgyHook:inline:value.workspacePaths.length > 32=32#0": "safety floor",
   "src/adapters/agy/hooks.ts:readAgyTranscript:inline:Math.min=window * 2#0": "operational",
   "src/adapters/agy/hooks.ts:window:inline:window=64 * 1024#0": "operational",
+  "src/adapters/channel-peer.ts:MAX_PID:constant:MAX_PID=2147483647#0": "contract",
   "src/adapters/channel-peer.ts:MAX_STANDBY_SESSIONS:inline:private static readonly MAX_STANDBY_SESSIONS = 8;=8#0": "safety floor",
   "src/adapters/channel-peer.ts:waitForAttach:inline:this.attachmentWaiters.length >= 64=64#0": "safety floor",
   "src/adapters/claude-channel.ts:<anonymous>:inline:2 ** Math.max(attempt, 0)=2#0": "operational",

@@ -23,6 +23,11 @@ export interface OwnedToolsLaunch {
 
 /** Display-only identity for a live channel connection waiting for a person's handover. */
 export interface PeerStandbySession { id: string; pid?: number; since: number; }
+/**
+ * Display metadata about the CURRENT owner of an attached channel peer (#1310): who holds it, since when, and which native session the host has already verified. Never authentication,
+ * delivery, takeover or permission evidence, and never derived from a standby id, a process name, a title or attach order. Every field is bounded; none is text from the client.
+ */
+export interface PeerOwnerAttachment { ownerPid?: number; attachedAt: number; nativeSessionId?: string; }
 
 /** Opaque, generation-fenced claim produced by a peer's person-requested takeover port. */
 export interface PeerTakeoverClaim {
@@ -46,6 +51,8 @@ export interface PeerAdapter {
   readonly id: PeerId;
   /** Live waiting sessions, for display only; ids and pids grant no native identity or authority. */
   readonly standbySessions?: readonly PeerStandbySession[];
+  /** The current owner's attachment facts, for display only; absent unless a socket is attached and no newer claim is arriving (#1310). */
+  readonly ownerAttachment?: PeerOwnerAttachment;
   /** Person-authorized takeover port. The host still performs its own admission and claim fences. */
   takeover?(standbyId: string | undefined, eligible: (socket: object) => boolean): PeerTakeoverClaim | undefined;
   /** Exact transport ownership check for guarding a selected standby through its asynchronous preface. */

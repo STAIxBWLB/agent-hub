@@ -79,6 +79,18 @@ Older daemons retain their existing close-and-retry standby behavior. An ordinar
 owner departure may release an eligible standby through normal claim admission;
 a standby never evicts a live owner without the person's takeover operation.
 
+The detailed status the console reads also names the current owner (#1310), so it is never
+inferred from standby rows, process start times or attach order. `ownerAttachment` holds the
+current socket's bounded `ownerPid` when it reported one, `attachedAt` (when the asynchronous
+attach completed, not the earlier hello), and `nativeSessionId` only after the host bound a native
+session through its verified native-facts path and only when it is a short plain token. It is
+absent while a newer hello is claiming, while offline, and after a detach, roster removal or stop,
+and a new attach replaces every field in one step, so a previous owner's pid, time or native
+session never sits beside the new socket. It is display metadata, never authentication, delivery,
+takeover or permission evidence. It carries no environment, argv, cwd, credential, prompt, title
+or text, adds no event, log or memory payload, and is withheld from `status.json` and every
+non-console reader. The field is additive and optional; no control protocol version changes.
+
 ## Accepted channel delivery settlement (#1172)
 
 Only an attached push channel opts into explicit disposition of its own accepted delivery. An `accepted` receipt acknowledges that the notification was accepted by the channel transport; it is not a native handling or task-completion signal. The host reads `bus.accepted_settle_ms` from accepted configuration on its existing maintenance sweep, defaulting to ten minutes. A row that remains unconfirmed becomes `needs_review` with no replay. `hub_inbox` returns bounded id/revision metadata for the channel's accepted and held rows, including when an accepted push prevents the pull itself. The plugin renders that metadata and avoids both an empty-inbox claim and polling advice while there is an actionable row. Important, task and review timeouts produce one durable status-kind, status-priority conductor message containing ids only when the existing `conductor.feed` policy is on; `feed: off` remains an opt-out. Pull-only sessions do not gain the explicit accepted-disposition port.
