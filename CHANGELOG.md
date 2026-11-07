@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The budget gate defaults to 0.99 instead of 0.9 (#1292). A peer now checkpoints and pauses only when a fresh quota window reaches 99%; it resumes below 89%, and a release cut is held only below 1% headroom. A provider's hard refusal still pauses at once. `ahub init` no longer writes `"gate": 0.9` into a new project's tracked config, so new projects follow the default. Existing projects keep the 0.9 their tracked `config.json` pins until the key is removed or a machine-local value is set. `budget.gate` is now a registered setting: `ahub settings set budget.gate <0..1>` from a terminal or an `ahub ui --settings` session writes `config.local.json` and applies from the next quota reading without a restart; an ordinary dashboard session and the conductor cannot set it.
 - Documentation is kept current (#1268): the quickstart's GitHub install tag, the Bun floor and the agent-mem pin are generated from `package.json` and `.bun-version` (`bun scripts/readme-facts.ts`, part of `scripts/check.sh`); `docs/verified.json` now covers every page under `docs/` and `docs/addons/` except the smoke ledger and the retired GSD analysis, and CI warns about stale stamps on every pull request; stale statements about claude-mem, research campaigns, design specs, events, roles and the SDLC readbacks are corrected; a release notifies the family site when `SITE_DISPATCH_TOKEN` is set.
 
 ## 0.34.1

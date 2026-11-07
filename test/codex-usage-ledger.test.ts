@@ -141,7 +141,7 @@ test("the daemon writes a codex_appserver usage event next to the tokens event, 
   expect(usage.inputTokens + usage.outputTokens).toBe(tokens.n);
   // A pause and its resume through the console: both are in the log, the second by the person.
   const before = log(stateDir).length;
-  expect((await console_.request({ t: "budget", set: { peer: "codex", used: 0.97, window: "5h", resetsInMs: 3_600_000 } })).ok).toBe(true);
+  expect((await console_.request({ t: "budget", set: { peer: "codex", used: 0.995, window: "5h", resetsInMs: 3_600_000 } })).ok).toBe(true);
   await until(() => log(stateDir).some(e => e.type === "budget_pause"), 8000); // after the checkpoint request times out (1 s)
   expect((await console_.request({ t: "budget", resume: "codex" })).ok).toBe(true);
   await until(() => log(stateDir).some(e => e.type === "budget_resume"));

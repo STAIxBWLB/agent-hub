@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Budget, DEFAULT_BUDGET, type BudgetHooks, type PauseRecord } from "../src/hub/budget.ts";
+// #1292: these tests exercise the gate mechanism at an explicit 0.9; the product default (0.99) has its own test.
+const GATE_090 = { ...DEFAULT_BUDGET, gate: 0.9 };
 
 const NOW = 1_800_000_000_000, MIN = 60_000;
 const account = (peer: string) => peer === "codex-2" || peer === "codex-3" ? "codex" : peer === "local-2" ? "local" : peer;
@@ -18,7 +20,7 @@ function fixture(extra: Partial<BudgetHooks> = {}, grouped = true, path?: string
     resumed: record => { notices.push(record); events.push(`notice ${record.peer}`); },
     reading: (peer, _windows, _hard, at) => { telemetry.push({ peer, at }); }, notify: () => {}, ...extra,
   };
-  const budget = new Budget(db, DEFAULT_BUDGET, hooks, () => clock.now);
+  const budget = new Budget(db, GATE_090, hooks, () => clock.now);
   return { budget, db, clock, events, telemetry, notices, hooks, close() { budget.close(); if (dir) rmSync(dir, { recursive: true, force: true }); } };
 }
 async function settled(budget: Budget) {

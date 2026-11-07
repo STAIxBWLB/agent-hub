@@ -17,7 +17,7 @@ function setup() {
     requestCheckpoint: async () => "checkpoint", platformContext: async () => "context", canHandOff: () => true, attached: () => true,
     handoff: async () => [], resumed: () => {}, notify: l => log.push(`! ${l}`),
   };
-  const budget = new Budget(join(mkdtempSync(join(tmpdir(), "ahub-budget-kinds-")), "hub.db"), DEFAULT_BUDGET, hooks, () => clock.now);
+  const budget = new Budget(join(mkdtempSync(join(tmpdir(), "ahub-budget-kinds-")), "hub.db"), GATE_090, hooks, () => clock.now);
   const settle = () => new Promise(r => setTimeout(r, 15));
   return { budget, clock, log, settle };
 }
@@ -125,7 +125,7 @@ test("quota_reset baselines are per kind: a person's number dropping is not read
   const entries: any[] = [];
   const clock = { now: 1_800_000_000_000 };
   const hooks: BudgetHooks = { pause: () => {}, resume: () => {}, requestCheckpoint: async () => "c", platformContext: async () => "c", canHandOff: () => true, attached: () => true, handoff: async () => [], resumed: () => {}, notify: () => {}, ledger: e => entries.push(e) };
-  const budget = new Budget(join(mkdtempSync(join(tmpdir(), "ahub-budget-kinds-")), "hub.db"), DEFAULT_BUDGET, hooks, () => clock.now);
+  const budget = new Budget(join(mkdtempSync(join(tmpdir(), "ahub-budget-kinds-")), "hub.db"), GATE_090, hooks, () => clock.now);
   budget.report("codex", [{ ...native(0.6), resetsAt: undefined }]);
   budget.report("codex", [{ ...manual(0.1), resetsAt: undefined }]); // lower, but another source: no reset
   expect(entries.filter(e => e.type === "quota_reset")).toEqual([]);
@@ -166,6 +166,8 @@ test("compactTokens reads at a glance, and the doctor row distinguishes off, unr
 
 // ---- the Pi/local 5 h counter seeded from a long event log ----
 import { TokenWindow } from "../src/hub/token-window.ts";
+// #1292: these tests exercise the gate mechanism at an explicit 0.9; the product default (0.99) has its own test.
+const GATE_090 = { ...DEFAULT_BUDGET, gate: 0.9 };
 const HOUR = 3_600_000;
 
 test("TokenWindow.seed skips rows already out of the window and keeps the rest in order, so a long log costs the window and not the log", () => {
