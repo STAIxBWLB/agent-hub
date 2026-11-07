@@ -66,7 +66,7 @@ test("the committed Qwen promotions exercise the exact fake candidate, RPC mode 
 
 test("canonical Qwen helpers load the actual network preload from a path containing spaces", async () => {
   const context = fixture(), original = join(import.meta.dir, "../scripts/compat-receipts/proofs");
-  const relocated = join(context.root, "producer helpers with spaces"), helpers = join(relocated, "scripts/compat-receipts/proofs"), project = join(relocated, "src/hub");
+  const relocated = join(context.root, "producer helpers with spaces 한글"), helpers = join(relocated, "scripts/compat-receipts/proofs"), project = join(relocated, "src/hub");
   mkdirSync(helpers, { recursive: true, mode: 0o700 }); mkdirSync(project, { recursive: true, mode: 0o700 });
   // Relocate canonical files byte-for-byte; keep the production path helper single-sourced.
   for (const name of ["qwen.ts", "qwen-acp.py", "qwen-permission.mjs", "qwen-network.cjs"]) copyFileSync(join(original, name), join(helpers, name));
@@ -89,7 +89,7 @@ test("canonical Qwen helpers load the actual network preload from a path contain
   expect(native.guardPositiveControl).toBe(true); expect(native.groupGone).toBe(true);
   expect(readFileSync(join(context.root, "qwen-producer/acp/network-positive.log"), "utf8")).toContain("blocked network attempt");
   const input = JSON.parse(readFileSync(join(context.root, "qwen-producer/acp-input.json"), "utf8"));
-  expect(input.guard).toBe(join(helpers, "qwen-network.cjs")); expect(input.guard).toContain("producer helpers with spaces");
+  expect(input.guard).toBe(join(helpers, "qwen-network.cjs")); expect(input.guard).toContain("producer helpers with spaces 한글");
   expect(readFileSync(input.guard)).toEqual(readFileSync(join(original, "qwen-network.cjs")));
 }, 20_000);
 

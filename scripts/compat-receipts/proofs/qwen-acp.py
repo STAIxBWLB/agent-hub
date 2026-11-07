@@ -25,7 +25,7 @@ def run_qwen_acp(config):
     env = {'PATH': config['runtimePath'], 'HOME': str(home), 'QWEN_HOME': str(home),
            'QWEN_RUNTIME_DIR': str(home), 'TMPDIR': str(tmp), 'XDG_CONFIG_HOME': str(home / 'config'),
            'OPENAI_API_KEY': 'fixture-not-a-real-key', 'PROBE_NETWORK_LOG': str(network),
-           'NODE_OPTIONS': '--require ' + json.dumps(config['guard']), 'NO_COLOR': '1', 'CI': '1'}
+           'NODE_OPTIONS': '--require ' + json.dumps(config['guard'], ensure_ascii=False), 'NO_COLOR': '1', 'CI': '1'}
     node, cli = config['node'], config['cli']
     argv = [node, cli, '--acp', '--bare', '--advisor', 'off', '--auth-type', 'openai',
             '--model', 'fixture-model', '--openai-base-url', 'http://127.0.0.1:9/v1', '--telemetry=false']
