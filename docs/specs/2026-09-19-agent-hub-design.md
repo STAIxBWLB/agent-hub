@@ -439,7 +439,12 @@ inside a peer.
   hub's own count of Kimi's session wire log (`src/adapters/kimi-wire-usage.ts`, wire protocol 1.5, read on Kimi 2.3.0; the issue
   read 2.1.1), not an ACP total: each `usage.record` row of the owned session, sub-agents included, is a `usage` event
   (`source: kimi_wire`) and a `tokens` event, and the rolling 5 h sum of `inputOther + inputCacheCreation + output` (cache reads are
-  recorded, never counted) is the `tokens` window, source `hub count, kimi wire log, of kimi_tokens_5h N`. Any read the reader
+  recorded, never counted) is the `tokens` window, source `hub count, kimi wire log, of kimi_tokens_5h N`. #1281 adds one coalesced
+  delayed drain per peer after each cue (250 ms, 1,000 ms and 2,000 ms, at most three follow-ups), cancelled on stop, offline and
+  session replacement; offline keeps the final synchronous `collect -> drop`. A native row time selects a unique interval among the
+  32 most recent captured turns, with no unique match recorded as `unattributed`. Late rows update usage, token increments, the
+  roll-up and soft window without rewriting an earlier `turn_end` or incrementing a later turn. A reader slice commits offsets only
+  after its rows are recorded, so cancellation cannot advance past an unrecorded row. Any read the reader
   cannot trust gives unknown (one notice, the reading dropped), never a short count. `ahub budget set`
   feeds a reading by hand. `local` has no quota and is never paused.
 - Gate at `budget.gate` (default 0.99, a registered setting) on any fresh window; readings older than

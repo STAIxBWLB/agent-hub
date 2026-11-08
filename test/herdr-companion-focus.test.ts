@@ -216,9 +216,18 @@ test("AC6: Herdr's working, blocked, done and idle words are shown as an observa
 });
 
 test("AC5: on Windows nothing is read or focused", async () => {
-  const s = setup({ platform: "windows" }); await ready(s);
-  expect(await s.entry.focusConsole()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
-  expect(s.fake.hcCalls).toEqual([]); expect(s.runs).toEqual([]);
+  const s = setup({ platform: "windows" });
+  expect(await s.entry.refresh()).toMatchObject({ status: "refused", refusal: "unsupported_platform" }); // no project can even be selected
+  expect(await s.entry.focusConsole()).toMatchObject({ ok: false });
+  expect(s.fake.hcCalls).toEqual([]); expect(s.runs).toEqual([]); expect(s.execs).toEqual([]);
+  // and focus refuses on its own if the platform answer changes after a selection
+  let platform = "macos";
+  const flip = setup(); flip.host.platform = () => platform;
+  const entry = core.createHerdrEntry({ host: flip.host });
+  await entry.refresh(); entry.select("p_a"); platform = "windows";
+  expect(await entry.focusConsole()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
+  expect(await entry.peekConsole()).toMatchObject({ ok: false, refusal: "unsupported_platform" });
+  expect(flip.fake.hcCalls).toEqual([]); expect(flip.runs).toEqual([]);
 });
 
 test("review thread (machine change during the reads): the space and machine are re-read with nothing awaited right before the focus or peek, so nothing is focused after the space moved or the machine went away", async () => {

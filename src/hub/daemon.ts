@@ -121,7 +121,8 @@ import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, type HubEvent, type RoleIdentity } from "./events.ts";
 import { SpecTaskInspector } from "./specs-task.ts";
-import { KimiUsage, kimiSeedRows } from "./kimi-usage.ts";
+import { KimiUsage, kimiSeedRows, type KimiRowAttribution, type KimiUsageScheduler } from "./kimi-usage.ts";
+import { KimiEventWriter } from "./kimi-events.ts";
 import { TokenWindow } from "./token-window.ts";
 import { budgetNotes, type BudgetPeerNote } from "./budget-notes.ts";
 import { kimiRowTotal } from "../adapters/kimi-wire-usage.ts";
@@ -717,6 +718,8 @@ export interface DaemonOptions {
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
   /** Host-only (#285): Kimi's data home for its wire-log usage reader; default `KIMI_CODE_HOME`, else `~/.kimi-code`. Never read from config or tools. */
   kimiHome?: string;
+  /** Host-only delayed-drain scheduler; tests fire it explicitly. Production leaves it unset and uses unreferenced timers. */
+  kimiUsageScheduler?: KimiUsageScheduler;
   /** Host-only replay-window test ceiling (1..512); never read from project config or a tool. */
   toolWriteReplayMaxEntries?: number;
   /** Host-only evidence seam; never supplied by project config or control messages. */
@@ -3475,21 +3478,25 @@ export async function startDaemon(opts: DaemonOptions) {
   const startupEvents = startupSeeds.events;
   budget.seedResets(startupEvents.flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
   // #285 phase 2: Kimi's consumption is the hub's own count of its session wire log (`src/adapters/kimi-wire-usage.ts`), not an ACP total.
+  const kimiEvents = new KimiEventWriter({ append: event, read: () => readEvents(join(opts.stateDir, "events.jsonl")) }, startupEvents);
   const kimiUsage = new KimiUsage({
     home: opts.kimiHome ?? process.env.KIMI_CODE_HOME ?? join(homedir(), ".kimi-code"),
     now: () => Date.now(),
     ceiling: () => config.budget.kimi_tokens_5h,
     session: peer => contextSession(peer),
-    record: (peer, row, counted) => {
-      addTokens(peer, counted);
-      event({ type: "usage", peer, source: "kimi_wire", id: row.id, measuredAt: new Date(row.at).toISOString(), inputTokens: row.inputOther, outputTokens: row.output,
-        cacheReadTokens: row.inputCacheRead, cacheWriteTokens: row.inputCacheCreation, totalTokens: kimiRowTotal(row),
-        ...taskAttribution(peer), ...(row.model ? { servedModel: row.model } : {}) });
+    schedule: opts.kimiUsageScheduler ?? ((delay, run) => {
+      const timer = setTimeout(run, delay); timer.unref?.();
+      return () => clearTimeout(timer);
+    }),
+    record: (peer, row, counted, attributed) => {
+      kimiEvents.write(peer, row, counted, attributed);
+      applyKimiTokens(peer, counted, attributed);
     },
     report: (peer, window) => budget.report(peer, [{ id: "tokens", kind: "count", used: window.used, resetsAt: window.resetsAt, source: `hub count, kimi wire log, of kimi_tokens_5h ${window.ceiling}` }]),
     forget: peer => budget.forget(peer, "tokens", "count"),
     notice: line => notify(line),
   });
+  startupCleanup.push(() => kimiUsage.stop());
   kimiUsage.seed(kimiSeedRows(startupEvents, Math.max(0, ...startupEvents.flatMap(e => e.type === "budget_resume" && definitionOf(e.peer)?.budget?.resetSoftTokensOnResume ? [Date.parse(e.at)] : []).filter(Number.isFinite))));
   startupTimings.mark("usage_seed");
   /** Why a peer shows no number (no quota, nothing read yet): one line each, from the definition and the counters, never from a log's text. */
@@ -3499,7 +3506,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return budgetNotes({ peers, windows: peer => quota[accountOf(peer)]?.windows.length ?? 0, definition: peer => definitionOf(peer), softTokens: () => kimiUsage.status(),
       hubTokens5h: peer => hubTokenWindows.get(peer)?.sum(Date.now()) });
   };
-  /** A peer whose definition keeps host-owned soft token accounting (Kimi): its rows are read at a turn start (the floor), a turn end and a usage_update. */
+  /** A peer whose definition keeps host-owned soft token accounting (Kimi): its rows are read at a turn start (the floor), a turn end, a usage_update and a bounded delayed drain. */
   const softTokenPeer = (peer: PeerId): boolean => !!definitionOf(peer)?.budget?.resetSoftTokensOnResume;
   const collectKimiUsage = (peer: PeerId): void => { if (!softTokenPeer(peer)) return; try { kimiUsage.collect(peer); } catch (error) { log(`kimi usage: ${(error as Error).name}`); } };
   startupCleanup.push(() => budget.close());
@@ -3518,7 +3525,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const task = result.task === undefined ? undefined : board.get(result.task);
     return { ...result, ...(task && tasks.isPii(task) ? { pii: true as const } : {}) };
   };
-  const supervisionTurns = new Map<PeerId, { id: string; at: number; tokens?: number; session?: string }>();
+  const supervisionTurns = new Map<PeerId, { id: string; at: number; tokens?: number; session?: string; nativeTurn?: string }>();
   /** #1054: who started the turn a delivery begins. The person's message (console, `ahub say`, an acon send: from `user`, never the hub's own `answer` envelope) opens a run; ids only. */
   const pendingPersonDelivery = new Map<PeerId, { envelope: string; private: boolean }>();
   /** A native turn whose transcript, not its hook payload, proved a person origin. Native prompt text is never available here, so the result stays private. */
@@ -4091,6 +4098,15 @@ export async function startDaemon(opts: DaemonOptions) {
   const seedNow = Date.now(), seedRows = new Map<PeerId, { at: number; n: number }[]>();
   for (const e of startupEvents) if (e.type === "tokens" && noQuotaPeer(e.peer)) (seedRows.get(e.peer) ?? seedRows.set(e.peer, []).get(e.peer)!).push({ at: Date.parse(e.at), n: e.n });
   for (const [peer, rows] of seedRows) hubTokenWindow(peer).seed(rows, seedNow);
+  const applyKimiTokens = (peer: PeerId, n: number, attributed: KimiRowAttribution): void => {
+    if (n > 0 && noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(n));
+    const supervisionTurn = supervisionTurns.get(peer);
+    if (supervisionTurn && Number.isFinite(n) && n >= 0 && (supervisionTurn.nativeTurn ?? supervisionTurn.id) === attributed.turn) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
+    if (n > 0) {
+      const turn = turns.get(peer);
+      if (turn && turn.id === attributed.turn) turn.tokens += n;
+    }
+  };
   startupTimings.mark("token_seed");
   const addTokens = (peer: PeerId, n: number, task?: number): number => {
     if (n > 0 && noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(n));
@@ -5196,9 +5212,10 @@ export async function startDaemon(opts: DaemonOptions) {
         return line(reviewed);
       }
       case "hub_remember": {
-        const saved = await tasks.remember(by, a);
+        const { message: saved, outcome } = await tasks.rememberOutcome(by, a);
         // #1279: a saved note that names another entry cites it. `tasks.remember` already refused a PII task, a private path and a secret, so only a note it saved gets here.
-        if (!piiTurn && !reviewTurn && typeof a.text === "string" && a.text && !/not saved|nothing saved/.test(saved)) {
+        // #802: the structured outcome decides, never the reply wording. Only `not_saved` skips the citation: a candidate note held for a person's review was cited under the old wording test too, and stays so.
+        if (!piiTurn && !reviewTurn && typeof a.text === "string" && a.text && outcome !== "not_saved") {
           const task = a.task !== undefined && Number.isSafeInteger(Number(a.task)) ? Number(a.task) : undefined;
           citeMemory(by, a.text, `remember:${task ?? "none"}:${createHash("sha256").update(a.text).digest("hex").slice(0, 16)}`, task !== undefined ? [newEnvelope(by, "", { refs: { task: String(task) } })] : []);
         }
@@ -6243,7 +6260,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; const reviewObserverHoldNote = reviewObserverSessionIdentityHoldNote(id); return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(reviewObserverHoldNote ? { reviewObserverHoldNote } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(includeAttentionItems && p?.standbySessions?.length ? { standbySessions: p.standbySessions } : {}), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) ? { ...(p.claiming ? { claiming: true } : {}), ...(definitionOf(id)?.transport === "claude-channel" && p.attached ? { attachMode: p.attachMode, attachEvidence: p.attachEvidence } : {}) } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; const reviewObserverHoldNote = reviewObserverSessionIdentityHoldNote(id); return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(reviewObserverHoldNote ? { reviewObserverHoldNote } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(includeAttentionItems && p?.standbySessions?.length ? { standbySessions: p.standbySessions } : {}), ...(includeAttentionItems && p?.ownerAttachment ? { ownerAttachment: p.ownerAttachment } : {}), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) ? { ...(p.claiming ? { claiming: true } : {}), ...(definitionOf(id)?.transport === "claude-channel" && p.attached ? { attachMode: p.attachMode, attachEvidence: p.attachEvidence } : {}) } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -6658,7 +6675,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const delivery = pendingDeliveryTask.get(e.peer);
         pendingDeliveryTask.delete(e.peer);
         const attribution = taskAttribution(e.peer, delivery);
-        const id = `${e.peer}#${runId}.${++turnSeq}`;
+        const id = `${e.peer}#${runId}.${++turnSeq}`, startedAt = Date.now();
         // A turn of a peer with a PII task open is not snapshotted: what it writes would stay in git's object store until
         // gc. It is still recorded, without trees, so an overlapping turn's undo knows its changes are unknown.
         const pii = holdsPii(e.peer);
@@ -6674,7 +6691,9 @@ export async function startDaemon(opts: DaemonOptions) {
           writeScope = ownerWriteRoot(e.peer) === opts.cwd ? canonicalWriteScope(start.repo, start.budget) : true;
         } catch (error) { snapshotFailure(`the write scope of ${id}`, error); }
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
-        turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        turns.set(e.peer, { id, capture, start: startedAt, tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        const supervised = supervisionTurns.get(e.peer);
+        if (supervised?.id.startsWith("supervision-")) supervised.nativeTurn = id;
         const pendingReviewInput = pendingReviewObserverInputs.get(e.peer);
         if (pendingReviewInput) {
           pendingReviewInput.turnId = id; delete pendingReviewInput.awaitingTurn;
@@ -6705,9 +6724,10 @@ export async function startDaemon(opts: DaemonOptions) {
             }
           }
         } catch { log(`completion run start for ${e.peer} failed; no completion for this turn`); }
-        if (softTokenPeer(e.peer)) try { kimiUsage.turnStarted(e.peer); } catch { /* counting never costs a turn */ }
+        if (softTokenPeer(e.peer)) try { kimiUsage.turnStarted(e.peer, { id, startedAt, attribution }); } catch { /* counting never costs a turn */ }
       } else if (!busy && open) {
         collectKimiUsage(e.peer); // before the turn closes: its rows count toward the turn's tokens
+        if (softTokenPeer(e.peer)) try { kimiUsage.turnEnded(e.peer, open.id, Date.now()); } catch { /* counting never costs a turn */ }
         turns.delete(e.peer);
         let afterTurn: (() => void) | undefined;
         let files: number | undefined;
@@ -11611,6 +11631,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    kimiUsage.stop();
     controlWriteTelemetry?.stop();
     const roomsStopped = roomCommands.stop().catch(() => { log("room shutdown failed; inspect ahub room status after restart"); });
     tasks.stopQueuePressureRechecks();

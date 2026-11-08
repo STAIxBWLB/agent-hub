@@ -6,6 +6,7 @@ import { CandidateStore, MemoryStore, memoryProjectKey, realPath } from "@staix/
 import { ControlClient } from "../src/hub/control-client.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { Tasks } from "../src/hub/tasks.ts";
 import { researchFile, readStore, type TaskRecord } from "../src/hub/research.ts";
 import { useEnvironmentScope } from "./helpers/env-scope.ts";
 
@@ -75,6 +76,32 @@ test("a hub_remember text that names a rendered entry cites it for its task, and
   await w.op("hub_remember", { text: `follow-up: mem:${fail.id.slice(0, 8)} was confirmed again`, kind: "finding", horizon: "long", task: 1 });
   await Bun.sleep(50);
   expect(sidecar.counters(w.project).filter(c => c.key.deliveryId.startsWith("remember:1:"))).toHaveLength(1);
+});
+
+test("#802: a hub_remember citation follows the structured outcome, whatever the reply says", async () => {
+  const w = await world();
+  await w.op("hub_remember", { text: "the first fail note", kind: "fail", horizon: "long" });
+  const reader = new MemoryStore(); cleanup.push(() => reader.close());
+  const fail = reader.list({ project: w.project }).find(n => n.kind === "fail")!;
+  const sidecar = new CandidateStore(); cleanup.push(() => sidecar.close());
+  await w.op("hub_task_propose", { title: "outline the work", class: "plan", owner: "worker" });
+  w.daemon.bus.publish(newEnvelope(HUB, `Memory brief (hub memory first, fails first):\nmem:${fail.id.slice(0, 8)} fail long: the first fail note`, { to: ["worker"], refs: { task: "1" } }));
+  await until(() => sidecar.counters(w.project).some(c => c.rendered !== null && c.key.task !== null), "the brief rendered for the task");
+  const remembered = () => sidecar.counters(w.project).filter(c => c.cited !== null && c.key.deliveryId.startsWith("remember:1:")).length;
+  // The only way to change the reply of a real save is to wrap the method: the note is stored by the real code, and only the text or the outcome the daemon reads is altered. Restored after the test.
+  const real = Tasks.prototype.rememberOutcome;
+  cleanup.push(() => { Tasks.prototype.rememberOutcome = real; });
+  // A saved note whose reply carries the words the old wording test matched on: it still cites.
+  Tasks.prototype.rememberOutcome = async function (this: Tasks, ...args) { const r = await real.apply(this, args); return { ...r, message: "nothing saved? no: stored fine (not saved elsewhere)" }; };
+  const worded = await w.op("hub_remember", { text: `follow-up one: mem:${fail.id.slice(0, 8)} was confirmed`, kind: "finding", horizon: "long", task: 1 });
+  expect(worded).toContain("nothing saved");
+  await until(() => remembered() === 1, "a citation although the reply says nothing saved");
+  // A reply that sounds saved on an outcome of not_saved: it cites nothing.
+  Tasks.prototype.rememberOutcome = async function (this: Tasks, ...args) { const r = await real.apply(this, args); return { message: r.message, outcome: "not_saved" as const }; };
+  const refused = await w.op("hub_remember", { text: `follow-up two: mem:${fail.id.slice(0, 8)} was confirmed twice`, kind: "finding", horizon: "long", task: 1 });
+  expect(refused).toContain("saved to shared memory");
+  await Bun.sleep(100);
+  expect(remembered()).toBe(1);
 });
 
 test("a review verdict note that names a rendered entry is a citation keyed to that verdict", async () => {

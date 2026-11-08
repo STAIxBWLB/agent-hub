@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>agent-hub</title>
+<style>
+  body { margin: 0; padding: 12px; font: 13px/1.45 system-ui, sans-serif; color: var(--orca-foreground); background: var(--orca-background); }
+  h1 { font-size: 13px; margin: 0 0 8px; }
+  p, li { margin: 4px 0; }
+  .note { opacity: .75; }
+  ul { list-style: none; margin: 8px 0; padding: 0; }
+  li.row { border: 1px solid color-mix(in srgb, var(--orca-foreground) 20%, transparent); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+  li.row[aria-selected="true"] { border-color: var(--orca-primary); }
+  li.row.off { opacity: .6; }
+  .root { font-family: ui-monospace, monospace; word-break: break-all; }
+  button { font: inherit; margin: 6px 6px 0 0; padding: 4px 10px; }
+  button[disabled] { opacity: .5; }
+  #status { margin-top: 10px; min-height: 2.8em; }
+  #status.bad { color: var(--orca-destructive, #c0392b); }
+  code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h1>agent-hub</h1>
+<p class="note">Opens an existing agent-hub screen for one workspace. It never approves, assigns, completes, retries, stops or upgrades anything. Those stay in the screens it opens.</p>
+<div><button id="refresh" type="button">Refresh workspaces</button></div>
+<ul id="rows" aria-label="Workspaces"></ul>
+<div id="actions">
+  <button id="dashboard" type="button" disabled>Open dashboard</button>
+  <button id="console" type="button" disabled>Open console</button>
+  <button id="family" type="button" disabled>Open family console</button>
+  <button id="link" type="button" hidden>Open the link</button>
+  <button id="statusbtn" type="button" disabled>Show status</button>
+</div>
+<div id="statusbox" aria-live="polite" hidden>
+  <h1>Status</h1>
+  <p id="statusline"></p>
+  <ul id="statuspeers" aria-label="Peers"></ul>
+  <p class="note" id="statusnote"></p>
+</div>
+<div id="status" role="status" aria-live="polite"></div>
+<script type="module">
+// Nothing is stored: not in localStorage, not in plugin storage. The selection lives in this page's memory and is checked again by the worker before every effect.
+const $ = id => document.getElementById(id);
+const rows = $("rows"), status = $("status"), link = $("link");
+let selected = null;          // { id, hostId, root, kind } the person chose; the worker verifies it again before acting
+let pendingLink = null;       // a one-time `ahub ui` link, held only until it is used or has expired
+let linkTimer = 0;
+let generation = 0;          // selection, refresh and open responses belong only to their initiating UI state
+const LINK_LIVES_MS = 55_000; // ahub's own link expires after 60 seconds
+
+const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
+const ask = (name, input) => orca.plugin.request(name, input, { timeoutMs: 30_000 });
+const setActions = on => { for (const id of ["dashboard", "console", "family", "statusbtn"]) $(id).disabled = !on; };
+const dropLink = () => { pendingLink = null; link.hidden = true; clearTimeout(linkTimer); };
+
+// The status reading (counts and closed words only). It is fetched ONLY when the person clicks "Show status"; nothing here polls and there is no recurring timer for it. An old reading is
+// re-labelled stale from the clock when the panel is drawn again, and it is drawn again when the person returns to it (focus or visibility): a context change, never a request.
+const STALE_AFTER_MS = 60_000;
+let reading = null;
+const WORDS = {
+  offline: "No agent-hub is running for this project. Start it yourself with `ahub up` in a terminal; this panel does not start anything.",
+  unavailable_version: "This project's agent-hub is too old to report these fields. Upgrade it yourself with `ahub upgrade`; this panel does not.",
+  unknown: "The reading has no time, so its age is unknown.",
+};
+function dropStatus() { reading = null; $("statusbox").hidden = true; $("statuspeers").replaceChildren(); }
+function drawStatus() {
+  const box = $("statusbox"), line = $("statusline"), peers = $("statuspeers"), note = $("statusnote");
+  if (!reading) { box.hidden = true; return; }
+  box.hidden = false; peers.replaceChildren(); note.textContent = "";
+  const age = Math.max(0, Math.round((Date.now() - reading.fetchedAt) / 1000));
+  let state = reading.state;
+  if (state === "running" && Date.now() - reading.fetchedAt > STALE_AFTER_MS) state = "stale";
+  if (state === "offline" || state === "unavailable_version" || state === "unknown") { line.textContent = state.replace("_", " ") + ": " + WORDS[state]; return; }
+  const tasks = reading.tasks ? Object.entries(reading.tasks).map(([k, n]) => n + " " + k).join(", ") || "none" : "unknown";
+  line.textContent = state + " (read " + age + " s ago" + (reading.version ? ", agent-hub " + reading.version : "") + "). Tasks: " + tasks + ".";
+  for (const peer of reading.peers ?? []) {
+    const li = document.createElement("li");
+    li.textContent = peer.id + ": " + peer.state + (peer.attached ? "" : " (not attached)") + (peer.queued === null ? "" : ", " + peer.queued + " queued");
+    peers.append(li);
+  }
+  if (reading.peers === null) note.textContent = "Peers: unknown (this hub did not report them).";
+  if (reading.missing.length) note.textContent += " Not reported by this hub: " + reading.missing.join(", ") + ".";
+  if (state === "stale") note.textContent += " This reading is old. Click Show status to read it again; nothing refreshes it for you.";
+}
+async function readStatus() {
+  if (!selected) { say("Select a workspace first.", true); return; }
+  const snapshot = Object.freeze({ ...selected }), requestGeneration = ++generation;
+  dropLink(); setActions(false); say("Reading status...");
+  try {
+    const result = await ask("status.read", { snapshot });
+    if (requestGeneration !== generation) return;
+    if (!result.ok) { dropStatus(); say(result.guidance, true); return; }
+    reading = result; drawStatus();
+    say(result.state === "offline" ? WORDS.offline : "Status read.");
+  } catch { if (requestGeneration === generation) { dropStatus(); say("The companion did not answer. Nothing was changed.", true); } }
+  finally { if (requestGeneration === generation && selected) setActions(true); }
+}
+
+function renderRows(list) {
+  rows.replaceChildren();
+  selected = null; setActions(false); dropLink(); dropStatus();
+  for (const row of list) {
+    const li = document.createElement("li");
+    li.className = "row" + (row.selectable ? "" : " off");
+    li.setAttribute("aria-selected", "false");
+    const title = document.createElement("div");
+    title.textContent = row.name + (row.branch ? "  [" + row.branch + "]" : "");
+    const root = document.createElement("div");
+    root.className = "root"; root.textContent = row.root;
+    const host = document.createElement("div");
+    host.className = "note"; host.textContent = "host: " + (row.hostId ?? "not stated") + ", " + row.kind;
+    li.append(title, root, host);
+    if (row.selectable) {
+      const choose = document.createElement("button");
+      choose.type = "button"; choose.textContent = "Select";
+      choose.addEventListener("click", () => {
+        generation++;
+        for (const other of rows.children) other.setAttribute("aria-selected", "false");
+        li.setAttribute("aria-selected", "true");
+        selected = { id: row.id, hostId: row.hostId, root: row.root, kind: row.kind };
+        setActions(true); dropLink(); dropStatus();
+        say("Selected. Choose a screen to open, or show its status.");
+      });
+      li.append(choose);
+    } else {
+      const why = document.createElement("div");
+      why.className = "note"; why.textContent = row.guidance;
+      li.append(why);
+    }
+    rows.append(li);
+  }
+}
+
+async function refresh() {
+  const requestGeneration = ++generation;
+  selected = null; setActions(false); dropLink(); dropStatus();
+  say("Reading Orca's workspaces...");
+  try {
+    const result = await ask("workspaces.list", undefined);
+    if (requestGeneration !== generation) return;
+    if (!result.ok) { renderRows([]); say(result.guidance, true); return; }
+    renderRows(result.rows);
+    say(result.rows.length ? "Select the workspace to open." : "Orca lists no workspaces.");
+  } catch { if (requestGeneration === generation) { renderRows([]); say("The companion did not answer. Disable and re-enable it from Orca's plugin list.", true); } }
+}
+
+async function open(kind) {
+  if (!selected) { say("Select a workspace first.", true); return; }
+  const snapshot = Object.freeze({ ...selected }), requestGeneration = ++generation;
+  dropLink(); setActions(false); say("Opening...");
+  try {
+    const result = await ask("entry.open", { kind, snapshot });
+    if (requestGeneration !== generation) return;
+    if (!result.ok) {
+      say(result.guidance + (result.command ? "  Run this in a terminal there: " + result.command : ""), true);
+    } else if (result.status === "terminal_created") {
+      say("A terminal was created in the workspace and is running the command. Select its tab to see it.");
+    } else if (result.status === "link" && !(orca.host && orca.host.has && orca.host.has("shell.openExternal") && orca.shell && orca.shell.openExternal)) {
+      // A browser client has no desktop external navigation: no link is held or shown there. ahub printed a loopback link, which would not be this person's browser anyway.
+      say("This Orca client cannot open a link. Run `ahub ui` in a terminal on the machine that runs the project.", true);
+    } else if (result.status === "link") {
+      // ahub could not open its own browser: the link is held in memory until the next click (a gesture is required to open it) and is never written anywhere.
+      pendingLink = result.url; link.hidden = false;
+      linkTimer = setTimeout(() => { if (requestGeneration === generation) { dropLink(); say("The one-time link expired. Open the dashboard again."); } }, LINK_LIVES_MS);
+      say("ahub printed a one-time link. Click \"Open the link\" within a minute.");
+    } else say("The dashboard was opened by ahub in your browser.");
+  } catch { if (requestGeneration === generation) say("The companion did not answer. Nothing was opened.", true); }
+  finally { if (requestGeneration === generation && selected) setActions(true); }
+}
+
+link.addEventListener("click", async () => {
+  const requestGeneration = ++generation;
+  const url = pendingLink; dropLink();
+  if (!url) { say("The link is gone. Open the dashboard again.", true); return; }
+  try {
+    const opened = await orca.shell.openExternal(url);
+    if (requestGeneration !== generation) return;
+    say(opened && opened.opened ? "Opened in your browser." : "Orca did not open the link (it may have asked and been declined). Open the dashboard again.", !(opened && opened.opened));
+  } catch { if (requestGeneration === generation) say("Orca could not open the link here. Run `ahub ui` in a terminal.", true); }
+});
+$("statusbtn").addEventListener("click", readStatus);
+window.addEventListener("focus", drawStatus);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) drawStatus(); });
+$("refresh").addEventListener("click", refresh);
+$("dashboard").addEventListener("click", () => open("dashboard"));
+$("console").addEventListener("click", () => open("console"));
+$("family").addEventListener("click", () => open("family"));
+refresh();
+</script>
+</body>
+</html>

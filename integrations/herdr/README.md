@@ -1,6 +1,6 @@
 # agent-hub entry for Herdr (optional)
 
-Tasks H1 and H2 of [#1199](https://github.com/STAIxBWLB/agent-hub/issues/1199), on the frozen
+Tasks H1, H2 and H3 of [#1199](https://github.com/STAIxBWLB/agent-hub/issues/1199), on the frozen
 [H0 contract](host-contract-v1.md). **Optional and removable.** Herdr and ahub keep working exactly as they do
 today with this folder absent. It is not an ahub dependency and ahub is not its dependency: nothing in `src/`,
 `scripts/` or `package.json` mentions it.
@@ -77,7 +77,25 @@ from `keys.json`. Terminals, tabs opened earlier, ahub agents and hub state are 
 none of them. What removal does to a copy that is already shown was **not observed** and is part of the
 person-run [native receipt](native-receipt.md).
 
-## Platforms
+## Platforms and support matrix (H3)
+
+[`support-matrix.json`](support-matrix.json) gives each combination its own verdict. A combination is `supported` only
+when its receipt file exists and no longer says NOT RUN, and a test enforces that. **None is supported today**: each leg
+needs a person's machines, so each is a **person-run** receipt that has not been run. No identity check is loosened for
+any combination.
+
+| Combination | Verdict | What happens | Receipt (person-run, NOT RUN) |
+| --- | --- | --- | --- |
+| `macos-local` | fixture only | everything above, checked against fixtures and the real `hc` and `herdr-app check` in scratch homes | [native-receipt.md](native-receipt.md) |
+| `remote-space` | unsupported | designed to open the console in that machine's space and read on that machine; the dashboard and focus refuse. No remote machine is configured here, so nothing remote was ever run | [receipts/remote.md](receipts/remote.md) |
+| `windows` | unsupported | every action refuses with `unsupported_platform` and nothing runs | [receipts/windows.md](receipts/windows.md) |
+| `linux` | unsupported | never exercised and not claimed | none |
+| `browser-or-mobile` | unsupported | Herdr names no such client for mods. Mobile is **not** inferred from SSH reachability or a machine being ready | [receipts/browser-mobile.md](receipts/browser-mobile.md) |
+
+How the journeys compare with the H0 baseline is in [baseline-comparison.md](baseline-comparison.md): procedure counts only,
+none observed, and no action-count gain is claimed.
+
+## Platforms (summary)
 
 macOS and Linux paths only. On a Windows window every action refuses (`unsupported_platform`) and nothing runs,
 because the folder and quoting rules here are POSIX and no Windows leg exists. A remote space needs a machine that

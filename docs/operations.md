@@ -5133,7 +5133,7 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 ## Optional Antigravity (agy) peer
 
-Antigravity is optional and off roster by default. Use `ahub roster add agy`, then run `ahub agy` in a terminal: it runs the Antigravity CLI as a fresh pull-only TUI in that terminal. It accepts the 1.4.x line: 1.4.2, 1.4.7 and 1.4.12 are the verified versions ([1.4.7 receipt](verification/2026-10-26-agy-1.4.7.md), [1.4.12 launcher nonce receipt](verification/2026-11-03-agy-1.4.12-launcher-nonce.md)), any other 1.4.x launches with a stderr warning (agy updates itself; set `AGY_CLI_DISABLE_AUTO_UPDATE=1` for a live run, #1140), and other versions are refused (#589) unless the person trusts that exact version with `ahub agents trust agy <version>` (#691). The running hub must advertise `native_hook_launch`; an older hub refuses before any write with an upgrade-or-restart remedy. Only the person's launcher starts it: conductor starts are refused, there is no controlled restore or resume, and a declared agy extra instance is refused when the config loads (#625). Headless/print, resume (`--conversation`, `--continue`, `--new`), `--mode`, `--dangerously-skip-permissions` and `--unattended` are refused until their native mapping is verified; `--print-command` previews without writing.
+Antigravity is optional and off roster by default. Use `ahub roster add agy`, then run `ahub agy` in a terminal: it runs the Antigravity CLI as a fresh pull-only TUI in that terminal. It accepts the 1.4.x line plus exact 1.5.3: 1.4.2, 1.4.7, 1.4.12 and 1.5.3 are the verified versions ([1.4.7 receipt](verification/2026-10-26-agy-1.4.7.md), [1.4.12 launcher nonce receipt](verification/2026-11-03-agy-1.4.12-launcher-nonce.md), [1.5.3 account-free receipt](verification/2026-11-08-agy-1.5.3.md)), any other 1.4.x launches with a stderr warning (agy updates itself; set `AGY_CLI_DISABLE_AUTO_UPDATE=1` for a live run, #1140), and other versions are refused (#589) unless the person trusts that exact version with `ahub agents trust agy <version>` (#691). The running hub must advertise `native_hook_launch`; an older hub refuses before any write with an upgrade-or-restart remedy. Only the person's launcher starts it: conductor starts are refused, there is no controlled restore or resume, and a declared agy extra instance is refused when the config loads (#625). Headless/print, resume (`--conversation`, `--continue`, `--new`), `--mode`, `--dangerously-skip-permissions` and `--unattended` are refused until their native mapping is verified; `--print-command` previews without writing.
 
 The launcher writes exactly `plugin.json`, `mcp_config.json` and `hooks.json` in `.agents/plugins/agent-hub/`, refusing linked or foreign entries before any write, and removes only its own matching files when the TUI ends. It never writes project-level `.agents/hooks.json` or the person's `~/.gemini` settings. Run `ahub init` afterwards to ignore the untracked plugin directory; a tracked plugin is written with a warning. The native model sees the hub tools under the server name `agent-hub_agent-hub`.
 
@@ -6595,6 +6595,43 @@ are recorded separately; declarations and fake results do not qualify them.
 The three baseline journeys count procedure actions only, with observed native
 counts still unknown. O1 must record actual open/disable/standalone UI proof.
 
+### Optional Orca companion: chooser and entry points (#1198 O1)
+
+[`integrations/orca/`](../integrations/orca/README.md) holds the optional companion: a manifest, a
+trusted worker and a sidebar panel. It is not in the npm package, no ahub source refers to it, and ahub and
+Orca keep all their own functionality without it. It lists Orca's workspaces, you select one by its exact
+id (a name or branch never selects), and it opens an existing screen: `ahub ui` run as a short-lived child
+with the folder as its working directory only, or a terminal created in the workspace running `ahub console`
+or `acon ui`. A selection binds the id, host id, kind and the folder's real path on this Mac and is
+re-checked against a complete inventory before every effect; a duplicate, missing, truncated or changed
+identity, or a host not declared to be this Mac, refuses visibly and runs nothing. It never passes `--json`
+to `ahub ui`, never approves, assigns, completes, retries, stops or upgrades anything, and keeps no CLI
+output, one-time link or task text in plugin state or logs.
+
+Install is explicit and in an isolated Orca profile first (`orca plugin validate`, `orca plugin dev load`
+with the fingerprint Orca prints); remove it with `orca plugin disable` and `orca plugin dev unload`. The
+fake-host checks are `test/orca-companion-entry.test.ts` and `test/orca-companion-independence.test.ts`.
+A **Show status** button (O2) reads the selected project's public status on a click only: version, tasks by
+state, and peer state with queue length, copied from `ahub status --json` through a closed allowlist so no
+free-text field (task title, a peer's current line, a notice, a path) is read. Offline, unavailable version,
+partial, stale and unknown stay distinct states; there is no poller, no transcript read and no terminal read.
+There is **no terminal focus**: O0 found no proof that a plugin terminal id names an `orca terminal switch`
+handle, so the companion never calls it and never replaces a terminal.
+
+**Platforms (O3).** [`support-matrix.json`](../integrations/orca/support-matrix.json) records one verdict per
+combination and a test enforces that `supported` needs a receipt that no longer says NOT RUN. Today none is
+supported: macOS local is fixture-only, and remote, Windows, browser or mobile and Linux are unsupported, each
+with a person-run receipt template under `integrations/orca/receipts/`. A remote workspace is refused before
+anything runs and shows the existing remote console command to run on that host; a remote loopback link is never
+opened locally. On Windows every workspace is refused (`unsupported_platform`). Where a client has no external
+navigation no link is held. Mobile availability is not inferred from SSH reachability or from Orca's mobile
+pairing option.
+
+**The native open and disable receipt is a person-run leg that has not been run**
+([`native-receipt.md`](../integrations/orca/native-receipt.md)): the action counts in the companion's README
+are procedure counts, remote, Windows and mobile stay unqualified (O3), and there is no focus-existing-console
+action.
+
 ## Herdr companion host contract (#1199 H0)
 
 [`integrations/herdr/host-contract-v1.md`](../integrations/herdr/host-contract-v1.md) freezes what an optional Herdr mod may
@@ -6605,6 +6642,10 @@ that same machine, and a remote cwd is never resolved on this Mac. Herdr has no 
 a folder the person adds and removes, and what removal does to a shown copy is for the H1 native receipt. Existing
 terminal focus is unbuilt until a Herdr terminal can be mapped to an ahub console. The three baseline journeys are
 procedure counts that have not been run in a native window.
+
+### Who owns a pull-only peer (#1310)
+
+`ahub status` (and `--json`) names the current owner of an attached channel peer, beside its standby rows: `<peer> owner: pid <n>; attached <age>; native session <id>`. The pid is what the owner's plugin reported at hello (`pid unknown` when it reported none or an unusable one). `attached` is when the attach finished, not when the hello arrived. The native session reads `unverified` until the hub has verified one through the native-facts path (today agy), and an id that is not a short plain token is never shown. The owner line is absent while a newer session is still arriving, while the peer is offline, and after a detach, so a claimant is never shown as attached, and a takeover replaces the whole line at once. Use it to see who holds a queued peer before running `ahub peer takeover`. It is display only: it never decides delivery, takeover or permission, and `status.json` on disk does not carry it.
 
 ### Herdr project and machine entry (#1199 H1)
 
@@ -6630,3 +6671,15 @@ selected project, exactly one match, rechecked right before a single `pane.focus
 believed only after Herdr's `focused()` shows it. They never start, replace, type into or close a terminal, and
 Herdr's own working, blocked, done and idle words are shown, never sent to ahub. A console started through a wrapper is
 not recognized and the person uses Open console. The native focus receipt is a person-run leg that has not been run.
+
+### Herdr platform support matrix (#1199 H3)
+
+[`integrations/herdr/support-matrix.json`](../integrations/herdr/support-matrix.json) records one verdict per combination and a
+test enforces that `supported` needs a receipt that no longer says NOT RUN. Today none is supported: macOS local is
+fixture-only, and remote, Windows, Linux and browser or mobile are unsupported, each with a person-run receipt template under
+`integrations/herdr/receipts/`. The remote console workflow is designed (read on that machine, new tab in that machine's space,
+no dashboard link, no remote focus) and exercised against the fixture only, because no remote machine is configured on the
+machine it was built on. On Windows every action refuses. Mobile is not inferred from SSH reachability or a machine being ready.
+[`baseline-comparison.md`](../integrations/herdr/baseline-comparison.md) lays the entry's journeys beside the H0 baseline as
+procedure counts: the entry costs one more action than the baseline when the pane is already in the right project, and its value
+is the verified machine and root, not a shorter path.

@@ -39,7 +39,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `native_thread` | `peer` (`codex`), `thread` (its native thread id), `fresh` (`true` when the TUI started the thread, `false` when it resumed one): each thread the Codex adapter adopts, before any turn on it. The upgrade planner reads it: a thread with no rollout that the hub saw start, with no `turn_start` since, is planned as a fresh start (issue #215) |
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
 | `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn), `files` and `snapshotMs` (when snapshots are on: how many files the turn changed, and the time both snapshots took); optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`) frozen at turn start, `pii: true` for an attributed PII task |
-| `tokens` | `peer`, `n` (tokens added since the previous report), optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`), `pii: true` for an attributed PII task |
+| `tokens` | `peer`, `n` (tokens added since the previous report), optional `source: kimi_wire` and opaque `id` (the native row, used to keep a partial-write retry exactly once), optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`), `pii: true` for an attributed PII task |
 | `usage` | `peer`, `source` (`omniroute`, `claude_transcript`, `claude_result`, `codex_appserver`, `kimi_wire`, `jcode_acp`), opaque `id`, optional `measuredAt` (provider/source time), the `requestedModel`, `servedModel` and `provider` labels, and any provider-reported counters (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`, `totalTokens`); optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`), `pii: true` for an attributed PII task. Missing counters stay unknown. |
 | `task` | `id`, `event` (the board history event, e.g. `proposed`, `assigned`, `done`, `check failed`, `blocked`, `ready`), `by`, `state`, `owner`, `reviewer`, `class`, `pii`, and `reason` when the board recorded a move reason (`manual`, `budget`, `offline`, `idle`, `rejections`, `declined`, `inference_failed`, `delivery_failed`). The research record (docs/research.md, #1277) reads these for every terminal task, approved or cancelled; no new event type was added |
 | `overlap` | `task`, `owner`, `others` (`task`, `owner`, `paths`, and `symbols` when plans name the same symbol; a name that matches a PII pattern is left out, so either list can be empty), the structured twin of the console notice |
@@ -61,26 +61,34 @@ The hub also writes `release_authorization`, `role`, `config_edit`, `invocation`
 
 Token usage by adapter:
 
-- Kimi (#285 phase 2): consumption is the hub's own count of Kimi's session wire log, never an ACP total. The `{used, size}`
+- Kimi (#285 phase 2, delayed drain #1281): consumption is the hub's own count of Kimi's session wire log, never an ACP total. The `{used, size}`
   `usage_update` Kimi sends is context occupancy: it is shown as the peer's native context reading (source
   `acp_usage_update`, phase 1) and writes no `tokens` event. The reader (`src/adapters/kimi-wire-usage.ts`, the only code that knows
   the format) finds the session directory from `session_index.jsonl` (resolved with `realPath`, kept inside `<kimi home>/sessions`)
   and reads `agents/*/wire.jsonl` incrementally from saved offsets, sub-agents included, at a turn end, when a `usage_update`
-  arrives and when the peer goes offline (a turn start only binds the session and fixes the history floor, it reads nothing): no
-  watcher, no timer. One call reads at most a fixed byte bound across all of the session's files (the rest waits for the next call),
-  and two agent entries that are one file count once. Each `usage.record` row becomes a `usage` event
+  arrives and when the peer goes offline. A turn start only binds the session and fixes the history floor, it reads nothing. Each cue
+  also schedules at most three follow-ups, after 250 ms, 1,000 ms and 2,000 ms, coalesced into one pending drain per peer with
+  unreferenced production timers. Stop, offline and session replacement cancel them. The offline path keeps its final synchronous
+  `collect -> drop`; a row durable only after that read remains uncollected, a documented ceiling. One call reads at most a fixed
+  byte bound across all of the session's files (the rest waits for the next call), and two agent entries that are one file count once.
+  A successful reader slice commits its offsets only after its rows, `seen` ids, events and window entries are committed, so a failed
+  event or cancellation cannot advance past an unrecorded row. Each `usage.record` row becomes a `usage` event
   (`source: kimi_wire`, `inputTokens` = Kimi's `inputOther`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `totalTokens`
   including cache reads, `servedModel`, `measuredAt` = Kimi's row time) and a `tokens` event of the counted share. The id is an
   opaque hash of session, agent and byte offset; no path, session id or text reaches an event. Only the four integers, the model
   label and the time are copied from a row. The counted share is `inputOther + inputCacheCreation + output` (`kimiCountedTokens`,
   one function): cache reads are recorded and shown, never counted against `budget.kimi_tokens_5h`. The rolling 5 h sum of the
   counted share against that ceiling is the `tokens` window (`hub count, kimi wire log, of kimi_tokens_5h N`, kind `count`: #285 phase 4 names each window's kind in the budget reply, never in an event, and a person's `ahub budget set` value, kind `manual`, outranks it at the gate). Rows already in the
-  session's log when the hub first sees it (a resumed session) are history and are not counted. An unreadable index, a missing,
+  session's log when the hub first sees it (a resumed session) are history and are not counted. A row's native time selects one of
+  the 32 most recent captured turn intervals; no unique match, an evicted interval or an ambiguous time gives `unattributed` with no
+  task id. Rows collected before a turn closes keep that turn's `turn_end.tokens`. Late rows update `usage`, `tokens`, the roll-up
+  and soft-quota window, but never rewrite an earlier `turn_end` or increment a later turn. An unreadable index, a missing,
   shrunk or replaced file (a replacement is told by a hash of the consumed head and tail kept with each offset, since Linux can reuse the inode), a truncated last line, an unknown row shape or an untested wire `protocol_version` (only 1.5 is known)
   makes the count unknown: one notice (`kimi usage unknown (<reason>)`), the `tokens` reading is dropped, and no figure is reported
   until the 5 h window the gap touched has passed (a transient read error or truncated line heals on the next read). Wire format
   followed: protocol 1.5 as written by Kimi Code 2.3.0 (the issue read 2.1.1; the verified Kimi versions are listed in `compat.ts`). The
-  live check against Kimi's own `/usage` (#285 AC11) is not done yet.
+  AC11 receipt is [2026-10-25-kimi-usage-ac11.md](verification/2026-10-25-kimi-usage-ac11.md); the current native timing and
+  attribution receipt is [2026-11-07-kimi-delayed-usage.md](verification/2026-11-07-kimi-delayed-usage.md).
 - Codex (app-server `thread/tokenUsage/updated`): recorded as the growth of the thread's running total, so
   compaction estimates, usage-limit refreshes and the replay to a reattaching connection add nothing. A thread
   started under the hub counts from zero; a resumed thread's first update is its history and only sets the
@@ -125,7 +133,7 @@ At write time, the first applicable attribution rule wins:
 `Bus.onDeliver` observes originals immediately before `peer.deliver` starts the
 turn. Pending task identity is consumed at turn start and cleared on delivery
 admission/failure, so later user-started native turns do not inherit it. Usage
-and token events apply the rule at write time; `turn_end` keeps the start-time
+and token events apply the rule at write time, except that a delayed Kimi row uses the unique captured turn interval selected by its native timestamp, never the later open task. `turn_end` keeps the start-time
 attribution. Local usage uses its request-bound route policy task when present.
 The existing relay has no task-bearing route usage event; this change adds no
 new usage source. Schema version 1 and the control protocol are unchanged.
