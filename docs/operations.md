@@ -6691,7 +6691,7 @@ A before/after side is either `{text}` or a project path with alt text:
 ```
 
 Paths are relative to the canonical hub project, not an inferred peer worktree.
-Published acon 0.1.3 and 0.1.4 do not serve `image/webp` through their asset route. Use PNG or JPEG with those hosts; end-to-end WebP remains unqualified pending agent-console#81. Hub WebP admission does not claim that host support is present.
+WebP asset display requires acon 0.1.7 or later (agent-console#81). Older 0.1.3/0.1.4 hosts refuse that MIME type; use PNG or JPEG there. The hub adds no transcoder.
 
 Only a guarded public PNG, JPEG or WebP of at most 8 MiB is accepted; extension
 and byte signature must agree. SVG, secret/PII paths, hub state, outside paths,

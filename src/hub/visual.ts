@@ -10,7 +10,8 @@ export interface VisualFile { asset: string; path: string; sha256: string; bytes
 export interface VisualRecord { id: string; task?: number; from: string; kind: VisualPayload["kind"]; title: string; payload: VisualPayload; files: VisualFile[]; created: number }
 export type VisualSummary = Pick<VisualRecord, "id" | "task" | "from" | "kind" | "title" | "created">;
 export const VISUAL_ID_PATTERN = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
-/** Acon 0.1.3: source/option/point bounds from contract.ts; table caps from shell.js UI_LIMITS.
+/** Acon 0.1.7 source limit counts UTF-16 code units; the hub's UTF-8 byte limit is intentionally stricter.
+ * Option/point bounds come from contract.ts; table caps from shell.js UI_LIMITS.
  * Other byte ceilings are explicit hub admission bounds, not additions to the acon type. No truncation. */
 export const VISUAL_LIMITS = Object.freeze({ source: 20 * 1024, options: 6, points: 10, rows: 500, columns: 12,
   title: 300, caption: 2000, alt: 1000, text: 20 * 1024, summary: 4000, point: 2000, cell: 4000, key: 128,
@@ -132,7 +133,7 @@ function validate(input: unknown, screen: Screen, assets: boolean): VisualPayloa
     const row = object(raw, ["kind", "before", "after"], ["caption"], "payload");
     const side = (value: unknown, field: string): VisualSide | VisualInputSide => {
       if (value && typeof value === "object" && Object.hasOwn(value, "text")) { const v = object(value, ["text"], [], field); return { text: text(v.text, VISUAL_LIMITS.text, `${field}.text`, screen) }; }
-      const name = assets ? "asset" : "path", v = object(value, [name, "alt"], [], field), alt = text(v.alt, VISUAL_LIMITS.alt, `${field}.alt`, screen);
+      const name = assets ? "asset" : "path", v = object(value, [name], ["alt"], field), alt = text(v.alt, VISUAL_LIMITS.alt, `${field}.alt`, screen);
       return assets ? { asset: identityText(v.asset, VISUAL_LIMITS.asset, `${field}.asset`, screen), alt } : { path: pathText(v.path, `${field}.path`, screen), alt };
     };
     const before = side(row.before, "payload.before"), after = side(row.after, "payload.after");

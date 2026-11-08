@@ -11,7 +11,16 @@
       "shell/shell.js": "c538e51a82ca461334a548558a818dacb6764ef5",
       "test/shell.test.ts": "fbdd4dc8c34ac09236bd4f1db6b0045f52d08882"
     },
-    "scope": "Mermaid/table/beforeAfter examples reproduce the upstream shell test payloads. Comparison adapts its over-bound clipping example to ten points. Additional hub cases test stricter admission only. Published conformance provides tableColumnProblems, not a VisualPayload validator or shared visual fixture. No renderer/native qualification is claimed."
+    "recheckedAgainst": {
+      "version": "0.1.7",
+      "sources": {
+        "src/contract.ts": "e1d636a73a365009a9aef39fbcff741c15aff381",
+        "src/conformance.ts": "9c997a77c5915cc2adec1d68ac2fbc49bd5be7d2",
+        "shell/shell.js": "347897ed2f3c299eac92e3a1cffb42d78213ef20",
+        "src/visual-cases.ts": "391cb0a8b463fb83301f2653f3325edfce4448ca"
+      }
+    },
+    "scope": "Originally derived from the recorded 0.1.3 shell tests: Mermaid/table/beforeAfter reproduce their payloads; comparison adapts the over-bound clipping example to ten points. These remain extra hub-owned cases, rechecked against 0.1.7, not copies of its canonical VISUAL_CASES. The canonical published cases are imported directly in visual-conformance.test.ts. No renderer/native qualification is claimed."
   },
   "valid": [
     { "id": "acon-mermaid", "payload": { "kind": "mermaid", "source": "flowchart LR\n  A[Start] --> B{Ok?}\n  B -->|yes| C[Ship]", "title": "Release flow" } },

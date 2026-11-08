@@ -102,11 +102,15 @@ Image bytes use the existing guarded deliverable reader and current hash/policy
 checks; console asset identifiers bind their originating project and instance.
 Raw visual tool arguments/results never enter observer capture, even on refusal.
 The unchanged acon shape has additional hub admission ceilings: 1 MiB serialized
-payload; UTF-8 bytes title 300, caption 2000, alt 1000, text side 20 KiB, option
+payload; UTF-8 bytes Mermaid source 20 KiB, title 300, caption 2000, alt 1000,
+text side 20 KiB, option
 summary 4000, each pro/con 2000, table cell 4000, key 128, path 4096 and asset
 reference 256. These are hub limits, not a claim that acon imposes each limit;
-validation refuses rather than truncates. A shared upstream visual fixture is
-still required for AC1; the hub-owned candidate is not substituted for it.
+validation refuses rather than truncates. acon counts Mermaid UTF-16 code units
+and leaves captions unbounded, while the hub counts UTF-8 bytes. All 42 published
+acon 0.1.7 visual cases are consumed directly; six named valid-acon cases are
+rejected only by these stricter source/caption/asset-ID ceilings. Historical
+hub-owned cases remain extra coverage, not a substitute for the shared fixture.
 
 Held controlled recovery compares retained visual integrity before startup
 retention pruning; normal retention resumes only after recovery release.

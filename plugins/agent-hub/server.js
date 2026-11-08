@@ -10638,7 +10638,7 @@ var init_package = __esm(() => {
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
-      "@staix/agent-console": "0.1.3",
+      "@staix/agent-console": "0.1.7",
       "@types/bun": "^1.3.0",
       typescript: "^5.8.0"
     },
