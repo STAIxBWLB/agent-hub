@@ -407,3 +407,16 @@ for (const cause of ["stopping", "stale-authority", "wrong-owner", "throwing-aut
   expect(error.message).not.toContain("PRIVATE-ERROR"); expect(unexpectedCalls).toBe(0);
   expect(authorityChecks).toBe(cause === "stopping" || cause === "wrong-owner" ? 0 : 1);
 });
+
+for (const op of ["hub_visual", "hub_visual_show", "hub_task_list"] as const) test(`actual outer stopping guard returns the correct guidance before dispatch: ${op}`, () => {
+  const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const start = source.indexOf("  const visualOperational ="), end = source.indexOf("  type VisualFilePolicy =", start);
+  const lines = source.split("\n").filter(line => line.trimStart().startsWith("if (stopping && !committedSourceProof &&"));
+  expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start); expect(lines).toHaveLength(1);
+  const replies: unknown[] = []; let fallthroughs = 0;
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + `\n(function(){${lines[0]}\nfallthrough();})();`);
+  runInNewContext(script, { PreEffectToolRefusal, stopping: true, committedSourceProof: false, c: { role: "tools" }, msg: { t: "task", op },
+    reply: (value: unknown) => replies.push(value), fallthrough: () => { fallthroughs++; throw Error("unexpected dispatch after stopping guard"); } });
+  expect(replies).toEqual([{ ok: false, error: op === "hub_task_list" ? "hub is stopping" : "visual unavailable: hub is stopping; wait for the hub to restart and retry" }]);
+  expect(fallthroughs).toBe(0);
+});

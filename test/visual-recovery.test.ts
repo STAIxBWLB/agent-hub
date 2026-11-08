@@ -195,9 +195,12 @@ test("prepared recovery refuses an actual tools visual request with release guid
     tools = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" });
     store = new VisualStore(join(f.stateDir, "hub.db")); const before = store.integrity();
     expect(await f.request("prepare", DAEMON_FEATURES)).toMatchObject({ ok: true, recovery: { phase: "prepared" } });
-    const result = await tools.request({ t: "task", op: "hub_visual", args: { payload: { kind: "mermaid", source: "flowchart LR; A-->B" } } });
-    expect(result.ok).toBe(false); expect(result.error).toContain("held by controlled recovery");
-    expect(result.error).toContain("wait for recovery release and retry");
-    expect(store.integrity()).toEqual(before); expect(store.list().map(row => row.id)).toEqual([VISUAL]);
+    for (const op of ["hub_visual", "hub_visual_show"] as const) {
+      const args = op === "hub_visual" ? { payload: { kind: "mermaid", source: "flowchart LR; A-->B" } } : { id: VISUAL };
+      const result = await tools.request({ t: "task", op, args });
+      expect(result.ok).toBe(false); expect(result.error).toContain("held by controlled recovery");
+      expect(result.error).toContain("wait for recovery release and retry");
+      expect(store.integrity()).toEqual(before); expect(store.list().map(row => row.id)).toEqual([VISUAL]);
+    }
   } finally { tools?.close(); store?.close(); await f.close(); }
 }, 20_000);

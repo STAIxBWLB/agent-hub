@@ -4863,7 +4863,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const visualUnavailable = () => new PreEffectToolRefusal("visual unavailable under the current privacy or project policy; use a public visual in an ordinary context and retry");
   const visualOperational = (cause: "stopping" | "recovery" | "authority" | "role" | "membership" | "observer" | "storage" | "concurrency" | "screen" | "policy") => new PreEffectToolRefusal({
     stopping: "visual unavailable: hub is stopping; wait for the hub to restart and retry",
-    recovery: "visual publication is held by controlled recovery; check ahub status, wait for recovery release and retry",
+    recovery: "visual operation is held by controlled recovery; check ahub status, wait for recovery release and retry",
     authority: "visual request authority changed; reconnect your current peer session and retry",
     role: "visual publication requires remember capability and a writable peer role; ask the person to update the peer role or capability and retry",
     membership: "visual peer is off roster; ask the person to enable it and retry",
@@ -10307,9 +10307,9 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
       && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
-    if (stopping && !committedSourceProof && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: "hub is stopping" });
+    if (stopping && !committedSourceProof && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: msg.t === "task" && (msg.op === "hub_visual" || msg.op === "hub_visual_show") ? visualOperational("stopping").message : "hub is stopping" });
     if (c.role === "peer" && c.detachedByPerson) return void reply({ t: msg.t, ok: false, error: "detached by the person; stop using this peer connection and tell the person; inspect ahub status before opening a fresh session" });
-    if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
+    if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: msg.t === "task" && (msg.op === "hub_visual" || msg.op === "hub_visual_show") ? visualOperational("membership").message : `${c.peer} is off roster` });
     if (c.role === "peer" && c.peer) {
       const currentPeer = bus.peers.get(c.peer);
       if (c.standbyId && currentPeer?.ownsSocket?.(sock) !== true) return void reply({ t: msg.t, ok: false, error: "peer is standing by; a person must request takeover" });
@@ -11531,7 +11531,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // #601: ahub study is the person's. A tools connection (any agent) may use the hub_study_* tools, never these op names, whatever Tasks would answer.
         if (String(msg.op).startsWith("study_") && c.role !== "console") return void reply({ t: "task", ok: false, error: "ahub study draft, revise, approve and close are console commands; agents use the hub_study_* tools" });
         if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
-        if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: msg.op === "hub_visual" ? visualOperational("recovery").message : "recovery is holding mutations" });
+        if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: msg.op === "hub_visual" || msg.op === "hub_visual_show" ? visualOperational("recovery").message : "recovery is holding mutations" });
         if (c.role === "tools" && c.peer && Object.hasOwn(CONDUCTOR_TASK_OPS, String(msg.op))) {
           // #933: a console task op the conductor may run: admitted (role recheck and one audit row) before Tasks sees it; Tasks asks `operational` again.
           let current: () => void;
