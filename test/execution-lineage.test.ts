@@ -17,7 +17,7 @@ test("AC1 explicit fixture traverses the chain without upgrading distinct states
   expect(page.state).toBe("available");
   if (page.state !== "available") throw new Error("fixture unavailable");
   expect(page.nodes.map(n => [n.ref.kind, n.state])).toEqual([["task", "approved"], ["dispatch", "completed"], ["attempt", "failed"], ["output", "recorded"], ["review", "approved"]]);
-  expect(page.edges).toEqual(source.edges);
+  expect(page.edges).toEqual([...source.edges]);
   expect(page.edges[1]!.strength).toBe("declared");
   expect(page.truncated).toBe(false);
   expect(page.cursor).toBeUndefined();
