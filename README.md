@@ -55,6 +55,9 @@ defaults. The
 - **Peers, not a pipeline.** Any agent can message the others. Messages are batched
   into digests, priorities decide what interrupts a turn, and delivery survives
   restarts.
+- **Live model selection.** A person can set a supported peer's next-turn model
+  with `ahub model set`, without restart or reload. Active turns stay unchanged;
+  [status distinguishes pending and unsupported selection](docs/operations.md#live-peer-model-overrides-1317).
 - **A shared task board.** Work is proposed, accepted, done and reviewed through hub
   tools. Roles split planning, implementation and review (up to eight planners,
   each task bound to one), `routing.toml` picks

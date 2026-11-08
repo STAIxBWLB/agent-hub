@@ -1847,17 +1847,51 @@ function appendRoleDetails(target, peer) {
   if (Array.isArray(peer.capableRoles)) target.append(el('p', 'Capable roles: ' + (peer.capableRoles.join(', ') || 'none'), 'meta'));
   if (typeof peer.ownerIsolation === 'boolean') target.append(el('p', 'Owner isolation: ' + (peer.ownerIsolation ? 'isolated' : 'not isolated: ' + (peer.ownerIsolationNote || 'execution root not verified')), 'meta'));
 }
+function modelControls(model, sessionUntil) {
+  const box = el('div', undefined, 'model-controls');
+  box.append(el('p', 'Model: ' + (model.effectiveModel || 'not reported') + ' / from ' + model.source + (model.pendingNextTurn ? ' / pending next turn: ' + (model.desiredModel || 'native default') : ''), 'meta'));
+  if (model.unsupported) box.append(el('p', model.unsupported.reason + '; ' + model.unsupported.nextStep, 'meta'));
+  if (managerMode || !(sessionUntil > Date.now())) { box.append(el('p', 'To change the next-turn model, open ahub ui --settings.', 'meta')); return box; }
+  const input = el('input'); input.type = 'text'; input.maxLength = 128; input.autocomplete = 'off'; input.spellcheck = false; input.setAttribute('aria-label', 'Next-turn model for ' + model.peer);
+  const out = el('p', '', 'meta'); out.setAttribute('role', 'status');
+  let busy = false;
+  const captured = context(), current = () => !stopped && canMutate() && !managerMode && sessionUntil > Date.now() && captured.generation === viewGeneration && captured.projectId === selectedProjectId && captured.instanceId === selectedInstanceId && box.isConnected;
+  for (const operation of ['set', 'clear']) {
+    const control = el('button', operation === 'set' ? 'Preview model' : 'Preview clear'); control.type = 'button';
+    control.addEventListener('click', async () => {
+      if (busy || !current()) return;
+      if (operation === 'set' && !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/.test(input.value)) { out.textContent = 'Use a model token of 1 to 128 letters, digits or ._:/@+-; no spaces or leading dash.'; return; }
+      busy = true; control.disabled = true;
+      try {
+        const result = await post('/action', {action:'model_preview', modelAction:operation, peer:model.peer, ...(operation === 'set' ? {model:input.value} : {})});
+        if (!current()) return;
+        const candidate = result.confirmation;
+        if (!candidate || typeof candidate.token !== 'string' || candidate.token.length > 256 || !candidate.token || candidate.peer !== model.peer || candidate.action !== operation || candidate.appliesFrom !== 'next_turn' || !(candidate.expiresAt > Date.now())) throw new Error('Model preview unavailable; reopen ahub ui --settings and retry.');
+        out.textContent = 'Next turn: ' + (candidate.previousModel || 'native default') + ' -> ' + (candidate.nextModel || 'native default') + '. The active turn is unchanged.';
+        const confirm = el('button', 'Confirm next-turn model'); confirm.type = 'button'; out.append(confirm);
+        confirm.addEventListener('click', async () => {
+          if (!current() || !(candidate.expiresAt > Date.now())) return;
+          confirm.disabled = true;
+          try { const applied = await post('/action', {action:'model_confirm', token:candidate.token}); if (applied.ok !== true || applied.appliesFrom !== 'next_turn' || applied.unconfirmed === true) throw new Error('Model change is unconfirmed; inspect ahub model list before retrying.'); if (current()) out.textContent = 'Selection saved for the next turn; the active turn is unchanged.'; }
+          catch (error) { if (current()) out.textContent = error.message; }
+        }, {once:true});
+      } catch (error) { if (current()) out.textContent = error.message; }
+      finally { busy = false; if (current()) control.disabled = false; }
+    }); box.append(control);
+  }
+  box.append(input, out); return box;
+}
 function render(snapshot) {
   renderNeedsAttention(snapshot);
   const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id], ...(typeof snapshot.status.ownerIsolation?.[id] === 'boolean' ? {ownerIsolation:snapshot.status.ownerIsolation[id],ownerIsolationNote:snapshot.status.ownerIsolationNotes?.[id]} : {})}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
-  update('peers', [peers, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
+  update('peers', [peers, snapshot.runtimeModels, snapshot.status.runtimeModels, snapshot.settings?.sessionUntil, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
     peerRows.clear();
     if (!ids.length) { empty(target, 'No peers connected. Start one below, or run ahub claude or ahub codex in a terminal.'); return renderStarts(target, starts); }
     const keyed = keyedStart('peers');
     for (const [id, peer] of Object.entries(peers)) {
-      const row = keyed(id, JSON.stringify([peer, (snapshot.boardLegend || []).find(item => item.peer === id)?.activeTasks]), () => {
+      const row = keyed(id, JSON.stringify([peer, snapshot.runtimeModels, snapshot.status.runtimeModels, snapshot.settings?.sessionUntil, (snapshot.boardLegend || []).find(item => item.peer === id)?.activeTasks]), () => {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
       name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
       head.append(name, badge(peer.rostered === false ? peer.state + ' off roster' : peer.state, peerDot[peer.state] || ''));
@@ -1868,6 +1902,8 @@ function render(snapshot) {
       // #878: the session title or current plan item the hub observed, already screened (a stub while private).
       if (typeof peer.doing?.text === 'string' && peer.doing.text) summary.append(el('span', (peer.doing.source === 'label' ? 'Unnamed session: ' : 'Doing: ') + peer.doing.text, 'meta'));
       row.append(head, summary);
+      const model = (snapshot.runtimeModels || snapshot.status.runtimeModels || []).find(item => item.peer === id);
+      if (model) row.append(modelControls(model, snapshot.settings?.sessionUntil));
       // A status notice asks a person to act (for example, reattach a native session): it stays visible, never folded away.
       if (typeof peer.statusNotice?.message === 'string' && peer.statusNotice.message) row.append(el('p', peer.statusNotice.message, 'meta notice-warn'));
       const more = el('div', undefined, 'peer-more');

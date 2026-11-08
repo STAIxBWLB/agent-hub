@@ -987,3 +987,45 @@ test("an admitted Codex proxy socket rechecks live roster before forwarding each
     expect(peer.state).toBe("offline");
   } finally { tui?.close(); await peer.stop(); native.stop(true); }
 });
+
+test("hub turns carry one captured model override and steer never changes the running model", async () => {
+  let desired: string | undefined = "runtime-a", gets = 0;
+  const applied: (string | undefined)[] = [];
+  const r = await setup(100, undefined, { getModelOverride: () => { gets++; const model = desired; return { model, applied: () => { applied.push(model); } }; } });
+  r.tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => r.peer.state === "idle");
+  await r.peer.deliver([newEnvelope("user", "first model turn")]);
+  expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-a");
+  desired = "runtime-b";
+  await r.peer.steer([newEnvelope("user", "steer same model")]);
+  expect(r.fake.requests.filter(row => row.method === "turn/steer").at(-1).params.model).toBeUndefined();
+  expect(gets).toBe(1); await until(() => r.peer.state === "idle");
+  await r.peer.deliver([newEnvelope("user", "next model turn")]); await until(() => r.peer.state === "idle");
+  expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-b");
+  desired = undefined;
+  await r.peer.deliver([newEnvelope("user", "native model turn")]); await until(() => r.peer.state === "idle");
+  expect(Object.hasOwn(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params, "model")).toBe(false);
+  expect(applied).toEqual(["runtime-a", "runtime-b", undefined]);
+});
+
+test("forwarded turn/start honors an explicit client model and reports sticky clear without overwriting native choice", async () => {
+  let desired: string | undefined = "hub-model";
+  const applied: { selected: string | undefined; native: string | undefined }[] = [], observed: string[] = [];
+  const r = await setup(20, undefined, {
+    getModelOverride: () => { const model = desired; return { model, applied: native => { applied.push({ selected: model, native }); } }; },
+    onNativeModelApplied: model => { observed.push(model); },
+  });
+  r.tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => r.peer.state === "idle");
+  const start = async (id: number, model?: string) => {
+    r.tui.send(JSON.stringify({ id, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: `native ${id}` }], ...(model === undefined ? {} : { model }) } }));
+    await until(() => r.seen.some(row => row.id === id)); await until(() => r.peer.state === "idle");
+  };
+  await start(3);
+  expect(r.fake.requests.find(row => row.id === 3).params.model).toBe("hub-model");
+  expect(applied).toEqual([{ selected: "hub-model", native: "hub-model" }]);
+  await start(4, "client-model");
+  expect(r.fake.requests.find(row => row.id === 4).params.model).toBe("client-model");
+  expect(observed).toEqual(["client-model"]); expect(applied).toHaveLength(1);
+  desired = undefined; await start(5);
+  expect(Object.hasOwn(r.fake.requests.find(row => row.id === 5).params, "model")).toBe(false);
+  expect(applied.at(-1)).toEqual({ selected: undefined, native: "client-model" });
+});

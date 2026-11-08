@@ -1,3 +1,5 @@
+import type { ModelOverrideSelection } from "./registry-types.ts";
+import { isNativeModelToken } from "./model-token.ts";
 import { isReviewObserverExcluded, reviewCaptureExcluded } from "../hub/memory-policy.ts";
 import { HubRouteRuntime, type RouteEvent, type AdvisorEvent } from "../models/route/runtime.ts";
 import type { HubRoute } from "../models/route/config.ts";
@@ -21,6 +23,8 @@ import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
 import type { OwnedInputContext, OwnedInputObserver } from "./claude-print-child.ts";
 
 export interface LocalOptions {
+  /** Host-only choice sampled once at the next turn/review boundary. */
+  getModelOverride?: () => ModelOverrideSelection;
   profile?: import("../hub/profiles.ts").ProfileSelection;
   sdlcStages?: readonly string[];
   sdlcCriteria?: boolean;
@@ -202,6 +206,17 @@ export class LocalPeer extends BasePeer {
     this.activeDeliveryId = deliveryId;
     this.abort = new AbortController();
     this.setState("busy");
+    let selected: ModelOverrideSelection | undefined, modelFailure: Error | undefined;
+    try {
+      selected = this.opts.getModelOverride?.();
+      if (selected?.model !== undefined && !isNativeModelToken(selected.model)) throw new Error("invalid model");
+    } catch { modelFailure = new Error("runtime model selection unavailable; check the peer model setting and retry"); }
+    let modelApplied = false;
+    const captured = selected;
+    const selection = captured && { model: captured.model, applied: () => {
+      if (modelApplied || turn !== this.turn) return;
+      modelApplied = true; try { captured.applied(); } catch { /* Status acknowledgement is not model authority. */ }
+    } };
     if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
     // The turn works on its own message list and joins the history only as a whole, so a failed or aborted turn can
     // never leave a tool call without its result (strict servers reject that history forever after).
@@ -217,7 +232,7 @@ export class LocalPeer extends BasePeer {
     // A PII turn speaks to the console user only, and privately: its answer must not be broadcast to cloud-hosted peers.
     // The task id travels with it, so the board can keep the text (`ahub task show`) while tail and log show a stub.
     const reply: EnvelopeOpts = { inReplyTo: replyParent(envs), to: replyAudience(envs), ...(policy?.pii ? { to: [USER], private: true, priority: "important" as const, ...(policy.task ? { refs: { task: policy.task } } : {}) } : {}) };
-    this.run(envs, turn, msgs, progress, policy, reply, reviewScope)
+    this.run(envs, turn, msgs, progress, policy, reply, reviewScope, selection, modelFailure)
       .then((answer) => {
         if (turn !== this.turn) return;
         if (preserveHistory && !reviewScope.excluded) this.commit(msgs); // Private, remote and review turns never enter later local capture through model history.
@@ -282,7 +297,10 @@ export class LocalPeer extends BasePeer {
     policy: { route?: string; fixedModel?: string; pii: boolean; task?: string } | undefined,
     reply: EnvelopeOpts,
     reviewScope: { excluded: boolean },
+    selection?: ModelOverrideSelection,
+    modelFailure?: Error,
   ): Promise<string> {
+    if (modelFailure) throw modelFailure;
     const { maxSteps = 30 } = this.opts;
     const turnSignal = this.abort!.signal;
     // Remote text/tool output is never memory evidence, even beside ordinary local work in the same turn.
@@ -299,13 +317,13 @@ export class LocalPeer extends BasePeer {
     let captureInvocation = 0;
     for (let step = 0; step < maxSteps; step++) {
       this.elide(msgs);
-      const res = await this.call(msgs, policy, envs);
+      const res = await this.call(msgs, policy, envs, selection);
       if (turn !== this.turn) return "";
       this.touch();
       msgs.push(res.message);
       progress.last = res.message.content?.trim() || progress.last;
       if (!res.message.tool_calls?.length) {
-        const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal, res.routeDecision);
+        const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal, res.routeDecision, selection);
         if (turn !== this.turn) return "";
         if (concluded === undefined) continue;
         if (usedTools && !reviewScope.excluded) capture?.summarize(concluded);
@@ -443,23 +461,24 @@ export class LocalPeer extends BasePeer {
   }
 
   /** Hub-owned in-process policy, with a fixed OmniRoute alias as fallback. */
-  private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii?: boolean; task?: string } | undefined, envs: Envelope[]): Promise<ChatResult> {
+  private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii?: boolean; task?: string } | undefined, envs: Envelope[], selection?: ModelOverrideSelection): Promise<ChatResult> {
     const { omni } = this.opts;
-    const route = effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel);
+    const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined;
     if (route && !route.startsWith("hub/") && !this.warnedLegacyRoutes.has(route)) {
       this.warnedLegacyRoutes.add(route);
       this.opts.log?.(`legacy route ${route} is deprecated and ignored; using fixed model`);
     }
-    const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
+    const fixedModel = selection?.model ?? policy?.fixedModel ?? this.opts.fixedModel;
     const task = policy?.task === undefined ? undefined : Number(policy.task);
     const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
     const routed = await this.hubCall(route, messages, policy, signal);
-    if (routed) return routed;
+    if (routed) { selection?.applied(); return routed; }
     await this.requireBudget(envs, "model_calls");
     this.releaseObserverInput(this.currentObserverInputContext, envs);
     const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...(policy?.pii ? { onCampusOnly: true } : {}) });
+    selection?.applied();
     this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
     this.recordUsage(res, fixedModel, task);
     return res;
@@ -508,8 +527,8 @@ export class LocalPeer extends BasePeer {
     }
   }
 
-  private async conclude(msgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii: boolean } | undefined, turn: number, step: number, maxSteps: number, answer: string, signal: AbortSignal, decisionId?: string): Promise<string | undefined> {
-    const route = effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel), config = this.hubConfig(route);
+  private async conclude(msgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii: boolean } | undefined, turn: number, step: number, maxSteps: number, answer: string, signal: AbortSignal, decisionId?: string, selection?: ModelOverrideSelection): Promise<string | undefined> {
+    const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined, config = this.hubConfig(route);
     if (!route || !config) return answer;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...msgs];
     const feedback = await this.routes.review(route, config, messages, this.routeScope(!!policy?.pii, turn), !!policy?.pii, signal, decisionId);

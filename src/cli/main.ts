@@ -128,7 +128,7 @@ import { agentShellCause, classifyPeerCommand, cliCommandLabel, detectCliIdentit
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
-import { outputWidth, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
+import { outputWidth, renderRuntimeModels, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
 import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
@@ -1225,6 +1225,25 @@ const commands: Record<string, () => Promise<void> | void> = {
     return entry.execute(context);
   }])),
 
+  model: async () => {
+    const { parseModelCommand, projectModelStatus } = await import("./model.ts");
+    let command;
+    try { command = parseModelCommand(args); } catch (error) { return fail((error as Error).message); }
+    const hub = await connect();
+    try {
+      const { json, ...message } = command;
+      const result = await hub.request({ t: "model", ...message });
+      if (result.ok !== true) return fail(String(result.error ?? "model request refused; upgrade and restart the hub before retrying"), result.refusalAudited === true, result.authorityRefused);
+      if (command.op !== "list" && result.appliesFrom !== "next_turn") return fail("model change is unconfirmed; inspect ahub model list before retrying");
+      const values = command.op === "list" ? result.models : [result.model];
+      if (!Array.isArray(values) || values.length > 128) return fail("model reply unavailable; upgrade and restart the hub, then retry ahub model list");
+      const models = values.map(projectModelStatus);
+      if (models.some(row => row === null)) return fail("model reply invalid; upgrade and restart the hub, then retry ahub model list");
+      const options = { json };
+      if (options.json) console.log(JSON.stringify({ models }, null, 2));
+      else printOutput(renderRuntimeModels(models.filter((row): row is NonNullable<typeof row> => row !== null)), false);
+    } finally { hub.close(); }
+  },
   models: async () => {
     const action = outputArguments()[0] ?? "status";
     const options = ["status", "start", "setup"].includes(action) ? outputOptions() : undefined;

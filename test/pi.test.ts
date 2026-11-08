@@ -835,3 +835,35 @@ for (const busyReturn of [false, true]) test(`Pi personal activity invalidates c
     expect((result as Error).message).toContain("session history is not persisted; refusing to recreate it");
   } finally { await f.cleanup(); }
 });
+
+test("Pi captures override before model preparation and clear restores the separate baseline", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-model-test-"));
+  let desired: string | undefined = "dgx/runtime-a", gets = 0, first = true;
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  const applied: (string | undefined)[] = [];
+  const peer: PiPeer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", model: "dgx/coding",
+    cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "relay-token", models: [{ id: "dgx/coding" }, { id: "dgx/runtime-a" }, { id: "dgx/runtime-b" }] },
+    tools: [], executeTool: async () => "ok",
+    getModelOverride: () => { gets++; const model = desired; return { model, applied: () => { applied.push(model); } }; },
+    selectModel: async () => { if (first) { first = false; enter(); await held; } return peer.getBaselineRequestedModel(); },
+  });
+  const settle = async () => {
+    const launch = peer.tuiLaunch!;
+    await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ type: "agent_settled" }) });
+    for (let i = 0; i < 200 && peer.state !== "idle"; i++) await Bun.sleep(5);
+    expect(peer.state).toBe("idle");
+  };
+  try {
+    await peer.start(); expect(gets).toBe(0);
+    const delivery = peer.deliver([newEnvelope("user", "first")]);
+    await entered; desired = "dgx/runtime-b"; expect(applied).toEqual([]); release(); await delivery;
+    expect(peer.getRequestedModel()).toBe("dgx/runtime-a"); expect(peer.getBaselineRequestedModel()).toBe("dgx/coding");
+    await settle();
+    await peer.deliver([newEnvelope("user", "second")]); expect(peer.getRequestedModel()).toBe("dgx/runtime-b"); await settle();
+    desired = undefined;
+    await peer.deliver([newEnvelope("user", "clear")]); expect(peer.getRequestedModel()).toBe("dgx/coding"); await settle();
+    expect(gets).toBe(3); expect(applied).toEqual(["dgx/runtime-a", "dgx/runtime-b", undefined]);
+  } finally { release(); await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+}, 20_000);

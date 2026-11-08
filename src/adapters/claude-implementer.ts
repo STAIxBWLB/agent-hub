@@ -1,3 +1,5 @@
+import type { ModelOverrideSelection } from "./registry-types.ts";
+import { isNativeModelToken } from "./model-token.ts";
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,6 +40,8 @@ export interface ClaudeImplementerOptions {
   watchdogMs: number;
   /** Declared `model` of this instance (#844): one validated word passed as `--model`; unset leaves the native default and the argv unchanged. */
   model?: string;
+  /** Host-only choice sampled once at the next turn/review boundary. */
+  getModelOverride?: () => ModelOverrideSelection;
   mode?: "ask" | "ask-when-needed";
   /** Exact host-reported transcript evidence only; unknown/read errors retain the recorded UUID. */
   transcriptPersisted?(task: number, sessionId: string): boolean | "unknown";
@@ -188,16 +192,24 @@ export class ClaudeImplementerPeer extends BasePeer {
     }
     const generation = this.generation; this.deliveryId = deliveryId; this.inputReleased = false;
     this.abort = new AbortController(); this.setState("busy");
+    let selection: ModelOverrideSelection | undefined, modelFailure: Error | undefined;
+    try {
+      selection = this.options.getModelOverride?.();
+      if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new Error("invalid model");
+    } catch { modelFailure = new Error("runtime model selection unavailable; check the peer model setting and retry"); }
     if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
     // Register the run identity before any synchronous failure can publish idle.
-    const running: Promise<void> = Promise.resolve().then(() => this.run(groups, generation, running));
+    const running: Promise<void> = Promise.resolve().then(() => this.run(groups, generation, running, selection, modelFailure));
     this.running = running;
     void running.finally(() => { if (this.running === running) this.running = undefined; }).catch(() => {});
   }
-  private async run(groups: { task?: number; envs: Envelope[] }[], generation: number, running: Promise<void>): Promise<void> {
+  private async run(groups: { task?: number; envs: Envelope[] }[], generation: number, running: Promise<void>, selection?: ModelOverrideSelection, modelFailure?: Error): Promise<void> {
     const current = () => generation === this.generation && !this.abort?.signal.aborted;
     let failureReason: string | undefined;
     try {
+      if (modelFailure) throw modelFailure;
+      const model = selection?.model ?? this.options.model;
+      let modelApplied = false;
       for (let group of groups) {
         failureReason = undefined;
         if (!current() || !this.binding?.()) throw new Error("Claude implementer admission changed");
@@ -224,7 +236,7 @@ export class ClaudeImplementerPeer extends BasePeer {
           AGENTHUB_INSTANCE_ID: this.options.instanceId, AGENTHUB_LAUNCH_ID: launchId, AGENTHUB_HOOK_PURPOSE: "permission", AGENTHUB_PERMISSION_TOOL: "1" };
         const mcp = JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", this.options.server], env } } });
         let result = false, failed = false;
-        const child = new OwnedPrintChild({ peer: this.id, command: this.command!, args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt, this.options.model), cwd: this.options.cwd,
+        const child = new OwnedPrintChild({ peer: this.id, command: this.command!, args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt, model), cwd: this.options.cwd,
           input: group.envs.map(frame).join("\n\n"), env, current, stop: this.options.stopChild,
           onSpawn: () => {
             try {
@@ -234,6 +246,7 @@ export class ClaudeImplementerPeer extends BasePeer {
               void this.cancel("Claude implementer admission changed before child start", "idle").catch(() => {});
               return;
             }
+            if (!modelApplied) { modelApplied = true; try { selection?.applied(); } catch { /* Status acknowledgement never grants child authority. */ } }
             this.childAbort = new AbortController();
             const launch: OwnedToolsLaunch = Object.freeze({ permissionHook: true, launchId, generation: `${generation}:${launchId}`, sessionId: turn.sessionId, signal: this.childAbort.signal, ...(group.task !== undefined ? { task: group.task } : {}) });
             this.active = launch;

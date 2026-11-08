@@ -15,6 +15,7 @@ export const LIVE_TEST_PERSON_REFUSAL = "live-test cannot write person-attribute
 
 /** Person verdicts and user-authored workflow content are never delegated. */
 export function liveTestRefusal(command: string, args: readonly string[], context: { repairedFresh?: boolean } = {}): boolean {
+  if (command === "model") return true; // #1317: even listing runtime overrides is person-only, never live-test delegated.
   if (command === "sdlc" && (args[0] === "authorize-release" || args[0] === "plan-review" || args[0] === "release-assign" || args[0] === "merge" || args[0] === "train" && args[1] !== "report")) return true;
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
   if (command === "pet" && (args.includes("--window") || args.includes("--palette"))) return false;
@@ -143,6 +144,7 @@ const isPeerReadForm = (command: string, args: readonly string[]): boolean => {
  * The branches above them are the older authority rules and stay unchanged.
  */
 export function classifyPeerCommand(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): PeerCommandAccess {
+  if (command === "model") return "console";
   if (command === "recovery" && recoveryAction(args) === "reattach") return "console";
   const native = catalog?.definitionOf(command) ?? definitionOf(command);
   if (native?.cli.personOnlyFlags?.some(flag => args.includes(flag))) return "console";
@@ -194,6 +196,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
 
 /** No argument text is included: notices and refusal logs must not copy task text or credentials. */
 export function cliCommandLabel(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): string {
+  if (command === "model") return ["list", "set", "clear"].includes(args[0] ?? "") ? `model ${args[0]}` : "model";
   if (command === "peer") return args[0] === "takeover" ? "peer takeover" : "peer";
   if (command === "backlog") return ["list", "add", "pull", "pull-ready", "split", "return", "plan", "pin", "undo"].includes(args[0] ?? "") ? `backlog ${args[0]}` : "backlog";
   if (command === "board" && args[0] === "import") return "board import";

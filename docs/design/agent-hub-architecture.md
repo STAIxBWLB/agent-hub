@@ -94,6 +94,15 @@ Its T1 authorization, revision and recovery boundaries are defined in
 
 Peer selection, hub-owned model routing, and provider access are distinct layers. Task routing chooses a peer; the in-process route selects a model for hub-owned inference; OmniRoute owns provider keys, provider fallback, and usage. Native CLIs retain their own account and provider configuration; subscription OAuth credentials are not pooled through the gateway. The former Switchyard sidecar is retired; routing now runs in process. This keeps provider credentials and fallback policy in one gateway while avoiding a second routing service ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
+Person-owned live model overrides (#1317) are runtime state in `hub.db`, not
+configuration edits. The host owns person admission, desired-versus-applied
+selection, next-turn fencing, status and audit; adapters acknowledge only their
+own captured spawn/transport acceptance. The override does not grant a model,
+provider or account authority to a peer. Unsupported surfaces remain unsupported
+without automatic restarts. Tier 3 configuration, recovery and native isolation
+boundaries stay in place; the [adapter contract](adapters.md#person-owned-live-model-selection-1317)
+defines supported turn paths and evidence limits.
+
 The hub's portable memory storage, sync, indexing, and project helpers come from the pinned first-party `@staix/agent-mem` package. `src/memory/` and `Tasks` provide hub-specific capture, recall, privacy screening, task briefs, and shared notes. Runtime memory is in-process: there is no claude-mem worker HTTP client or model summarizer. claude-mem is an off-by-default, import-only source. This removes a second capture path while keeping caller authority and task privacy in the hub ([#752](https://github.com/STAIxBWLB/agent-hub/issues/752), [agent-mem#13](https://github.com/STAIxBWLB/agent-mem/issues/13)).
 
 Long-term hub writes and core promotion callbacks use the configured standalone sync policy plus hub narrowing. Profile readiness is independent of the current daemon's last automatic sync result. Public status exposes safe cause/count/action metadata; person-only declined inspection exposes IDs and rule categories, with explicit incomplete state when the portable core cannot supply a bounded physical view. Portable row placement and physical sync inspection remain agent-mem responsibilities.

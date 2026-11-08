@@ -20,7 +20,7 @@ function reviewerVariant(kind: string, displayName: string, reviewer: NonNullabl
   };
 }
 const codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codexReviewerBackend, defaultPool: true, declaration: "explicit", scope: "code" }, CODEX_DISPLAY);
-export const CODEX_REVIEWER_VARIANT: AdapterDefinition = { ...codexVariant, start: { ...codexVariant.start, create: createCodexReviewer } };
+export const CODEX_REVIEWER_VARIANT: AdapterDefinition = { ...codexVariant, modelOverride: { boundary: "turn" }, start: { ...codexVariant.start, create: createCodexReviewer } };
 export const KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { backend: kimiReviewerBackend, defaultPool: true, declaration: "explicit", scope: "code" }, KIMI_DISPLAY);
 /** Data-only declared placeholder for route explanations; no factory, backend or native argv. */
 export const AGY_REVIEWER_VARIANT: AdapterDefinition = {

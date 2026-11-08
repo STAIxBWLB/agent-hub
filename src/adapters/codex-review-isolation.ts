@@ -1,3 +1,4 @@
+import { isNativeModelToken } from "./model-token.ts";
 import { DENY_NAMES, DENY_SEGMENTS } from "@staix/agent-mem/platform";
 import { assessVersion, COMPAT } from "./compat.ts";
 import { createHash } from "node:crypto";
@@ -182,6 +183,7 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
   // #722: the proof leg being run, so a refusal names a class and never text from the native CLI. `timedOut` is set by `run` only.
   let leg: ReviewerCauseClass = "binary", timedOut = false;
   try {
+    if (ctx.modelOverride !== undefined && !isNativeModelToken(ctx.modelOverride)) throw new Error("invalid runtime model token");
     const cwd = realPath(ctx.cwd), env = peerChildEnv(ctx.peer), bound = resolveCommand(ctx, cwd);
     const initialBinaryMetadata = bound.files.map(metadata).join(";");
     // Hash content once per receipt, then fence the identity with dev/ino/size/mtime/ctime metadata.
@@ -282,7 +284,7 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
     if (!current()) throw new Error("binary or config changed during proof");
     const cleanupRoot = root;
     const launchProfile = digest(toml({ profile, servers, policy }));
-    return { command: bound.command, args: ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json", "--color", "never", "-C", cwd, ...policy, ...permissions, ...mcp, "-c", `developer_instructions=${toml(ctx.systemPrompt)}`, "-"], env,
+    return { command: bound.command, args: ["exec", ...(ctx.modelOverride === undefined ? [] : ["-m", ctx.modelOverride]), "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json", "--color", "never", "-C", cwd, ...policy, ...permissions, ...mcp, "-c", `developer_instructions=${toml(ctx.systemPrompt)}`, "-"], env,
       current: () => { try { return current(); } catch { return false; } },
       cleanup: () => rmSync(cleanupRoot, { recursive: true, force: true }),
       isolation: { backend: "codex", version, binary: `sha256:${binaryHash}`, profile: `sha256:${launchProfile}`, readOnly: true, strictMcp: true, ephemeral: true,

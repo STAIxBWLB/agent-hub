@@ -829,3 +829,20 @@ test("#1056 provider failure during a public review turn never logs or retains i
   await until(()=>ctx.said.length===2,"ordinary request after failed review");
   expect(JSON.stringify(ctx.model.requests.at(-1)!.body.messages)).not.toContain(secret);
 });
+
+test("runtime model stays latched across tool rounds and changes only on the next local turn", async () => {
+  let desired: string | undefined = "runtime-a", gets = 0;
+  const models: string[] = [], applied: (string | undefined)[] = [];
+  const r = await setup(body => {
+    models.push(body.model); desired = "runtime-b";
+    return bulkEdit(body, models.length);
+  }, { getModelOverride: () => { gets++; const model = desired; return { model, applied: () => { applied.push(model); } }; } });
+  await r.peer.deliver([newEnvelope("user", "first")]); await until(() => r.peer.state === "idle");
+  const first = models.length; expect(first).toBeGreaterThan(1); expect(models).toEqual(Array(first).fill("runtime-a"));
+  await r.peer.deliver([newEnvelope("user", "second")]); await until(() => r.peer.state === "idle");
+  expect(models.slice(first).every(model => model === "runtime-b")).toBe(true);
+  desired = undefined; const second = models.length;
+  await r.peer.deliver([newEnvelope("user", "clear")]); await until(() => r.peer.state === "idle");
+  expect(models.slice(second).every(model => model === "vllm/fixed")).toBe(true);
+  expect(gets).toBe(3); expect(applied).toEqual(["runtime-a", "runtime-b", undefined]);
+});

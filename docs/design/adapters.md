@@ -121,6 +121,57 @@ The PII screen is distinct from ordinary optional inference. It may use an on-de
 
 Runtime memory capture and recall use the in-process `@staix/agent-mem` package, screened and invoked by host integration. claude-mem is off by default and import-only; there is no worker HTTP or model-summary path in the runtime. This avoids a parallel capture route with different privacy checks ([#752](https://github.com/STAIxBWLB/agent-hub/issues/752), [agent-mem#13](https://github.com/STAIxBWLB/agent-mem/issues/13)).
 
+## Person-owned live model selection (#1317)
+
+A person may store a per-peer model override in `hub.db` with `ahub model set`,
+clear it with `ahub model clear`, or inspect it with `ahub model list`. The CLI
+uses the settings command's identity boundary, but all model subcommands are
+person-only, including list. Dashboard changes use the existing person settings
+session and preview/confirm flow. No hub tool, conductor role or agent shell
+receives this authority. Provider, account, native home and executable changes
+remain on their existing machine-local configuration paths.
+
+The host stores desired state independently of an active turn. A model selection
+is captured once at the next supported turn/review boundary and stays unchanged
+through steering and local tool rounds. Captured application callbacks bind the
+exact adapter owner and turn; they cannot mark a newer desired revision applied.
+Two changes before a turn leave the last desired value. Status distinguishes the
+effective selection, its source, a pending next-turn value and unsupported live
+selection; a desired row alone is never evidence that a native model accepted it.
+The precedence is override, instance model, launch model, then native default,
+where the surface already supports that source. An unknown native default stays
+unknown rather than becoming an invented model id.
+
+Claude headless implementers select `--model` per spawned turn; codex-review
+selects `-m` per isolated review spawn. Supported Codex app-server `turn/start`
+requests carry `model` only for an override, alongside the existing permission
+policy. Both hub-delivered and client-forwarded app-server `turn/start` paths
+support it, but an explicit client model (for example the person's native
+`/model` choice) wins and is never rewritten. The app-server retains a
+`turn/start` model as its thread default. Clearing the hub override returns
+selection to that current native default; it does not reconstruct an earlier
+thread model. Native client acceptance does not certify a conflicting hub
+override as applied. Raw or pull-only `WsPeer` TUI attachments remain unsupported.
+`turn/steer` never acquires a model field. Local uses the existing direct
+OmniRoute model path for an explicit override while retaining budget, campus,
+observer and generation guards. Pi reuses its model-selection path at the next
+turn and retains a separate baseline so clear can restore normal selection.
+Existing no-override behavior and native permission/isolation proofs stay intact.
+
+T1 does not invent ACP model setters or change a person's native TUI setting.
+Unsupported surfaces refuse a live set with a cause and `ahub restart <peer>` as
+the next step, without storing a newly refused override or restarting anything.
+Future ACP support requires a model-free receipt for the binary's setter before
+its capability is admitted. Registry capability metadata does not grant an
+external adapter an unimplemented setter.
+
+Overrides survive daemon restart and are cleared by runtime reset. Retained
+state must remain protected by recovery feature/integrity admission. Model ids
+use the existing #844 bounded token rule, with no spaces or leading dash.
+`model_change` records only peer, previous/new ids, person surface and a next-turn
+boundary, never prompts or credentials. A future native turn id is not invented;
+`appliesFrom: next_turn` and an existing `afterTurn` identify the boundary.
+
 ## Compatibility and external modules
 
 Native CLI compatibility is centralized in `compat.ts`. Each gated operation asks that policy for a verified, in-contract, person-trusted, or refused result; person trust for one exact version does not skip a separate isolation or runtime proof. This lets upstream versions change without turning an untested protocol assumption into support ([#691](https://github.com/STAIxBWLB/agent-hub/issues/691)).

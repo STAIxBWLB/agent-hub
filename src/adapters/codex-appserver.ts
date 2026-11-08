@@ -1,3 +1,5 @@
+import type { ModelOverrideSelection } from "./registry-types.ts";
+import { isNativeModelToken } from "./model-token.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
@@ -25,6 +27,10 @@ function confirmsReadOnlySandbox(value: unknown): boolean {
 /** A counter Codex reported: a finite non-negative number, otherwise 0 (an absent kind is not a negative delta). */
 const counter = (value: unknown): number => { const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : 0; };
 export interface CodexOptions {
+  /** Host-only choice sampled once at the next turn/review boundary. */
+  getModelOverride?: () => ModelOverrideSelection;
+  /** Successful explicit native-client choice; never acknowledgement of a hub override revision. */
+  onNativeModelApplied?: (model: string) => void;
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
   proxyPort: number;
   permissionMode?: PermissionMode;
@@ -84,6 +90,7 @@ interface Link {
   up: WebSocket;
   backlog: string[]; // TUI frames that arrived before the upstream socket opened
   approvalIds: Set<string | number>; // intercepted native ids stay tombstoned for this socket lifetime
+  modelStarts: Map<string | number, { thread: string; epoch: number; selection?: ModelOverrideSelection; explicit?: string } | null>;
   tracked: Map<string | number, string>; // request id -> method, for thread/start and thread/resume
   /** Correlated native initial policy, retained even before this instance gains the planner role. */
   readOnlyThread?: string;
@@ -106,6 +113,7 @@ export class CodexPeer extends BasePeer {
   get actionGated(): boolean { return this.opts.actionGate !== undefined; }
   private readonly nativeApprovalPolicies = new Map<string, unknown>();
   private readonly overriddenApprovals = new Set<string>();
+  private readonly nativeModels = new Map<string, string>();
   private readonly restoringApprovals = new Map<string | number, string>();
   private proc: ChildProcess | undefined;
   private server: Server<Link> | undefined;
@@ -189,6 +197,7 @@ export class CodexPeer extends BasePeer {
   }
 
   async start(): Promise<void> {
+    this.nativeModels.clear();
     const upstream = this.opts.upstreamUrl ?? (await this.spawnAppServer());
     try {
       this.server = Bun.serve<Link>({
@@ -259,6 +268,15 @@ export class CodexPeer extends BasePeer {
     const id = this.nextId--, epoch = this.deliveryEpoch, session = this.contextEpoch;
     this.setState("busy"); // claim the turn now so the bus stops draining
     return new Promise<void>((resolve, reject) => {
+      let selection: ModelOverrideSelection | undefined;
+      try {
+        selection = this.opts.getModelOverride?.();
+        if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new Error("runtime model must be one bounded native token");
+      } catch (error) {
+        this.setState("idle");
+        if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "runtime model selection unavailable" });
+        reject(error); return;
+      }
       let invalidated = false;
       const retiredAtCancel = new Set<string>();
       const invalidate = (reason: string, failureCause?: DeliveryFailureCause) => {
@@ -279,6 +297,8 @@ export class CodexPeer extends BasePeer {
               (!retiredAtCancel.has(nativeTurn) || this.retiredTurns.has(nativeTurn))) this.retireTurn(nativeTurn);
             return;
           }
+          if (selection?.model !== undefined) this.rememberNativeModel(this.threadId, selection.model);
+          try { selection?.applied(this.nativeModels.get(this.threadId)); } catch { /* Native acceptance remains authoritative. */ }
           this.primed = true;
           this.injected = replyParent(envs);
           this.answering = [...envs];
@@ -308,7 +328,7 @@ export class CodexPeer extends BasePeer {
         pending?.reject(new Error(`${this.id} is not injectable`)); return;
       }
       link.up.send(
-        JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }] }, id) }),
+        JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }], ...(selection?.model === undefined ? {} : { model: selection.model }) }, id) }),
       );
     });
   }
@@ -494,7 +514,7 @@ export class CodexPeer extends BasePeer {
 
   private attach(tui: ServerWebSocket<Link>, upstream: string): void {
     const up = new WebSocket(upstream);
-    const link: Link = { tui, up, backlog: [], tracked: new Map(), approvalIds: new Set(), ...(tui.data.launchId ? { launchId: tui.data.launchId } : {}) };
+    const link: Link = { tui, up, backlog: [], tracked: new Map(), modelStarts: new Map(), approvalIds: new Set(), ...(tui.data.launchId ? { launchId: tui.data.launchId } : {}) };
     this.claimedTui = link;
     tui.data = link;
     up.onopen = () => {
@@ -588,6 +608,12 @@ export class CodexPeer extends BasePeer {
     if (thread !== undefined && !failed && this.permissionMode === "ask") this.overriddenApprovals.delete(thread);
   }
 
+  private rememberNativeModel(thread: string, model: string): void {
+    this.nativeModels.set(thread, model);
+    // ponytail: keep the newest 128 thread choices; older sticky defaults are unknown until a native model readback is added.
+    if (this.nativeModels.size > 128) this.nativeModels.delete(this.nativeModels.keys().next().value!);
+  }
+
   private fromTui(link: Link, raw: string): void {
     const msg = parse(raw);
     if (msg?.id !== undefined && !msg.method && link.approvalIds.has(msg.id)) return;
@@ -597,6 +623,25 @@ export class CodexPeer extends BasePeer {
     if (msg?.method === "turn/interrupt" && link === this.link) this.abortActionWaits(link, typeof msg.params?.turnId === "string" ? msg.params.turnId : undefined);
     if (msg?.method === "turn/start" && msg.params && link === this.link) {
       const thread = typeof msg.params.threadId === "string" ? msg.params.threadId : this.threadId;
+      // An explicit native choice wins. A missing client model may use the already captured host override.
+      let selection: ModelOverrideSelection | undefined;
+      const explicit = msg.params.model !== undefined;
+      if (!explicit) {
+        try {
+          selection = this.opts.getModelOverride?.();
+          if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new Error("invalid model");
+        } catch {
+          if (msg.id !== undefined) link.tui.send(JSON.stringify({ id: msg.id, error: { code: -32000, message: "runtime model selection unavailable; check the peer model setting and retry" } }));
+          return;
+        }
+        if (selection?.model !== undefined) { msg.params = { ...msg.params, model: selection.model }; raw = JSON.stringify(msg); }
+      }
+      if (typeof msg.id === "string" || typeof msg.id === "number") {
+        if (link.modelStarts.has(msg.id)) link.modelStarts.set(msg.id, null); // reused outstanding id cannot prove which choice was acknowledged
+        // ponytail: at most 64 in-flight model acknowledgements per link; overflow stays unacknowledged until protocol-level backpressure is added.
+        else if (link.modelStarts.size < 64) link.modelStarts.set(msg.id, { thread, epoch: this.contextEpoch,
+          ...(selection ? { selection } : {}), ...(explicit && isNativeModelToken(msg.params.model) ? { explicit: msg.params.model } : {}) });
+      }
       // A resumed TUI can echo the sticky hub overlay. The restoring turn must use the kept baseline.
       const restoring = this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread);
       if (msg.params.approvalPolicy != null && !restoring) this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
@@ -633,6 +678,17 @@ export class CodexPeer extends BasePeer {
       if (msg.error) p?.reject(new Error(msg.error.message ?? "app-server rejected the request"));
       else p?.resolve(msg.result);
       return; // ours: the TUI never asked for it
+    }
+    if (msg.id !== undefined && !msg.method && link.modelStarts.has(msg.id)) {
+      const selected = link.modelStarts.get(msg.id); link.modelStarts.delete(msg.id);
+      if (selected && !msg.error && link === this.link && selected.epoch === this.contextEpoch && selected.thread === this.threadId) {
+        const model = selected.explicit ?? selected.selection?.model;
+        if (model !== undefined) this.rememberNativeModel(selected.thread, model);
+        try {
+          if (selected.explicit !== undefined) this.opts.onNativeModelApplied?.(selected.explicit);
+          else selected.selection?.applied(this.nativeModels.get(selected.thread));
+        } catch { /* Native acceptance remains authoritative. */ }
+      }
     }
     if (typeof msg.result?.userAgent === "string") this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
     const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
