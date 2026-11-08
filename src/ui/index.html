@@ -458,7 +458,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <section id="projects-panel" aria-labelledby="projects-title" data-view="agents" hidden><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
 <section id="schedules-section" aria-labelledby="schedules-title" data-view="agents" hidden><div class="section-head"><h2 id="schedules-title">Schedules</h2><span id="schedule-count" class="meta"></span></div><div id="schedules"></div></section>
 <section id="rooms-section" aria-labelledby="rooms-title" data-view="agents" data-empty="true" hidden><div class="section-head"><h2 id="rooms-title">Rooms</h2><span id="room-count" class="meta"></span></div><div id="rooms"></div></section>
-<section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
+<section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><p id="runtime-models-notice" class="meta notice-warn" role="status" hidden></p><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
 <section id="results-section" aria-labelledby="results-title" data-view="agents" hidden><div class="section-head"><h2 id="results-title">Results</h2><span id="results-count" class="meta"></span></div><div id="results"></div></section>
 <section aria-labelledby="permissions-title" data-view="agents" hidden><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
 <section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div>
@@ -699,6 +699,7 @@ function syncMutationControls() { document.querySelectorAll('button[data-mutatio
 // when that project's first snapshot renders, so a slow or failed first /snapshot reads as loading, not as an empty project.
 const firstLoad = Object.fromEntries(['tasks', 'peers'].map((name) => [name, [...$(name).childNodes].map((node) => node.cloneNode(true))]));
 function resetView(id, instance) {
+  const modelNotice = $('runtime-models-notice'); if (modelNotice) { modelNotice.hidden = true; modelNotice.textContent = ''; }
   saveDraft();
   selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
   lastSnapshot = null; reviewCommentsCache.clear();
@@ -1847,8 +1848,15 @@ function appendRoleDetails(target, peer) {
   if (Array.isArray(peer.capableRoles)) target.append(el('p', 'Capable roles: ' + (peer.capableRoles.join(', ') || 'none'), 'meta'));
   if (typeof peer.ownerIsolation === 'boolean') target.append(el('p', 'Owner isolation: ' + (peer.ownerIsolation ? 'isolated' : 'not isolated: ' + (peer.ownerIsolationNote || 'execution root not verified')), 'meta'));
 }
-function modelControls(model, sessionUntil) {
+function modelUnavailableText() { return 'Runtime models unavailable: peer catalog exceeds the bounded display limit; use ahub model set <peer> <model> or ahub model clear <peer> for a known peer, then reduce the retained peer catalog before listing again.'; }
+function renderModelAvailability(snapshot) {
+  const unavailable = snapshot.runtimeModelsUnavailable === true || snapshot.status?.runtimeModelsUnavailable === true;
+  const notice = $('runtime-models-notice'); notice.hidden = !unavailable; notice.textContent = unavailable ? modelUnavailableText() : '';
+  return unavailable;
+}
+function modelControls(model, sessionUntil, unavailable = false) {
   const box = el('div', undefined, 'model-controls');
+  if (unavailable) { box.append(el('p', modelUnavailableText(), 'meta notice-warn')); return box; }
   box.append(el('p', 'Model: ' + (model.effectiveModel || 'not reported') + ' / from ' + model.source + (model.pendingNextTurn ? ' / pending next turn: ' + (model.desiredModel || 'native default') : ''), 'meta'));
   if (model.unsupported) box.append(el('p', model.unsupported.reason + '; ' + model.unsupported.nextStep, 'meta'));
   if (managerMode || !(sessionUntil > Date.now())) { box.append(el('p', 'To change the next-turn model, open ahub ui --settings.', 'meta')); return box; }
@@ -1882,16 +1890,17 @@ function modelControls(model, sessionUntil) {
   box.append(input, out); return box;
 }
 function render(snapshot) {
+  const modelUnavailable = renderModelAvailability(snapshot);
   renderNeedsAttention(snapshot);
   const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id], ...(typeof snapshot.status.ownerIsolation?.[id] === 'boolean' ? {ownerIsolation:snapshot.status.ownerIsolation[id],ownerIsolationNote:snapshot.status.ownerIsolationNotes?.[id]} : {})}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
-  update('peers', [peers, snapshot.runtimeModels, snapshot.status.runtimeModels, snapshot.settings?.sessionUntil, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
+  update('peers', [peers, snapshot.runtimeModels, snapshot.status.runtimeModels, modelUnavailable, snapshot.settings?.sessionUntil, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
     peerRows.clear();
     if (!ids.length) { empty(target, 'No peers connected. Start one below, or run ahub claude or ahub codex in a terminal.'); return renderStarts(target, starts); }
     const keyed = keyedStart('peers');
     for (const [id, peer] of Object.entries(peers)) {
-      const row = keyed(id, JSON.stringify([peer, snapshot.runtimeModels, snapshot.status.runtimeModels, snapshot.settings?.sessionUntil, (snapshot.boardLegend || []).find(item => item.peer === id)?.activeTasks]), () => {
+      const row = keyed(id, JSON.stringify([peer, snapshot.runtimeModels, snapshot.status.runtimeModels, modelUnavailable, snapshot.settings?.sessionUntil, (snapshot.boardLegend || []).find(item => item.peer === id)?.activeTasks]), () => {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
       name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
       head.append(name, badge(peer.rostered === false ? peer.state + ' off roster' : peer.state, peerDot[peer.state] || ''));
@@ -1903,7 +1912,7 @@ function render(snapshot) {
       if (typeof peer.doing?.text === 'string' && peer.doing.text) summary.append(el('span', (peer.doing.source === 'label' ? 'Unnamed session: ' : 'Doing: ') + peer.doing.text, 'meta'));
       row.append(head, summary);
       const model = (snapshot.runtimeModels || snapshot.status.runtimeModels || []).find(item => item.peer === id);
-      if (model) row.append(modelControls(model, snapshot.settings?.sessionUntil));
+      if (model && !modelUnavailable) row.append(modelControls(model, snapshot.settings?.sessionUntil, modelUnavailable));
       // A status notice asks a person to act (for example, reattach a native session): it stays visible, never folded away.
       if (typeof peer.statusNotice?.message === 'string' && peer.statusNotice.message) row.append(el('p', peer.statusNotice.message, 'meta notice-warn'));
       const more = el('div', undefined, 'peer-more');

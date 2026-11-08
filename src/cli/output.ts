@@ -17,6 +17,7 @@ import type { SpecsStatus } from "../hub/specs-task.ts";
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
   runtimeModels?: RuntimeModelStatus[];
+  runtimeModelsUnavailable?: boolean;
   roomsUnavailable?: unknown;
   roomsOpening?: boolean;
   controlWriteTiming?: { active: number; slowRequests: number; blockedLoopSamples: number; droppedActive: number; droppedRecent: number; droppedLogs: number; droppedSpans?: number; droppedMetadata?: number; expiredRequests?: number };
@@ -229,7 +230,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
   const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
   if (data.cwd) out.push(...lines(data.cwd, columns));
-  if (Array.isArray(data.runtimeModels)) out.push(...renderRuntimeModels(data.runtimeModels.map(projectModelStatus).filter((row): row is RuntimeModelStatus => row !== null), columns));
+  if (data.runtimeModelsUnavailable === true) out.push(...lines("Runtime models unavailable: peer catalog exceeds the bounded display limit; use ahub model set <peer> <model> or ahub model clear <peer> for a known peer, then reduce the retained peer catalog before listing again.", columns, "attention"));
+  else if (Array.isArray(data.runtimeModels)) out.push(...renderRuntimeModels(data.runtimeModels.map(projectModelStatus).filter((row): row is RuntimeModelStatus => row !== null), columns));
   const timing = data.controlWriteTiming;
   if (full && timing && Object.values(timing).every(value => Number.isSafeInteger(value) && value >= 0)) {
     out.push(...lines(`control writes: active ${timing.active}, slow ${timing.slowRequests}, loop delays ${timing.blockedLoopSamples}, dropped ${timing.droppedActive + timing.droppedLogs + (timing.droppedSpans ?? 0) + (timing.droppedMetadata ?? 0)}, expired ${timing.expiredRequests ?? 0}; timings in hub.log`, columns, timing.slowRequests || timing.blockedLoopSamples ? "attention" : undefined));

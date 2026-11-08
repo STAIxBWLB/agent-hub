@@ -1080,5 +1080,33 @@ test("an older forwarded model ACK cannot replace a newer accepted hub model or 
     const clearId = requests.filter(row => row.method === "turn/start")[2].id;
     await until(() => releases.has(clearId)); releases.get(clearId)!(); await clear;
     expect(applied).toEqual(["hub-newer", "hub-newer"]);
+    // A newer model-changing start without its ACK makes an inherited default unknown, not the earlier cached model.
+    tui.send(JSON.stringify({ id: 6, method: "turn/start", params: { threadId: "th1", model: "client-unsettled", input: [{ type: "text", text: "D" }] } }));
+    await until(() => releases.has(6) && seen.some(row => row.method === "turn/completed" && row.params.turn.id === "ordered-4"));
+    const uncertain = peer.deliver([newEnvelope("user", "clear while older choice unacknowledged")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 5);
+    const uncertainId = requests.filter(row => row.method === "turn/start")[4].id;
+    await until(() => releases.has(uncertainId)); releases.get(uncertainId)!(); await uncertain;
+    expect(applied.at(-1)).toBeUndefined();
+    releases.get(6)!(); await until(() => seen.some(row => row.id === 6));
+    expect(observed).toEqual([]);
+    desired = "hub-reset";
+    const restore = peer.deliver([newEnvelope("user", "restore known choice")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 6);
+    const restoreId = requests.filter(row => row.method === "turn/start")[5].id;
+    await until(() => releases.has(restoreId)); releases.get(restoreId)!(); await restore;
+    expect(applied.at(-1)).toBe("hub-reset"); await until(() => peer.state === "idle");
+    const duplicate = (text: string) => tui!.send(JSON.stringify({ id: 7, method: "turn/start", params: { threadId: "th1", model: "client-ambiguous", input: [{ type: "text", text }] } }));
+    duplicate("G"); await until(() => releases.has(7) && seen.some(row => row.method === "turn/completed" && row.params.turn.id === "ordered-7"));
+    const olderDuplicate = releases.get(7)!;
+    duplicate("H"); await until(() => seen.some(row => row.method === "turn/completed" && row.params.turn.id === "ordered-8"));
+    desired = undefined;
+    const ambiguousClear = peer.deliver([newEnvelope("user", "clear with ambiguous native RPC id")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 9);
+    const ambiguousId = requests.filter(row => row.method === "turn/start")[8].id;
+    await until(() => releases.has(ambiguousId)); releases.get(ambiguousId)!(); await ambiguousClear;
+    expect(applied.at(-1)).toBeUndefined();
+    olderDuplicate(); releases.get(7)!(); await until(() => seen.filter(row => row.id === 7).length === 2);
+    expect(observed).toEqual([]);
   } finally { tui?.close(); await peer.stop(); fake.stop(true); }
 });

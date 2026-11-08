@@ -4377,6 +4377,7 @@ var init_codex_appserver = __esm(() => {
     nativeApprovalPolicies = new Map;
     overriddenApprovals = new Set;
     nativeModels = new Map;
+    modelStartSequence = 0;
     restoringApprovals = new Map;
     proc;
     server;
@@ -4447,6 +4448,7 @@ var init_codex_appserver = __esm(() => {
     }
     async start() {
       this.nativeModels.clear();
+      this.modelStartSequence = 0;
       const upstream = this.opts.upstreamUrl ?? await this.spawnAppServer();
       try {
         this.server = Bun.serve({
@@ -4534,6 +4536,7 @@ var init_codex_appserver = __esm(() => {
           reject(error);
           return;
         }
+        const modelStart = { thread: this.threadId, sequence: ++this.modelStartSequence, changing: selection?.model !== undefined };
         let invalidated = false;
         const retiredAtCancel = new Set;
         const invalidate = (reason, failureCause) => {
@@ -4551,6 +4554,7 @@ var init_codex_appserver = __esm(() => {
         this.pending.set(id, {
           deliveryId,
           kind: "deliver",
+          modelStart,
           invalidate,
           resolve: (result) => {
             const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
@@ -4560,11 +4564,11 @@ var init_codex_appserver = __esm(() => {
                 this.retireTurn(nativeTurn);
               return;
             }
-            if (selection?.model !== undefined)
-              this.rememberNativeModel(this.threadId, selection.model);
-            try {
-              selection?.applied(this.nativeModels.get(this.threadId));
-            } catch {}
+            const acceptedModel = this.acceptModelStart(modelStart, selection?.model, true);
+            if (acceptedModel)
+              try {
+                selection?.applied(acceptedModel.model);
+              } catch {}
             this.primed = true;
             this.injected = replyParent(envs);
             this.answering = [...envs];
@@ -4898,10 +4902,26 @@ ${renderDigest(envs, false)}`;
       if (thread !== undefined && !failed && this.permissionMode === "ask")
         this.overriddenApprovals.delete(thread);
     }
-    rememberNativeModel(thread, model) {
-      this.nativeModels.set(thread, model);
+    nativeModelHint(thread) {
+      const known = this.nativeModels.get(thread);
+      if (!known?.model || (this.link?.modelUnknownAfter ?? 0) >= known.sequence)
+        return;
+      const unsettled = [...this.pending.values()].flatMap((value) => value.modelStart ? [value.modelStart] : []);
+      for (const value of this.link?.modelStarts.values() ?? [])
+        if (value)
+          unsettled.push(value);
+      if (unsettled.some((value) => value.thread === thread && value.changing && value.sequence > known.sequence))
+        return;
+      return known.model;
+    }
+    acceptModelStart(start, model, inherit) {
+      if ((this.nativeModels.get(start.thread)?.sequence ?? 0) >= start.sequence)
+        return;
+      const actual = model ?? (inherit ? this.nativeModelHint(start.thread) : undefined);
+      this.nativeModels.set(start.thread, { sequence: start.sequence, ...actual === undefined ? {} : { model: actual } });
       if (this.nativeModels.size > 128)
         this.nativeModels.delete(this.nativeModels.keys().next().value);
+      return actual === undefined ? {} : { model: actual };
     }
     fromTui(link, raw) {
       const msg = parse(raw);
@@ -4932,17 +4952,23 @@ ${renderDigest(envs, false)}`;
             raw = JSON.stringify(msg);
           }
         }
+        const modelStart = { thread, sequence: ++this.modelStartSequence, changing: explicit || selection?.model !== undefined };
         if (typeof msg.id === "string" || typeof msg.id === "number") {
-          if (link.modelStarts.has(msg.id))
+          if (link.modelStarts.has(msg.id)) {
             link.modelStarts.set(msg.id, null);
-          else if (link.modelStarts.size < 64)
+            link.modelUnknownAfter = modelStart.sequence;
+          } else if (link.modelStarts.size < 64)
             link.modelStarts.set(msg.id, {
-              thread,
+              ...modelStart,
               epoch: this.contextEpoch,
+              clientModel: explicit,
               ...selection ? { selection } : {},
               ...explicit && isNativeModelToken(msg.params.model) ? { explicit: msg.params.model } : {}
             });
-        }
+          else
+            link.modelUnknownAfter = modelStart.sequence;
+        } else
+          link.modelUnknownAfter = modelStart.sequence;
         const restoring = this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread);
         if (msg.params.approvalPolicy != null && !restoring)
           this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
@@ -4991,15 +5017,14 @@ ${renderDigest(envs, false)}`;
         const selected = link.modelStarts.get(msg.id);
         link.modelStarts.delete(msg.id);
         if (selected && !msg.error && link === this.link && selected.epoch === this.contextEpoch && selected.thread === this.threadId) {
-          const model = selected.explicit ?? selected.selection?.model;
-          if (model !== undefined)
-            this.rememberNativeModel(selected.thread, model);
-          try {
-            if (selected.explicit !== undefined)
-              this.opts.onNativeModelApplied?.(selected.explicit);
-            else
-              selected.selection?.applied(this.nativeModels.get(selected.thread));
-          } catch {}
+          const acceptedModel = this.acceptModelStart(selected, selected.explicit ?? selected.selection?.model, !selected.clientModel);
+          if (acceptedModel)
+            try {
+              if (selected.explicit !== undefined)
+                this.opts.onNativeModelApplied?.(selected.explicit);
+              else
+                selected.selection?.applied(acceptedModel.model);
+            } catch {}
         }
       }
       if (typeof msg.result?.userAgent === "string")

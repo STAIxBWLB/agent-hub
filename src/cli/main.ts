@@ -1231,12 +1231,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     try { command = parseModelCommand(args); } catch (error) { return fail((error as Error).message); }
     const hub = await connect();
     try {
+      if (!hub.features.includes("model_overrides")) return fail("running hub lacks model_overrides support; upgrade and restart the hub, then retry ahub model list");
       const { json, ...message } = command;
       const result = await hub.request({ t: "model", ...message });
       if (result.ok !== true) return fail(String(result.error ?? "model request refused; upgrade and restart the hub before retrying"), result.refusalAudited === true, result.authorityRefused);
       if (command.op !== "list" && result.appliesFrom !== "next_turn") return fail("model change is unconfirmed; inspect ahub model list before retrying");
       const values = command.op === "list" ? result.models : [result.model];
-      if (!Array.isArray(values) || values.length > 128) return fail("model reply unavailable; upgrade and restart the hub, then retry ahub model list");
+      if (!Array.isArray(values) || values.length > 512) return fail("model reply is not a supported bounded row list; upgrade and restart the hub, then retry ahub model list");
       const models = values.map(projectModelStatus);
       if (models.some(row => row === null)) return fail("model reply invalid; upgrade and restart the hub, then retry ahub model list");
       const options = { json };

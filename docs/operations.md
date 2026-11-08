@@ -2508,6 +2508,12 @@ The plural `ahub models` still manages the existing local model service; it is
 separate from the singular per-peer `ahub model` command. `model_change` records
 ids and the next-turn boundary, never prompts or credentials.
 
+Model display is bounded to 512 local identities. If legacy sessions exceed the
+view budget, list refuses explicitly and status/dashboard mark model data
+unavailable; they never call a truncated list complete. Close unused native
+sessions, clear obsolete overrides and follow the restart guidance. Single-peer
+set/clear remains usable and no process is restarted automatically.
+
 ## Settings from the dashboard and the terminal
 
 In `ahub console`, press `6` for Settings. Existing operational-tab arrow cycling

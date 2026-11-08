@@ -53,3 +53,38 @@ native RPC records, CLI response rows and incoming confirmation-token length
 are safety floors at input/proof-reader boundaries. The existing #844 token
 representation is reused unchanged in a pure leaf module; native adapters do
 not import the registry through instances, avoiding an initialization cycle.
+
+
+At `69974c37b53cc74bb6656b63648f6b8b07818754`, DGX typecheck,
+inventory and all 559 exact seed anchors passed. Runtime tests had 383 pass,
+3 existing platform skips and 1 failure across twenty files (3,821 assertions;
+124 s). The new Codex test requested steering after the RPC response but before
+its actual native `turn/started` observation. Its fake now supplies that barrier
+and asserts the steer uses the observed native turn id. No ownership guard,
+assertion or timeout was relaxed. The three existing #845 skips do not provide
+Linux-native sandbox evidence.
+
+Additional boundary checks before submission cover a saved override whose audit
+append fails (explicit saved-but-failed reply and readback/repair guidance), an
+older hub that advertises no model support (refusal before any model request),
+and model listings with retained removed peers. The model view has a display-only 512-row ceiling, with bounded collection
+of builtin, configured, external, active local and retained ids. Legacy native
+peer admission has no universal 64-peer cap, so a complete inventory is not
+assumed to fit. Overflow explicitly refuses list, marks model data unavailable in
+status/snapshot without breaking other fields, and leaves single-peer set/clear
+usable. No peer admission is narrowed and no truncated list is called complete. This does not raise the
+storage cap or change any existing timeout.
+
+
+The display path caches a scalar launch model only when a trusted supported
+factory registers its owner. Periodic model views do not call unsupported
+owners' recovery hooks or scan task history. The unavailable flag has fixed
+CLI/UI cause and repair guidance, and disables stale model controls.
+
+At `29f3be831399c0125ad9ea5bd4f117894505a760`, the new real fake-WebSocket
+ACK-order test reproduced a product defect: an older explicit-client ACK arrived
+after a newer hub model acceptance and incorrectly emitted `client-older` as the
+native choice. The named assertion failed normally (one case, seven assertions,
+4 s), without setup/compiler/timeout failure. This red checkpoint intentionally
+contained the new test and unchanged Codex source; other pending refinements were
+not claimed tested. Its eventual fix and green evidence are recorded separately.

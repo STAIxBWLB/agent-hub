@@ -38,14 +38,24 @@ test("model display distinguishes effective from next turn, keeps closed sources
   expect(renderStatus({ peers: {}, runtimeModels: [row], models: { backends: [] } }).map(line => paint(line, false)).join("\n")).toContain("pending next turn");
 });
 
+test("status names catalog overflow rather than rendering an empty model success", () => {
+  const output = renderStatus({ peers: { codex: { state: "idle", queued: 0 } }, runtimeModels: [row], runtimeModelsUnavailable: true, models: { backends: [] } });
+  const text = output.map(line => paint(line, false)).join("\n");
+  expect(text).toContain("Runtime models unavailable: peer catalog exceeds the bounded display limit");
+  expect(text).toContain("ahub model set <peer> <model>"); expect(text).toContain("ahub model clear <peer>");
+  expect(text).not.toContain("EFFECTIVE MODEL"); expect(text).toContain("codex"); expect(text).toContain("idle");
+  expect(output.flat().some(cell => cell.tone === "attention" && cell.text.includes("Runtime models unavailable"))).toBe(true);
+});
+
 test("actual CLI defaults to sentences/table, JSON is explicit, mutations retain next-turn wording and agent calls have no model effects", async () => {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-model-cli-"))), state = join(root, ".agenthub/state"), requests: Record<string, unknown>[] = [];
+  let supportsModels = true, responseRows = [row];
   mkdirSync(state, { recursive: true }); mkdirSync(join(root, "home"));
   writeFileSync(join(root, ".agenthub/config.json"), "{}");
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("unexpected"); }, websocket: { message(ws, raw) {
     const request = JSON.parse(String(raw));
-    if (request.t === "hello") ws.send(JSON.stringify({ t: "welcome", rid: request.rid, ok: true, cwd: root, projectId: "fixture", instanceId: "fixture", protocol: PROTOCOL, features: [] }));
-    else { requests.push(request); ws.send(JSON.stringify({ rid: request.rid, ok: true, models: [row], model: row, appliesFrom: "next_turn" })); }
+    if (request.t === "hello") ws.send(JSON.stringify({ t: "welcome", rid: request.rid, ok: true, cwd: root, projectId: "fixture", instanceId: "fixture", protocol: PROTOCOL, features: supportsModels ? ["model_overrides"] : [] }));
+    else { requests.push(request); ws.send(JSON.stringify({ rid: request.rid, ok: true, models: responseRows, model: row, appliesFrom: "next_turn" })); }
   } } });
   writeFileSync(join(state, "control-token"), "fixture-token");
   writeFileSync(join(state, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL, projectId: "fixture", instanceId: "fixture", pid: process.pid, pidSignature: processSignature(process.pid) }));
@@ -58,9 +68,23 @@ test("actual CLI defaults to sentences/table, JSON is explicit, mutations retain
     const human = await cli(["model", "list"]); expect(human.code, human.stderr).toBe(0); expect(human.stdout).toContain("EFFECTIVE MODEL"); expect(human.stdout).not.toMatch(/^\s*\{/);
     const json = await cli(["model", "list", "--json"]); expect(json.code, json.stderr).toBe(0); expect(JSON.parse(json.stdout)).toEqual({ models: [row] });
     const mutation = await cli(["model", "set", "codex", "new"]); expect(mutation.code, mutation.stderr).toBe(0); expect(mutation.stdout).toContain("active turn is unchanged");
+    supportsModels = false;
+    const beforeOlder = requests.length, older = await cli(["model", "list"]);
+    expect(older.code).toBe(1); expect(older.stderr).toContain("running hub lacks model_overrides support"); expect(older.stderr).toContain("upgrade and restart the hub");
+    expect(requests.slice(beforeOlder).some(request => request.t === "model")).toBe(false);
+    supportsModels = true;
     const before = requests.length;
     for (const prefix of [[], ["--live-test"]]) for (const form of [["list"], ["set", "codex", "new"], ["clear", "codex"]]) { const result = await cli([...prefix, "model", ...form], true); expect(result.code).toBe(1); }
     expect(requests.filter(request => request.t === "model")).toHaveLength(3);
     expect(requests.slice(before).some(request => request.t === "model")).toBe(false);
+    responseRows = Array.from({ length: 129 }, (_, index) => ({ ...row, peer: `peer-${index}` }));
+    const large = await cli(["model", "list", "--json"]); expect(large.code, large.stderr).toBe(0);
+    expect(JSON.parse(large.stdout).models).toEqual(responseRows);
+    responseRows = Array.from({ length: 257 }, (_, index) => ({ ...row, peer: `peer-${index}` }));
+    const complete = await cli(["model", "list", "--json"]); expect(complete.code, complete.stderr).toBe(0);
+    expect(JSON.parse(complete.stdout).models).toEqual(responseRows);
+    responseRows = Array.from({ length: 513 }, (_, index) => ({ ...row, peer: `peer-${index}` }));
+    const oversized = await cli(["model", "list", "--json"]); expect(oversized.code).toBe(1);
+    expect(oversized.stderr).toContain("model reply is not a supported bounded row list"); expect(oversized.stderr).toContain("upgrade and restart the hub"); expect(oversized.stdout).toBe("");
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);

@@ -2,18 +2,20 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
-import { ModelOverrides } from "../src/hub/model-overrides.ts";
+import { ModelOverrides, ModelOverrideLatches } from "../src/hub/model-overrides.ts";
+import { runInNewContext } from "node:vm";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const stop of cleanup.splice(0).reverse()) await stop(); });
 class Passive extends BasePeer { async start() { this.setState("idle"); } async stop() { this.setState("offline"); } async deliver(_envs: Envelope[]) {} }
-async function fixture() {
+async function fixture(configured = false) {
   const root = mkdtempSync(join(tmpdir(), "ahub-live-model-")), stateDir = join(root, "state"); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.local.json"), "{}");
-  const config = { ...DEFAULT_CONFIG, roster: {}, start: { agents: [] }, batch_ms: 0, configWatch: false,
+  const adapters: NonNullable<HubConfig["adapters"]> = configured ? { fixture: { transport: "acp", command: process.execPath, args: [], displayName: "Fixture ACP", roles: ["implementer"] } } : {};
+  mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.local.json"), configured ? JSON.stringify({ adapters }) : "{}");
+  const config = { ...DEFAULT_CONFIG, adapters, roster: {}, start: { agents: [] }, batch_ms: 0, configWatch: false,
     memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
     mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, omniroute: { urls: [], access_hosts: [] },
     pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, specs: { ...DEFAULT_CONFIG.specs, enabled: false },
@@ -125,14 +127,90 @@ test("peer replacement after dashboard preview refuses confirmation without chan
   expect(result.ok).toBe(false); expect(result.error).toContain("changed after preview"); expect(f.store.hasRecords()).toBe(false);
 });
 
-test("effective model drift invalidates preview even with the same desired row, owner and idle turn", async () => {
-  const f = await fixture(); let nativeBaseline = "native-first";
-  class ObservedAttachment extends Passive { recoveryMetadata() { return { launch: { model: nativeBaseline } }; } }
-  const owner = new ObservedAttachment("codex"); f.daemon.bus.add(owner); await owner.start();
-  // Unsupported retained state can be cleared by the person; this does not grant the raw attachment a setter.
-  f.store.set("codex", "retained", 1); const before = f.store.integrity(), person = await f.session(true);
-  const preview = await person.post({ action: "model_preview", modelAction: "clear", peer: "codex" }); expect(preview.ok).toBe(true);
-  expect(preview.model.effectiveModel).toBe("native-first"); nativeBaseline = "native-second";
-  const result = await person.post({ action: "model_confirm", token: preview.confirmation.token });
-  expect(result.ok).toBe(false); expect(result.error).toContain("changed after preview"); expect(f.store.integrity()).toEqual(before);
+test("actual confirm comparison refuses changed effective model before effects with unchanged desired row and owner", async () => {
+  const f = await fixture(), owner = {}, latches = new ModelOverrideLatches(f.store);
+  f.store.set("codex", "retained", 1); const before = f.store.integrity();
+  const runtimeModelRow = (peer: string) => latches.status(peer, owner, { source: "native default" });
+  latches.capture("codex", owner, {}, () => true).applied();
+  const preview = { peer: "codex", config: 0, revision: f.store.revision("codex"), runtime: JSON.stringify(runtimeModelRow("codex")), owner, generation: undefined, afterTurn: undefined };
+  // Simulated accepted native-model fact only, not native identity or transport qualification.
+  latches.observeNative("codex", owner, "native-second");
+  expect(runtimeModelRow("codex").effectiveModel).toBe("native-second"); expect(f.store.revision("codex")).toBe(preview.revision);
+  const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const start = source.indexOf("      if (preview.config !== configRevision"), end = source.indexOf("\n    } else {", start);
+  expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  let effects = 0;
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`(function(){${source.slice(start, end)}\nreturn effect();})()`);
+  const result = runInNewContext(script, { preview, configRevision: 0, modelOverrides: f.store, runtimeModelRow,
+    bus: { peers: new Map([["codex", owner]]) }, connectionGeneration: () => undefined, turns: new Map(),
+    modelFailure: (error: string) => ({ ok: false, error }), effect: () => { effects++; throw Error("changed preview reached a write/effect"); } });
+  expect(result.ok).toBe(false); expect(result.error).toContain("changed after preview"); expect(effects).toBe(0); expect(f.store.integrity()).toEqual(before);
+});
+
+test("audit append failure reports the saved override explicitly without rollback or a false success", async () => {
+  const f = await fixture(), file = join(f.stateDir, "events.jsonl"), original = readFileSync(file);
+  rmSync(file); mkdirSync(file);
+  try {
+    const result = await f.request({ op: "set", peer: "codex", model: "saved-model" });
+    expect({ ok: result.ok, saved: result.saved, error: result.error }).toEqual({ ok: false, saved: true, error: "model override was saved but its model_change audit could not be appended; run ahub model list before retrying and repair events.jsonl" });
+    expect(f.store.get("codex")?.model).toBe("saved-model");
+    const listed = await f.request({ op: "list" }); expect(listed.ok).toBe(true);
+    expect(listed.models.find((row: { peer: string }) => row.peer === "codex").desiredModel).toBe("saved-model");
+    expect(result.error).not.toContain("saved-model"); expect(result.error).not.toContain(f.root);
+  } finally { rmSync(file, { recursive: true, force: true }); writeFileSync(file, original); }
+});
+
+test("list preserves all current peers alongside 128 retained removed-peer overrides and permits person cleanup", async () => {
+  const f = await fixture(), initial = await f.request({ op: "list" }); expect(initial.ok).toBe(true);
+  const current = initial.models.map((row: { peer: string }) => row.peer) as string[];
+  const retired = Array.from({ length: 128 }, (_, index) => `retired-model-${String(index).padStart(3, "0")}`);
+  expect(current.some(peer => retired.includes(peer))).toBe(false);
+  for (const peer of retired) f.store.set(peer, "retained-model", 1);
+  const listed = await f.request({ op: "list" }); expect(listed.ok).toBe(true);
+  const rows = listed.models as { peer: string; desiredModel: string | null }[];
+  expect(rows.length).toBeGreaterThan(128); expect(rows.length).toBeLessThanOrEqual(512);
+  expect(rows).toHaveLength(current.length + retired.length); expect(new Set(rows.map(row => row.peer)).size).toBe(rows.length);
+  for (const peer of current) expect(rows.some(row => row.peer === peer)).toBe(true);
+  for (const peer of retired) expect(rows.find(row => row.peer === peer)?.desiredModel).toBe("retained-model");
+  for (const peer of retired) {
+    const cleared = await f.request({ op: "clear", peer }); expect(cleared.ok, peer).toBe(true); expect(cleared.model.desiredModel).toBeNull();
+  }
+  expect(f.store.hasRecords()).toBe(false);
+  expect((await f.request({ op: "list" })).models.map((row: { peer: string }) => row.peer)).toEqual(current);
+}, 20_000);
+
+test("configured peers and valid local bus IDs are listed as unsupported without running recovery hooks", async () => {
+  const f = await fixture(true); let hookReads = 0;
+  class ExternalAttachment extends Passive { recoveryMetadata(): Record<string, unknown> { hookReads++; throw Error("unexpected recovery hook on a model poll"); } }
+  for (const id of ["fixture", "legacy-extra", "kimi@remote", "codex~session"]) {
+    const owner = new ExternalAttachment(id); f.daemon.bus.add(owner); await owner.start();
+  }
+  const listed = await f.request({ op: "list" }); expect(listed.ok).toBe(true);
+  const rows = listed.models as { peer: string; effectiveModel: string | null; unsupported?: { reasonCode: string } }[];
+  for (const id of ["fixture", "legacy-extra"]) expect(rows.find(row => row.peer === id)).toMatchObject({ effectiveModel: null, unsupported: { reasonCode: "unverified_setter" } });
+  expect(rows.some(row => row.peer === "kimi@remote" || row.peer === "codex~session")).toBe(false);
+  const refused = await f.request({ op: "set", peer: "fixture", model: "unverified" });
+  expect(refused.ok).toBe(false); expect(refused.error).toContain("unsupported live: fixture"); expect(refused.error).toContain("ahub restart fixture");
+  expect(f.store.hasRecords()).toBe(false); expect(f.daemon.bus.peers.get("fixture")?.state).toBe("idle");
+  await f.console_.request({ t: "status" }); await f.console_.request({ t: "ui_snapshot" });
+  expect(hookReads).toBe(0);
+});
+
+test("model display overflow is explicit while status and single-peer writes remain usable", async () => {
+  const f = await fixture(), initial = await f.request({ op: "list" }); expect(initial.ok).toBe(true);
+  const added: string[] = [];
+  // Owned fixture metadata only: no sockets, native starts, state events or new transport admission policy.
+  const add = (id: string) => { added.push(id); f.daemon.bus.peers.set(id, new Passive(id)); };
+  try {
+    for (let i = 0; i < 512 - initial.models.length; i++) add(`display-peer-${i}`);
+    const edge = await f.request({ op: "list" }); expect(edge.ok).toBe(true); expect(edge.models).toHaveLength(512);
+    add("display-overflow");
+    const overflow = await f.request({ op: "list" }); expect(overflow.ok).toBe(false); expect(overflow.models).toBeUndefined();
+    expect(overflow.error).toContain("model list exceeds its display bound"); expect(overflow.error).toContain("close unused peer sessions"); expect(overflow.error).toContain("ahub model clear");
+    const status = (await f.console_.request({ t: "status" })).status;
+    expect(status.instanceId).toBeDefined(); expect(status.runtimeModels).toEqual([]); expect(status.runtimeModelsUnavailable).toBe(true);
+    const snapshot = await f.console_.request({ t: "ui_snapshot" }); expect(snapshot.ok).toBe(true); expect(snapshot.runtimeModels).toEqual([]); expect(snapshot.runtimeModelsUnavailable).toBe(true);
+    const set = await f.request({ op: "set", peer: "codex", model: "single-peer-still-works" }); expect(set.ok).toBe(true); expect(f.store.get("codex")?.model).toBe("single-peer-still-works");
+    expect((await f.request({ op: "clear", peer: "codex" })).ok).toBe(true); expect(f.store.hasRecords()).toBe(false);
+  } finally { for (const id of added) f.daemon.bus.peers.delete(id); }
 });

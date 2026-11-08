@@ -84,13 +84,16 @@ export interface CodexOptions {
   log?: (line: string) => void;
 }
 
+interface ModelStartOrder { thread: string; sequence: number; changing: boolean }
 interface Link {
   launchId?: string;
   tui: ServerWebSocket<Link>;
   up: WebSocket;
   backlog: string[]; // TUI frames that arrived before the upstream socket opened
   approvalIds: Set<string | number>; // intercepted native ids stay tombstoned for this socket lifetime
-  modelStarts: Map<string | number, { thread: string; epoch: number; selection?: ModelOverrideSelection; explicit?: string } | null>;
+  modelStarts: Map<string | number, ModelStartOrder & { epoch: number; selection?: ModelOverrideSelection; explicit?: string; clientModel: boolean } | null>;
+  /** Untracked/reused requests cannot prove a sticky default until a later explicit model ACK. */
+  modelUnknownAfter?: number;
   tracked: Map<string | number, string>; // request id -> method, for thread/start and thread/resume
   /** Correlated native initial policy, retained even before this instance gains the planner role. */
   readOnlyThread?: string;
@@ -113,7 +116,8 @@ export class CodexPeer extends BasePeer {
   get actionGated(): boolean { return this.opts.actionGate !== undefined; }
   private readonly nativeApprovalPolicies = new Map<string, unknown>();
   private readonly overriddenApprovals = new Set<string>();
-  private readonly nativeModels = new Map<string, string>();
+  private readonly nativeModels = new Map<string, { sequence: number; model?: string }>();
+  private modelStartSequence = 0;
   private readonly restoringApprovals = new Map<string | number, string>();
   private proc: ChildProcess | undefined;
   private server: Server<Link> | undefined;
@@ -144,7 +148,7 @@ export class CodexPeer extends BasePeer {
   }
   private unboundAccepted = false;
   private nextId = -1;
-  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error, failureCause?: DeliveryFailureCause) => void; deliveryId?: string; kind?: "deliver" | "steer"; expectedTurnId?: string; afterTurn?: () => void; invalidate?: (reason: string, failureCause?: DeliveryFailureCause) => void }>();
+  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error, failureCause?: DeliveryFailureCause) => void; deliveryId?: string; kind?: "deliver" | "steer"; modelStart?: ModelStartOrder; expectedTurnId?: string; afterTurn?: () => void; invalidate?: (reason: string, failureCause?: DeliveryFailureCause) => void }>();
   private usageTimer: ReturnType<typeof setInterval> | undefined;
   private injected: Envelope | undefined; // the hub envelope that started the current turn, if any
   private answering: Envelope[] = []; // everything delivered or steered into the current turn: who its answer is for
@@ -197,7 +201,7 @@ export class CodexPeer extends BasePeer {
   }
 
   async start(): Promise<void> {
-    this.nativeModels.clear();
+    this.nativeModels.clear(); this.modelStartSequence = 0;
     const upstream = this.opts.upstreamUrl ?? (await this.spawnAppServer());
     try {
       this.server = Bun.serve<Link>({
@@ -277,6 +281,7 @@ export class CodexPeer extends BasePeer {
         if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "runtime model selection unavailable" });
         reject(error); return;
       }
+      const modelStart: ModelStartOrder = { thread: this.threadId, sequence: ++this.modelStartSequence, changing: selection?.model !== undefined };
       let invalidated = false;
       const retiredAtCancel = new Set<string>();
       const invalidate = (reason: string, failureCause?: DeliveryFailureCause) => {
@@ -288,7 +293,7 @@ export class CodexPeer extends BasePeer {
         reject(new Error(reason));
       };
       this.pending.set(id, {
-        deliveryId, kind: "deliver", invalidate,
+        deliveryId, kind: "deliver", modelStart, invalidate,
         resolve: (result) => {
           const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
           if (invalidated || epoch !== this.deliveryEpoch || session !== this.contextEpoch || link !== this.link) {
@@ -297,8 +302,8 @@ export class CodexPeer extends BasePeer {
               (!retiredAtCancel.has(nativeTurn) || this.retiredTurns.has(nativeTurn))) this.retireTurn(nativeTurn);
             return;
           }
-          if (selection?.model !== undefined) this.rememberNativeModel(this.threadId, selection.model);
-          try { selection?.applied(this.nativeModels.get(this.threadId)); } catch { /* Native acceptance remains authoritative. */ }
+          const acceptedModel = this.acceptModelStart(modelStart, selection?.model, true);
+          if (acceptedModel) try { selection?.applied(acceptedModel.model); } catch { /* Native acceptance remains authoritative. */ }
           this.primed = true;
           this.injected = replyParent(envs);
           this.answering = [...envs];
@@ -608,10 +613,23 @@ export class CodexPeer extends BasePeer {
     if (thread !== undefined && !failed && this.permissionMode === "ask") this.overriddenApprovals.delete(thread);
   }
 
-  private rememberNativeModel(thread: string, model: string): void {
-    this.nativeModels.set(thread, model);
-    // ponytail: keep the newest 128 thread choices; older sticky defaults are unknown until a native model readback is added.
+  private nativeModelHint(thread: string): string | undefined {
+    const known = this.nativeModels.get(thread);
+    if (!known?.model || (this.link?.modelUnknownAfter ?? 0) >= known.sequence) return undefined;
+    const unsettled = [...this.pending.values()].flatMap(value => value.modelStart ? [value.modelStart] : []);
+    for (const value of this.link?.modelStarts.values() ?? []) if (value) unsettled.push(value);
+    if (unsettled.some(value => value.thread === thread && value.changing && value.sequence > known.sequence)) return undefined;
+    return known.model;
+  }
+
+  /** Shared by hub and forwarded starts: response arrival order never rewrites a later accepted start. */
+  private acceptModelStart(start: ModelStartOrder, model: string | undefined, inherit: boolean): { model?: string } | undefined {
+    if ((this.nativeModels.get(start.thread)?.sequence ?? 0) >= start.sequence) return undefined;
+    const actual = model ?? (inherit ? this.nativeModelHint(start.thread) : undefined);
+    this.nativeModels.set(start.thread, { sequence: start.sequence, ...(actual === undefined ? {} : { model: actual }) });
+    // ponytail: keep at most 128 thread receipts; older defaults are unknown until native model readback is added.
     if (this.nativeModels.size > 128) this.nativeModels.delete(this.nativeModels.keys().next().value!);
+    return actual === undefined ? {} : { model: actual };
   }
 
   private fromTui(link: Link, raw: string): void {
@@ -636,12 +654,17 @@ export class CodexPeer extends BasePeer {
         }
         if (selection?.model !== undefined) { msg.params = { ...msg.params, model: selection.model }; raw = JSON.stringify(msg); }
       }
+      const modelStart: ModelStartOrder = { thread, sequence: ++this.modelStartSequence, changing: explicit || selection?.model !== undefined };
       if (typeof msg.id === "string" || typeof msg.id === "number") {
-        if (link.modelStarts.has(msg.id)) link.modelStarts.set(msg.id, null); // reused outstanding id cannot prove which choice was acknowledged
-        // ponytail: at most 64 in-flight model acknowledgements per link; overflow stays unacknowledged until protocol-level backpressure is added.
-        else if (link.modelStarts.size < 64) link.modelStarts.set(msg.id, { thread, epoch: this.contextEpoch,
+        if (link.modelStarts.has(msg.id)) {
+          link.modelStarts.set(msg.id, null); // reused outstanding id cannot identify an accepted model revision
+          link.modelUnknownAfter = modelStart.sequence;
+        }
+        // ponytail: at most 64 in-flight ACKs per link; overflow keeps defaults unknown until a later explicit model ACK.
+        else if (link.modelStarts.size < 64) link.modelStarts.set(msg.id, { ...modelStart, epoch: this.contextEpoch, clientModel: explicit,
           ...(selection ? { selection } : {}), ...(explicit && isNativeModelToken(msg.params.model) ? { explicit: msg.params.model } : {}) });
-      }
+        else link.modelUnknownAfter = modelStart.sequence;
+      } else link.modelUnknownAfter = modelStart.sequence;
       // A resumed TUI can echo the sticky hub overlay. The restoring turn must use the kept baseline.
       const restoring = this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread);
       if (msg.params.approvalPolicy != null && !restoring) this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
@@ -682,11 +705,10 @@ export class CodexPeer extends BasePeer {
     if (msg.id !== undefined && !msg.method && link.modelStarts.has(msg.id)) {
       const selected = link.modelStarts.get(msg.id); link.modelStarts.delete(msg.id);
       if (selected && !msg.error && link === this.link && selected.epoch === this.contextEpoch && selected.thread === this.threadId) {
-        const model = selected.explicit ?? selected.selection?.model;
-        if (model !== undefined) this.rememberNativeModel(selected.thread, model);
-        try {
+        const acceptedModel = this.acceptModelStart(selected, selected.explicit ?? selected.selection?.model, !selected.clientModel);
+        if (acceptedModel) try {
           if (selected.explicit !== undefined) this.opts.onNativeModelApplied?.(selected.explicit);
-          else selected.selection?.applied(this.nativeModels.get(selected.thread));
+          else selected.selection?.applied(acceptedModel.model);
         } catch { /* Native acceptance remains authoritative. */ }
       }
     }

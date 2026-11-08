@@ -2452,6 +2452,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const modelOverrides = new ModelOverrides(join(opts.stateDir, "hub.db"));
   const modelLatches = new ModelOverrideLatches(modelOverrides);
   const modelManagedOwners = new WeakSet<PeerAdapter>();
+  const modelLaunchModels = new WeakMap<PeerAdapter, string>();
   startupCleanup.push(() => modelOverrides.close());
   startupCleanup.push(() => codeFacts.close());
   const supervision = new SupervisionFeed({
@@ -6084,15 +6085,39 @@ export async function startDaemon(opts: DaemonOptions) {
   const modelFallback = (peer: string): { model?: string; source: Exclude<ModelSource, "override"> } => {
     const declared = declarations[peer]?.model;
     if (isNativeModelToken(declared)) return { model: declared, source: "instance" };
-    try {
-      const launch = bus.peers.get(peer)?.recoveryMetadata?.()?.launch;
-      const model = launch && typeof launch === "object" && !Array.isArray(launch) ? (launch as Record<string, unknown>).model : undefined;
-      if (isNativeModelToken(model)) return { model, source: "launch" };
-    } catch { /* no explicit launch evidence: native default remains unknown */ }
+    const owner = bus.peers.get(peer), model = owner ? modelLaunchModels.get(owner) : undefined;
+    if (model !== undefined) return { model, source: "launch" };
     return { source: "native default" };
   };
+  const registerModelOwner = (owner: PeerAdapter): void => {
+    modelManagedOwners.add(owner);
+    try {
+      const launch = owner.recoveryMetadata?.()?.launch;
+      const model = launch && typeof launch === "object" && !Array.isArray(launch) ? (launch as Record<string, unknown>).model : undefined;
+      if (isNativeModelToken(model)) modelLaunchModels.set(owner, model);
+    } catch { /* No explicit launch evidence: leave native default unknown. Never read this hook on a poll. */ }
+  };
   const runtimeModelRow = (peer: string) => modelLatches.status(peer, bus.peers.get(peer), modelFallback(peer), modelUnsupported(peer));
-  const runtimeModelRows = () => [...new Set([...SUPPORTED_PEERS, ...extraIds, ...modelOverrides.list().map(row => row.peer)])].sort().map(runtimeModelRow);
+  const MODEL_DISPLAY_ROWS_MAX = 512;
+  const runtimeModelRows = (): RuntimeModelStatus[] | undefined => {
+    const ids = new Set<string>();
+    const add = (id: string) => { if (PEER_ID.test(id)) ids.add(id); return ids.size <= MODEL_DISPLAY_ROWS_MAX; };
+    // Stop at the first overflow: existing legacy attachments are not admission-bounded by this display ceiling.
+    for (const id of SUPPORTED_PEERS) if (!add(id)) return undefined;
+    for (const id of configuredIds) if (!add(id)) return undefined;
+    for (const id of extraIds) if (!add(id)) return undefined;
+    for (const peer of restored?.peers ?? []) if (peer.externalInstance && !add(peer.id)) return undefined;
+    for (const id of externalInstanceIds) if (!add(id)) return undefined;
+    for (const id of externalRefusedRows.keys()) if (!add(id)) return undefined;
+    for (const id of bus.peers.keys()) if (!add(id)) return undefined;
+    for (const row of modelOverrides.list()) if (!add(row.peer)) return undefined;
+    return [...ids].sort().map(runtimeModelRow);
+  };
+  const runtimeModelProjection = () => {
+    try { const rows = runtimeModelRows(); if (rows) return { runtimeModels: rows }; }
+    catch { /* Model metadata failure is not whole-daemon status failure. The explicit list keeps its refusal. */ }
+    return { runtimeModels: [] as RuntimeModelStatus[], runtimeModelsUnavailable: true as const };
+  };
   const modelSelection = (peer: string) => {
     const owner = bus.peers.get(peer);
     if (!owner || modelUnsupported(peer)) throw new Error("model selection has no current supported owner; inspect ahub status and restart the peer before retrying");
@@ -6116,7 +6141,10 @@ export async function startDaemon(opts: DaemonOptions) {
   function modelCommand(input: Record<string, unknown>, grant: ModelGrant): Record<string, unknown> {
     if (!grant.current()) return modelFailure("model changes are person-only and this authority expired; run ahub model in a person's terminal or reopen ahub ui --settings");
     if (stopping || recoveryActive() || bus.isRecoveryHeld) return modelFailure("recovery or shutdown is holding model overrides; inspect ahub status and retry after release");
-    if (input.op === "list") return { ok: true, models: runtimeModelRows() };
+    if (input.op === "list") {
+      const rows = runtimeModelRows();
+      return rows ? { ok: true, models: rows } : modelFailure("model list exceeds its display bound; close unused peer sessions and restart if needed, or clear unused overrides with ahub model clear, then list again");
+    }
     let preview: ModelPreview;
     if (input.op === "confirm") {
       const token = typeof input.token === "string" ? input.token : "", retained = modelPreviews.get(token);
@@ -6149,9 +6177,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (preview.action === "set" && unsupported) return modelFailure(`${unsupported.reason}; ${unsupported.nextStep}`);
     const previousModel = modelOverrides.get(preview.peer)?.model ?? null;
     if (preview.action === "set") modelOverrides.set(preview.peer, preview.model!); else modelOverrides.clear(preview.peer);
-    event({ type: "model_change", peer: preview.peer, previousModel, model: preview.model ?? null, by: "person", source: grant.source,
+    const audited = event({ type: "model_change", peer: preview.peer, previousModel, model: preview.model ?? null, by: "person", source: grant.source,
       appliesFrom: "next_turn", ...(preview.afterTurn ? { afterTurn: preview.afterTurn } : {}) });
     writeStatus();
+    if (!audited) return { ok: false, saved: true, error: "model override was saved but its model_change audit could not be appended; run ahub model list before retrying and repair events.jsonl" };
     return { ok: true, model: runtimeModelRow(preview.peer), appliesFrom: "next_turn", ...(preview.afterTurn ? { afterTurn: preview.afterTurn } : {}) };
   }
   const modelCommandSafe = (input: Record<string, unknown>, grant: ModelGrant): Record<string, unknown> => {
@@ -6258,7 +6287,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const deliveryFailures = bus.failedDeliveryCounts();
     const view = {
     ...(deliveryFailures ? { deliveryFailures } : {}),
-    runtimeModels: runtimeModelRows(),
+    ...runtimeModelProjection(),
     ...(queueBackpressure ? { queueBackpressure } : {}),
     ...(crashLines.length ? { crash: crashLines } : {}),
     projectId,
@@ -7682,7 +7711,7 @@ export async function startDaemon(opts: DaemonOptions) {
         watchdogMs: config.watchdog_ms,
         log,
       }) }) as CodexPeer;
-      modelManagedOwners.add(codex);
+      registerModelOwner(codex);
       recoveryTaskPreface(peer);
       await ensurePreface(peer); startCurrent?.();
       try {
@@ -7891,7 +7920,7 @@ export async function startDaemon(opts: DaemonOptions) {
         },
         watchdogMs: config.watchdog_ms, maxSteps: config.pi.max_steps, log,
       }) }) as PiPeer;
-      modelManagedOwners.add(pi);
+      registerModelOwner(pi);
       recoveryTaskPreface(peer);
       await ensurePreface(peer); startCurrent?.();
       executionOwners.set(peer, { owner: pi, cwd: executionCwd });
@@ -8001,7 +8030,7 @@ export async function startDaemon(opts: DaemonOptions) {
         maxSteps: config.local.max_steps,
         log,
       }) }) as LocalPeer;
-      modelManagedOwners.add(local);
+      registerModelOwner(local);
       localObserverSessionIds.set(local, () => local.observerSessionId);
       ownedReviewInputReleasePeers.add(local);
       recoveryTaskPreface(peer);
@@ -8080,7 +8109,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!currentRoot()) throw new Error("Claude implementer startup admission changed");
         recoveryTaskPreface(peer); await ensurePreface(peer); startCurrent?.();
         if (!currentRoot()) throw new Error("Claude implementer startup admission changed");
-        modelManagedOwners.add(implementer); executionOwners.set(peer, { owner: implementer, cwd: executionCwd }); bus.add(implementer);
+        registerModelOwner(implementer); executionOwners.set(peer, { owner: implementer, cwd: executionCwd }); bus.add(implementer);
         return { ok: true };
       } catch (error) { await implementer.stop().catch(() => {}); throw error; }
     }
@@ -8160,7 +8189,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return { ok: false, error: reason };
       }
       reviewerUnavailable.delete(peer);
-      modelManagedOwners.add(reviewer); executionOwners.set(peer, { owner: reviewer, cwd: executionCwd });
+      registerModelOwner(reviewer); executionOwners.set(peer, { owner: reviewer, cwd: executionCwd });
       reviewerToolObservers.set(peer, (task, tool, refusal) => {
         try { if (bus.peers.get(peer) === reviewer) reviewer.recordToolTrace(task, { tool, ...(refusal === undefined ? {} : { refusal }) }); }
         catch { /* Diagnostics never change a host tool's result or authority. */ }
@@ -8606,7 +8635,7 @@ export async function startDaemon(opts: DaemonOptions) {
       projectId,
       instanceId,
       attention: attentionStatus.attentionInput,
-      runtimeModels: runtimeModelRows(),
+      ...runtimeModelProjection(),
       rooms: attentionStatus.rooms,
       pet,
       status: { peers: peerView, pendingRestart: allPendingRestart(), retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo, ownerIsolation: attentionStatus.ownerIsolation, ownerIsolationNotes: attentionStatus.ownerIsolationNotes },

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
 class Node {
-  children: Node[] = []; textContent = ""; value = ""; disabled = false; isConnected = true; type = ""; maxLength = 0; autocomplete = ""; spellcheck = false;
+  children: Node[] = []; textContent = ""; value = ""; disabled = false; hidden = false; isConnected = true; type = ""; maxLength = 0; autocomplete = ""; spellcheck = false;
   listeners: Record<string, (() => unknown)[]> = {};
   constructor(readonly tag: string) {}
   append(...nodes: Node[]) { this.children.push(...nodes); }
@@ -13,18 +13,20 @@ class Node {
   text(): string { return [this.textContent, ...this.children.map(child => child.text())].join(" "); }
   async click() { for (const callback of this.listeners.click ?? []) await callback(); }
 }
-function page(options: { manager?: boolean; session?: boolean; post?: (payload: any) => Promise<any> } = {}) {
+function page(options: { manager?: boolean; session?: boolean; unavailable?: boolean; statusUnavailable?: boolean; post?: (payload: any) => Promise<any> } = {}) {
   const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
-  const start = html.indexOf("function modelControls("), end = html.indexOf("function render(snapshot)", start);
+  const start = html.indexOf("function modelUnavailableText("), end = html.indexOf("function render(snapshot)", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  const banner = new Node("p");
   const requests: any[] = [], state = { stopped: false, managerMode: options.manager ?? false, selectedProjectId: "project", selectedInstanceId: "instance", viewGeneration: 1,
+    $: () => banner, snapshot: { runtimeModels: [], runtimeModelsUnavailable: options.unavailable === true, status: { runtimeModelsUnavailable: options.statusUnavailable === true } },
     context: () => ({ projectId: "project", instanceId: "instance", generation: 1 }), canMutate: () => true,
     el: (tag: string, text = "") => { const node = new Node(tag); node.textContent = text; return node; },
     post: async (_url: string, payload: any) => { requests.push(payload); return options.post ? options.post(payload) : { ok: true, confirmation: { token: "fixture-token", expiresAt: Date.now() + 60_000, peer: "codex", action: payload.modelAction, previousModel: "old", nextModel: "new", appliesFrom: "next_turn" }, appliesFrom: "next_turn" }; },
     model: { peer: "codex", effectiveModel: "old", source: "override", desiredModel: "new", pendingNextTurn: true }, until: options.session === false ? 0 : Date.now() + 60_000,
   };
-  const box = runInNewContext(`${html.slice(start, end)}; modelControls(model,until)`, state) as Node;
-  return { box, state, requests, button: (label: string) => { const found = box.all().find(node => node.tag === "button" && node.textContent === label); if (!found) throw new Error("fixture button missing"); return found; }, input: () => box.all().find(node => node.tag === "input")! };
+  const box = runInNewContext(`${html.slice(start, end)}; modelControls(model,until,renderModelAvailability(snapshot))`, state) as Node;
+  return { box, banner, state, requests, button: (label: string) => { const found = box.all().find(node => node.tag === "button" && node.textContent === label); if (!found) throw new Error("fixture button missing"); return found; }, input: () => box.all().find(node => node.tag === "input")! };
 }
 test("ordinary and manager dashboards show model state but acquire no settings authority", () => {
   for (const options of [{ session: false }, { manager: true }]) { const f = page(options); expect(f.box.text()).toContain("pending next turn"); expect(f.box.text()).toContain("ahub ui --settings"); expect(f.box.all().filter(node => node.tag === "button")).toHaveLength(0); expect(f.requests).toHaveLength(0); }
@@ -53,4 +55,15 @@ test("stale confirmation and unconfirmed replies never claim an applied model", 
   const f = page({ post: async payload => payload.action === "model_preview" ? { ok: true, confirmation: { token: "token", expiresAt: Date.now() + 60_000, peer: "codex", action: "set", previousModel: "old", nextModel: "new", appliesFrom: "next_turn" } } : { ok: true, unconfirmed: true } });
   f.input().value = "new"; await f.button("Preview model").click(); await f.button("Confirm next-turn model").click();
   expect(f.box.text()).toContain("unconfirmed"); expect(f.box.text()).not.toContain("Selection saved");
+});
+
+test("model catalog overflow shows a fixed banner and no model controls even in a settings session", () => {
+  for (const options of [{ unavailable: true }, { statusUnavailable: true }]) {
+    const f = page(options);
+    expect(f.banner.hidden).toBe(false); expect(f.banner.text()).toContain("peer catalog exceeds the bounded display limit");
+    expect(f.banner.text()).toContain("ahub model set <peer> <model>"); expect(f.banner.text()).toContain("ahub model clear <peer>");
+    expect(f.box.text()).toContain("Runtime models unavailable"); expect(f.box.all().some(node => node.tag === "button" || node.tag === "input")).toBe(false);
+    expect(f.requests).toHaveLength(0);
+  }
+  const healthy = page(); expect(healthy.banner.hidden).toBe(true); expect(healthy.banner.text()).toBe("");
 });
