@@ -27,6 +27,7 @@ function manualScheduler() {
     schedule,
     maxSize: () => maxSize,
     size: () => pending.size,
+    delays: () => [...pending.values()].map(item => item.delay),
     fire: () => {
       const next = pending.entries().next().value as [number, { delay: number; run: () => void }] | undefined;
       expect(next, "a delayed daemon drain is pending").toBeDefined();
@@ -125,9 +126,37 @@ test("#1281 AC2/AC4: a delayed row keeps task A while task B is open, never chan
   expect(events(r.file, "usage")).toHaveLength(2);
 });
 
+test("#1283: the terminal offline read finishes the bounded backlog before drop", async () => {
+  const r = await rig();
+  await r.turn("terminal backlog");
+  appendFileSync(r.wire, `${JSON.stringify({ type: "prompt", text: "x".repeat(1_100_000) })}\n`);
+  r.row(Date.now(), 4, 2);
+  await r.daemon.stop();
+  expect(events(r.file, "usage")).toHaveLength(1);
+  expect(events(r.file, "usage")[0]).toMatchObject({ inputTokens: 4, outputTokens: 2 });
+});
+
 test("#1281 immediate Kimi tokens count in the supervision receipt opened before the native turn", async () => {
   const r = await rig();
   await r.turn("supervised ordinary turn", { supervision: true, during: () => r.row(Date.now(), 5, 2) });
   await until(() => events(r.file, "supervision_turn").length === 1, "supervision receipt");
   expect(events(r.file, "supervision_turn")[0]).toMatchObject({ peer: "kimi", tokens: 7 });
+});
+
+test("#1283 AC2/AC4/AC6: status runs between slices and the next fresh discovery sees a new agent", async () => {
+  const r = await rig();
+  appendFileSync(r.wire, `${JSON.stringify({ type: "prompt", text: "x".repeat(1_100_000) })}\n`);
+  await r.turn("large backlog");
+  expect(r.timers.delays()).toEqual([0]);
+  mkdirSync(join(r.dir, "agents", "agent-new"), { recursive: true });
+  writeFileSync(join(r.dir, "agents", "agent-new", "wire.jsonl"), `${JSON.stringify({ type: "metadata", protocol_version: "1.5", created_at: 1 })}\n`);
+  r.row(Date.now(), 9, 1);
+  const status = await r.console_.request({ t: "status" });
+  expect(status.status.peers.kimi).toBeDefined();
+  expect(events(r.file, "usage")).toHaveLength(0);
+  r.timers.fire();
+  await until(() => events(r.file, "usage").length === 1, "the new agent is collected by the next slice");
+  expect(events(r.file, "usage")[0]).toMatchObject({ inputTokens: 9, outputTokens: 1 });
+  expect(r.timers.maxSize()).toBe(1);
+  await r.daemon.stop();
 });

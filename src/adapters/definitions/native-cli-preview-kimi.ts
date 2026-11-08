@@ -1,4 +1,6 @@
 import { join } from "node:path";
+import { homedir } from "node:os";
+import { kimiPluginPreview } from "../../cli/kimi-plugin.ts";
 import type { Launch } from "../../cli/launch.ts";
 import { REDACTED, nativeCommand, previewState, finishPreview, type NativePreviewContext, type NativePreviewMetadata } from "./native-cli-preview-common.ts";
 
@@ -9,6 +11,7 @@ export function previewKimi(ctx: NativePreviewContext) {
   let envNames = state.envNames;
   let launch: Launch;
   let kimiMetadata: NativePreviewMetadata | undefined;
+  let completionPlugin: NativePreviewMetadata["completionPlugin"];
   const model = value("--model");
   const mode = value("--mode") ?? startModeOf(config.peers, "kimi");
   if (mode !== "tui" && mode !== "headless") throw new Error("invalid Kimi mode");
@@ -19,10 +22,14 @@ export function previewKimi(ctx: NativePreviewContext) {
   } else {
     const native = buildKimiTuiLaunch(config.kimi_cmd, model ? REDACTED : undefined);
     launch = { ...native, cmd: native.cmd === "kimi" ? "kimi" : REDACTED, args: native.args.map(arg => arg === "--model" || arg === REDACTED ? arg : REDACTED) };
-    envNames = Object.keys(nativeLaunchEnv("kimi", childEnv())).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]);
+    const nativeEnv = nativeLaunchEnv("kimi", childEnv());
+    envNames = Object.keys(nativeEnv).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_HOOK_PURPOSE"]);
+    unresolved.push({ field: "nativeLaunchId", reason: "native completion facts bind to the launch admitted by the running hub" });
+    const home = nativeEnv.KIMI_CODE_HOME ?? join(nativeEnv.HOME ?? homedir(), ".kimi-code");
+    completionPlugin = kimiPluginPreview(home, join(cliDir, "../../plugins/agent-hub/kimi-hook.js"));
   }
   const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join(cliDir, "../../plugins/agent-hub/server.js"), mode);
-  kimiMetadata = { mode, mcp: { file, action, changed, tracked } };
+  kimiMetadata = { mode, mcp: { file, action, changed, tracked }, ...(completionPlugin ? { completionPlugin } : {}) };
 
   return finishPreview(ctx, launch, envNames, unresolved, kimiMetadata);
 }

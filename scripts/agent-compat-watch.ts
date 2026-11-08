@@ -14,6 +14,7 @@ export const SOURCES: Record<CompatId, WatchSource> & Record<string, WatchSource
   "claude-implementer": { kind: "npm", pkg: "@anthropic-ai/claude-code" },
   "codex-review": { kind: "npm", pkg: "@openai/codex" },
   "kimi-review": { kind: "npm", pkg: "@moonshot-ai/kimi-code" },
+  "kimi-tui": { kind: "npm", pkg: "@moonshot-ai/kimi-code" },
   jcode: { kind: "github", repo: "1jehuang/jcode" },
   agy: { kind: "none" },
   qwen: { kind: "npm", pkg: "@qwen-code/qwen-code" },

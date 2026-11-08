@@ -1,8 +1,41 @@
 import { retainedLaunchWarning } from "./native-cli-retained.ts";
-import { resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { assessVersion, COMPAT } from "../compat.ts";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 import { bundleInStatus, rosterInStatus } from "../../hub/status-roster.ts";
+import { cleanupKimiPlugin, ensureKimiPlugin, type KimiPluginOptions } from "../../cli/kimi-plugin.ts";
+
+export function kimiTuiVersionGate(stdout: string): { ok: true; message?: string } | { ok: false; message: string } {
+  const verdict = assessVersion("kimi-tui", COMPAT["kimi-tui"].parse(stdout));
+  if (!verdict.ok) return { ok: false, message: verdict.reason };
+  return verdict.note ? { ok: true, message: verdict.note } : { ok: true };
+}
+
+export function kimiTuiSpawnOptions(cwd: string, env: NodeJS.ProcessEnv) {
+  return { cwd, env, stdio: "inherit" as const };
+}
+
+export function kimiTuiVersionProbe(launch: { cmd: string; args: string[] }): { cmd: string; args: string[] } {
+  return { cmd: launch.cmd, args: [...launch.args, "--version"] };
+}
+
+function runKimiTui(cmd: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<{ error?: Error; status: number | null }> {
+  const child = spawn(cmd, args, kimiTuiSpawnOptions(cwd, env));
+  return new Promise(resolveExit => {
+    const forward = (signal: NodeJS.Signals) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      try { child.kill(signal); } catch { /* the native child may exit as the signal arrives */ }
+    };
+    const onInterrupt = () => forward("SIGINT"), onTerminate = () => forward("SIGTERM"), onHangup = () => forward("SIGHUP");
+    const cleanup = () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); process.off("SIGHUP", onHangup); };
+    process.on("SIGINT", onInterrupt); process.on("SIGTERM", onTerminate); process.on("SIGHUP", onHangup);
+    child.once("error", error => { cleanup(); resolveExit({ error, status: null }); });
+    child.once("close", code => { cleanup(); resolveExit({ status: code }); });
+  });
+}
 
 export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
   const peer = ctx.instance ?? "kimi";
@@ -42,20 +75,56 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
       if (!admission.ok) fail(admission.error);
       const runningCommand = admission.retainedLaunchConfig?.kimi_cmd;
       let launch: ReturnType<typeof buildKimiTuiLaunch>;
-      let result: ReturnType<typeof spawnSync>;
+      let result: { error?: Error; status: number | null };
       try {
         // Inside the try: a kimi_cmd with no TUI form throws here, and the admission must still be released (#549).
         // The running hub's value wins over the file's while a reload is retained (#654): when it has no TUI form, say whose it is, so the
         // error is not read as a fault in the file. The words themselves are never echoed.
         const running = Array.isArray(runningCommand) && runningCommand.every((arg: unknown) => typeof arg === "string");
-        try { launch = buildKimiTuiLaunch(running ? runningCommand : projectConfig().kimi_cmd, model); }
+        const command = running ? runningCommand : projectConfig().kimi_cmd;
+        try { launch = buildKimiTuiLaunch(command, model); }
         catch (error) {
           throw running ? new Error(`${(error as Error).message} (the command is the running hub's kimi_cmd: the value in the config file is retained until ahub settings reload)`) : error;
         }
-        // The daemon's own bundle, so the MCP server matches the hub it talks to (#502); this CLI's copy only for an older hub.
-        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve(cliDir, "../../plugins/agent-hub/server.js"), "tui");
+        const probe = kimiTuiVersionProbe(buildKimiTuiLaunch(command));
+        const version = spawnSync(probe.cmd, probe.args, { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: nativeLaunchEnv("kimi", childEnv()) });
+        const gate = kimiTuiVersionGate(version.status === 0 ? version.stdout : "");
+        if (version.status === 0 && version.stdout.trim() && gate.message) console.error(`${gate.message}. Completion receipts are off; the TUI launches as before.`);
+        // The daemon's own bundles, so the MCP server and native hook match the hub they talk to (#502, #1282).
+        const serverBundle = bundleInStatus(snapshot) ?? resolve(cliDir, "../../plugins/agent-hub/server.js");
+        const written = configureKimiMcp(cwd, stateDir, serverBundle, "tui");
         if (written.tracked) console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
-        result = spawnSync(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+        const nativeEnv: NodeJS.ProcessEnv = { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+        if (!gate.ok) {
+          result = await runKimiTui(launch.cmd, launch.args, cwd, nativeEnv);
+        } else {
+          const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join(nativeEnv.HOME ?? homedir(), ".kimi-code");
+          let nativeLaunchId: string | undefined, completionEnv: NodeJS.ProcessEnv | undefined, plugin: KimiPluginOptions | undefined;
+          try {
+            mkdirSync(nativeHome, { recursive: true, mode: 0o700 });
+            const native = await hub.request({ t: "native_hook_launch", op: "begin", peer, nativeHome });
+            if (!native.ok || typeof native.launchId !== "string" || typeof native.instanceId !== "string") throw new Error(native.error ?? "native hook launch was not admitted");
+            nativeLaunchId = native.launchId;
+            plugin = { home: nativeHome, hookScript: resolve(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
+            console.error(`Kimi TUI completion facts: installing a launch-scoped native plugin under ${join(nativeHome, "plugins", "managed", "agent-hub")}; it will be removed after this TUI exits`);
+            ensureKimiPlugin(plugin);
+            completionEnv = { ...nativeEnv, AGENTHUB_INSTANCE_ID: native.instanceId, AGENTHUB_LAUNCH_ID: native.launchId, AGENTHUB_HOOK_PURPOSE: "facts" };
+          } catch (error) {
+            console.error(`Kimi TUI completion facts are unavailable: ${(error as Error).message}. Continuing without completion receipts; resolve the cause and restart to enable them.`);
+            if (nativeLaunchId) await hub.request({ t: "native_hook_launch", op: "end", peer, launchId: nativeLaunchId }).catch(() => {});
+            if (plugin) try { cleanupKimiPlugin(plugin); } catch { console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join(nativeHome, "plugins", "managed", "agent-hub")} before removing it`); }
+          }
+          if (completionEnv) {
+            try {
+              result = await runKimiTui(launch.cmd, launch.args, cwd, completionEnv);
+            } finally {
+              if (nativeLaunchId) await hub.request({ t: "native_hook_launch", op: "end", peer, launchId: nativeLaunchId }).catch(() => {});
+              if (plugin) try { cleanupKimiPlugin(plugin); } catch { console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join(nativeHome, "plugins", "managed", "agent-hub")} before removing it`); }
+            }
+          } else {
+            result = await runKimiTui(launch.cmd, launch.args, cwd, nativeEnv);
+          }
+        }
       } finally {
         if (admission.admissionId) await hub.request({ t: "kimi_launch_end", admissionId: admission.admissionId }).catch(() => {});
       }
