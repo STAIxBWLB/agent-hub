@@ -82,7 +82,7 @@ export const STATUS_SENTENCES = Object.freeze({
   offline: "No agent-hub is running for this project. Start it yourself with `ahub up` in a terminal; this panel does not start anything.",
   unavailable_version: "This project's agent-hub is too old to report what this panel shows. Upgrade it yourself with `ahub upgrade`; this panel does not.",
   unknown: "The reading has no time, so its age is unknown.",
-  failed: "ahub did not answer the status request. Nothing was changed.",
+  failed: "ahub did not answer the status request. Nothing was changed. Run `ahub status` in a terminal in the project to see why.",
   timeout: "ahub did not answer in time. Nothing was left running.",
   too_large: "ahub printed more than expected, so its answer was not used.",
 });

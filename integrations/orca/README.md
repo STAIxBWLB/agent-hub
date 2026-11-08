@@ -125,6 +125,21 @@ orca plugin uninstall <publisher>.agent-hub-companion      # if it was installed
 Disabling or removing it stops no agent, removes no worktree, edits no hub state and restores no
 setting, because it never changed any. Remove its plugin folder state with the commands above only.
 
+## Platforms and support matrix (O3)
+
+[`support-matrix.json`](support-matrix.json) gives each combination its own verdict. A combination is
+`supported` only when its receipt file exists and no longer says NOT RUN, and a test enforces that. **None is
+supported today**: each leg needs a person's machines or accounts, so each is a **person-run** receipt that has
+not been run. No identity check is loosened for any combination.
+
+| Combination | Verdict | What happens | Receipt (person-run, NOT RUN) |
+| --- | --- | --- | --- |
+| `macos-local-desktop` | fixture only | everything above, checked against fixtures and real scripts | [native-receipt.md](native-receipt.md) |
+| `remote-workspace` | unsupported | a workspace whose host id is not declared to be this Mac is refused before anything runs; you are shown `'ahub' 'console'` to run on that host; a remote loopback link is never opened locally | [receipts/remote.md](receipts/remote.md) |
+| `windows-desktop` | unsupported | every workspace is refused with `unsupported_platform` and nothing runs: the entries build a POSIX-quoted command line and expect an `ahub` executable | [receipts/windows.md](receipts/windows.md) |
+| `browser-or-mobile-client` | unsupported | where the client has no external navigation, no link is held or shown; it says to run `ahub ui` on the machine that runs the project. Mobile is **not** inferred from SSH reachability or from Orca offering mobile pairing | [receipts/browser-mobile.md](receipts/browser-mobile.md) |
+| `linux-desktop` | unsupported | never exercised and not claimed | none |
+
 ## What is not proven
 
 - **Native behaviour.** Everything above is checked against the O0 fake host and CLI fixtures and against

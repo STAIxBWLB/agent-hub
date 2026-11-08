@@ -25,6 +25,7 @@ export const REFUSALS = Object.freeze({
   cli_output_too_large: "ahub printed more than expected, so its answer was not used.",
   unrecognized_output: "ahub answered in a form this companion does not recognize, so nothing was opened. Run `ahub ui` in a terminal.",
   bad_request: "That request was not valid.",
+  unsupported_platform: "This companion is not qualified on this operating system, so it runs nothing here. Open a terminal in the workspace yourself and run `ahub console`.",
 });
 
 /** @typedef {keyof typeof REFUSALS} RefusalCode */
@@ -74,6 +75,9 @@ export function parseSettings(raw) {
   return { localHostIds: ids, nullHostIsLocal: settings.trustNullHostAsLocal === true, ahubPath: ahubValid && ahub !== "" ? ahub : undefined, ahubInvalid: !ahubValid };
 }
 
+/** The one command shown for a workspace on another host: the existing remote console, as fixed words to run there. Never a link, never a project path. */
+export const REMOTE_COMMAND = terminalCommand(["ahub", "console"]);
+
 /** The default canonicalizer: this machine's own real path. A remote path is never resolved here, because a remote host is refused before it is reached. */
 export const canonicalizeHere = path => realpathSync(path);
 
@@ -83,6 +87,9 @@ export const canonicalizeHere = path => realpathSync(path);
  * @returns {{ ok: true, binding: Binding } | Refusal}
  */
 export function bindRow(row, ctx) {
+  // The entries build a POSIX-quoted command line and expect an `ahub` executable, which are not right for a Windows shell, and no Windows receipt exists. An unqualified platform runs nothing
+  // rather than something close to right; the identity checks below are not loosened for any platform. `ctx.platform` is injected (the worker passes process.platform).
+  if (ctx.platform === "win32") return refuse("unsupported_platform");
   if (row.hostId === null) { if (!ctx.settings.nullHostIsLocal) return refuse("host_unknown"); }
   else if (!ctx.settings.localHostIds.includes(row.hostId)) return refuse("remote");
   if (!isAbsolute(row.path)) return refuse("unreal_root");
