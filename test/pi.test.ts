@@ -930,7 +930,8 @@ for (const accepted of [false, true]) test(`Pi ${accepted ? "acknowledges the ru
     expect(applied).toEqual(accepted ? ["dgx/runtime"] : []);
     if (accepted) {
       expect(receipts).toContainEqual(expect.objectContaining({ state: "accepted" }));
-      expect((await f.post("/event", { type: "agent_settled" })).ok).toBe(true); expect(f.peer.state).toBe("idle");
+      expect((await f.post("/event", { type: "agent_start", generation: 1 })).ok).toBe(true);
+      expect((await f.post("/event", { type: "agent_settled", generation: 1 })).ok).toBe(true); expect(f.peer.state).toBe("idle");
       desired = undefined;
       await expect(f.peer.deliver([newEnvelope("user", "fixture clear without baseline")], "model-clear")).rejects.toThrow("ahub restart pi");
       expect(applied).toEqual(["dgx/runtime"]);
