@@ -123,3 +123,32 @@ test("clear before the first ACK stays pending while the captured override remai
   expect(next.model).toBeUndefined(); next.applied();
   expect(latches.status("codex", owner, fallback)).toMatchObject({ effectiveModel: "instance-model", source: "instance", desiredModel: null, pendingNextTurn: false });
 });
+
+test("failed capture retirement is token-specific and cannot retire ACKed or native-start-superseded selections", () => {
+  const { store } = fixture(), latches = new ModelOverrideLatches(store), owner = {}, rejectedToken = {};
+  store.set("codex", "rejected", 1); latches.capture("codex", owner, rejectedToken, () => true);
+  store.set("codex", "corrected", 2); expect(latches.end("codex", rejectedToken, true)).toBe(true);
+  const currentToken = {}, current = latches.capture("codex", owner, currentToken, () => true);
+  expect(current.model).toBe("corrected"); expect(latches.end("codex", rejectedToken, true)).toBe(false);
+  expect(latches.capture("codex", owner, currentToken, () => true)).toBe(current);
+  current.applied(); expect(latches.end("codex", currentToken, true)).toBe(false);
+  const nativeToken = {}; latches.capture("codex", owner, nativeToken, () => true); latches.observeNative("codex", owner, "native-choice");
+  expect(latches.end("codex", nativeToken, true)).toBe(false);
+  expect(latches.status("codex", owner, fallback)).toMatchObject({ effectiveModel: "native-choice", source: "native default", desiredModel: "corrected", pendingNextTurn: true });
+});
+test("sticky clear provenance requires the same owner's prior override ACK and an exact native hint", () => {
+  const { store } = fixture(), latches = new ModelOverrideLatches(store), owner = {};
+  store.set("codex", "owned-x", 1); latches.capture("codex", owner, {}, () => true).applied();
+  store.clear("codex"); latches.capture("codex", owner, {}, () => true).applied("owned-x");
+  expect(latches.status("codex", owner, { source: "native default" })).toMatchObject({ effectiveModel: "owned-x", source: "native thread default (was override)", desiredModel: null, pendingNextTurn: false });
+  latches.end("codex"); latches.capture("codex", owner, {}, () => true).applied("owned-x");
+  expect(latches.status("codex", owner, fallback).source).toBe("native thread default (was override)");
+  latches.observeNative("codex", owner, "owned-x");
+  latches.capture("codex", owner, {}, () => true).applied("owned-x");
+  expect(latches.status("codex", owner, fallback).source).toBe("native default");
+  store.set("codex", "owned-x", 2); latches.capture("codex", owner, {}, () => true).applied(); store.clear("codex");
+  const replacement = {}; latches.capture("codex", replacement, {}, () => true).applied("owned-x");
+  expect(latches.status("codex", replacement, fallback).source).toBe("native default");
+  latches.capture("codex", replacement, {}, () => true).applied("unrelated");
+  expect(latches.status("codex", replacement, fallback)).toMatchObject({ effectiveModel: "unrelated", source: "native default" });
+});

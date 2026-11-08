@@ -91,7 +91,9 @@ interface Link {
   up: WebSocket;
   backlog: string[]; // TUI frames that arrived before the upstream socket opened
   approvalIds: Set<string | number>; // intercepted native ids stay tombstoned for this socket lifetime
-  modelStarts: Map<string | number, ModelStartOrder & { epoch: number; selection?: ModelOverrideSelection; explicit?: string; clientModel: boolean } | null>;
+  modelStarts: Map<string | number, ModelStartOrder & { epoch: number; nativeStarted?: true; selection?: ModelOverrideSelection; explicit?: string; clientModel: boolean } | null>;
+  /** One drained rejection candidate, never an unbounded history while another request hangs. */
+  rejectedModelSelection?: { selection: ModelOverrideSelection; epoch: number; thread: string };
   /** Untracked/reused requests cannot prove a sticky default until a later explicit model ACK. */
   modelUnknownAfter?: number;
   tracked: Map<string | number, string>; // request id -> method, for thread/start and thread/resume
@@ -530,6 +532,7 @@ export class CodexPeer extends BasePeer {
   }
 
   private detach(link: Link): void {
+    link.rejectedModelSelection = undefined;
     this.abortActionWaits(link);
     link.up.close();
     if (this.claimedTui === link) this.claimedTui = undefined;
@@ -624,12 +627,22 @@ export class CodexPeer extends BasePeer {
 
   /** Shared by hub and forwarded starts: response arrival order never rewrites a later accepted start. */
   private acceptModelStart(start: ModelStartOrder, model: string | undefined, inherit: boolean): { model?: string } | undefined {
+    // Even an older successful start protects its shared capture from pre-start retirement.
+    if (this.link) this.link.rejectedModelSelection = undefined;
     if ((this.nativeModels.get(start.thread)?.sequence ?? 0) >= start.sequence) return undefined;
     const actual = model ?? (inherit ? this.nativeModelHint(start.thread) : undefined);
     this.nativeModels.set(start.thread, { sequence: start.sequence, ...(actual === undefined ? {} : { model: actual }) });
     // ponytail: keep at most 128 thread receipts; older defaults are unknown until native model readback is added.
     if (this.nativeModels.size > 128) this.nativeModels.delete(this.nativeModels.keys().next().value!);
     return actual === undefined ? {} : { model: actual };
+  }
+
+  private retireRejectedModelSelection(link: Link): void {
+    const candidate = link.rejectedModelSelection;
+    if (!candidate || link !== this.link || candidate.epoch !== this.contextEpoch || candidate.thread !== this.threadId ||
+        link.modelStarts.size || [...this.pending.values()].some(value => value.modelStart)) return;
+    link.rejectedModelSelection = undefined;
+    try { candidate.selection.rejected?.(); } catch { /* Retirement never changes the native rejection. */ }
   }
 
   private fromTui(link: Link, raw: string): void {
@@ -700,17 +713,29 @@ export class CodexPeer extends BasePeer {
       this.pending.delete(msg.id);
       if (msg.error) p?.reject(new Error(msg.error.message ?? "app-server rejected the request"));
       else p?.resolve(msg.result);
+      if (msg.error) this.retireRejectedModelSelection(link);
       return; // ours: the TUI never asked for it
     }
     if (msg.id !== undefined && !msg.method && link.modelStarts.has(msg.id)) {
-      const selected = link.modelStarts.get(msg.id); link.modelStarts.delete(msg.id);
-      if (selected && !msg.error && link === this.link && selected.epoch === this.contextEpoch && selected.thread === this.threadId) {
-        const acceptedModel = this.acceptModelStart(selected, selected.explicit ?? selected.selection?.model, !selected.clientModel);
-        if (acceptedModel) try {
-          if (selected.explicit !== undefined) this.opts.onNativeModelApplied?.(selected.explicit);
-          else selected.selection?.applied(acceptedModel.model);
-        } catch { /* Native acceptance remains authoritative. */ }
+      const selected = link.modelStarts.get(msg.id);
+      // A reused id has no trustworthy response correlation. Keep its tombstone until reattach;
+      // the first reply cannot prove that all duplicate requests rejected before native execution.
+      if (selected !== null) link.modelStarts.delete(msg.id);
+      if (selected && link === this.link && selected.epoch === this.contextEpoch && selected.thread === this.threadId) {
+        if (msg.error) {
+          // The final rejecting request may have an explicit client model and no selection.
+          // Retain only one still-unaccepted candidate until the known outstanding receipts drain.
+          if (selected.selection && !selected.nativeStarted && (this.nativeModels.get(selected.thread)?.sequence ?? 0) < selected.sequence)
+            link.rejectedModelSelection = { selection: selected.selection, epoch: selected.epoch, thread: selected.thread };
+        } else {
+          const acceptedModel = this.acceptModelStart(selected, selected.explicit ?? selected.selection?.model, !selected.clientModel);
+          if (acceptedModel) try {
+            if (selected.explicit !== undefined) this.opts.onNativeModelApplied?.(selected.explicit);
+            else selected.selection?.applied(acceptedModel.model);
+          } catch { /* Native acceptance remains authoritative. */ }
+        }
       }
+      if (msg.error) this.retireRejectedModelSelection(link);
     }
     if (typeof msg.result?.userAgent === "string") this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
     const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
@@ -821,6 +846,7 @@ export class CodexPeer extends BasePeer {
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.tokenTotal = undefined; this.tokenKinds = undefined;
     this.freshThread = fresh;
+    link.rejectedModelSelection = undefined;
     this.link = link;
     this.threadId = threadId;
     this.onDoing?.("reset");
@@ -918,6 +944,10 @@ export class CodexPeer extends BasePeer {
       return;
     }
     if (method === "turn/started") {
+      link.rejectedModelSelection = undefined;
+      // The notification has no request id. Conservatively protect every outstanding capture on
+      // this bound thread rather than retiring a possibly accepted selection on a later RPC error.
+      for (const start of link.modelStarts.values()) if (start && start.thread === this.threadId) start.nativeStarted = true;
       const nativeTurn = params.turn?.id ?? `unknown:${Date.now()}`;
       this.unboundAccepted = false;
       this.activeTurns.add(nativeTurn);

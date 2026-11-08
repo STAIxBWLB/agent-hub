@@ -4,7 +4,7 @@ import { isNativeModelToken } from "../adapters/model-token.ts";
 import type { ModelOverrideSelection } from "../adapters/registry-types.ts";
 
 export interface ModelOverrideRow { peer: string; model: string; setAt: number; by: "person" }
-export type ModelSource = "override" | "instance" | "launch" | "native default";
+export type ModelSource = "override" | "instance" | "launch" | "native default" | "native thread default (was override)";
 export interface RuntimeModelStatus {
   peer: string;
   effectiveModel: string | null;
@@ -69,21 +69,25 @@ interface Captured {
   revision: string;
   model: string | undefined;
   selection: ModelOverrideSelection;
+  retirementFenced: boolean;
 }
 /** Selected and acknowledged are separate. A later desired write never changes a turn's captured selection. */
 export class ModelOverrideLatches {
   private readonly captured = new Map<string, Captured>();
-  private readonly acknowledged = new Map<string, { owner: object; revision: string | undefined; model: string | undefined; source: "override" | "native default" }>();
+  private readonly acknowledged = new Map<string, { owner: object; revision: string | undefined; model: string | undefined; source: "override" | "native default" | "native thread default (was override)" }>();
   constructor(private readonly store: ModelOverrides) {}
   capture(peer: string, owner: object, turn: object, current: () => boolean): ModelOverrideSelection {
     const previous = this.captured.get(peer);
     if (previous?.owner === owner && previous.turn === turn) return previous.selection;
     const revision = this.store.revision(peer), model = this.store.get(peer)?.model;
-    const capture: Captured = { owner, turn, revision, model, selection: { model, applied: (nativeModel?: string) => {
+    const capture: Captured = { owner, turn, revision, model, retirementFenced: false, selection: { model, applied: (nativeModel?: string) => {
       if (this.captured.get(peer) !== capture) return;
       try { if (!current()) return; } catch { return; }
       const hint = model === undefined && isNativeModelToken(nativeModel) ? nativeModel : undefined;
-      this.acknowledged.set(peer, { owner, revision, model: model ?? hint, source: hint === undefined ? "override" : "native default" });
+      const before = this.acknowledged.get(peer), wasOwned = hint !== undefined && before?.owner === owner && before.model === hint
+        && (before.source === "override" || before.source === "native thread default (was override)");
+      capture.retirementFenced = true;
+      this.acknowledged.set(peer, { owner, revision, model: model ?? hint, source: hint === undefined ? "override" : wasOwned ? "native thread default (was override)" : "native default" });
     } } };
     this.captured.set(peer, capture);
     return capture.selection;
@@ -98,9 +102,14 @@ export class ModelOverrideLatches {
       ...(unsupported ? { unsupported } : {}) };
   }
   forget(peer: string): void { this.captured.delete(peer); this.acknowledged.delete(peer); }
-  end(peer: string): void { this.captured.delete(peer); }
+  end(peer: string, expectedTurn?: object, onlyUnacknowledged = false): boolean {
+    const capture = this.captured.get(peer);
+    if (!capture || expectedTurn !== undefined && capture.turn !== expectedTurn || onlyUnacknowledged && capture.retirementFenced) return false;
+    this.captured.delete(peer); return true;
+  }
   observeNative(peer: string, owner: object, model: string): void {
     if (!isNativeModelToken(model)) return;
+    const capture = this.captured.get(peer); if (capture && capture.owner === owner) capture.retirementFenced = true;
     this.acknowledged.set(peer, { owner, model, source: "native default", revision: this.store.get(peer) ? undefined : this.store.revision(peer) });
   }
 }

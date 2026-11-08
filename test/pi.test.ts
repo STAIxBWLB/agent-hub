@@ -5,7 +5,7 @@ import { processTable } from "../src/hub/child-process.ts";
 import { join } from "node:path";
 import { rosterPiFixture } from "./fakes/pi-roster-tui.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { PiPeer, type PiExit } from "../src/adapters/pi.ts";
+import { PiPeer, type PiExit, type PiOptions } from "../src/adapters/pi.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { newEnvelope, type EnvelopeOpts } from "../src/hub/envelope.ts";
 
@@ -909,4 +909,33 @@ test("Pi model ACK invalidated by roster change is not reported applied before t
       finally { await delivery; rmSync(stateDir, { recursive: true, force: true }); }
     }
   }
+}, 20_000);
+
+for (const accepted of [false, true]) test(`Pi ${accepted ? "acknowledges the runtime model only after prompt acceptance" : "does not acknowledge the runtime model after prompt rejection"}`, async () => {
+  const f = await rosterPiFixture();
+  let desired: string | undefined = "dgx/runtime";
+  const applied: (string | undefined)[] = [], receipts: { state: string; reason?: string }[] = [];
+  const options = (f.peer as unknown as { opts: PiOptions }).opts;
+  options.getModelOverride = () => { const model = desired; return { model, applied: () => { applied.push(model); } }; };
+  f.peer.onDelivery = receipt => { receipts.push(receipt); };
+  let delivery: Promise<unknown> | undefined;
+  try {
+    delivery = f.peer.deliver([newEnvelope("user", "fixture runtime model turn")], "model-prompt").then(() => undefined, error => error);
+    const model = await f.next(); expect(model.type).toBe("set_model"); expect(model.modelId).toBe("dgx/runtime"); expect(applied).toEqual([]);
+    expect((await f.ack(model)).ok).toBe(true);
+    const prompt = await f.next(); expect(prompt.type).toBe("prompt"); expect(applied).toEqual([]);
+    if (accepted) expect((await f.ack(prompt)).ok).toBe(true);
+    else expect((await f.post("/ack", { id: prompt.id, ok: false, refusal: { kind: "prompt_not_started", promptId: prompt.id, sessionId: f.sessionId, generation: prompt.generation } })).ok).toBe(true);
+    expect(await delivery).toBeUndefined();
+    expect(applied).toEqual(accepted ? ["dgx/runtime"] : []);
+    if (accepted) {
+      expect(receipts).toContainEqual(expect.objectContaining({ state: "accepted" }));
+      expect((await f.post("/event", { type: "agent_settled" })).ok).toBe(true); expect(f.peer.state).toBe("idle");
+      desired = undefined;
+      await expect(f.peer.deliver([newEnvelope("user", "fixture clear without baseline")], "model-clear")).rejects.toThrow("ahub restart pi");
+      expect(applied).toEqual(["dgx/runtime"]);
+    } else {
+      expect(f.peer.state).toBe("offline"); expect(receipts).toContainEqual(expect.objectContaining({ state: "failed_safe" }));
+    }
+  } finally { await f.cleanup(); await delivery; }
 }, 20_000);

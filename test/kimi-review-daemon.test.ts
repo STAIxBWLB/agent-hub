@@ -30,6 +30,10 @@ test("daemon Kimi fresh reviews use task capabilities and separate clean homes o
  cleanups.push(() => daemon.stop());
  const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => console_.close());
  expect(await console_.request({ t: "start", peer: "kimi-review" })).toMatchObject({ ok: true });
+ const model = (await console_.request({ t: "model", op: "list" })).models.find((row: { peer: string }) => row.peer === "kimi-review");
+ expect(model).toMatchObject({ desiredModel: null, source: "native default", unsupported: { reasonCode: "unverified_setter" } });
+ expect((await console_.request({ t: "model", op: "set", peer: "kimi-review", model: "unsupported" })).ok).toBe(false);
+ expect((await console_.request({ t: "model", op: "list" })).models.find((row: { peer: string }) => row.peer === "kimi-review").desiredModel).toBeNull();
  expect((daemon.bus.peers.get("kimi-review") as ReviewerPrintPeer).isolationReceipt?.binary).toBe(realPath(executable));
  const builder = await ControlClient.connect(stateDir, { role: "peer", peer: "builder", channel: true }); cleanups.push(() => builder.close());
  await until(() => daemon.bus.stateOf("builder") === "idle");

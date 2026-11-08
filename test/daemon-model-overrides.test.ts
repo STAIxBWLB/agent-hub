@@ -12,7 +12,7 @@ import type { Envelope } from "../src/hub/envelope.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const stop of cleanup.splice(0).reverse()) await stop(); });
 class Passive extends BasePeer { async start() { this.setState("idle"); } async stop() { this.setState("offline"); } async deliver(_envs: Envelope[]) {} }
-async function fixture(configured = false) {
+async function fixture(configured = false, configure?: (root: string) => Partial<HubConfig>, appPort = 0) {
   const root = mkdtempSync(join(tmpdir(), "ahub-live-model-")), stateDir = join(root, "state"); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const adapters: NonNullable<HubConfig["adapters"]> = configured ? { fixture: { transport: "acp", command: process.execPath, args: [], displayName: "Fixture ACP", roles: ["implementer"] } } : {};
   mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.local.json"), configured ? JSON.stringify({ adapters }) : "{}");
@@ -20,8 +20,8 @@ async function fixture(configured = false) {
     memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
     mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, omniroute: { urls: [], access_hosts: [] },
     pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, specs: { ...DEFAULT_CONFIG.specs, enabled: false },
-    snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } };
-  const start = () => startDaemon({ cwd: root, stateDir, config, configWatch: false, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, memorySyncTrigger: () => {} });
+    snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false }, ...configure?.(root) };
+  const start = () => startDaemon({ cwd: root, stateDir, config, configWatch: false, controlPort: 0, codexAppPort: appPort, codexProxyPort: 0, memorySyncTrigger: () => {} });
   let daemon = await start();
   cleanup.push(() => daemon.stop());
   let console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
@@ -236,3 +236,44 @@ test("actual model fallback repeatedly reads cached scalar metadata and never in
   }
   expect(reads).toBe(0);
 });
+
+test("actual daemon proxy retires a definitively rejected model capture before the next corrected choice", async () => {
+  // Existing model-free app-server fixture, launched as the daemon's owned fake child. No native/account/model run.
+  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("fixture port") }), port = probe.port!;
+  await probe.stop(true); let log = "";
+  const f = await fixture(false, root => {
+    const executable = join(root, "codex-fixture"); log = join(root, "native-models.jsonl");
+    const fake = new URL("../src/adapters/conformance/fakes/app-server.ts", import.meta.url).href;
+    writeFileSync(executable, `#!${process.execPath}
+import {appendFileSync} from "node:fs";
+import {startFakeAppServer} from ${JSON.stringify(fake)};
+const args=process.argv.slice(2), listen=args[args.indexOf("--listen")+1];
+startFakeAppServer(30,Number(new URL(listen).port),undefined,0,true,msg=>{if(msg.method==="turn/start")appendFileSync(${JSON.stringify(log)},JSON.stringify({model:msg.params.model})+"\\n");});
+await new Promise(()=>{});
+`, { mode: 0o700 });
+    return { codex_bin: executable };
+  }, port);
+  expect((await f.console_.request({ t: "start", peer: "codex" })).ok).toBe(true);
+  const url = f.daemon.bus.peers.get("codex")?.frontendProxy?.url;
+  if (typeof url !== "string") throw Error("owned fake Codex proxy was not published");
+  const tui = new WebSocket(url); cleanup.push(() => tui.close());
+  await new Promise<void>((resolve, reject) => { tui.onopen = () => resolve(); tui.onerror = () => reject(Error("fake proxy connection failed")); });
+  const rpc = (id: number, method: string, params: Record<string, unknown>) => new Promise<any>((resolve, reject) => {
+    const timer = setTimeout(() => { tui.removeEventListener("message", receive); reject(Error("fake native RPC reply missing")); }, 5000);
+    const receive = (event: MessageEvent) => {
+      const reply = JSON.parse(String(event.data)); if (reply.id !== id) return;
+      clearTimeout(timer); tui.removeEventListener("message", receive); resolve(reply);
+    };
+    tui.addEventListener("message", receive); tui.send(JSON.stringify({ id, method, params }));
+  });
+  expect((await rpc(1, "initialize", { clientInfo: { name: "model-free-fixture" } })).result).toBeDefined();
+  expect((await rpc(2, "thread/start", {})).result.thread.id).toBe("th1");
+  expect((await f.request({ op: "set", peer: "codex", model: "rejected-choice" })).ok).toBe(true);
+  expect((await rpc(3, "turn/start", { threadId: "th1", input: [{ type: "text", text: "REFUSE_TURN" }] })).error).toBeDefined();
+  expect((await f.request({ op: "set", peer: "codex", model: "corrected-choice" })).ok).toBe(true);
+  expect((await rpc(4, "turn/start", { threadId: "th1", input: [{ type: "text", text: "accepted fixture" }] })).result.turn.id).toBeDefined();
+  const sent = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  expect(sent.map(row => row.model)).toEqual(["rejected-choice", "corrected-choice"]);
+  const row = (await f.request({ op: "list" })).models.find((value: { peer: string }) => value.peer === "codex");
+  expect(row).toMatchObject({ effectiveModel: "corrected-choice", desiredModel: "corrected-choice", source: "override", pendingNextTurn: false });
+}, 20_000);

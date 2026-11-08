@@ -21,7 +21,7 @@ export function projectModelStatus(value: unknown): RuntimeModelStatus | null {
       if (descriptor && "value" in descriptor) row[key] = descriptor.value;
     }
   } catch { return null; }
-  if (!peerToken(row.peer) || !(row.effectiveModel === null || isNativeModelToken(row.effectiveModel)) || !(row.desiredModel === null || isNativeModelToken(row.desiredModel)) || !(typeof row.source === "string" && ["override", "instance", "launch", "native default"].includes(row.source)) || typeof row.pendingNextTurn !== "boolean") return null;
+  if (!peerToken(row.peer) || !(row.effectiveModel === null || isNativeModelToken(row.effectiveModel)) || !(row.desiredModel === null || isNativeModelToken(row.desiredModel)) || !(typeof row.source === "string" && ["override", "instance", "launch", "native default", "native thread default (was override)"].includes(row.source)) || typeof row.pendingNextTurn !== "boolean") return null;
   let unsupported: RuntimeModelStatus["unsupported"];
   if (row.unsupported !== undefined) {
     if (!row.unsupported || typeof row.unsupported !== "object" || Array.isArray(row.unsupported)) return null;

@@ -1,5 +1,10 @@
 /** One host-latched runtime choice; applied binds the captured revision and boundary, never a later value. */
-export interface ModelOverrideSelection { readonly model: string | undefined; applied(nativeModel?: string): void; }
+export interface ModelOverrideSelection {
+  readonly model: string | undefined;
+  applied(nativeModel?: string): void;
+  /** Retire only this still-unacknowledged capture after a definitive native pre-start rejection. */
+  rejected?(): void;
+}
 
 import type { ClaudeImplementerOptions } from "./claude-implementer.ts";
 import type { ReviewerBackend, ReviewerPrintOptions } from "./reviewer-print.ts";

@@ -4811,6 +4811,7 @@ ${renderDigest(envs, false)}`;
       up.onclose = () => tui.close();
     }
     detach(link) {
+      link.rejectedModelSelection = undefined;
       this.abortActionWaits(link);
       link.up.close();
       if (this.claimedTui === link)
@@ -4915,6 +4916,8 @@ ${renderDigest(envs, false)}`;
       return known.model;
     }
     acceptModelStart(start, model, inherit) {
+      if (this.link)
+        this.link.rejectedModelSelection = undefined;
       if ((this.nativeModels.get(start.thread)?.sequence ?? 0) >= start.sequence)
         return;
       const actual = model ?? (inherit ? this.nativeModelHint(start.thread) : undefined);
@@ -4922,6 +4925,15 @@ ${renderDigest(envs, false)}`;
       if (this.nativeModels.size > 128)
         this.nativeModels.delete(this.nativeModels.keys().next().value);
       return actual === undefined ? {} : { model: actual };
+    }
+    retireRejectedModelSelection(link) {
+      const candidate = link.rejectedModelSelection;
+      if (!candidate || link !== this.link || candidate.epoch !== this.contextEpoch || candidate.thread !== this.threadId || link.modelStarts.size || [...this.pending.values()].some((value) => value.modelStart))
+        return;
+      link.rejectedModelSelection = undefined;
+      try {
+        candidate.selection.rejected?.();
+      } catch {}
     }
     fromTui(link, raw) {
       const msg = parse(raw);
@@ -5011,21 +5023,31 @@ ${renderDigest(envs, false)}`;
           p?.reject(new Error(msg.error.message ?? "app-server rejected the request"));
         else
           p?.resolve(msg.result);
+        if (msg.error)
+          this.retireRejectedModelSelection(link);
         return;
       }
       if (msg.id !== undefined && !msg.method && link.modelStarts.has(msg.id)) {
         const selected = link.modelStarts.get(msg.id);
-        link.modelStarts.delete(msg.id);
-        if (selected && !msg.error && link === this.link && selected.epoch === this.contextEpoch && selected.thread === this.threadId) {
-          const acceptedModel = this.acceptModelStart(selected, selected.explicit ?? selected.selection?.model, !selected.clientModel);
-          if (acceptedModel)
-            try {
-              if (selected.explicit !== undefined)
-                this.opts.onNativeModelApplied?.(selected.explicit);
-              else
-                selected.selection?.applied(acceptedModel.model);
-            } catch {}
+        if (selected !== null)
+          link.modelStarts.delete(msg.id);
+        if (selected && link === this.link && selected.epoch === this.contextEpoch && selected.thread === this.threadId) {
+          if (msg.error) {
+            if (selected.selection && !selected.nativeStarted && (this.nativeModels.get(selected.thread)?.sequence ?? 0) < selected.sequence)
+              link.rejectedModelSelection = { selection: selected.selection, epoch: selected.epoch, thread: selected.thread };
+          } else {
+            const acceptedModel = this.acceptModelStart(selected, selected.explicit ?? selected.selection?.model, !selected.clientModel);
+            if (acceptedModel)
+              try {
+                if (selected.explicit !== undefined)
+                  this.opts.onNativeModelApplied?.(selected.explicit);
+                else
+                  selected.selection?.applied(acceptedModel.model);
+              } catch {}
+          }
         }
+        if (msg.error)
+          this.retireRejectedModelSelection(link);
       }
       if (typeof msg.result?.userAgent === "string")
         this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
@@ -5174,6 +5196,7 @@ ${renderDigest(envs, false)}`;
       this.tokenTotal = undefined;
       this.tokenKinds = undefined;
       this.freshThread = fresh;
+      link.rejectedModelSelection = undefined;
       this.link = link;
       this.threadId = threadId;
       this.onDoing?.("reset");
@@ -5281,6 +5304,10 @@ ${renderDigest(envs, false)}`;
         return;
       }
       if (method === "turn/started") {
+        link.rejectedModelSelection = undefined;
+        for (const start of link.modelStarts.values())
+          if (start && start.thread === this.threadId)
+            start.nativeStarted = true;
         const nativeTurn = params.turn?.id ?? `unknown:${Date.now()}`;
         this.unboundAccepted = false;
         this.activeTurns.add(nativeTurn);
@@ -8672,7 +8699,7 @@ var init_pi = __esm(() => {
         const baseline = await this.opts.selectModel?.(envs);
         const requested = selection?.model ?? baseline ?? (this.baselineRequestedModel || undefined);
         if (selection && selection.model === undefined && this.runtimeModelSelected && !requested)
-          throw new Error("baseline model unavailable; restore the peer model configuration and retry");
+          throw new Error(`baseline model unavailable; restore the peer model configuration and run ahub restart ${this.id} before retrying`);
         if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
           throw new Error("Pi is off roster or stopped");
         if (requested) {
@@ -8684,11 +8711,6 @@ var init_pi = __esm(() => {
         }
         if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
           throw new Error("Pi is off roster or stopped");
-        if (requested) {
-          try {
-            selection?.applied();
-          } catch {}
-        }
         this.noteActivity();
         attempted = true;
         if (deliveryId)
@@ -8709,11 +8731,11 @@ var init_pi = __esm(() => {
           this.setState("offline");
           return;
         }
-        if (!requested) {
-          try {
-            selection?.applied();
-          } catch {}
-        }
+        if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
+          throw new Error("Pi is off roster or stopped");
+        try {
+          selection?.applied();
+        } catch {}
         if (deliveryId && this.activeDeliveryIds.has(deliveryId))
           this.delivery({ id: deliveryId, state: "accepted" });
       } catch (error) {

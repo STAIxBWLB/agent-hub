@@ -190,3 +190,25 @@ verification continues at parent `2f311bf61c6c77636aeb54a5ad249838b8ea0ee5`;
 it is not an exact-head canonical pass for the corrected document head. Hosted
 CI must verify the final head before merge. No duplicate canonical run or empty
 retry commit is introduced for this bookkeeping correction.
+
+## Reviewer regression corrections
+
+Review of `54546e9d` found two regressions the earlier focused set missed:
+the generic reviewer factory supplied a model getter to unsupported Claude and
+Kimi reviewer surfaces, and a client-forwarded Codex start rejected before any
+turn began retained its captured model choice. Both are operational regressions,
+not unavailable evidence. The corrected fixtures exercise actual daemon reviewer
+starts and rejected proxy requests followed by a corrected desired model.
+
+The original canonical run at `2f311bf6` reproduced the Claude reviewer failure
+in `reviewer-pool-daemon.test.ts`. It also reported a `#733` catch-up test failure.
+After those failures and this review, the owner interrupted that obsolete run
+with SIGINT; it exited 130 after 592 seconds. It is cancelled, not a full-suite
+pass, and no test failure is erased or counted as fixed merely by cancellation.
+
+The correction also acknowledges Pi selections only after prompt acceptance,
+and identifies a cleared Codex override retained by the native thread as
+`native thread default (was override)`. The latter describes known accepted
+history; clear still cannot reconstruct a previous thread model. Unsupported
+reviewer surfaces keep their original no-override review behavior and do not
+gain a model-setting capability.

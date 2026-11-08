@@ -29,6 +29,12 @@ for (const kind of ["claude", "codex"] as const) test(`daemon ${kind} review var
   const connect = async (hello: Parameters<typeof ControlClient.connect>[1]) => { const client = await ControlClient.connect(stateDir, hello); cleanup.push(() => client.close()); return client; };
   const console_ = await connect({ role: "console" });
   expect(await console_.request({ t: "start", peer })).toMatchObject({ ok: true });
+  if (kind === "claude") {
+    const model = (await console_.request({ t: "model", op: "list" })).models.find((row: { peer: string }) => row.peer === peer);
+    expect(model).toMatchObject({ desiredModel: null, source: "native default", unsupported: { reasonCode: "unverified_setter" } });
+    expect((await console_.request({ t: "model", op: "set", peer, model: "unsupported" })).ok).toBe(false);
+    expect((await console_.request({ t: "model", op: "list" })).models.find((row: { peer: string }) => row.peer === peer).desiredModel).toBeNull();
+  }
   const builder = await connect({ role: "peer", peer: "builder", channel: true });
   await until(() => daemon.bus.stateOf("builder") === "idle");
   expect(await builder.request({ t: "send", to: [peer], body: "builder reasoning" })).toMatchObject({ ok: false, error: expect.stringContaining("review-only") });

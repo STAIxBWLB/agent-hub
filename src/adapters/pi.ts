@@ -764,7 +764,7 @@ export class PiPeer extends BasePeer {
       if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new Error("runtime model must be one bounded native token");
       const baseline = await this.opts.selectModel?.(envs);
       const requested = selection?.model ?? baseline ?? (this.baselineRequestedModel || undefined);
-      if (selection && selection.model === undefined && this.runtimeModelSelected && !requested) throw new Error("baseline model unavailable; restore the peer model configuration and retry");
+      if (selection && selection.model === undefined && this.runtimeModelSelected && !requested) throw new Error(`baseline model unavailable; restore the peer model configuration and run ahub restart ${this.id} before retrying`);
       if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
       if (requested) {
         if (selection?.model !== undefined) await this.applyRequestedModel(requested);
@@ -772,7 +772,6 @@ export class PiPeer extends BasePeer {
         this.runtimeModelSelected = selection?.model !== undefined;
       }
       if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
-      if (requested) { try { selection?.applied(); } catch { /* Native model acknowledgement remains authoritative. */ } }
       this.noteActivity();
       attempted = true;
       if (deliveryId) this.activeDeliveryIds.add(deliveryId);
@@ -785,7 +784,8 @@ export class PiPeer extends BasePeer {
         this.setState("offline");
         return;
       }
-      if (!requested) { try { selection?.applied(); } catch { /* Prompt acceptance proves the unchanged native default. */ } }
+      if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
+      try { selection?.applied(); } catch { /* Only prompt acceptance proves this turn used the selected model or unchanged native default. */ }
       if (deliveryId && this.activeDeliveryIds.has(deliveryId)) this.delivery({ id: deliveryId, state: "accepted" });
     } catch (error) {
       if (promptId !== undefined && promptId !== this.pendingPromptId) return;

@@ -152,6 +152,10 @@ support it, but an explicit client model (for example the person's native
 selection to that current native default; it does not reconstruct an earlier
 thread model. Native client acceptance does not certify a conflicting hub
 override as applied. Raw or pull-only `WsPeer` TUI attachments remain unsupported.
+When clear retains an acknowledged former override as the thread default,
+status labels its source `native thread default (was override)`. A rejected
+start retires its unused capture so a later start can sample a corrected choice;
+an older rejection cannot retire a newer accepted or pending start.
 `turn/steer` never acquires a model field. Local uses the existing direct
 OmniRoute model path for an explicit override while retaining budget, campus,
 observer and generation guards. Pi reuses its model-selection path at the next

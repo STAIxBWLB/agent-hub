@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import type { ModelOverrideSelection } from "../src/adapters/registry-types.ts";
 import { CodexPeer, type CodexOptions } from "../src/adapters/codex-appserver.ts";
 import { Bus } from "../src/hub/bus.ts";
 import type { DeliveryFailureCause } from "../src/hub/delivery-failure.ts";
@@ -1120,3 +1121,90 @@ test("an older forwarded model ACK cannot replace a newer accepted hub model or 
     expect(observed).toEqual([]);
   } finally { tui?.close(); await peer.stop(); fake.stop(true); }
 });
+
+
+test("a rejected forwarded start retires its capture before the corrected model is selected", async () => {
+  let desired = "before-rejection", captured: ModelOverrideSelection | undefined;
+  const applied: string[] = [];
+  let rejected = 0;
+  const r = await setup(0, undefined, {
+    getModelOverride: () => captured ??= {
+      model: desired,
+      applied() { applied.push(this.model!); },
+      rejected() { rejected++; if (captured === this) captured = undefined; },
+    },
+  });
+  r.tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => r.peer.state === "idle");
+  r.tui.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "REFUSE_TURN" }] } }));
+  await until(() => r.seen.some(row => row.id === 3));
+  expect(r.seen.find(row => row.id === 3).error.message).toBe("turn rejected");
+  expect(r.seen.some(row => row.method === "turn/started")).toBe(false);
+  expect(rejected).toBe(1); expect(applied).toEqual([]); expect(captured).toBeUndefined();
+  desired = "corrected-model";
+  r.tui.send(JSON.stringify({ id: 4, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "corrected" }] } }));
+  await until(() => r.seen.some(row => row.id === 4));
+  expect(r.fake.requests.find(row => row.id === 3).params.model).toBe("before-rejection");
+  expect(r.fake.requests.find(row => row.id === 4).params.model).toBe("corrected-model");
+  expect(applied).toEqual(["corrected-model"]); expect(rejected).toBe(1);
+});
+
+for (const newerState of ["pending", "accepted", "started", "both-rejected", "explicit-last", "tombstoned"] as const) {
+  test(newerState === "both-rejected" ? "concurrent forwarded rejections retire their capture when the older rejection drains last"
+    : newerState === "explicit-last" ? "a final explicit forwarded rejection retires the earlier rejected implicit capture"
+    : newerState === "tombstoned" ? "a reused forwarded RPC id keeps rejection retirement unknown until reattachment"
+    : `an older forwarded rejection cannot retire a newer ${newerState} model capture`, async () => {
+    const replies = new Map<number, (error: boolean) => void>();
+    const received: number[] = [];
+    const applied: string[] = [];
+    let rejected = 0, observedStart: (() => void) | undefined;
+    const native = Bun.serve({ hostname: "127.0.0.1", port: 0,
+      fetch(req, server) { return server.upgrade(req) ? undefined : new Response("fixture"); },
+      websocket: { message(ws, raw) {
+        const msg = JSON.parse(String(raw));
+        if (msg.method === "thread/start") return void ws.send(JSON.stringify({ id: msg.id, result: { thread: { id: "th1" } } }));
+        if (msg.method !== "turn/start") return;
+        received.push(msg.id);
+        replies.set(msg.id, error => { ws.send(JSON.stringify(error ? { id: msg.id, error: { code: -32000, message: "turn rejected" } } : { id: msg.id, result: { turn: { id: `turn-${msg.id}` } } })); });
+        observedStart = () => { ws.send(JSON.stringify({ method: "turn/started", params: { threadId: "th1", turn: { id: `turn-${msg.id}` } } })); };
+      } },
+    });
+    const selection: ModelOverrideSelection = { model: "captured-model", applied() { applied.push("captured-model"); }, rejected() { rejected++; } };
+    const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: `ws://127.0.0.1:${native.port}`, cwd: process.cwd(),
+      getModelOverride: () => selection,
+    });
+    let tui: WebSocket | undefined;
+    const seen: any[] = [];
+    try {
+      await peer.start(); tui = new WebSocket(peer.proxyUrl);
+      tui.onmessage = event => seen.push(JSON.parse(String(event.data)));
+      await new Promise<void>(resolve => { tui!.onopen = () => resolve(); });
+      tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+      await until(() => peer.state === "idle");
+      const start = (id: number, model?: string) => tui!.send(JSON.stringify({ id, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "fixture" }], ...(model ? { model } : {}) } }));
+      start(3); await until(() => replies.has(3));
+      start(4, newerState === "explicit-last" || newerState === "tombstoned" ? "client-model" : undefined); await until(() => replies.has(4));
+      const firstDuplicate = replies.get(4)!;
+      if (newerState === "tombstoned") {
+        start(4, "client-second"); await until(() => received.filter(id => id === 4).length === 2);
+      }
+      if (newerState === "accepted") { replies.get(4)!(false); await until(() => seen.some(row => row.id === 4)); }
+      if (newerState === "started") { observedStart!(); await until(() => seen.some(row => row.method === "turn/started")); }
+      if (newerState === "both-rejected") {
+        replies.get(4)!(true); await until(() => seen.some(row => row.id === 4));
+        expect(rejected).toBe(0); // The older request still shares the unaccepted boundary.
+      }
+      replies.get(3)!(true); await until(() => seen.some(row => row.id === 3));
+      expect(rejected).toBe(newerState === "both-rejected" ? 1 : 0);
+      if (newerState === "pending") { replies.get(4)!(false); await until(() => seen.some(row => row.id === 4)); }
+      if (newerState === "started" || newerState === "explicit-last") { replies.get(4)!(true); await until(() => seen.some(row => row.id === 4)); }
+      if (newerState === "tombstoned") {
+        firstDuplicate(true); await until(() => seen.filter(row => row.id === 4).length === 1);
+        expect(rejected).toBe(0);
+        replies.get(4)!(true); await until(() => seen.filter(row => row.id === 4).length === 2);
+      }
+      expect(rejected).toBe(newerState === "both-rejected" || newerState === "explicit-last" ? 1 : 0);
+      expect(applied).toEqual(newerState === "pending" || newerState === "accepted" ? ["captured-model"] : []);
+    } finally { tui?.close(); await peer.stop(); native.stop(true); }
+  });
+}

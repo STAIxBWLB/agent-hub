@@ -2486,7 +2486,9 @@ Clear restores the existing lower-priority selection. For Codex app-server,
 an explicit client model always wins over hub injection. A `turn/start` model
 becomes the native thread default, so clear may retain that current default;
 it does not recover an earlier model. Raw/pull-only native TUI attachments remain
-unsupported. The model and its source appear in `ahub status` and JSON output. An unknown native default remains
+unsupported. A retained former override is labelled `native thread default (was override)`;
+a rejected start leaves the next start free to sample a corrected selection.
+The model and its source appear in `ahub status` and JSON output. An unknown native default remains
 unknown. `pending next turn` means the desired value has not been acknowledged
 at an eligible boundary; it does not claim the current turn changed models.
 

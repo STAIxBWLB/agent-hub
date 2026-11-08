@@ -30,6 +30,9 @@ test("model display distinguishes effective from next turn, keeps closed sources
   expect(projectModelStatus({ ...row, unsupported: { reasonCode: "unmanaged_attachment" } })?.unsupported?.reason).toContain("this attachment has no verified live model setter");
   for (const unsupported of [{ reason: "secret" }, { reasonCode: "secret" }, { reasonCode: "unverified_setter", kind: "secret text" }]) expect(projectModelStatus({ ...row, unsupported })).toBeNull();
   expect(projectModelStatus({ ...row, source: "secret" })).toBeNull();
+  const sticky = projectModelStatus({ ...row, desiredModel: null, pendingNextTurn: false, source: "native thread default (was override)" });
+  expect(sticky?.source).toBe("native thread default (was override)");
+  expect(renderRuntimeModels([sticky!]).map(line => paint(line, false)).join("\n")).toContain("native thread default (was override)");
   const hostile = Object.defineProperty({}, "peer", { get() { throw new Error("must not invoke reply getters"); } });
   expect(projectModelStatus(hostile)).toBeNull();
   expect(projectModelStatus(Object.create(row))).toBeNull();

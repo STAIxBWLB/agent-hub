@@ -6072,7 +6072,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // filled one stays in the row and never matches.
   const ADDED_COLUMNS = [["deps", "[]"], ["plan", "{}"]] as const;
   // Person-owned runtime choices are separate from reload-bound configuration and native serving evidence.
-  const modelBoundaries = new Map<string, { owner: PeerAdapter; token: object; turn?: object }>();
+  const modelBoundaries = new Map<string, { owner: PeerAdapter; token: object; turn?: object; nativeStarted?: true }>();
   const modelUnsupported = (peer: string): RuntimeModelStatus["unsupported"] | undefined => {
     const definition = definitionOf(peer), owner = bus.peers.get(peer);
     if (!definition || !isFixedBuiltinDefinition(definition) || !definition.modelOverride) return {
@@ -6090,6 +6090,8 @@ export async function startDaemon(opts: DaemonOptions) {
     return { source: "native default" };
   };
   const registerModelOwner = (owner: PeerAdapter): void => {
+    const definition = definitionOf(owner.id);
+    if (!definition || !isFixedBuiltinDefinition(definition) || !definition.modelOverride) return;
     modelManagedOwners.add(owner);
     try {
       const launch = owner.recoveryMetadata?.()?.launch;
@@ -6130,7 +6132,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const captured = boundary;
     const selection = modelLatches.capture(peer, owner, captured.token, () => !stopping && bus.peers.get(peer) === owner
       && modelBoundaries.get(peer) === captured && (!captured.turn || turns.get(peer) === captured.turn));
-    return { model: selection.model, applied: (nativeModel?: string) => { selection.applied(nativeModel); if (!stopping) writeStatus(); } };
+    return { model: selection.model, applied: (nativeModel?: string) => { selection.applied(nativeModel); if (!stopping) writeStatus(); }, rejected: () => {
+      if (stopping || bus.peers.get(peer) !== owner || modelBoundaries.get(peer) !== captured || captured.nativeStarted
+        || captured.turn && turns.get(peer) !== captured.turn) return;
+      if (modelLatches.end(peer, captured.token, true)) { modelBoundaries.delete(peer); writeStatus(); }
+    } };
   };
   type ModelGrant = { source: "cli" | "dashboard"; scope: object | string; current: () => boolean; expiresAt?: number };
   type ModelPreview = { peer: string; action: "set" | "clear"; model?: string; expiresAt: number; scope: object | string; source: "cli" | "dashboard";
@@ -7660,6 +7666,8 @@ export async function startDaemon(opts: DaemonOptions) {
         // #215: before the thread's first turn_start, so the planner can tell which turns belong to which thread.
         onThread: (thread, fresh) => { lastCodexThreads.set(peer, thread); event({ type: "native_thread", peer, thread, fresh }); },
         onTurn: (native) => {
+          const modelBoundary = modelBoundaries.get(peer);
+          if (modelBoundary && modelBoundary.owner === codex) modelBoundary.nativeStarted = true;
           const open = turns.get(peer);
           if (open) turnLog?.native(open.id, native);
           if (factsOn()) factSession(peer, codex.thread); // a new thread is unverified before its first item
@@ -8122,7 +8130,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const reviewPolicies = new Map<string, string>();
       startCurrent?.();
       const reviewer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["reviewer-print"]({
-        getModelOverride: () => modelSelection(peer),
+        ...(isFixedBuiltinDefinition(adapter) && adapter.modelOverride ? { getModelOverride: () => modelSelection(peer) } : {}),
         backend, cwd: executionCwd,
         mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", SERVER_JS], env: toolEnv(peer, true) } } }),
         systemPrompt: sessionRoleContract(peer),
