@@ -89,8 +89,18 @@ export function preferRecordItems(items: readonly NativeItem[], snapshot: Record
   // Preexisting priority/baseline context is never deleted merely to satisfy a new optional source cap.
   const ceiling = Math.max(maximumLineBytes, bytes(items));
   const selected = [...items]; let replacedNotes = 0;
-  // A bounded partial window can add known evidence, but can never prove note replacement coverage.
-  for (const note of snapshot.partial ? [] : items) {
+  const partialMarker = "[partial Record window: older Records not read] ";
+  const marked = (rows: NativeItem[]): NativeItem[] => {
+    if (!snapshot.partial) return rows;
+    let first = true;
+    return rows.map(item => {
+      if (!first || !records.some(record => record.item.id === item.id)) return item;
+      first = false;
+      return item.line.startsWith(partialMarker) ? item : { ...item, line: partialMarker + item.line };
+    });
+  };
+  // A partial candidate window does not weaken explicit saved-id/anchor proof for its complete known rows.
+  for (const note of items) {
     if (note.kind === "fail" || note.kind === "contract" || protectedIds.has(note.id)) continue;
     const permitted = snapshot.replaceable.filter(value => value.id === note.id);
     if (permitted.length !== 1 || !permitted[0]!.anchors.length) continue;
@@ -103,18 +113,16 @@ export function preferRecordItems(items: readonly NativeItem[], snapshot: Record
     if (position < 0) continue;
     const complete = additions.map(record => record.item);
     if (bytes(complete) > Buffer.byteLength(note.line)) continue;
-    const candidate = [...selected.slice(0, position), ...complete, ...selected.slice(position + 1)];
-    if (bytes(candidate) > ceiling) continue;
-    selected.splice(position, 1, ...complete); replacedNotes++;
+    const candidate = marked([...selected.slice(0, position), ...complete, ...selected.slice(position + 1)]);
+    if (bytes(candidate) > ceiling || bytes(candidate) > bytes(selected)) continue;
+    selected.splice(0, selected.length, ...candidate); replacedNotes++;
   }
   // Host relevance is authoritative; spare room can carry Records without suppressing any original item.
-  let partialMarked = false;
   for (const record of records) {
     if (selected.length >= maximum || selected.some(item => item.id === record.item.id)) continue;
-    const item = snapshot.partial && !partialMarked
-      ? { ...record.item, line: `[partial Record window: older Records not read] ${record.item.line}` } : record.item;
-    if (bytes([...selected, item]) > ceiling) continue;
-    selected.push(item); partialMarked ||= snapshot.partial;
+    const candidate = marked([...selected, record.item]);
+    if (bytes(candidate) > ceiling) continue;
+    selected.splice(0, selected.length, ...candidate);
   }
   return { items: selected, replacedNotes, records: selected.filter(item => records.some(record => record.item.id === item.id)).length };
 }

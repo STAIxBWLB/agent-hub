@@ -1,3 +1,4 @@
+import { GeneratedNoteRegistry, type GeneratedNoteProof } from "../memory/record-provenance.ts";
 import { RecordCapture, type RecordCapturePolicy } from "../memory/records.ts";
 import { VisualStore, validateVisualInput, validateVisualPayload, VISUAL_ID_PATTERN, type VisualRecord, type VisualSummary } from "./visual.ts";
 import { resolveVisualAssets } from "./visual-assets.ts";
@@ -166,7 +167,7 @@ import { Capture } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { CorpusIndex } from "./corpus.ts";
 import { corpusEvidence } from "./corpus-evidence.ts";
-import { Briefs, type BriefTask } from "../memory/brief.ts";
+import { Briefs, preferRecordItems, type NativeItem, type BriefTask } from "../memory/brief.ts";
 import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { UsageRollup, USAGE_GROUPS, LIMITS_MAX, type UsageGroup } from "./usage-rollup.ts";
 import { Budget, readNativeQuota, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
@@ -1940,6 +1941,8 @@ export async function startDaemon(opts: DaemonOptions) {
     publicText: text => !looksSecret(text) && withoutPii([{ title: "", text }], activeRouting(), opts.cwd, config.pii?.paths ?? []).length === 1,
     capture: () => ({ memoryDir: captureBinding!.home }), log,
   });
+  // ponytail: generated-note proofs are bounded to this daemon lifetime; after restart, unknown notes remain untouched.
+  const generatedRecordNotes = new GeneratedNoteRegistry();
   const memoryTelemetry = candidates && memoryStore ? new MemoryTelemetry(candidates, memoryStore, memoryProject, screenMemory, checkMemory) : undefined;
   startupTimings.mark("memory");
   const staleness = () => createStalenessProbe({ cwd: opts.cwd, privatePaths: config.pii?.paths ?? [], deny: config.local.deny });
@@ -2189,10 +2192,10 @@ export async function startDaemon(opts: DaemonOptions) {
     catch (e) { log(`hub memory recall failed: ${(e as Error).message}`); }
     const recordRecallTask: BriefTask = { owner: peer, title: "", refs: {} };
     const recordRecallAllowed = () => !reviewOnlyPeer(peer) && !contextPii(peer) && !reviewObserverInput(peer) && recordReadAllowed(undefined, recordReadCwd(recordRecallTask));
-    const theirs = config.memory.enabled ? await recallFor(peer, memory, chain, own ? Math.ceil(config.memory.inject_tokens / 2) : config.memory.inject_tokens, {
+    const recordRecallTokens = own ? Math.ceil(config.memory.inject_tokens / 2) : config.memory.inject_tokens;
+    const theirs = config.memory.enabled ? await recallFor(peer, memory, chain, recordRecallTokens, {
       allowed: recordRecallAllowed, policyVersion: () => recordReadVersion(recordRecallTask),
-      // contextInject exposes no generated-note/raw-anchor proof: preserve the exact old context until that metadata exists.
-      project: () => undefined,
+      project: original => projectRecordRecall(peer, original, recordRecallTokens),
       observe: counts => { if (recordRecallAllowed()) log(`records recall before=${counts.beforeBytes} after=${counts.afterBytes}`); },
     }) : undefined;
     const block = [own, theirs].filter(Boolean).join("\n\n");
@@ -2952,7 +2955,7 @@ export async function startDaemon(opts: DaemonOptions) {
       };
       return controlWriteTelemetry ? controlWriteTelemetry.observe("memory", controlWritePrivacyGuard(true, true, undefined, task.id), read) : read();
     } } : {}),
-    ...(memoryStore ? { store: { store: memoryStore, project: memoryProject, repo: memoryRepo, deny: config.local.deny, onNote: (id: string) => void suggestEdges(id) } } : {}),
+    ...(memoryStore ? { store: { store: memoryStore, project: memoryProject, repo: memoryRepo, deny: config.local.deny, onGeneratedNote: (proof: GeneratedNoteProof) => generatedRecordNotes.record(proof), onNote: (id: string) => void suggestEdges(id) } } : {}),
     notify,
     recordOverlap: (task, owner, others) => event({ type: "overlap", task, owner, others }),
     checkEnded: owner => settleCheck(owner), // #1054: a run waited on its owner's completion check
@@ -3372,25 +3375,66 @@ export async function startDaemon(opts: DaemonOptions) {
       && (task ? corpusBriefAllowed(task) : true) && recordPolicy(cwd)?.enabled === true; } catch { return false; }
   }
   function recordReadVersion(task?: BriefTask): string { const cwd = recordReadCwd(task); return JSON.stringify([configRevision, memorySyncPolicyVersion(), cwd, recordPolicy(cwd)]); }
-  function readRecordSnapshot(task: BriefTask): import("../memory/brief.ts").RecordBriefSnapshot | undefined {
-    if (!recordReadAllowed(task)) return;
-    const version = recordReadVersion(task), binding = captureBinding!, cwd = recordReadCwd(task);
+  function readRecordSnapshot(task?: BriefTask, peer?: PeerId): import("../memory/brief.ts").RecordBriefSnapshot | undefined {
+    if (peer && (reviewOnlyPeer(peer) || contextPii(peer) || reviewObserverInput(peer))) return;
+    const context = task ?? (peer ? { owner: peer, title: "", refs: {} } : undefined), cwd = recordReadCwd(context);
+    if (!recordReadAllowed(task, cwd)) return;
+    const version = recordReadVersion(context), binding = captureBinding!;
     let store: CaptureStore | undefined;
     try {
       binding.assertCurrent(); if (memoryProjectFor(opts.cwd) !== memoryProject) return;
       const policy = configuredPolicy(binding.home, cwd);
       store = new CaptureStore({ memoryDir: binding.home, project: memoryProject, cwd, readOnly: true });
       const snapshot = store.readBriefRecords(32);
-      if (!recordReadAllowed(task) || recordReadVersion(task) !== version) return;
-      const paths = [...task.refs.paths ?? [], ...task.plan?.paths ?? []];
+      if (!recordReadAllowed(task, cwd) || recordReadVersion(context) !== version) return;
+      const paths = task ? [...task.refs.paths ?? [], ...task.plan?.paths ?? []] : undefined;
       const rows = snapshot.rows.filter(row => row.event === "Record" && !row.subagent && Array.isArray(row.paths) && policy.screenStandalone(row) && policy.screenStandalone(row.excerpt) && policy.screenStandalone(row.paths) && recordPublic(JSON.stringify(row))
         && sanitize(row.excerpt) === row.excerpt && row.paths.every(anchor => typeof anchor === "string" && !recordPathDenied(anchor.split("#")[0]!, cwd))
-        && (row.paths.length === 0 || row.paths.some(anchor => paths.some(path => anchor === path || anchor.split("#")[0] === path))));
+        && (!paths || row.paths.length === 0 || row.paths.some(anchor => paths.some(path => anchor === path || anchor.split("#")[0] === path))));
       binding.assertCurrent();
-      if (!recordReadAllowed(task) || recordReadVersion(task) !== version || memoryProjectFor(opts.cwd) !== memoryProject) return;
-      // Current note views do not expose generated-note/raw-anchor provenance. Never guess replaceability from prose.
-      return { rows, replaceable: [], partial: snapshot.partial };
+      if (!recordReadAllowed(task, cwd) || recordReadVersion(context) !== version || memoryProjectFor(opts.cwd) !== memoryProject) return;
+      return { rows, replaceable: generatedRecordNotes.matching([...new Set(rows.flatMap(row => row.paths))], 32), partial: snapshot.partial };
     } catch { return; } finally { try { store?.close(); } catch { /* Read preference never changes the old brief. */ } }
+  }
+  function projectRecordRecall(peer: PeerId, original: string, tokens: number): import("../memory/recall.ts").RecordRecallProjection | undefined {
+    const header = "# [amem] recent curated context\n\n### Curated short-term notes\n";
+    if (typeof original !== "string" || original.length > 64 * 1024 || Buffer.byteLength(original) > 64 * 1024 || !original.startsWith(header) || original.includes("\r") || !Number.isSafeInteger(tokens) || tokens < 1) return;
+    const owner = bus.peers.get(peer), context: BriefTask = { owner: peer, title: "", refs: {} };
+    const allowed = () => bus.peers.get(peer) === owner && !reviewOnlyPeer(peer) && !contextPii(peer) && !reviewObserverInput(peer) && recordReadAllowed(undefined, recordReadCwd(context));
+    if (!allowed()) return;
+    const version = recordReadVersion(context), current = () => allowed() && recordReadVersion(context) === version;
+    if (!current()) return;
+    const body = original.slice(header.length).split("\n"), items: NativeItem[] = [], ids = new Set<string>(), protectedIds = new Set<string>();
+    const row = /^(mem:[a-f0-9]{32}) (decision|finding|contract|fail): /;
+    for (const line of body) {
+      const match = row.exec(line);
+      if (!match) { if (line.startsWith("mem:")) return; continue; }
+      const id = match[1]!;
+      if (ids.has(id) || items.length >= 32) return;
+      ids.add(id); items.push({ id, kind: match[2]!, line });
+      if (!generatedRecordNotes.get(id)) protectedIds.add(id);
+    }
+    const snapshot = readRecordSnapshot(undefined, peer);
+    if (!snapshot || !current()) return;
+    const staticBytes = Buffer.byteLength(original) - Buffer.byteLength(items.map(item => item.line).join("\n"));
+    const preferred = preferRecordItems(items, snapshot, 32, protectedIds, Math.max(0, tokens * 3 - staticBytes));
+    if (!current()) return;
+    const output: string[] = []; let index = 0;
+    for (const line of body) {
+      const match = row.exec(line);
+      if (!match) { output.push(line); continue; }
+      if (preferred.items.some(item => item.id === match[1])) {
+        while (index < preferred.items.length && !ids.has(preferred.items[index]!.id)) output.push(preferred.items[index++]!.line);
+        if (preferred.items[index]?.id !== match[1]) return;
+        output.push(line); index++;
+      } else {
+        while (index < preferred.items.length && !ids.has(preferred.items[index]!.id)) output.push(preferred.items[index++]!.line);
+      }
+    }
+    while (index < preferred.items.length) { const item = preferred.items[index++]!; if (ids.has(item.id)) return; output.push(item.line); }
+    const after = header + output.join("\n");
+    if (!current() || Buffer.byteLength(after) > Math.max(Buffer.byteLength(original), tokens * 3)) return;
+    return { before: original, after };
   }
   bus.onFinalAnswer = (peer, raw, input) => {
     const frame = recordFrames.get(peer);
@@ -12241,7 +12285,7 @@ export async function startDaemon(opts: DaemonOptions) {
       executionBudget.close();
       syncStop.abort(); // a sync in flight kills its git step and ends before the store closes
       await syncRun?.catch(() => undefined);
-      for (const peer of recordFrames.keys()) closeRecordFrame(peer); recordInputs.clear();
+      for (const peer of recordFrames.keys()) closeRecordFrame(peer); recordInputs.clear(); generatedRecordNotes.clear();
       memory.close();
       candidates?.close();
       memoryStore?.close();

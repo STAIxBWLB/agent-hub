@@ -54,7 +54,7 @@ test("Records fill spare room without prose-based replacement or unrelated recal
 test("partial, malformed, noncanonical, mismatched or subagent Records never suppress the original", () => {
   const first = record();
   for (const value of [
-    { ...snapshot(), partial: true },
+    { ...snapshot(), partial: true, replaceable: [] },
     snapshot([{ ...first, excerpt: "amem: fix | src/writer.ts | missing cause and retry" }]),
     snapshot([{ ...first, excerpt: "prefix\n" + first.excerpt }]),
     snapshot([{ ...first, paths: ["src/different.ts"] }]),
@@ -250,9 +250,9 @@ test("every Record brief revision read is bound to the exact task identity", asy
 });
 
 
-test("a partial 32-row Record window appends known evidence without replacing any original note", async () => {
+test("a partial 32-row Record window without saved-id proof appends without replacing original notes", async () => {
   const window: RecordBriefSnapshot = { rows: Array.from({ length: 32 }, (_, index) => record(index + 1)),
-    partial: true, replaceable: [{ id: note.id, anchors: ["src/writer.ts"] }] };
+    partial: true, replaceable: [] };
   const result = preferRecordItems([note, unrelated], window, 3, new Set(), 4096);
   expect(result.replacedNotes).toBe(0); expect(result.records).toBe(1);
   expect(result.items.slice(0, 2)).toEqual([note, unrelated]);
@@ -273,4 +273,25 @@ test("partial coverage notice consumes the byte budget and a whole Record is nev
   expect(exact.items.map(item => item.line)).toEqual([unrelated.line, marker + completeRecord]);
   expect(Buffer.byteLength(exact.items.map(item => item.line).join("\n"))).toBe(fit);
   expect(exact.replacedNotes).toBe(0);
+});
+
+
+test("a partial Record window compacts only explicit saved-id notes whose anchors are fully covered", () => {
+  const window = { ...snapshot(), partial: true };
+  const result = preferRecordItems([note, unrelated], window, 2);
+  expect(result.replacedNotes).toBe(1); expect(result.records).toBe(1);
+  expect(result.items[0]!.line).toBe("[partial Record window: older Records not read] capture:Record:1 " + record().excerpt);
+  expect(result.items[1]).toEqual(unrelated);
+  expect(Buffer.byteLength(result.items.map(item => item.line).join("\n"))).toBeLessThan(Buffer.byteLength([note.line, unrelated.line].join("\n")));
+  const uncovered = { ...window, replaceable: [{ id: note.id, anchors: ["src/writer.ts", "src/unread.ts"] }] };
+  expect(preferRecordItems([note, unrelated], uncovered, 2).items).toEqual([note, unrelated]);
+  for (const kind of ["fail", "contract"]) expect(preferRecordItems([{ ...note, kind }, unrelated], window, 2).replacedNotes).toBe(0);
+  expect(preferRecordItems([note, unrelated], window, 2, new Set([note.id])).items).toEqual([note, unrelated]);
+});
+
+test("partial replacement still counts its visible marker against the replaced note footprint", () => {
+  const rawLine = "capture:Record:1 " + record().excerpt;
+  const small = { ...note, line: "x".repeat(Buffer.byteLength(rawLine) + 1) };
+  const window = { ...snapshot(), partial: true };
+  expect(preferRecordItems([small], window, 1, new Set(), 4096).items).toEqual([small]);
 });

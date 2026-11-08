@@ -6,6 +6,9 @@ import { matchesPolicy } from "../src/hub/path-policy.ts";
 import { runInNewContext } from "node:vm";
 import { CaptureStore, configuredPolicy, RECORD_INSTRUCTION } from "@staix/agent-mem";
 import { preferRecordItems, type RecordBriefSnapshot } from "../src/memory/brief.ts";
+import { GeneratedNoteRegistry } from "../src/memory/record-provenance.ts";
+import { recallFor } from "../src/memory/recall.ts";
+import type { MemoryClient } from "../src/memory/client.ts";
 import { RecordCapture } from "../src/memory/records.ts";
 import { isInvocationKind, newEnvelope, remoteEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { BasePeer, type PeerAdapter } from "../src/hub/peers.ts";
@@ -34,6 +37,7 @@ function fixture(policy: "enabled" | "disabled" | "missing" | "throw" = "enabled
   const bus: { peers: Map<string, PeerAdapter>; isRecoveryHeld: boolean; onFinalAnswer?: (peer: string, raw: string, context: { out: Envelope[]; originals: Envelope[] }) => void; onFinalAnswerBytes?: (peer: string, counts: { before: number; after: number }) => void } = { peers: new Map([[owner.id, owner]]), isRecoveryHeld: false };
   let reads = 0, version = "one", privateTurn = false, review = false, recovery = false, attached = false, profile = "profile-one";
   const logs: string[] = [];
+  const generatedRecordNotes = new GeneratedNoteRegistry();
   const binding = { home: memoryDir, assertCurrent() {} };
   const state = { config: { memory: { enabled: true }, local: { deny: [] }, pii: { paths: [] as string[] } }, stopping: false, configRevision: 0,
     opts: { cwd, effectiveRecordPolicy: policy === "missing" ? undefined : () => { reads++; if (policy === "throw") throw Error("closed fixture policy failure"); return { enabled: policy === "enabled", version }; } },
@@ -42,13 +46,16 @@ function fixture(policy: "enabled" | "disabled" | "missing" | "throw" = "enabled
     reviewOnlyPeer: () => false, definitionOf: () => ({}), contextPii: () => privateTurn, reviewInputHeld: () => review, reviewObserverInput: () => review,
     isReviewObserverExcluded: () => false, isInvocationKind, remoteEnvelope, boundedSafe: (text: string) => !text.includes("PRIVATE_CANARY"),
     tasks: { publicMetadataText: (text: string) => !text.includes("PRIVATE_CANARY") }, looksSecret: (text: string) => text.includes("SECRET_CANARY"),
-    isDenied: (path: string) => path.startsWith("private/"), matchesPolicy: (_cwd: string, _path: string, _paths: string[], _includeParents = false) => false, log: (text: string) => logs.push(text), RecordCapture, CaptureStore, configuredPolicy, resolve, sanitize: (text: string) => text, corpusBriefAllowed: () => true,
+    isDenied: (path: string) => path.startsWith("private/"), matchesPolicy: (_cwd: string, _path: string, _paths: string[], _includeParents = false) => false, log: (text: string) => logs.push(text), RecordCapture, CaptureStore, configuredPolicy, generatedRecordNotes, preferRecordItems, resolve, sanitize: (text: string) => text, corpusBriefAllowed: () => true,
   };
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8"), start = source.indexOf("  const recordOwners ="), end = source.indexOf("  // Hoisted for the Tasks ports above", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.records = {bind:bindRecordOwner, inputs:recordInputs, close:closeRecordFrame, read:readRecordSnapshot, steer:noteRecordSteered};");
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.records = {bind:bindRecordOwner, inputs:recordInputs, close:closeRecordFrame, read:readRecordSnapshot, steer:noteRecordSteered, project:projectRecordRecall};");
   runInNewContext(script, state);
-  const ports = (state as typeof state & { records: { bind(owner: PeerAdapter, cwd: string, session: () => string | undefined): void; inputs: Map<string, { owner: PeerAdapter; originals: Envelope[]; tainted?: true }>; steer(peer: string, originals: Envelope[]): void; close(peer: string): void; read(task: { owner?: string; title: string; refs: { paths?: string[] } }): RecordBriefSnapshot | undefined } }).records;
+  const ports = (state as typeof state & { records: { bind(owner: PeerAdapter, cwd: string, session: () => string | undefined): void; inputs: Map<string, { owner: PeerAdapter; originals: Envelope[]; tainted?: true }>; steer(peer: string, originals: Envelope[]): void; close(peer: string): void; read(task?: { owner?: string; title: string; refs: { paths?: string[] } }): RecordBriefSnapshot | undefined; project(peer: string, original: string, tokens: number): { before: string; after: string } | undefined } }).records;
+  const hookStart = source.indexOf("onGeneratedNote: "), hookEnd = source.indexOf(", onNote:", hookStart);
+  expect(hookStart).toBeGreaterThan(0); expect(hookEnd).toBeGreaterThan(hookStart);
+  const generatedNote = runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync("(" + source.slice(hookStart + "onGeneratedNote: ".length, hookEnd) + ")"), state) as (proof: { id: string; anchors: string[] }) => void;
   ports.bind(owner, executionCwd, () => owner.nativeSession); ports.inputs.set(owner.id, { owner, originals: [original] });
   cleanups.push(() => ports.close(owner.id));
   const rows = () => {
@@ -56,7 +63,7 @@ function fixture(policy: "enabled" | "disabled" | "missing" | "throw" = "enabled
     const store = new CaptureStore({ memoryDir, project: "synthetic-project", cwd, readOnly: true });
     try { return store.rows({ limit: 10 }); } finally { store.close(); }
   };
-  return { owner, bus, turns, ports, logs, rows, state, cwd, executionCwd, memoryDir, original, reads: () => reads,
+  return { owner, bus, turns, ports, logs, rows, state, cwd, executionCwd, memoryDir, original, generatedNote, generatedRecordNotes, reads: () => reads,
     private: () => { privateTurn = true; }, review: () => { review = true; }, clearReview: () => { review = false; }, recovery: () => { recovery = true; }, attached: () => { attached = true; },
     policyChanged: () => { version = "two"; }, profileChanged: () => { profile = "profile-two"; },
     finish: (raw: string, input = original) => bus.onFinalAnswer!(owner.id, raw, { out: [input], originals: [input] }) };
@@ -182,18 +189,62 @@ test("unknown or replaced steering owners cannot inherit an earlier public captu
 });
 
 
-test("a 33-Record store retains the screened bounded partial view and never replaces existing notes", () => {
+test("a 33-Record partial window preserves unproved notes and compacts only exact registry-proved overlap", () => {
   const f = fixture();
   const store = new CaptureStore({ memoryDir: f.memoryDir, project: "synthetic-project", cwd: f.cwd });
   try {
-    for (let index = 0; index < 33; index++) store.append({ project: "synthetic-project", agent: "codex", event: "Record", paths: ["src/main.ts#run"], excerpt: `amem: fix | src/main.ts#run | synthetic failure ${index} -> synthetic repair`, at: new Date(Date.now() + index).toISOString() });
+    for (let index = 0; index < 33; index++) {
+      const anchor = index === 32 ? "src/main.ts#run" : `src/other-${index}.ts#run`;
+      store.append({ project: "synthetic-project", agent: "codex", event: "Record", paths: [anchor], excerpt: `amem: fix | ${anchor} | synthetic failure ${index} -> synthetic repair`, at: new Date(Date.now() + index).toISOString() });
+    }
   } finally { store.close(); }
-  const snapshot = f.ports.read({ owner: "codex", title: "Synthetic task", refs: { paths: ["src/main.ts"] } });
+  const snapshot = f.ports.read();
   if (!snapshot) throw new Error("bounded Record snapshot unavailable");
   expect(snapshot.rows).toHaveLength(32); expect(snapshot.partial).toBe(true); expect(snapshot.replaceable).toEqual([]);
   expect(snapshot.rows.some(row => row.excerpt.includes("synthetic failure 0 ->"))).toBe(false);
-  const old = { id: "mem:old", kind: "decision", line: "mem:old decision Synthetic existing summary ".repeat(10) };
-  const preferred = preferRecordItems([old], { ...snapshot, replaceable: [{ id: old.id, anchors: ["src/main.ts#run"] }] }, 2);
+  const old = { id: `mem:${"c".repeat(32)}`, kind: "decision", line: "Synthetic existing generated summary ".repeat(20) };
+  const preferred = preferRecordItems([old], snapshot, 2);
   expect(preferred.items[0]).toEqual(old); expect(preferred.items).toHaveLength(2);
   expect(preferred.replacedNotes).toBe(0); expect(preferred.records).toBe(1);
+  expect(preferred.items[1]?.line).toContain("partial Record window");
+  f.generatedNote({ id: old.id, anchors: ["src/main.ts#run"] });
+  const proven = f.ports.read();
+  if (!proven) throw new Error("registry-proved partial snapshot unavailable");
+  expect(proven.partial).toBe(true); expect(proven.replaceable).toEqual([{ id: old.id, anchors: ["src/main.ts#run"] }]);
+  const compact = preferRecordItems([old], proven, 2);
+  expect(compact.replacedNotes).toBe(1); expect(compact.items.some(item => item.id === old.id)).toBe(false);
+  expect(compact.items.some(item => item.line.includes("partial Record window"))).toBe(true);
+  expect(Buffer.byteLength(compact.items.map(item => item.line).join("\n"))).toBeLessThan(Buffer.byteLength(old.line));
+});
+
+
+test("proven generated-note overlap reduces actual brief and recall bytes while preserving unproved context", async () => {
+  const f = fixture(); expect(f.owner.recordInstruction?.()).toBe(RECORD_INSTRUCTION); f.finish(record);
+  const id = "a".repeat(32), unrelatedId = "b".repeat(32), old = `mem:${id} decision: ` + "Synthetic generated outcome detail ".repeat(40);
+  const unrelated = `mem:${unrelatedId} contract: Keep this unrelated authored contract exactly.`;
+  f.generatedNote({ id, anchors: ["src/main.ts#run"] });
+  const snapshot = f.ports.read({ owner: "codex", title: "Synthetic task", refs: { paths: ["src/main.ts"] } });
+  if (!snapshot) throw new Error("screened Record snapshot unavailable");
+  expect(snapshot.replaceable).toEqual([{ id: `mem:${id}`, anchors: ["src/main.ts#run"] }]);
+  const originalItems = [{ id: `mem:${id}`, kind: "decision", line: old }, { id: `mem:${unrelatedId}`, kind: "contract", line: unrelated }];
+  const brief = preferRecordItems(originalItems, snapshot, 3);
+  expect(brief.replacedNotes).toBe(1); expect(brief.records).toBe(1); expect(brief.items.some(item => item.line === unrelated)).toBe(true);
+  expect(Buffer.byteLength(brief.items.map(item => item.line).join("\n"))).toBeLessThan(Buffer.byteLength(originalItems.map(item => item.line).join("\n")));
+  const context = `# [amem] recent curated context\n\n### Curated short-term notes\nCoverage notice stays exact.\n${old}\n${unrelated}\nTrailing notice stays exact.`;
+  let contextCalls = 0;
+  const client = { contextInject: async () => { contextCalls++; return context; } } as unknown as MemoryClient;
+  const before = await recallFor("codex", client, ["synthetic-project"], 10_000); expect(contextCalls).toBe(1);
+  contextCalls = 0;
+  const after = await recallFor("codex", client, ["synthetic-project"], 10_000, { allowed: () => true, policyVersion: () => "fixture-one", project: original => f.ports.project("codex", original, 10_000) });
+  expect(contextCalls).toBe(1); expect(typeof before).toBe("string"); expect(typeof after).toBe("string");
+  expect(Buffer.byteLength(after!)).toBeLessThan(Buffer.byteLength(before!)); expect(after).not.toContain(old);
+  expect(after).toContain(unrelated); expect(after).toContain("Coverage notice stays exact."); expect(after).toContain("Trailing notice stays exact.");
+  const projected = f.ports.project("codex", context, 10_000); expect(projected?.before).toBe(context);
+  expect(projected?.after.startsWith("# [amem] recent curated context\n\n### Curated short-term notes\n")).toBe(true);
+  f.generatedRecordNotes.clear();
+  const restarted = f.ports.read({ owner: "codex", title: "Synthetic task", refs: { paths: ["src/main.ts"] } });
+  expect(restarted?.replaceable).toEqual([]);
+  const fallback = f.ports.project("codex", context, Math.floor(Buffer.byteLength(context) / 3));
+  expect(fallback).toEqual({ before: context, after: context });
+  expect(f.ports.project("codex", context.replace(`mem:${id}`, "mem:not-a-full-id"), 10_000)).toBeUndefined();
 });
