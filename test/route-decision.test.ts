@@ -223,3 +223,15 @@ test("inconsistent or unavailable current privacy refuses before signal/evidence
     expect(error.message).not.toContain("PRIVATE_AUTHORITY_DIAGNOSTIC"); expect(h.events).toHaveLength(0); expect(h.calls).toHaveLength(0); expect(s.requests).toHaveLength(0);
   }
 });
+
+test("a negative campus reply cannot bypass a privacy-change refusal", async () => {
+  let arrived!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { arrived = resolve; }), gate = new Promise<void>(resolve => { release = resolve; }); close.push(release);
+  const facts = { private: false, excluded: false }, s = service();
+  const h = host({ decisionContext: () => ({ ...facts }), onCampus: async () => { arrived(); await gate; return false; } });
+  h.runtime.beginTurn({ turn: "negative-campus", pii: true });
+  const settled = h.runtime.call("hub/test", s.config, messages, "scope", true, signal()).then(() => undefined, error => error);
+  await entered; facts.excluded = true; release(); const error = await settled;
+  expect(s.requests).toHaveLength(0); expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
+  expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy");
+});
