@@ -227,7 +227,7 @@ interface Envelope {
   kind: "chat" | "task" | "review" | "status" | "budget" | "presence";
   priority: "important" | "status" | "fyi";
   body: string;                          // agent conclusions only, never tool noise
-  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string };
+  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; visual?: string };
   ts: number;
 }
 ```

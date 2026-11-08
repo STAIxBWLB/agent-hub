@@ -62,10 +62,10 @@ export const COMPAT = {
     parse: out => plain(out.trim()),
     trustNote: "Exact 1.5.3 repeats the account-free CLI/plugin MCP, hooks, normal close and actual-launcher nonce legs; existing 1.4.x verified receipts remain unchanged. Other 1.5.x versions, real model/account behavior, headless ACP and native permission mappings remain unverified.",
     receipt: "docs/verification/2026-11-08-agy-1.5.3.md" },
-  qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
+  qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8", "0.26.9"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); real model turns remain unverified. Another version may change those contracts.",
-    receipt: "docs/verification/2026-11-06-qwen-0268-acp.md" },
+    trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); exact 0.26.9 repeats those account-free probes on macOS arm64. Real model turns and Linux repetition of 0.26.9 remain unverified. Another version may change those contracts.",
+    receipt: "docs/verification/2026-11-08-qwen-0269-acp.md" },
   // Receipt: docs/verification/2026-10-25-qwen-dual-output-t0.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
   // the ACP receipts of the headless `qwen` entry say nothing about it, so that entry is not widened and this one carries no `line`.
   "qwen-dual": { label: "Qwen Code dual-output TUI", verified: ["0.26.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",

@@ -8,7 +8,7 @@
  *
  * Contract: @staix/agent-console api 1, declared structurally below so agent-hub keeps zero runtime dependencies.
  */
-import type { ActionMeta } from "@staix/agent-console/contract";
+import type { VisualPayload, VisualSide, ActionMeta } from "@staix/agent-console/contract";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Registry } from "../hub/registry.ts";
@@ -19,6 +19,9 @@ import { officeModel, type OfficeScene } from "./office-model.ts";
 import { personEvidence, questionItem, QUESTION_ITEM, type InboxAnswers, type QuestionRowView } from "./plugin-questions.ts";
 import { canPublishResults, receiptEvidence, resultItem, RESULT_ACTIONS, RESULT_ITEM, type ResultAction, type ResultRowView } from "./plugin-results.ts";
 import { mergeSpaces, officeSpace } from "./office-space.ts";
+import type { DeliverablePorts } from "../hub/deliverable-files.ts";
+import type { VisualFile } from "../hub/visual.ts";
+import { matchesPolicy } from "../hub/path-policy.ts";
 import { VERSION as version } from "../version.ts";
 
 type Tone = "ok" | "warn" | "err" | "neutral";
@@ -38,6 +41,7 @@ export interface ConsoleProvider {
   assets: { js: string; css?: string };
   snapshot(input: { after: number; panel: string } & Record<string, unknown>): Promise<Record<string, unknown>>;
   action(input: { action: string; confirmed?: true; fingerprint?: string } & Record<string, unknown>, meta?: ActionMeta): Promise<ActionResult>;
+  asset?(input: { id: string }): Promise<{ bytes: Uint8Array; mime: string; name: string } | null>;
   close?(): Promise<void>;
 }
 export interface ConsolePlugin {
@@ -83,6 +87,7 @@ export function panelAssets(): { js: string; css: string } {
   body = swap(body, "const apply = () => { document.documentElement.dataset.theme = choice; };", "const apply = () => {};");
   body = swap(body, "const $ = (id) => $$(id);", "const $ = $$;");
   body = swap(body, "const reviewKit = null;", "const reviewKit = typeof host.ui.review === 'function' ? {render:host.ui.review.bind(host.ui),snapshot:input=>host.snapshot(input)} : null;");
+  body = swap(body, "const visualKit = null;", "const visualKit = typeof host.ui.visual === 'function' ? host.ui.visual.bind(host.ui) : null;");
   // post() goes to the host: /projects is the manager listing, /snapshot and /action are the plugin's panel calls.
   body = swap(body, "async function post(path, body) {\n  const response = await fetch(path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});\n  if (response.status === 401) { expire(); throw new Error('Run ahub ui to start a new session.'); }\n  const result = await response.json();",
     "async function post(path, body) {\n  const result = path === '/projects' ? await host.snapshot({ panel: 'board' }) : path === '/snapshot' ? await host.snapshot({ ...body, panel: 'board' }) : await host.action(body);\n  if (!result) { expire(); throw new Error('The console session ended.'); }\n  const response = { ok: result.ok !== false, status: 200 };");
@@ -162,7 +167,7 @@ function lazyLifecycle(): Lifecycle {
 }
 
 /** Build the provider over an injectable registry and lifecycle (tests use a temp home and fakes). */
-export function createProvider(options: { home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void; spaceBudgetMs?: number; features?: readonly string[]; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"]; inboxFreshMs?: number; inboxStaleMs?: number; inboxProjectBudgetMs?: number }): ConsoleProvider {
+export function createProvider(options: { visualPolicy?: (cwd: string) => Promise<DeliverablePorts>; visualRead?: typeof import("../hub/visual-assets.ts").readVisualAsset; home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void; spaceBudgetMs?: number; features?: readonly string[]; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"]; inboxFreshMs?: number; inboxStaleMs?: number; inboxProjectBudgetMs?: number }): ConsoleProvider {
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
@@ -419,12 +424,56 @@ export function createProvider(options: { home: string; registry?: Registry; lif
         return { ...listing, ...(live.length === 1 ? { selectedProjectId: live[0]!.id } : {}), panel: input.panel };
       }
       const { panel: _panel, ...rest } = input;
-      return { ...await act({ ...rest, action: "snapshot", ...(view ? { view } : {}) }) as Record<string, unknown>, reviewWritable: options.features?.includes("action.meta") === true };
+      const result = await act({ ...rest, action: "snapshot", ...(view ? { view } : {}) }) as Record<string, unknown>;
+      if (result.visual && typeof result.visual === "object") {
+        const row = result.visual as { payload?: VisualPayload };
+        if (row.payload?.kind === "beforeAfter") {
+          const side = (value: VisualSide) => "asset" in value
+            ? { ...value, asset: visualAssetId(input.projectId as string, input.instanceId as string, value.asset) } : value;
+          result.visual = { ...row, payload: { ...row.payload, before: side(row.payload.before), after: side(row.payload.after) } };
+        }
+      }
+      return { ...result, reviewWritable: options.features?.includes("action.meta") === true };
     },
     async action(input, meta) {
       // #727: an action changes what is waiting, so the cached inbox is dropped before it runs and again when it ends (a poll in between must not keep the old answer).
       inboxGeneration++;
       try { return await runAction(input, meta); } finally { inboxGeneration++; }
+    },
+    async asset(input) {
+      let readingAsset = false;
+      try {
+        const identity = parseVisualAssetId(input.id); if (!identity) return null;
+        const { projectId, instanceId, asset } = identity;
+        const registered = registry.get(projectId);
+        if (!registered || registered.instanceId !== instanceId) return null;
+        const project = { ...registered };
+        const sameProject = () => { const now = registry.get(projectId); return !!now && now.root === project.root && now.stateDir === project.stateDir && now.instanceId === instanceId; };
+        const metadata = async () => {
+          if (!sameProject()) return null;
+          const reply = await act({ action: "snapshot", after: 0, projectId, instanceId, visualAsset: asset }) as Record<string, unknown>;
+          return reply.ok === false || !sameProject() ? null : reply.visualAsset;
+        };
+        const before = await metadata() as { id: string; task?: number; from: string; created: number; file: VisualFile } | null;
+        if (!before || before.file?.asset !== asset || before.id !== asset.split(":")[0]) return null;
+        const policy = options.visualPolicy ?? (async (cwd: string): Promise<DeliverablePorts> => {
+          const { loadConfig } = await import("../hub/daemon.ts");
+          const config = loadConfig(cwd); return { cwd, deny: config.local.deny, private: file => matchesPolicy(cwd, file, config.pii?.paths ?? [], true) };
+        });
+        const initialPolicy = await policy(project.root);
+        if (!sameProject()) return null;
+        const read = options.visualRead ?? (await import("../hub/visual-assets.ts")).readVisualAsset;
+        if (!sameProject()) return null;
+        readingAsset = true;
+        const bytes = await read(before.file, initialPolicy);
+        readingAsset = false;
+        const after = await metadata(), currentPolicy = await policy(project.root);
+        if (!after || !sameProject() || currentPolicy.private(before.file.path) || JSON.stringify(currentPolicy.deny) !== JSON.stringify(initialPolicy.deny) || JSON.stringify(after) !== JSON.stringify(before)) return null;
+        return bytes;
+      } catch {
+        if (readingAsset) throw new Error("visual asset changed since posted or no longer allowed; post the visual again using a current public file");
+        return null;
+      }
     },
     async close() { if (owned) registry.close(); },
   };
@@ -482,3 +531,15 @@ const plugin: ConsolePlugin = {
   async open(ctx) { return createProvider({ home: ctx.home, log: ctx.log, features: ctx.features }); },
 };
 export default plugin;
+
+/** Project and instance are part of the outward id; a copied DB's UUID never selects another project. */
+export function visualAssetId(projectId: string, instanceId: string, asset: string): string {
+  const value = `ahub-visual:${projectId}:${instanceId}:${asset}`;
+  if (!parseVisualAssetId(value)) throw new Error("visual asset identity unavailable; reopen its current project");
+  return value;
+}
+export function parseVisualAssetId(value: unknown): { projectId: string; instanceId: string; asset: string } | undefined {
+  if (typeof value !== "string") return;
+  const match = /^ahub-visual:([A-Za-z0-9_-]{1,80}):([A-Za-z0-9_-]{1,80}):([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}:(?:before|after))$/.exec(value);
+  return match ? { projectId: match[1]!, instanceId: match[2]!, asset: match[3]! } : undefined;
+}

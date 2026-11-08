@@ -65,9 +65,10 @@ export function isTrustedReviewPackage(env: Envelope): boolean {
     && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(env.refs.reviewPackage);
 }
 
-/** Only structured review carriers are excluded; ordinary review tool capture stays unchanged. */
+/** Structured review and visual tool bodies never enter observer capture, including refused inputs. */
 export function reviewCaptureExcluded(tool: string, args: string): boolean {
   const name = tool.replace(/^mcp__[^ ]+__/, "");
+  if (name === "hub_visual" || name === "hub_visual_show") return true;
   if (["review_comment_put", "review_comment_delete", "review_comment_send", "review_blob"].includes(name)) return true;
   if (name !== "hub_review") return false;
   try {

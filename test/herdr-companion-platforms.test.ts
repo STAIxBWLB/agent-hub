@@ -74,6 +74,7 @@ test("AC9: every receipt a combination names exists, is a NOT RUN template that 
 });
 
 test("AC9: the remote console workflow, against the fixture: read on the machine, prove there, open in that machine's space, nothing here", async () => {
+  const before = existsSync("/home/dev/it's an app");
   const s = setup();
   expect(await s.entry.refresh()).toMatchObject({ status: "ready", machine: "vps", candidate: "single" });
   s.entry.select("p_r");
@@ -82,7 +83,7 @@ test("AC9: the remote console workflow, against the fixture: read on the machine
   expect(s.execs.every(e => e.on === "vps")).toBe(true);
   expect(s.runs).toEqual([{ name: "tab.new", args: { space: "s1", folder: "/home/dev/it's an app", argv: ["ahub", "--project", "p_r", "console"], name: "ahub: it's an app" } }]);
   expect(JSON.stringify(s.runs)).not.toMatch(/vps/);
-  expect(existsSync("/home/dev")).toBe(false);
+  expect(existsSync("/home/dev/it's an app")).toBe(before);
   // the copyable command names the machine and is one quoted word
   expect(s.entry.copyCommand()).toEqual({ ok: true, command: "ahub --project '/home/dev/it'\\''s an app' console", machine: "vps", machineLabel: "vps" });
   // the status card reads on that machine, from that folder
