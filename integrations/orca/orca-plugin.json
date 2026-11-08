@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "agent-hub-companion",
+  "name": "agent-hub",
+  "version": "0.1.0",
+  "description": "Optional. Picks an Orca workspace by its exact id, host and real folder, then opens the existing agent-hub console, dashboard or family console for it. It approves, assigns and stops nothing.",
+  "license": "MIT",
+  "engines": { "orca": ">=1.4.252" },
+  "pluginApi": 1,
+  "main": "src/worker.mjs",
+  "contributes": {
+    "panels": [
+      { "id": "chooser", "title": "agent-hub", "icon": "layers", "entry": "panel/index.html" }
+    ],
+    "settings": [
+      { "key": "localHostIds", "title": "Host ids that mean this Mac", "description": "Comma separated. A workspace whose host id is not listed here is treated as remote and nothing is run for it on this Mac.", "type": "string", "default": "", "maxLength": 512, "placeholder": "e.g. local" },
+      { "key": "trustNullHostAsLocal", "title": "Treat a missing host id as this Mac", "description": "Orca leaves a workspace's host id empty for some workspaces. Turn this on only if all of yours are on this Mac.", "type": "boolean", "default": false },
+      { "key": "ahubPath", "title": "ahub executable", "description": "Absolute path to the installed ahub command. Empty uses `ahub` from PATH.", "type": "string", "default": "", "maxLength": 1024, "placeholder": "/usr/local/bin/ahub" }
+    ]
+  },
+  "capabilities": [
+    { "kind": "workspace:read" },
+    { "kind": "workspace:write" },
+    { "kind": "terminal:send" },
+    { "kind": "settings:own" }
+  ]
+}

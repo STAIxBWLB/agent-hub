@@ -6595,6 +6595,27 @@ are recorded separately; declarations and fake results do not qualify them.
 The three baseline journeys count procedure actions only, with observed native
 counts still unknown. O1 must record actual open/disable/standalone UI proof.
 
+### Optional Orca companion: chooser and entry points (#1198 O1)
+
+[`integrations/orca/`](../integrations/orca/README.md) holds the optional companion: a manifest, a
+trusted worker and a sidebar panel. It is not in the npm package, no ahub source refers to it, and ahub and
+Orca keep all their own functionality without it. It lists Orca's workspaces, you select one by its exact
+id (a name or branch never selects), and it opens an existing screen: `ahub ui` run as a short-lived child
+with the folder as its working directory only, or a terminal created in the workspace running `ahub console`
+or `acon ui`. A selection binds the id, host id, kind and the folder's real path on this Mac and is
+re-checked against a complete inventory before every effect; a duplicate, missing, truncated or changed
+identity, or a host not declared to be this Mac, refuses visibly and runs nothing. It never passes `--json`
+to `ahub ui`, never approves, assigns, completes, retries, stops or upgrades anything, and keeps no CLI
+output, one-time link or task text in plugin state or logs.
+
+Install is explicit and in an isolated Orca profile first (`orca plugin validate`, `orca plugin dev load`
+with the fingerprint Orca prints); remove it with `orca plugin disable` and `orca plugin dev unload`. The
+fake-host checks are `test/orca-companion-entry.test.ts` and `test/orca-companion-independence.test.ts`.
+**The native open and disable receipt is a person-run leg that has not been run**
+([`native-receipt.md`](../integrations/orca/native-receipt.md)): the action counts in the companion's README
+are procedure counts, remote, Windows and mobile stay unqualified (O3), and there is no focus-existing-console
+action.
+
 ## Herdr companion host contract (#1199 H0)
 
 [`integrations/herdr/host-contract-v1.md`](../integrations/herdr/host-contract-v1.md) freezes what an optional Herdr mod may
