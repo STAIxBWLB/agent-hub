@@ -13346,6 +13346,13 @@ class DecisionRouteController {
     this.host = host;
     this.timeoutMs = timeoutMs;
   }
+  checkEntry(config, pii) {
+    if (config.type !== "decision" || (config.decision_mode ?? "off") === "off")
+      return;
+    const current = this.privacy(pii);
+    if ((current.pii || current.private) && !pii)
+      throw new DecisionPolicyChangedError;
+  }
   async pick(config, context) {
     if (config.type !== "decision" || (config.decision_mode ?? "off") === "off")
       return {};
@@ -13356,7 +13363,7 @@ class DecisionRouteController {
     } catch (error) {
       if (context.signal.aborted || context.turn?.closed)
         throw ended();
-      if (error && typeof error === "object" && "budgetStop" in error)
+      if (error instanceof DecisionPolicyChangedError || error && typeof error === "object" && "budgetStop" in error)
         throw error;
       return this.skip(config, "unavailable");
     }
@@ -13373,22 +13380,50 @@ class DecisionRouteController {
     this.states.set(key, state);
     return state;
   }
+  confirm(selection) {
+    selection.handoff?.();
+    return selection;
+  }
+  privacy(pii) {
+    try {
+      const current = this.host.decisionContext?.() ?? { private: pii, excluded: false };
+      if (typeof current.private !== "boolean" || typeof current.excluded !== "boolean" || current.pii !== undefined && typeof current.pii !== "boolean")
+        throw new DecisionPolicyChangedError;
+      return { pii: pii || current.pii === true, private: current.private, excluded: current.excluded };
+    } catch {
+      throw new DecisionPolicyChangedError;
+    }
+  }
+  same(a, b) {
+    return a.pii === b.pii && a.private === b.private && a.excluded === b.excluded;
+  }
+  fence(context, privacy) {
+    if (!context.current())
+      throw ended();
+    try {
+      if (this.same(privacy, this.privacy(context.pii)))
+        return;
+    } catch {}
+    throw new DecisionPolicyChangedError;
+  }
   async select(config, context) {
-    const { turn, pii } = context;
+    const { turn } = context;
     if (!turn)
       return this.skip(config, "turn_unavailable");
-    const privacy = this.host.decisionContext?.() ?? { private: pii, excluded: false };
+    const privacy = this.privacy(context.pii);
     if (privacy.excluded)
       return this.skip(config, "observer_excluded");
-    if ((pii || privacy.private) && !await this.host.onCampus())
-      return this.skip(config, "off_campus");
-    if (!context.current())
-      throw ended();
+    if ((privacy.pii || privacy.private) && !context.pii)
+      throw new DecisionPolicyChangedError;
     const state = this.state(config, context), key = createHash6("sha256").update(JSON.stringify([context.route, context.scope, turn.context.turn])).digest("hex");
     const began = performance.now();
-    const result = state.failure?.turn === key ? state.failure.result : await this.request(config, context, privacy.private, state, key);
+    const attempt = state.failure?.turn === key ? { result: state.failure.result, privacy } : await this.request(config, context, privacy, state, key);
     if (!context.current())
       throw ended();
+    if ("skipped" in attempt)
+      return this.skip(config, attempt.skipped);
+    this.fence(context, attempt.privacy);
+    const result = attempt.result;
     if (!result.ok)
       return { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: result.reason, decisionLatencyMs: Math.max(0, performance.now() - began) } };
     const d = result.decision, apply = config.decision_mode === "enforce" && d.alias !== null && d.effort !== null ? { alias: d.alias, effort: d.effort } : undefined;
@@ -13397,8 +13432,10 @@ class DecisionRouteController {
       decider = null;
     else if (this.host.publicDecisionText?.(JSON.stringify(d.decider)) === true)
       decider = { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs };
+    this.fence(context, attempt.privacy);
     return {
       ...apply ? { apply } : {},
+      handoff: () => this.fence(context, attempt.privacy),
       applied: () => {
         if (context.current())
           state.currentPair = apply ? { turn: turn.context.turn, pair: apply } : undefined;
@@ -13415,35 +13452,48 @@ class DecisionRouteController {
       }
     };
   }
-  async request(config, context, privateTurn, state, key) {
+  async request(config, context, initial, state, key) {
     await this.host.admitDecision?.();
     if (!context.current())
       throw ended();
-    const sensitive = context.pii || privateTurn;
+    const privacy = this.privacy(context.pii);
+    if (!this.same(initial, privacy))
+      throw new DecisionPolicyChangedError;
+    if ((privacy.pii || privacy.private) && !await this.host.onCampus())
+      return { skipped: "off_campus" };
+    this.fence(context, privacy);
+    const sensitive = privacy.pii || privacy.private;
     const evidence = buildDecisionEvidence(sensitive ? [] : context.messages, context.dimensions, (text) => this.host.publicDecisionText?.(text) === true);
     const pairs = config.candidates?.flatMap((candidate) => candidate.efforts.map((effort) => ({ alias: candidate.alias, effort }))) ?? [];
+    this.fence(context, privacy);
     const result = await requestAdecRoute(config.adec_endpoint ?? "http://127.0.0.1:8740/v1/route", {
       policyId: config.policy_id ?? "",
       turnId: `ahub:${key}`,
       evidence,
       constraints: {
         contextTokens: sensitive ? 0 : estimateInputTokens(context.messages),
-        pii: context.pii,
-        private: privateTurn,
+        pii: privacy.pii,
+        private: privacy.private,
         ...state.currentPair?.turn === context.turn?.context.turn ? { current: state.currentPair.pair } : {}
       },
       candidates: [...new Set(pairs.map((pair) => pair.alias))]
     }, pairs, context.signal, config.decision_timeout_ms ?? this.timeoutMs);
+    this.fence(context, privacy);
     if (!result.ok)
       state.failure = { turn: key, result };
-    return result;
+    return { result, privacy };
   }
 }
-var ended = () => new Error("model route turn ended before execution; retry in the current turn");
+var DecisionPolicyChangedError, ended = () => new Error("model route turn ended before execution; retry in the current turn");
 var init_decision = __esm(() => {
   init_adec();
   init_decision_evidence();
   init_stage();
+  DecisionPolicyChangedError = class DecisionPolicyChangedError extends Error {
+    constructor() {
+      super("decision routing privacy or observer policy changed or is unavailable during preparation; run ahub status, inspect current task policy and retry");
+    }
+  };
 });
 
 // src/models/route/prompts.ts
@@ -14583,6 +14633,7 @@ class HubRouteRuntime {
   }
   async call(route, config, messages, scope, pii, signal) {
     const labelTurn = this.labels.captureTurn();
+    this.decisions.checkEntry(config, pii);
     const started = performance.now(), state = this.state(route, config, scope);
     const conversation = normalizeConversation(messages), signals = extractToolSignals(conversation);
     const dimensions = dimensionsFromSignal(signals);
@@ -14607,7 +14658,7 @@ class HubRouteRuntime {
         sent = [{ role: "system", content: decision.planningPrompt }, ...messages];
     } else if (config.type === "escalation" && state.escalation.snapshot().latched)
       model = capable;
-    const picked = config.type === "decision" ? await this.decisions.pick(config, {
+    const proposed = config.type === "decision" ? await this.decisions.pick(config, {
       route,
       scope,
       turn: labelTurn,
@@ -14617,10 +14668,11 @@ class HubRouteRuntime {
       signal,
       current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn
     }) : {};
+    const picked = this.decisions.confirm(proposed);
     model = picked.apply?.alias ?? model;
     source = picked.trace ? "decision" : source;
     let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
-    const result = picked?.apply ? await this.host.execute(model, sent, false, signal, undefined, picked.apply.effort) : await this.host.execute(model, sent, false, signal);
+    const result = picked?.apply ? await this.host.execute(model, sent, false, signal, undefined, picked.apply.effort, picked.handoff) : await this.host.execute(model, sent, false, signal);
     picked.applied?.();
     if (config.type !== "escalation" || state.escalation.snapshot().latched)
       return this.withDecision(result, decisionId);
@@ -15104,6 +15156,7 @@ var HISTORY_CHARS = 1e5, TURN_CHARS = 120000, SIDE_EFFECTS2, ExecutionBudgetStop
 var init_local_worker = __esm(() => {
   init_model_token();
   init_memory_policy();
+  init_decision();
   init_runtime();
   init_envelope();
   init_hub_tools();
@@ -15173,18 +15226,19 @@ var init_local_worker = __esm(() => {
       super(id, opts.watchdogMs);
       this.opts = opts;
       this.routes = new HubRouteRuntime({
-        execute: async (model, messages, judge, signal, maxTokens, reasoningEffort) => {
+        execute: async (model, messages, judge, signal, maxTokens, reasoningEffort, beforeRequest) => {
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
           const envs = this.routeEnvs, pii = this.routePii, generation = this.turn, task = this.routeTask;
           await this.requireBudget(envs, "model_calls");
           if (generation !== this.turn)
             throw new Error("route belongs to an ended turn");
+          beforeRequest?.();
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
           const tools = judge ? undefined : [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : []];
           this.releaseObserverInput(this.currentObserverInputContext, envs);
-          const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {}, ...reasoningEffort ? { reasoning_effort: reasoningEffort } : {} }, { signal, ...pii ? { onCampusOnly: true } : {} });
+          const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {}, ...reasoningEffort ? { reasoning_effort: reasoningEffort } : {} }, { signal, ...pii ? { onCampusOnly: true } : {}, ...beforeRequest ? { beforeRequest } : {} });
           this.recordUsage(result, model, task);
           if (generation !== this.turn)
             throw new Error("route belongs to an ended turn");
@@ -15192,7 +15246,7 @@ var init_local_worker = __esm(() => {
           return result;
         },
         onCampus: () => this.opts.omni.onCampus(),
-        decisionContext: () => ({ private: this.routeEnvs.some((env) => env.private === true), excluded: this.routeEnvs.some((env) => remoteEnvelope(env) || isReviewObserverExcluded(env)) || this.routeReviewScope?.excluded === true }),
+        decisionContext: () => this.decisionContext(),
         publicDecisionText: (text) => this.opts.routeEvidencePublic?.(text) === true,
         admitDecision: () => this.requireBudget(this.routeEnvs, "model_calls"),
         staySwitch: () => this.opts.staySwitch?.(),
@@ -15201,6 +15255,16 @@ var init_local_worker = __esm(() => {
         onRouteOutcome: (event) => this.opts.onRouteOutcome?.(event)
       });
       this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny, opts.tools.readOnly);
+    }
+    decisionContext() {
+      const current = this.opts.routeDecisionContext?.();
+      if (this.opts.routeDecisionContext && (!current || typeof current.private !== "boolean" || typeof current.excluded !== "boolean" || current.pii !== undefined && typeof current.pii !== "boolean"))
+        throw new DecisionPolicyChangedError;
+      return {
+        pii: this.routePii || current?.pii === true,
+        private: this.routeEnvs.some((env) => env.private === true) || current?.private === true,
+        excluded: this.routeEnvs.some((env) => remoteEnvelope(env) || isReviewObserverExcluded(env)) || this.routeReviewScope?.excluded === true || current?.excluded === true
+      };
     }
     recoveryMetadata() {
       return { launch: { kind: "local", cwd: this.opts.cwd, model: this.opts.fixedModel, ...this.opts.route ? { route: this.opts.route } : {} }, sessionId: this.sessionId };
@@ -15610,7 +15674,7 @@ var init_local_worker = __esm(() => {
       try {
         return await this.routes.call(route, config, messages, this.routeScope(!!policy?.pii), !!policy?.pii, signal);
       } catch (error) {
-        if (signal.aborted || error instanceof ExecutionBudgetStop)
+        if (signal.aborted || error instanceof ExecutionBudgetStop || error instanceof DecisionPolicyChangedError)
           throw error;
         this.opts.log?.(`hub route ${route} unavailable; using fixed model`);
         return;
