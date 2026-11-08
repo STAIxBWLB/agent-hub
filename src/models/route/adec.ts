@@ -2,7 +2,7 @@ import { Agent, request as httpRequest, type ClientRequest, type IncomingMessage
 import { connect } from "node:net";
 import { types } from "node:util";
 
-// Wire contract: agent-decide issue #4 / PR #5, source 4f4935c1 (policy.ts, route.ts, contract.ts).
+// Wire contract: agent-decide issue #4 / PR #5, merged source 008548c5 (policy.ts, route.ts, contract.ts).
 const POLICY = /^[a-z0-9][a-z0-9._-]{0,49}$/;
 const TURN = /^[A-Za-z0-9._:-]{1,128}$/;
 const ALIAS = /^[a-z0-9][a-z0-9._/:-]{0,63}$/;
@@ -12,7 +12,7 @@ const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 const BODY_BYTES = 64 * 1024;
 const MAX_PAIRS = 26;
 const REASONS = ["ok", "explicit", "pinned", "single", "no_candidate", "low_margin", "off_prem", "timeout", "http", "malformed", "outside_options", "state_too_long"] as const;
-const RULES = ["onprem_only", "no_downgrade", "ctx_max", "pin_broken"] as const;
+const RULES = ["onprem_only", "explicit", "no_downgrade", "ctx_max", "no_candidate", "pin_broken", "pinned", "single"] as const;
 export type AdecReason = typeof REASONS[number];
 export type AdecRule = typeof RULES[number];
 export interface AdecPair { alias: string; effort: string }

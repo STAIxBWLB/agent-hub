@@ -13019,7 +13019,7 @@ var init_adec = __esm(() => {
   MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
   BODY_BYTES = 64 * 1024;
   REASONS = ["ok", "explicit", "pinned", "single", "no_candidate", "low_margin", "off_prem", "timeout", "http", "malformed", "outside_options", "state_too_long"];
-  RULES = ["onprem_only", "no_downgrade", "ctx_max", "pin_broken"];
+  RULES = ["onprem_only", "explicit", "no_downgrade", "ctx_max", "no_candidate", "pin_broken", "pinned", "single"];
 });
 
 // src/models/route/config.ts
