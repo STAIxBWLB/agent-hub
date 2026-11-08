@@ -56,10 +56,10 @@ test("a priority-prefixed invalid Record is removed without changing the remaini
   await f.worker.stop(); await f.recipient.stop(); f.bus.closeJournal();
 });
 test("private, review-held, unknown-parent and partial finals never become Record captures", async () => {
-  for (const mode of ["private", "review", "unknown", "partial"] as const) {
+  for (const mode of ["private", "private-output", "review", "unknown", "partial"] as const) {
     const f = await rig(mode === "private" ? { private: true } : {}, mode === "review" ? { reviewObserverInputExcluded: () => true } : {});
     let captured = 0; f.bus.onFinalAnswer = () => { captured++; };
-    f.worker.answer("Answer.\namem: contract | - | fixed", { inReplyTo: mode === "unknown" ? newEnvelope("user", "other") : f.prompt, to: [f.recipient.id] }, mode !== "partial");
+    f.worker.answer("Answer.\namem: contract | - | fixed", { inReplyTo: mode === "unknown" ? newEnvelope("user", "other") : f.prompt, to: [f.recipient.id], ...(mode === "private-output" ? { private: true } : {}) }, mode !== "partial");
     expect(captured).toBe(0);
     expect(f.events.filter(e => e.t === "envelope" && e.env.from === "kimi").every(e => e.t === "envelope" && !e.env.body.includes("amem:"))).toBe(true);
     await f.worker.stop(); await f.recipient.stop(); f.bus.closeJournal();

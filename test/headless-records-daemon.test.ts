@@ -46,7 +46,7 @@ function fixture(policy: "enabled" | "disabled" | "missing" | "throw" = "enabled
     reviewOnlyPeer: () => false, definitionOf: () => ({}), contextPii: () => privateTurn, reviewInputHeld: () => review, reviewObserverInput: () => review,
     isReviewObserverExcluded: () => false, isInvocationKind, remoteEnvelope, boundedSafe: (text: string) => !text.includes("PRIVATE_CANARY"),
     tasks: { publicMetadataText: (text: string) => !text.includes("PRIVATE_CANARY") }, looksSecret: (text: string) => text.includes("SECRET_CANARY"),
-    isDenied: (path: string) => path.startsWith("private/"), matchesPolicy: (_cwd: string, _path: string, _paths: string[], _includeParents = false) => false, log: (text: string) => logs.push(text), RecordCapture, CaptureStore, configuredPolicy, generatedRecordNotes, preferRecordItems, resolve, sanitize: (text: string) => text, corpusBriefAllowed: () => true,
+    isDenied: (path: string) => path.startsWith("private/"), matchesPolicy: (_cwd: string, _path: string, _paths: string[], _includeParents = false) => false, log: (text: string) => logs.push(text), RecordCapture, CaptureStore, configuredPolicy, generatedRecordNotes, preferRecordItems, Buffer, resolve, sanitize: (text: string) => text, corpusBriefAllowed: () => true,
   };
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8"), start = source.indexOf("  const recordOwners ="), end = source.indexOf("  // Hoisted for the Tasks ports above", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);

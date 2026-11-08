@@ -343,7 +343,7 @@ export class Bus {
         finalPriority = parseMarker(raw).priority;
         // Strip before invocation routing, publication, journaling, digests or the console event tap.
         text = stripRecordLines(raw);
-        let observable = !this.closed && this.peers.get(peer.id) === peer && !!context && !remoteId(peer.id) && !opts?.to?.some(remoteId) && !answerParent;
+        let observable = !this.closed && this.peers.get(peer.id) === peer && !!context && opts?.private !== true && !remoteId(peer.id) && !opts?.to?.some(remoteId) && !answerParent;
         try {
           observable &&= this.opts.reviewObserverInputExcluded?.(peer.id, context!.originals) !== true &&
             ![...context!.out, ...context!.originals].some(env => env.private || isReviewObserverExcluded(env) || isInvocationKind(env) || remoteId(env.from) || env.to?.some(remoteId));

@@ -104,6 +104,9 @@ defaults. The
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,
   git sync between machines). Agents get
   it as a recall preface, as briefs on a task, and through bounded search tools.
+  Managed headless peers can save compact `amem:` records from final answers; the
+  hub follows amem's `records` policy and removes record lines from shared replies
+  ([details](docs/memory.md#agent-authored-records-1320)).
 - **Local and on-prem models.** Pi and the local worker can run on DGX or local MLX
   through an authenticated relay. Tasks marked as PII stay on the on-prem worker.
 - **Guard rails.** The local worker and Pi run in a sandbox, and their writes and
