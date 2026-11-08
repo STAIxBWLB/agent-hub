@@ -24,7 +24,7 @@ export interface RecordCapturePorts {
   /** Counts of processed records/canonical UTF-8 bytes only; never text, paths or identity. */
   observe?(counts: RecordCaptureCounts): void;
 }
-const marker = /^[\t ]*(?:>[\t ]*)*amem:[^\r\n]*(?:\r\n|[\r\n]|$)/gm;
+const marker = /^[\t ]*(?:>[\t ]*)*(?:\[(?:IMPORTANT|FYI)\][\t ]*)?amem:[^\r\n]*(?:\r\n|[\r\n]|$)/gm;
 /** Transport stripping only. Record grammar, private-span handling and validation belong to agent-mem. */
 export function stripRecordLines(text: string): string { return text.replace(marker, ""); }
 function stripped(text: string): { text: string; count: number } {

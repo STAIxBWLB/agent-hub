@@ -336,12 +336,14 @@ export class Bus {
           : parentId === undefined && this.invocationTurnOpen(peer.id)
             ? pushedInvocation ? pushed : pulledInvocation ? pulled : undefined
             : undefined;
+      let finalPriority: Priority | undefined;
       if (final) {
         const context = parentId === undefined ? pulled ?? pushed : namedPush ? pushed : namedPull ? pulled : undefined;
         const raw = text;
+        finalPriority = parseMarker(raw).priority;
         // Strip before invocation routing, publication, journaling, digests or the console event tap.
         text = stripRecordLines(raw);
-        let observable = !this.closed && this.peers.get(peer.id) === peer && !!context && !remoteId(peer.id) && !answerParent;
+        let observable = !this.closed && this.peers.get(peer.id) === peer && !!context && !remoteId(peer.id) && !opts?.to?.some(remoteId) && !answerParent;
         try {
           observable &&= this.opts.reviewObserverInputExcluded?.(peer.id, context!.originals) !== true &&
             ![...context!.out, ...context!.originals].some(env => env.private || isReviewObserverExcluded(env) || isInvocationKind(env) || remoteId(env.from) || env.to?.some(remoteId));
@@ -356,7 +358,7 @@ export class Bus {
         try { taken = this.onAnswer(peer.id, text, answerParent.out) === true; } catch { taken = true; } // a throwing host never turns a callee's answer into a broadcast
         if (taken) return;
       }
-      const { priority, body } = parseMarker(text);
+      const parsed = parseMarker(text), priority = finalPriority ?? parsed.priority, body = parsed.body;
       if (!body) return;
       // What the peer was handed differs from what it stands for once a delivery was condensed; both the audience
       // and the priority ceiling are about what it stands for.

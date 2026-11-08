@@ -58,17 +58,22 @@ export interface RecordBriefSnapshot {
 }
 export interface RecordBriefPort {
   allowed(task: BriefTask): boolean;
-  policyVersion(): string;
+  policyVersion(task?: BriefTask): string;
   read(task: BriefTask): RecordBriefSnapshot | undefined | Promise<RecordBriefSnapshot | undefined>;
   observe?(peer: PeerId, task: number | undefined, counts: RecordPreferenceCounts): void;
+  /** Legacy Record addition ceiling. Existing larger context is retained; additions cannot enlarge it. */
+  maxBytes?: number | (() => number);
 }
 const RECORD_ROWS = 32, RECORD_BYTES = 2048;
+const LEGACY_KNOWLEDGE_HEADER = "Knowledge brief (advice, not a block):";
+const LEGACY_NATIVE_HEADER = "Memory brief (hub memory first, fails first: ahub memory show <mem id>; amem by mem:id):";
+const LEGACY_CURATED_HEADER = "Memory brief (amem curated notes; fetch details by mem:id):";
 
 /** Read-time display preference only; the package parser owns Record syntax and canonical anchors. */
 export function preferRecordItems(items: readonly NativeItem[], snapshot: RecordBriefSnapshot, maximum: number,
-  protectedIds: ReadonlySet<string> = new Set()): { items: NativeItem[]; replacedNotes: number; records: number } {
+  protectedIds: ReadonlySet<string> = new Set(), maximumLineBytes = 2048): { items: NativeItem[]; replacedNotes: number; records: number } {
   const original = () => ({ items: [...items], replacedNotes: 0, records: 0 });
-  if (snapshot.partial || snapshot.rows.length > RECORD_ROWS || snapshot.replaceable.length > RECORD_ROWS) return original();
+  if (!Number.isSafeInteger(maximumLineBytes) || maximumLineBytes < 0 || snapshot.rows.length > RECORD_ROWS || snapshot.replaceable.length > RECORD_ROWS) return original();
   const records: { item: NativeItem; anchors: readonly string[] }[] = [];
   for (const row of snapshot.rows) {
     if (row.event !== "Record" || row.subagent || !Number.isSafeInteger(row.id) || row.id < 1 || typeof row.excerpt !== "string"
@@ -80,8 +85,12 @@ export function preferRecordItems(items: readonly NativeItem[], snapshot: Record
     if (records.some(value => value.item.id === id)) continue;
     records.push({ item: { id, line: `${id} ${record.line}`, kind: record.kind, anchors: record.anchors }, anchors: record.anchors });
   }
+  const bytes = (rows: readonly NativeItem[]) => Buffer.byteLength(rows.map(item => item.line).join("\n"));
+  // Preexisting priority/baseline context is never deleted merely to satisfy a new optional source cap.
+  const ceiling = Math.max(maximumLineBytes, bytes(items));
   const selected = [...items]; let replacedNotes = 0;
-  for (const note of items) {
+  // A bounded partial window can add known evidence, but can never prove note replacement coverage.
+  for (const note of snapshot.partial ? [] : items) {
     if (note.kind === "fail" || note.kind === "contract" || protectedIds.has(note.id)) continue;
     const permitted = snapshot.replaceable.filter(value => value.id === note.id);
     if (permitted.length !== 1 || !permitted[0]!.anchors.length) continue;
@@ -92,10 +101,21 @@ export function preferRecordItems(items: readonly NativeItem[], snapshot: Record
     if (selected.length - 1 + additions.length > maximum) continue;
     const position = selected.findIndex(item => item.id === note.id);
     if (position < 0) continue;
-    selected.splice(position, 1, ...additions.map(record => record.item)); replacedNotes++;
+    const complete = additions.map(record => record.item);
+    if (bytes(complete) > Buffer.byteLength(note.line)) continue;
+    const candidate = [...selected.slice(0, position), ...complete, ...selected.slice(position + 1)];
+    if (bytes(candidate) > ceiling) continue;
+    selected.splice(position, 1, ...complete); replacedNotes++;
   }
   // Host relevance is authoritative; spare room can carry Records without suppressing any original item.
-  for (const record of records) if (selected.length < maximum && !selected.some(item => item.id === record.item.id)) selected.push(record.item);
+  let partialMarked = false;
+  for (const record of records) {
+    if (selected.length >= maximum || selected.some(item => item.id === record.item.id)) continue;
+    const item = snapshot.partial && !partialMarked
+      ? { ...record.item, line: `[partial Record window: older Records not read] ${record.item.line}` } : record.item;
+    if (bytes([...selected, item]) > ceiling) continue;
+    selected.push(item); partialMarked ||= snapshot.partial;
+  }
   return { items: selected, replacedNotes, records: selected.filter(item => records.some(record => record.item.id === item.id)).length };
 }
 
@@ -152,20 +172,24 @@ export class Briefs {
         return items;
       } catch { return current() ? [] : undefined; }
     };
-    const recordItems = async (items: readonly NativeItem[]): Promise<{ items: NativeItem[]; replacedNotes: number; records: number; invalidated?: true }> => {
-      const fallback = () => ({ items: [...items], replacedNotes: 0, records: 0 });
-      if (!this.records || !current()) return fallback();
+    const recordItems = async (items: readonly NativeItem[], lineBudget: number): Promise<{ items: NativeItem[]; replacedNotes: number; records: number; invalidated?: true; current?: () => boolean }> => {
       let version: string | undefined;
+      const recordCurrent = () => {
+        try { return current() && this.records!.allowed(task) && this.records!.policyVersion(task) === version; } catch { return false; }
+      };
+      const fallback = () => ({ items: [...items], replacedNotes: 0, records: 0, ...(version === undefined ? {} : { current: recordCurrent }) });
+      if (!this.records || !current()) return fallback();
       try {
         if (!this.records.allowed(task)) return fallback();
-        version = this.records.policyVersion();
+        version = this.records.policyVersion(task);
         const snapshot = await this.records.read(task);
-        if (!current() || !this.records.allowed(task) || this.records.policyVersion() !== version) return { ...fallback(), invalidated: true };
+        if (!current() || !this.records.allowed(task) || this.records.policyVersion(task) !== version) return { ...fallback(), invalidated: true };
         if (!snapshot) return fallback();
         const available = { ...snapshot, rows: snapshot.rows.filter(row => !this.seen.get(peer)?.has(`capture:Record:${row.id}`)) };
-        return preferRecordItems(items, available, maximum, new Set(priority.map(item => item.id)));
+        const result = preferRecordItems(items, available, maximum, new Set(priority.map(item => item.id)), lineBudget);
+        return { ...result, current: recordCurrent };
       } catch {
-        try { if (version !== undefined && (!current() || !this.records.allowed(task) || this.records.policyVersion() !== version)) return { ...fallback(), invalidated: true }; }
+        try { if (version !== undefined && (!current() || !this.records.allowed(task) || this.records.policyVersion(task) !== version)) return { ...fallback(), invalidated: true }; }
         catch { return { ...fallback(), invalidated: true }; }
         return fallback();
       }
@@ -208,8 +232,8 @@ export class Briefs {
           if (!current()) return undefined;
           const header = selected.some(item => item.kind === "note") ? "Knowledge brief (advice, not a block):" : lines[0] || "Live fail notes for this plan (advice, not a block):";
           const before = [header, ...selected.map(item => item.line)].join("\n");
-          const preferred = await recordItems(selected);
-          if (preferred.invalidated || !current() || context.options.allowed?.() === false || context.options.policyVersion() !== revision) return undefined;
+          const preferred = this.records ? await recordItems(selected, Math.max(0, (context.options.maxBytes ?? 2048) - Buffer.byteLength(header) - 1)) : { items: [...selected], replacedNotes: 0, records: 0, invalidated: undefined, current: undefined };
+          if (preferred.invalidated || preferred.current?.() === false || !current() || context.options.allowed?.() === false || context.options.policyVersion() !== revision) return undefined;
           context.options.assertCurrent?.();
           const representedIds = selected.filter(item => !preferred.items.some(row => row.id === item.id)).map(item => item.id);
           selected.splice(0, selected.length, ...preferred.items);
@@ -273,12 +297,21 @@ export class Briefs {
     if (!current()) return undefined;
     const notice = this.client?.readNotice();
     const beforeOwn = [...own, ...corpusRows];
-    const preferred = await recordItems(beforeOwn);
-    if (preferred.invalidated || !current()) return undefined;
+    let legacyBytes = 2048;
+    try { legacyBytes = typeof this.records?.maxBytes === "function" ? this.records.maxBytes() : this.records?.maxBytes ?? legacyBytes; }
+    catch { legacyBytes = NaN; } // An unreadable optional cap cannot grant additional bytes.
+    const indexLines = items.map(item => `${item.id.toString().startsWith("mem:") ? item.id : `#${item.id}`} ${item.time} ${item.type} ${item.title}`);
+    const overhead = Math.max(...[LEGACY_KNOWLEDGE_HEADER, LEGACY_NATIVE_HEADER, LEGACY_CURATED_HEADER].map(header => Buffer.byteLength(header))) + 1
+      + (notice ? Buffer.byteLength(notice) + 1 : 0) + indexLines.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, 0);
+    const preferred = this.records ? await recordItems(beforeOwn, Math.max(0, legacyBytes - overhead)) : { items: beforeOwn, replacedNotes: 0, records: 0, invalidated: undefined, current: undefined };
+    if (preferred.invalidated || preferred.current?.() === false || !current()) return undefined;
+    // A Record read is another yield point. Concurrent legacy reads share this same set, so
+    // recheck every ordinary row after it before claiming any delivered id.
+    items.splice(0, items.length, ...items.filter(item => !seen.has(`#${item.id}`) && !seen.has(String(item.id))));
     // The index/timeline bridge has no anchor metadata and is never removed by a Record preference.
     const room = Math.max(0, maximum - items.length);
     const preferredOwn = preferred.items.length <= room ? preferred : { items: beforeOwn, replacedNotes: 0, records: 0 };
-    own.splice(0, own.length, ...preferredOwn.items); corpusRows.length = 0;
+    own.splice(0, own.length, ...preferredOwn.items.filter(item => priorityIds.has(item.id) || !seen.has(item.id))); corpusRows.length = 0;
     if (!own.length && !items.length && !notice) return undefined;
     if (!current()) return undefined;
     for (const item of own) seen.add(item.id);
@@ -290,11 +323,12 @@ export class Briefs {
     if (!current()) return undefined;
     const render = (rows: readonly NativeItem[]) => {
       const native = rows.filter(item => item.kind !== "note"), notes = rows.filter(item => item.kind === "note");
-      const header = notes.length ? "Knowledge brief (advice, not a block):" : rows.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; amem by mem:id):" : "Memory brief (amem curated notes; fetch details by mem:id):";
+      const header = notes.length ? LEGACY_KNOWLEDGE_HEADER : rows.length ? LEGACY_NATIVE_HEADER : LEGACY_CURATED_HEADER;
       return [header, ...(notice ? [notice] : []), ...(this.displayNative?.(native) ?? native.map(item => item.line)), ...items.map(item => `${item.id.toString().startsWith("mem:") ? item.id : `#${item.id}`} ${item.time} ${item.type} ${item.title}`), ...notes.map(item => item.line)].join("\n");
     };
     const text = render(own);
-    if (this.records) observeRecords(render(beforeOwn), text, preferredOwn);
+    if (this.records) observeRecords(render(beforeOwn), text, { ...preferredOwn,
+      records: own.filter(item => item.id.startsWith("capture:Record:")).length });
     return text;
   }
 }

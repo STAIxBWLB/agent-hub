@@ -46,6 +46,14 @@ test("observer failures cannot leak Record lines or change the existing reply au
   expect(answer?.t === "envelope" && answer.env.to).toEqual([f.recipient.id]);
   await f.worker.stop(); await f.recipient.stop(); f.bus.closeJournal();
 });
+test("a priority-prefixed invalid Record is removed without changing the remaining answer priority", async () => {
+  const f = await rig({ priority: "important" });
+  f.worker.answer("[IMPORTANT] amem: invalid\nRemaining answer.", { inReplyTo: f.prompt, to: [f.recipient.id] });
+  const answer = f.events.find(e => e.t === "envelope" && e.env.from === "kimi");
+  expect(answer?.t === "envelope" && answer.env.body).toBe("Remaining answer.");
+  expect(answer?.t === "envelope" && answer.env.priority).toBe("important");
+  await f.worker.stop(); await f.recipient.stop(); f.bus.closeJournal();
+});
 test("private, review-held, unknown-parent and partial finals never become Record captures", async () => {
   for (const mode of ["private", "review", "unknown", "partial"] as const) {
     const f = await rig(mode === "private" ? { private: true } : {}, mode === "review" ? { reviewObserverInputExcluded: () => true } : {});

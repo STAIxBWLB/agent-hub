@@ -1,3 +1,4 @@
+import { RecordCapture, type RecordCapturePolicy } from "../memory/records.ts";
 import { VisualStore, validateVisualInput, validateVisualPayload, VISUAL_ID_PATTERN, type VisualRecord, type VisualSummary } from "./visual.ts";
 import { resolveVisualAssets } from "./visual-assets.ts";
 import type { DeliverablePorts } from "./deliverable-files.ts";
@@ -209,7 +210,7 @@ import { ControlClient, DAEMON_FEATURES, HANDOFF_CONNECT_MS, HANDOFF_LOOKUP_CONN
 import { negotiateProtocol, protocolWindow } from "./protocol-window.ts";
 import { attachEvent, originOf, type Origin } from "./provenance.ts";
 import { mintSessionId, sessionGate } from "./session-identity.ts";
-import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
+import { MAX_HOP, isInvocationKind, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter, type PeerTakeoverClaim } from "./peers.ts";
 import { ClaudeTodoSource, DoingTracker, readAiTitle, DOING_STUB, SESSION_TITLE_HINT, sessionTitleText, sessionTitleBindings, unnamedSessionLabel, type DoingKind, type PeerDoing, type TitleCursor } from "./peer-doing.ts";
 import { MemoryClient } from "../memory/client.ts";
@@ -240,7 +241,7 @@ import { isHubWritePath, grantablePath, instructionProtection, isPermissionMode,
 import { ContextWindows, DEFAULT_CONTEXT, readNativeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
-import { looksSecret, DEFAULT_LEASE_MS, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
+import { CaptureStore, configuredPolicy, looksSecret, DEFAULT_LEASE_MS, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
 import { memoryProjectKey } from "@staix/agent-mem";
 import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory, createIntentBriefSource, createStandalonePolicy } from "@staix/agent-mem";
@@ -713,6 +714,8 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 }
 
 export interface DaemonOptions {
+  /** Host-only staging seam. Missing/unreadable policy disables Records until the public package policy API is available. */
+  effectiveRecordPolicy?: (cwd: string) => { enabled: boolean; version: string } | undefined;
   /** Host-only numeric startup reader observation; never read from config or control input. Observer failure changes no replay state. */
   startupSeedObserved?: (observation: { readPasses: number; readBytes: number }) => void;
   /** Host-only test/embedding port; never read from project configuration or a tool. */
@@ -2184,7 +2187,14 @@ export async function startDaemon(opts: DaemonOptions) {
       own = memoryStore ? nativeRecall([...goals, ...recallMemoryLines(screenMemory(memoryStore.list({ project: memoryProject, tier: "long", limit: Number.MAX_SAFE_INTEGER }).filter((v) => v.kind !== "finding")), 30, staleness())], config.memory.enabled ? Math.floor(config.memory.inject_tokens / 2) : config.memory.inject_tokens, (line) => sanitize(line.replace(/\s+/g, " "))) : undefined;
     }
     catch (e) { log(`hub memory recall failed: ${(e as Error).message}`); }
-    const theirs = config.memory.enabled ? await recallFor(peer, memory, chain, own ? Math.ceil(config.memory.inject_tokens / 2) : config.memory.inject_tokens) : undefined;
+    const recordRecallTask: BriefTask = { owner: peer, title: "", refs: {} };
+    const recordRecallAllowed = () => !reviewOnlyPeer(peer) && !contextPii(peer) && !reviewObserverInput(peer) && recordReadAllowed(undefined, recordReadCwd(recordRecallTask));
+    const theirs = config.memory.enabled ? await recallFor(peer, memory, chain, own ? Math.ceil(config.memory.inject_tokens / 2) : config.memory.inject_tokens, {
+      allowed: recordRecallAllowed, policyVersion: () => recordReadVersion(recordRecallTask),
+      // contextInject exposes no generated-note/raw-anchor proof: preserve the exact old context until that metadata exists.
+      project: () => undefined,
+      observe: counts => { if (recordRecallAllowed()) log(`records recall before=${counts.beforeBytes} after=${counts.afterBytes}`); },
+    }) : undefined;
     const block = [own, theirs].filter(Boolean).join("\n\n");
     if (!block || recalled.has(peer)) return; // nothing yet (worker down, no memory): the peer's next session tries again
     recalled.add(peer);
@@ -2926,6 +2936,9 @@ export async function startDaemon(opts: DaemonOptions) {
       {
         allowed: corpusBriefAllowed, policyVersion: corpusPolicyVersion,
         read: task => publicCorpus([task.title, ...task.refs.paths ?? [], ...task.plan?.paths ?? [], ...task.plan?.symbols ?? []].join(" "), () => corpusBriefAllowed(task)).map(item => ({ id: item.id, kind: "note", line: `${item.id}: ${item.text.replace(/\s+/g, " ")}` })),
+      }, {
+        allowed: recordReadAllowed, policyVersion: recordReadVersion, read: readRecordSnapshot,
+        observe: (_peer, task, counts) => { const row = task === undefined ? undefined : board.get(task); if (row && recordReadAllowed(row)) log(`records brief before=${counts.beforeBytes} after=${counts.afterBytes} replaced=${counts.replacedNotes} records=${counts.records}`); },
       }),
     ...(memoryStore ? { planFails: (task: import("./board.ts").Task) => {
       const read = () => {
@@ -3297,6 +3310,95 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
   const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.peerTaskSignals(peer).some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
+  const recordOwners = new WeakMap<PeerAdapter, { cwd: string; session(): string | undefined }>();
+  const recordInputs = new Map<PeerId, { owner: PeerAdapter | undefined; originals: readonly Envelope[]; tainted?: true }>();
+  const recordFrames = new Map<PeerId, { owner: PeerAdapter; turn: NonNullable<ReturnType<typeof turns.get>>; capture: RecordCapture }>();
+  function recordPolicy(cwd: string): { enabled: boolean; version: string } | undefined {
+    try { const policy = opts.effectiveRecordPolicy?.(cwd); return policy && typeof policy.enabled === "boolean" && typeof policy.version === "string" && policy.version ? { enabled: policy.enabled, version: policy.version } : undefined; }
+    catch { return; }
+  }
+  function recordPublic(text: string): boolean { return !looksSecret(text) && boundedSafe(text) && tasks.publicMetadataText(text); }
+  function recordPathDenied(path: string, cwd = opts.cwd): boolean { return isDenied(path, config.local.deny) || matchesPolicy(cwd, path, config.pii?.paths ?? [], true) || matchesPolicy(opts.cwd, resolve(cwd, path), config.pii?.paths ?? [], true); }
+  function recordInputAllowed(peer: PeerId, envs: readonly Envelope[]): boolean {
+    try { return !!envs.length && !reviewInputHeld(peer, envs) && !reviewObserverInput(peer) && !envs.some(env => env.private || isReviewObserverExcluded(env) || isInvocationKind(env) || remoteEnvelope(env) || env.to?.some(id => id.includes("@"))); }
+    catch { return false; }
+  }
+  function recordOwnerEligible(owner: PeerAdapter): boolean {
+    const peer = owner.id, input = recordInputs.get(peer), proxy = frontendProxyState(peer, owner);
+    if (proxy.present && (!proxy.port || proxy.port.attached)) return false;
+    return config.memory.enabled && !stopping && !recoveryActive() && !bus.isRecoveryHeld && recordOwners.has(owner) && bus.peers.get(peer) === owner
+      && membershipAllowed(peer) && owner.state === "busy" && !reviewOnlyPeer(peer) && !definitionOf(peer)?.reviewer && !contextPii(peer)
+      && !!input && !input.tainted && input.owner === owner && recordInputAllowed(peer, input.originals);
+  }
+  function noteRecordSteered(peer: PeerId, originals: readonly Envelope[]): void {
+    const input = recordInputs.get(peer), owner = bus.peers.get(peer);
+    if (!input) { recordInputs.set(peer, { owner, originals: [], tainted: true }); return; }
+    if (!input.tainted && (!owner || input.owner !== owner || !recordInputAllowed(peer, originals))) input.tainted = true;
+  }
+  function closeRecordFrame(peer: PeerId): void { recordFrames.get(peer)?.capture.close(); recordFrames.delete(peer); }
+  function bindRecordOwner(owner: PeerAdapter, cwd: string, session: () => string | undefined): void {
+    recordOwners.set(owner, { cwd, session });
+    owner.recordInstruction = () => {
+      if (!recordOwnerEligible(owner)) return;
+      const turn = turns.get(owner.id), bound = recordOwners.get(owner), prior = recordFrames.get(owner.id);
+      if (!turn || !bound) return;
+      if (prior?.owner === owner && prior.turn === turn) return prior.capture.instruction();
+      closeRecordFrame(owner.id);
+      const session = bound.session();
+      if (!session) return;
+      const effective = recordPolicy(cwd);
+      if (!effective?.enabled || !captureBinding || memoryProblem) return;
+      const binding = captureBinding, profile = memorySyncPolicyVersion(), revision = configRevision, generation = owner.sessionGeneration;
+      const current = () => {
+        if (!recordOwnerEligible(owner) || turns.get(owner.id) !== turn || bound.session() !== session || owner.sessionGeneration !== generation || configRevision !== revision || captureBinding !== binding || memoryProblem) return false;
+        const policy = recordPolicy(cwd);
+        if (policy?.enabled !== true || policy.version !== effective.version || memorySyncPolicyVersion() !== profile) return false;
+        try { binding.assertCurrent(); return memoryProjectFor(opts.cwd) === memoryProject; } catch { return false; }
+      };
+      const policy: RecordCapturePolicy = { records: true, current, project: memoryProject, cwd, peer: owner.id, turn: turn.id, session, at: new Date(turn.start).toISOString(), memoryDir: binding.home,
+        publicText: recordPublic, denyPath: path => recordPathDenied(path, cwd) };
+      const capture = new RecordCapture({ eligible: () => recordOwnerEligible(owner) && turns.get(owner.id) === turn, policy: () => current() ? policy : undefined,
+        observe: counts => { if (current()) log(`records capture accepted=${counts.accepted} dropped=${counts.dropped} bytes=${counts.bytes}`); } });
+      recordFrames.set(owner.id, { owner, turn, capture });
+      return capture.instruction();
+    };
+  }
+  function recordReadCwd(task?: Pick<BriefTask, "owner">): string {
+    const owner = task?.owner ? bus.peers.get(task.owner) : undefined;
+    return owner ? recordOwners.get(owner)?.cwd ?? opts.cwd : opts.cwd;
+  }
+  function recordReadAllowed(task?: BriefTask, cwd = recordReadCwd(task)): boolean {
+    try { return config.memory.enabled && !stopping && !recoveryActive() && !bus.isRecoveryHeld && !memoryProblem && !!captureBinding
+      && (task ? corpusBriefAllowed(task) : true) && recordPolicy(cwd)?.enabled === true; } catch { return false; }
+  }
+  function recordReadVersion(task?: BriefTask): string { const cwd = recordReadCwd(task); return JSON.stringify([configRevision, memorySyncPolicyVersion(), cwd, recordPolicy(cwd)]); }
+  function readRecordSnapshot(task: BriefTask): import("../memory/brief.ts").RecordBriefSnapshot | undefined {
+    if (!recordReadAllowed(task)) return;
+    const version = recordReadVersion(task), binding = captureBinding!, cwd = recordReadCwd(task);
+    let store: CaptureStore | undefined;
+    try {
+      binding.assertCurrent(); if (memoryProjectFor(opts.cwd) !== memoryProject) return;
+      const policy = configuredPolicy(binding.home, cwd);
+      store = new CaptureStore({ memoryDir: binding.home, project: memoryProject, cwd, readOnly: true });
+      const snapshot = store.readBriefRecords(32);
+      if (!recordReadAllowed(task) || recordReadVersion(task) !== version) return;
+      const paths = [...task.refs.paths ?? [], ...task.plan?.paths ?? []];
+      const rows = snapshot.rows.filter(row => row.event === "Record" && !row.subagent && Array.isArray(row.paths) && policy.screenStandalone(row) && policy.screenStandalone(row.excerpt) && policy.screenStandalone(row.paths) && recordPublic(JSON.stringify(row))
+        && sanitize(row.excerpt) === row.excerpt && row.paths.every(anchor => typeof anchor === "string" && !recordPathDenied(anchor.split("#")[0]!, cwd))
+        && (row.paths.length === 0 || row.paths.some(anchor => paths.some(path => anchor === path || anchor.split("#")[0] === path))));
+      binding.assertCurrent();
+      if (!recordReadAllowed(task) || recordReadVersion(task) !== version || memoryProjectFor(opts.cwd) !== memoryProject) return;
+      // Current note views do not expose generated-note/raw-anchor provenance. Never guess replaceability from prose.
+      return { rows, replaceable: [], partial: snapshot.partial };
+    } catch { return; } finally { try { store?.close(); } catch { /* Read preference never changes the old brief. */ } }
+  }
+  bus.onFinalAnswer = (peer, raw, input) => {
+    const frame = recordFrames.get(peer);
+    if (!frame || !recordOwnerEligible(frame.owner) || turns.get(peer) !== frame.turn || !recordInputAllowed(peer, input.out) || !recordInputAllowed(peer, input.originals)) return;
+    frame.capture.finish(raw);
+  };
+  bus.onFinalAnswerBytes = (peer, counts) => { const owner = bus.peers.get(peer); if (owner && recordOwnerEligible(owner)) log(`records forwarded before=${counts.before} after=${counts.after}`); };
+
   // Hoisted for the Tasks ports above; only the returned guard reads fully initialized daemon state.
   function controlWritePrivacyGuard(admittedAtReceive: boolean, inputPublicAtReceive: boolean, peer?: PeerId, taskId?: number) {
     return () => {
@@ -3563,6 +3665,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const pendingNativePerson = new Set<PeerId>();
   bus.onDeliver = (peer, originals) => {
     if (peer.includes("@")) return;
+    recordInputs.set(peer, { owner: bus.peers.get(peer), originals: [...originals] });
     resetReviewObserverSessionIfChanged(peer);
     if (!presenceOnlyDelivery(originals)) {
       const pendingBefore = pendingReviewObserverInputs.get(peer), previous = pendingBefore ?? currentReviewObserverInputs.get(peer), reviewInputScoped = reviewInputHeld(peer, originals), turnId = turns.get(peer)?.id;
@@ -3690,7 +3793,7 @@ export async function startDaemon(opts: DaemonOptions) {
     supervisionTurns.set(peer, { id: turn?.id ?? `supervision-${randomUUID()}`, at: turn?.start ?? Date.now(), ...(turn?.tokens ? { tokens: turn.tokens } : {}), ...(contextSession(peer) ? { session: contextSession(peer) } : {}) });
   };
   bus.onPulled = (peer, originals) => { notePulledReviewInput(peer, originals); };
-  bus.onSteering = (peer, originals) => { noteSteeredReviewInput(peer, originals); };
+  bus.onSteering = (peer, originals) => { try { noteSteeredReviewInput(peer, originals); } finally { noteRecordSteered(peer, originals); } };
   bus.onDeliveryFailed = peer => {
     pendingDeliveryTask.delete(peer); pendingPersonDelivery.delete(peer); deliveredAwaitingTurn.delete(peer); supervisionTurns.delete(peer);
     const pending = pendingReviewObserverInputs.get(peer);
@@ -7106,6 +7209,7 @@ export async function startDaemon(opts: DaemonOptions) {
       } else if (!busy && open) {
         collectKimiUsage(e.peer); // before the turn closes: its rows count toward the turn's tokens
         if (softTokenPeer(e.peer)) try { kimiUsage.turnEnded(e.peer, open.id, Date.now()); } catch { /* counting never costs a turn */ }
+        closeRecordFrame(e.peer); recordInputs.delete(e.peer);
         turns.delete(e.peer);
         modelBoundaries.delete(e.peer); modelLatches.end(e.peer);
         let afterTurn: (() => void) | undefined;
@@ -8238,6 +8342,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryTaskPreface(peer);
       await ensurePreface(peer); startCurrent?.();
       executionOwners.set(peer, { owner: pi, cwd: executionCwd });
+      if (pi.mode === "headless") bindRecordOwner(pi, executionCwd, () => pi.nativeSession);
       bus.add(pi);
       // The start's own error is the one reported; a stop that fails too is logged beside it (#115).
       try { startCurrent?.(); await pi.start(); } catch (error) {
@@ -8352,6 +8457,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryTaskPreface(peer);
       await ensurePreface(peer); startCurrent?.();
       executionOwners.set(peer, { owner: local, cwd: executionCwd });
+      bindRecordOwner(local, executionCwd, () => local.observerSessionId);
       bus.add(local);
       startCurrent?.(); await local.start();
       return { ok: true, model: route ? `${route} (fallback ${routing.local.fixed_model})` : (args.model ?? routing.local.fixed_model) };
@@ -10316,6 +10422,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       // The bus may immediately drain at add(): do not expose an idle adapter until its current choice is applied.
       startCurrent?.();
+      bindRecordOwner(owner, executionRoots.get(peer) ?? opts.cwd, () => owner.nativeSession);
       executionOwners.set(peer, { owner, cwd: executionRoots.get(peer) ?? opts.cwd });
       bus.add(owner);
       // start() finished before the bus installed its state hook: replay the current state to drain queued work and record it.
@@ -12134,6 +12241,7 @@ export async function startDaemon(opts: DaemonOptions) {
       executionBudget.close();
       syncStop.abort(); // a sync in flight kills its git step and ends before the store closes
       await syncRun?.catch(() => undefined);
+      for (const peer of recordFrames.keys()) closeRecordFrame(peer); recordInputs.clear();
       memory.close();
       candidates?.close();
       memoryStore?.close();

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { CaptureRow } from "@staix/agent-mem";
+import { createStandalonePolicy, type View, type CaptureRow } from "@staix/agent-mem";
 import { Briefs, preferRecordItems, type NativeItem, type RecordBriefPort, type RecordBriefSnapshot, type RecordPreferenceCounts } from "../src/memory/brief.ts";
 import { recallFor, type RecordRecallPort } from "../src/memory/recall.ts";
 import type { MemoryClient } from "../src/memory/client.ts";
@@ -74,11 +74,11 @@ test("Briefs measures actual rendered bytes with count-only exception-isolated o
   expect(counts[0]!.afterBytes).toBeLessThan(counts[0]!.beforeBytes);
 });
 
-test("Record reads unavailable, partial or initially denied preserve original brief bytes", async () => {
+test("Record reads unavailable or initially denied preserve original brief bytes", async () => {
   const expected = await briefs([note, unrelated]).forTask("codex", task);
   let deniedReads = 0;
   for (const source of [
-    port(() => undefined), port(() => ({ ...snapshot(), partial: true })), port(() => { throw Error("store unavailable"); }),
+    port(() => undefined), port(() => { throw Error("store unavailable"); }),
     port(() => { deniedReads++; return snapshot(); }, { allowed: () => false }),
   ]) {
     expect(await briefs([note, unrelated], source).forTask("codex", task)).toBe(expected);
@@ -127,4 +127,150 @@ test("privacy changes during Record read withhold the whole brief without poison
   mutate = false;
   const result = await instance.forTask("codex", task);
   expect(result).toContain(record().excerpt); expect(result).toContain(unrelated.line);
+});
+
+
+function gate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test("concurrent legacy briefs deduplicate both corpus and optional Record rows after the Record await", async () => {
+  const release = gate(), bothReading = gate();
+  let reads = 0;
+  const instance = new Briefs(undefined, "fixture", 3, undefined, undefined, undefined, undefined,
+    { allowed: () => true, policyVersion: () => "public", read: () => [{ ...unrelated, kind: "note" }] },
+    port(async () => { if (++reads === 2) bothReading.resolve(); await release.promise; return { ...snapshot(), replaceable: [] }; }));
+  const first = instance.forTask("codex", task), second = instance.forTask("codex", { ...task, id: 43 });
+  await bothReading.promise; release.resolve();
+  const delivered = await Promise.all([first, second]);
+  expect(reads).toBe(2);
+  expect(delivered.filter(Boolean)).toHaveLength(1);
+  expect(delivered.filter(text => text?.includes(unrelated.line))).toHaveLength(1);
+  expect(delivered.filter(text => text?.includes(record().excerpt))).toHaveLength(1);
+});
+
+test("concurrent Record reads recheck policy after yielding without claiming delivered ids", async () => {
+  const release = gate(), bothReading = gate();
+  let reads = 0, revision = "before";
+  const instance = briefs([unrelated], port(async () => {
+    if (++reads <= 2) { if (reads === 2) bothReading.resolve(); await release.promise; }
+    return { ...snapshot(), replaceable: [] };
+  }, { policyVersion: () => revision }));
+  const first = instance.forTask("codex", task), second = instance.forTask("codex", { ...task, id: 43 });
+  await bothReading.promise; revision = "after"; release.resolve();
+  expect(await Promise.all([first, second])).toEqual([undefined, undefined]);
+  const fresh = await instance.forTask("codex", task);
+  expect(fresh).toContain(unrelated.line); expect(fresh).toContain(record().excerpt);
+});
+
+
+test("Record substitutions cannot increase the replaced line footprint and additions respect total line bytes", () => {
+  const short: NativeItem = { ...note, line: "short generated note" };
+  expect(preferRecordItems([short], snapshot(), 1, new Set(), 4096).items).toEqual([short]);
+  const recordLine = "capture:Record:1 " + record().excerpt;
+  const fitting = Buffer.byteLength(unrelated.line) + 1 + Buffer.byteLength(recordLine);
+  expect(preferRecordItems([unrelated], { ...snapshot(), replaceable: [] }, 8, new Set(), fitting - 1).items).toEqual([unrelated]);
+  expect(preferRecordItems([unrelated], { ...snapshot(), replaceable: [] }, 8, new Set(), fitting).items).toHaveLength(2);
+  const large: NativeItem = { ...unrelated, line: "existing context ".repeat(300) };
+  expect(preferRecordItems([large], snapshot(), 8, new Set(), 100).items).toEqual([large]);
+});
+
+test("small intent byte budgets preserve clipped existing notes rather than insert larger whole Records", async () => {
+  const id = "a".repeat(32), at = new Date().toISOString();
+  const view: View = { id, at, machine: "fixture", project: "fixture", scope: "project", tier: "long", kind: "decision", peer: "codex",
+    title: "writer decision", text: "public writer context ".repeat(80), task: null, about: ["path:src/writer.ts"], source: "person", supersededBy: null,
+    supersedes: [], promotedFrom: null, expiresAt: null, local: false };
+  const intent = async () => ({ source: { notes: () => [view] }, options: { project: "fixture", cwd: "/fixture", repo: "fixture/repo", intent: "writer decision",
+    paths: ["src/writer.ts"], maxBytes: 384, policy: () => createStandalonePolicy(), policyVersion: () => "public" } });
+  const longRecord = { ...record(), excerpt: "amem: decision | src/writer.ts | " + "r".repeat(300) };
+  const source = port(() => ({ rows: [longRecord], replaceable: [{ id: `mem:${id}`, anchors: ["src/writer.ts"] }], partial: false }));
+  const baseline = await new Briefs(undefined, "fixture", 8, undefined, undefined, undefined, intent).forTask("codex", task);
+  const preferred = await new Briefs(undefined, "fixture", 8, undefined, undefined, undefined, intent, undefined, source).forTask("codex", task);
+  expect(baseline).toBeDefined(); expect(preferred).toBe(baseline); expect(Buffer.byteLength(preferred!)).toBeLessThanOrEqual(384);
+  expect(preferred).not.toContain("capture:Record:");
+  const emptyIntent = async () => ({ ...await intent(), source: { notes: () => [] } });
+  expect(await new Briefs(undefined, "fixture", 8, undefined, undefined, undefined, emptyIntent, undefined, source).forTask("codex", task)).toBeUndefined();
+});
+
+test("legacy Record additions honor the host byte cap without deleting preexisting context", async () => {
+  const largeRecord = { ...record(), excerpt: "amem: decision | src/writer.ts | " + "r".repeat(300) };
+  const source = port(() => ({ rows: [largeRecord], replaceable: [], partial: false }), { maxBytes: 128 });
+  const baseline = await briefs([unrelated]).forTask("codex", task);
+  expect(await briefs([unrelated], source).forTask("codex", task)).toBe(baseline);
+  const defaultSized = await briefs([unrelated], { ...source, maxBytes: 2048 }).forTask("codex", task);
+  expect(defaultSized).toContain(largeRecord.excerpt); expect(Buffer.byteLength(defaultSized!)).toBeLessThanOrEqual(2048);
+});
+
+
+test("recall pins Record privacy and owner revision before the first held contextInject await", async () => {
+  const original = "# [amem] context\n\n### Notes\nretained original context";
+  for (const change of ["denied", "revision", "unavailable"] as const) {
+    const release = gate(), entered = gate();
+    let allowed = true, revision = "owner-before", broken = false, projected = 0;
+    const client = { contextInject: async () => { entered.resolve(); await release.promise; return original; } } as unknown as MemoryClient;
+    const source: RecordRecallPort = { allowed: () => allowed, policyVersion: () => { if (broken) throw Error("policy unavailable"); return revision; },
+      project: text => { projected++; return { before: text, after: text }; } };
+    const pending = recallFor("codex", client, ["fixture"], 1000, source);
+    await entered.promise;
+    if (change === "denied") allowed = false;
+    else if (change === "revision") revision = "owner-after";
+    else broken = true;
+    release.resolve();
+    expect(await pending).toBeUndefined(); expect(projected).toBe(0);
+  }
+});
+
+test("an initially disabled or unavailable Record source cannot activate during the first recall await", async () => {
+  const original = "# [amem] context\n\n### Notes\nretained original context";
+  const baseline = await recallFor("codex", { contextInject: async () => original } as unknown as MemoryClient, ["fixture"], 1000);
+  for (const initial of ["disabled", "unavailable"] as const) {
+    const release = gate(), entered = gate();
+    let allowed = initial !== "disabled", available = initial !== "unavailable", projected = 0;
+    const client = { contextInject: async () => { entered.resolve(); await release.promise; return original; } } as unknown as MemoryClient;
+    const source: RecordRecallPort = { allowed: () => allowed, policyVersion: () => { if (!available) throw Error("initial policy unavailable"); return "ready"; },
+      project: text => { projected++; return { before: text, after: "# [amem] changed\nnewly enabled source" }; } };
+    const pending = recallFor("codex", client, ["fixture"], 1000, source);
+    await entered.promise; allowed = true; available = true; release.resolve();
+    expect(await pending).toBe(baseline); expect(projected).toBe(0);
+  }
+});
+
+
+test("every Record brief revision read is bound to the exact task identity", async () => {
+  const observed: unknown[] = [];
+  const source = port(async () => { await Promise.resolve(); return snapshot(); }, {
+    policyVersion: currentTask => { observed.push(currentTask); return currentTask === task ? "owner-worktree-policy" : "wrong-context"; },
+  });
+  const result = await briefs([note], source).forTask("codex", task);
+  expect(result).toContain(record().excerpt);
+  expect(observed.length).toBeGreaterThanOrEqual(3);
+  expect(observed.every(currentTask => currentTask === task)).toBe(true);
+});
+
+
+test("a partial 32-row Record window appends known evidence without replacing any original note", async () => {
+  const window: RecordBriefSnapshot = { rows: Array.from({ length: 32 }, (_, index) => record(index + 1)),
+    partial: true, replaceable: [{ id: note.id, anchors: ["src/writer.ts"] }] };
+  const result = preferRecordItems([note, unrelated], window, 3, new Set(), 4096);
+  expect(result.replacedNotes).toBe(0); expect(result.records).toBe(1);
+  expect(result.items.slice(0, 2)).toEqual([note, unrelated]);
+  expect(result.items[2]!.line).toContain("[partial Record window: older Records not read]");
+  expect(result.items[2]!.line).toContain(record().excerpt);
+  const rendered = await briefs([note, unrelated], port(() => window), 3).forTask("codex", task);
+  expect(rendered).toContain(note.line); expect(rendered).toContain(unrelated.line);
+  expect(rendered).toContain("partial Record window");
+});
+
+test("partial coverage notice consumes the byte budget and a whole Record is never clipped to fit", () => {
+  const window = { ...snapshot(), partial: true };
+  const completeRecord = "capture:Record:1 " + record().excerpt;
+  const marker = "[partial Record window: older Records not read] ";
+  const fit = Buffer.byteLength(unrelated.line) + 1 + Buffer.byteLength(marker + completeRecord);
+  expect(preferRecordItems([unrelated], window, 2, new Set(), fit - 1).items).toEqual([unrelated]);
+  const exact = preferRecordItems([unrelated], window, 2, new Set(), fit);
+  expect(exact.items.map(item => item.line)).toEqual([unrelated.line, marker + completeRecord]);
+  expect(Buffer.byteLength(exact.items.map(item => item.line).join("\n"))).toBe(fit);
+  expect(exact.replacedNotes).toBe(0);
 });

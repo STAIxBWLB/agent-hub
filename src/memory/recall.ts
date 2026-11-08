@@ -35,19 +35,26 @@ export interface RecordRecallPort {
 }
 
 export async function recallFor(_peer: PeerId, client: MemoryClient, chain: string[], tokens: number, records?: RecordRecallPort): Promise<string | undefined> {
+  // Pin optional Record admission before the existing asynchronous context read. A source disabled
+  // or unavailable at entry cannot become a new authority halfway through this call.
+  let admitted = false, revision: string | undefined;
+  if (records) try {
+    if (records.allowed()) {
+      const value = records.policyVersion();
+      if (typeof value === "string") { revision = value; admitted = true; }
+    }
+  } catch { /* Initial optional source unavailability retains the legacy path. */ }
   // Curated amem notes are one project source, regardless of which native peer originally authored them.
   const original = await client.contextInject(chain);
+  if (admitted) try { if (!records!.allowed() || records!.policyVersion() !== revision) return undefined; }
+  catch { return undefined; }
   if (!hasContext(original)) return undefined;
   let text = original;
   const render = (source: string): string | undefined => { const body = entries(source); return body ? `${HEADER}\n\n${trimToTokens(body, tokens)}` : undefined; };
-  let revision: string | undefined;
-  if (records) try {
-    if (records.allowed()) {
-      revision = records.policyVersion();
-      const projected = await records.project(original);
-      if (!records.allowed() || records.policyVersion() !== revision) return undefined;
-      if (projected?.before === original && hasContext(projected.after)) text = projected.after;
-    }
+  if (records && admitted) try {
+    const projected = await records.project(original);
+    if (!records.allowed() || records.policyVersion() !== revision) return undefined;
+    if (projected?.before === original && hasContext(projected.after)) text = projected.after;
   } catch {
     // An unavailable Record source falls back, but a changed privacy context cannot publish old recall.
     try { if (revision !== undefined && (!records!.allowed() || records!.policyVersion() !== revision)) return undefined; }
