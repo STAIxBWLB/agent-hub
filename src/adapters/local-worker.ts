@@ -165,6 +165,7 @@ export class LocalPeer extends BasePeer {
       decisionContext: () => this.decisionContext(),
       publicDecisionText: text => this.opts.routeEvidencePublic?.(text) === true,
       admitDecision: () => this.requireBudget(this.routeEnvs, "model_calls"),
+      onDecisionIssue: reason => this.opts.log?.(`decision route observation ${reason}; using the original heuristic; check adec serve and routing.toml policy settings, then retry`),
       staySwitch: () => this.opts.staySwitch?.(),
       onRoute: event => this.opts.onRoute?.(event),
       onAdvisor: event => this.opts.onAdvisor?.(event),

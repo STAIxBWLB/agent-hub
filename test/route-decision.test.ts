@@ -250,3 +250,24 @@ test("shadow route records optional pinned decider version without inventing one
     expect(Object.hasOwn(h.events[0]!.decider!, "version")).toBe(version !== undefined);
   }
 });
+
+
+test("operational failure diagnostics are once per change, recovery resets them and logger faults cannot route", async () => {
+  let status = 400, healthy = false;
+  const failed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+    return status === 200 ? Response.json({ id: "0123456789abcdef0123456789abcdef", policyId: "ahub.test", alias: healthy ? "coding" : null, effort: healthy ? "high" : null, margin: healthy ? 0.4 : 0, abstain: !healthy, reason: healthy ? "ok" : "no_candidate", fallbackApplied: false, pinned: false, rules: [], decider: null }) : Response.json({ error: "DIAGNOSTIC_SECRET" }, { status });
+  } }); close.push(() => failed.stop(true));
+  const s = service(), seen: string[] = [], h = host({ onDecisionIssue: reason => seen.push(reason) });
+  const config = { ...s.config, adec_endpoint: `http://127.0.0.1:${failed.port}/v1/route` };
+  const run = async (turn: string) => { h.runtime.beginTurn({ turn, pii: false }); await h.runtime.call("hub/test", config, messages, "scope", false, signal()); h.runtime.endTurn(turn, "completed"); };
+  await run("first"); await run("same"); expect(seen).toEqual(["caller_error"]);
+  status = 503; await run("changed"); await run("same-http"); expect(seen).toEqual(["caller_error", "http"]);
+  status = 200; await run("no-candidate"); await run("same-none"); expect(seen).toEqual(["caller_error", "http", "no_candidate"]);
+  healthy = true; await run("recovered"); expect(seen).toEqual(["caller_error", "http", "no_candidate"]);
+  healthy = false; await run("none-again"); expect(seen).toEqual(["caller_error", "http", "no_candidate", "no_candidate"]);
+  status = 400; await run("recurrence"); expect(seen).toEqual(["caller_error", "http", "no_candidate", "no_candidate", "caller_error"]);
+  const throwing = host({ onDecisionIssue: () => { throw new Error("LOGGER_SECRET"); } }); throwing.runtime.beginTurn({ turn: "logger", pii: false });
+  await throwing.runtime.call("hub/test", config, messages, "scope", false, signal());
+  expect(throwing.calls[0]?.model).toBe("fast"); expect(throwing.events[0]?.decisionReason).toBe("caller_error");
+  expect(JSON.stringify([...h.events, ...throwing.events])).not.toContain("SECRET");
+});

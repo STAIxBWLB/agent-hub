@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { requestAdecRoute, type AdecResult } from "./adec.ts";
+import { requestAdecRoute, type AdecResult, type AdecFailure, type AdecReason } from "./adec.ts";
 import { buildDecisionEvidence } from "./decision-evidence.ts";
 import type { HubRoute } from "./config.ts";
 import type { ChatMessage } from "../../omniroute/client.ts";
@@ -13,6 +13,7 @@ export interface DecisionHost {
   decisionContext?: () => { pii?: boolean; private: boolean; excluded: boolean };
   publicDecisionText?: (text: string) => boolean;
   admitDecision?: () => Promise<void>;
+  onDecisionIssue?: (reason: AdecFailure | AdecReason) => void;
 }
 export interface DecisionTrace {
   decisionMode: "off" | "shadow";
@@ -36,6 +37,7 @@ const ended = () => new Error("model route turn ended before execution; retry in
 /** Optional decision work never changes the baseline on failure; valid pins/rules remain owned by adec. */
 export class DecisionRouteController {
   private readonly states = new SessionState<State>();
+  private readonly issues = new SessionState<{ fingerprint: string; reason: AdecFailure | AdecReason | null }>();
   constructor(private readonly host: DecisionHost, private readonly timeoutMs: number) {}
   checkEntry(config: HubRoute, pii: boolean): void {
     if (config.type !== "decision" || (config.decision_mode ?? "off") === "off") return;
@@ -43,7 +45,7 @@ export class DecisionRouteController {
     if ((current.pii || current.private) && !pii) throw new DecisionPolicyChangedError();
   }
   async pick(config: HubRoute, context: Context): Promise<Selection> {
-    if (config.type !== "decision" || (config.decision_mode ?? "off") === "off") return {};
+    if (config.type !== "decision" || (config.decision_mode ?? "off") === "off") { this.issues.delete(context.route); return {}; }
     if (context.signal.aborted || context.turn?.closed) throw ended();
     try { return await this.select(config, context); }
     catch (error) {
@@ -51,6 +53,12 @@ export class DecisionRouteController {
       if (error instanceof DecisionPolicyChangedError || error && typeof error === "object" && "budgetStop" in error) throw error;
       return this.skip(config, "unavailable");
     }
+  }
+  private issue(config: HubRoute, context: Context, reason: AdecFailure | AdecReason | null): void {
+    const fingerprint = JSON.stringify(config), previous = this.issues.get(context.route);
+    if (previous?.fingerprint === fingerprint && previous.reason === reason) return;
+    this.issues.set(context.route, { fingerprint, reason });
+    if (reason !== null) { try { this.host.onDecisionIssue?.(reason); } catch { /* diagnostics cannot change shadow routing */ } }
   }
   private skip(config: HubRoute, reason: string): Selection {
     return { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: reason } };
@@ -92,8 +100,9 @@ export class DecisionRouteController {
     if ("skipped" in attempt) return this.skip(config, attempt.skipped);
     this.fence(context, attempt.privacy);
     const result = attempt.result;
-    if (!result.ok) return { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: result.reason, decisionLatencyMs: Math.max(0, performance.now() - began) } };
+    if (!result.ok) { this.issue(config, context, result.reason); return { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: result.reason, decisionLatencyMs: Math.max(0, performance.now() - began) } }; }
     const d = result.decision;
+    this.issue(config, context, d.alias === null || d.fallbackApplied ? d.reason : null);
     let decider: DecisionTrace["decider"];
     if (d.decider === null) decider = null;
     else if (this.host.publicDecisionText?.(JSON.stringify(d.decider)) === true) decider = { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs, ...(d.decider.version === undefined ? {} : { version: d.decider.version }) };

@@ -4631,7 +4631,10 @@ heuristic unchanged. An HTTP 400 is a caller/configuration
 error; inspect the policy id and allowed pairs. Transport errors, timeout,
 malformed responses and an out-of-list pair also keep the hub heuristic, with a
 closed reason in the route event. A failed service is not asked again in the
-same user turn. The default total timeout is 8 seconds (configurable from 1 to
+same user turn. Operational diagnostics contain a closed cause and repair step,
+and are emitted once per state/configuration change; a successful reply resets
+the diagnostic so a later recurrence is visible. Per-call route records remain
+available for outcome correlation. The default total timeout is 8 seconds (configurable from 1 to
 30000 ms), covering headers and the full bounded response. Redirects, ambient
 proxies, credentials and browser headers are not used. Endpoint URLs accept only
 HTTP numeric loopback with `/v1/route`, without userinfo, query or fragment.
