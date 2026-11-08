@@ -45,6 +45,8 @@
   "scripts/benchmarks/kimi-review-watch-1284.ts:requester:inline:Atomics.wait=0#0": "contract",
   "scripts/benchmarks/kimi-review-watch-1284.ts:requester:inline:Atomics.wait=5000#0": "operational",
   "scripts/benchmarks/kimi-review-watch-1284.ts:requester:inline:parentPort!.postMessage=1#0": "contract",
+  "scripts/benchmarks/kimi-wire-drain-1283.ts:CHUNK:constant:CHUNK=128 * 1024#0": "test seam",
+  "scripts/benchmarks/kimi-wire-drain-1283.ts:SLICES:constant:SLICES=16#0": "test seam",
   "scripts/benchmarks/ledger.py:final_text:inline:slice=200#0": "safety floor",
   "scripts/benchmarks/model-routing-gate.ts:error:inline:the call failed: ${(error as Error).message}.slice=200#0": "safety floor",
   "scripts/benchmarks/model-routing-gate.ts:signal:inline:AbortSignal.timeout=60_000#0": "operational",
