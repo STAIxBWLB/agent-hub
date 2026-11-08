@@ -161,3 +161,13 @@ test("a connection closed before HTTP headers becomes a closed transport failure
   const f = await fake(req => req.socket.destroy());
   expect(await call(f.endpoint)).toEqual({ ok: false, reason: "http" }); expect(f.calls()).toBe(1);
 });
+
+test("merged adec policy terminal rule markers are accepted as closed metadata", async () => {
+  for (const rule of ["explicit", "no_candidate", "pinned", "single"]) {
+    const expected = rule === "no_candidate"
+      ? { ...answer(), alias: null, effort: null, reason: "no_candidate", abstain: true, decider: null, rules: [rule] }
+      : { ...answer(), reason: rule, pinned: rule === "pinned", decider: null, rules: [rule] };
+    const f = await fake((_req, res) => json(res, expected));
+    expect(await call(f.endpoint)).toEqual({ ok: true, decision: expected });
+  }
+});
