@@ -12917,14 +12917,15 @@ function decision(value, request, pairs) {
   }
   let decider = null;
   if (d.decider !== null) {
-    const model = record2(d.decider, ["provider", "kind", "model", "latencyMs"]);
-    if (!model || !token(model.provider, PROVIDER) || !token(model.model, MODEL) || !finite(model.latencyMs) || model.kind !== undefined && model.kind !== "systemone" && model.kind !== "logits")
+    const model = record2(d.decider, ["provider", "kind", "model", "version", "latencyMs"]);
+    if (!model || !token(model.provider, PROVIDER) || !token(model.model, MODEL) || !finite(model.latencyMs) || model.kind !== undefined && model.kind !== "systemone" && model.kind !== "logits" || model.version !== undefined && (!token(model.version, MODEL) || /(^|-)latest$/i.test(model.version)))
       return failure("malformed");
     decider = {
       provider: model.provider,
       model: model.model,
       latencyMs: model.latencyMs,
-      ...model.kind === undefined ? {} : { kind: model.kind }
+      ...model.kind === undefined ? {} : { kind: model.kind },
+      ...model.version === undefined ? {} : { version: model.version }
     };
   }
   return { ok: true, decision: {
@@ -13360,6 +13361,7 @@ class DecisionRouteController {
   host;
   timeoutMs;
   states = new SessionState;
+  issues = new SessionState;
   constructor(host, timeoutMs) {
     this.host = host;
     this.timeoutMs = timeoutMs;
@@ -13372,8 +13374,10 @@ class DecisionRouteController {
       throw new DecisionPolicyChangedError;
   }
   async pick(config, context) {
-    if (config.type !== "decision" || (config.decision_mode ?? "off") === "off")
+    if (config.type !== "decision" || (config.decision_mode ?? "off") === "off") {
+      this.issues.delete(context.route);
       return {};
+    }
     if (context.signal.aborted || context.turn?.closed)
       throw ended();
     try {
@@ -13384,6 +13388,17 @@ class DecisionRouteController {
       if (error instanceof DecisionPolicyChangedError || error && typeof error === "object" && "budgetStop" in error)
         throw error;
       return this.skip(config, "unavailable");
+    }
+  }
+  issue(config, context, reason) {
+    const fingerprint = JSON.stringify(config), previous = this.issues.get(context.route);
+    if (previous?.fingerprint === fingerprint && previous.reason === reason)
+      return;
+    this.issues.set(context.route, { fingerprint, reason });
+    if (reason !== null) {
+      try {
+        this.host.onDecisionIssue?.(reason);
+      } catch {}
     }
   }
   skip(config, reason) {
@@ -13442,14 +13457,17 @@ class DecisionRouteController {
       return this.skip(config, attempt.skipped);
     this.fence(context, attempt.privacy);
     const result = attempt.result;
-    if (!result.ok)
+    if (!result.ok) {
+      this.issue(config, context, result.reason);
       return { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: result.reason, decisionLatencyMs: Math.max(0, performance.now() - began) } };
+    }
     const d = result.decision;
+    this.issue(config, context, d.alias === null || d.fallbackApplied ? d.reason : null);
     let decider;
     if (d.decider === null)
       decider = null;
     else if (this.host.publicDecisionText?.(JSON.stringify(d.decider)) === true)
-      decider = { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs };
+      decider = { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs, ...d.decider.version === undefined ? {} : { version: d.decider.version } };
     this.fence(context, attempt.privacy);
     return {
       check: () => this.fence(context, attempt.privacy),
@@ -15255,6 +15273,7 @@ var init_local_worker = __esm(() => {
         decisionContext: () => this.decisionContext(),
         publicDecisionText: (text) => this.opts.routeEvidencePublic?.(text) === true,
         admitDecision: () => this.requireBudget(this.routeEnvs, "model_calls"),
+        onDecisionIssue: (reason) => this.opts.log?.(`decision route observation ${reason}; using the original heuristic; check adec serve and routing.toml policy settings, then retry`),
         staySwitch: () => this.opts.staySwitch?.(),
         onRoute: (event) => this.opts.onRoute?.(event),
         onAdvisor: (event) => this.opts.onAdvisor?.(event),
