@@ -235,14 +235,24 @@ function operationalRefusal(result: { ok: boolean; error?: string }, cause: RegE
   expect(result.error).not.toContain("PRIVATE-VISUAL"); expect(result.error).not.toContain("PRIVATE-ERROR");
 }
 for (const kind of ["role", "membership", "recovery", "storage"] as const) test(`nonprivacy visual refusal names its cause and next step: ${kind}`, async () => {
-  const r = await rig(undefined, undefined, undefined, kind === "role" ? { capabilities: { ...DEFAULT_CONFIG.capabilities, codex: [] } } : kind === "membership" ? { roster: { ...DEFAULT_CONFIG.roster, codex: false } } : {});
+  const r = await rig(undefined, undefined, undefined, kind === "role" ? { capabilities: { ...DEFAULT_CONFIG.capabilities, codex: [] } } : {});
+  // Connect first, then withdraw the actual roster membership. An initially off-roster peer cannot complete hello.
+  if (kind === "membership") {
+    expect(await r.console_.request({ t: "settings_set", key: "roster.codex", value: false, confirm: "codex" })).toMatchObject({ ok: true });
+    expect((await r.console_.request({ t: "status" })).status.peers.codex.rostered).toBe(false);
+  }
   if (kind === "recovery") r.daemon.bus.setRecoveryHold(true);
-  if (kind === "storage") r.daemon.bus.closeJournal();
+  const journalAvailable = r.daemon.bus.deliveryJournalAvailable;
+  // Closing the real journal also holds recovery. Inject only the unavailable-storage observation to isolate this cause.
+  if (kind === "storage") { expect(r.daemon.bus.isRecoveryHeld).toBe(false); r.daemon.bus.deliveryJournalAvailable = () => false; }
   try {
     const result = await r.op("hub_visual", { payload });
     operationalRefusal(result, { role: /remember capability.*writable peer role/, membership: /off roster/, recovery: /controlled recovery/, storage: /storage.*unavailable/ }[kind]);
     expect(r.store.list()).toEqual([]); expect(r.receiver.received).toEqual([]);
-  } finally { if (kind === "recovery") r.daemon.bus.setRecoveryHold(false); }
+  } finally {
+    if (kind === "recovery") r.daemon.bus.setRecoveryHold(false);
+    if (kind === "storage") { r.daemon.bus.deliveryJournalAvailable = journalAvailable; expect(r.daemon.bus.isRecoveryHeld).toBe(false); }
+  }
 });
 for (const kind of ["unknown", "throw", "pii"] as const) test(`privacy screen ${kind} keeps the right public refusal without leaking input or errors`, async () => {
   const r = await rig(async () => {
@@ -290,7 +300,13 @@ for (const kind of ["task", "config"] as const) test(`awaited visual admission r
   try {
     await entered;
     if (kind === "task") expect((await r.op("hub_task_cancel", { id: task, reason: "fixture concurrent change" }, r.console_)).ok).toBe(true);
-    else { writeFileSync(join(r.root, ".agenthub/config.local.json"), JSON.stringify({ visuals: { retention_days: 29 } })); expect((await r.console_.request({ t: "settings_reload" })).ok).toBe(true); }
+    else {
+      writeFileSync(join(r.root, ".agenthub/config.local.json"), JSON.stringify({ visuals: { retention_days: 29 } }));
+      let reload = await r.console_.request({ t: "settings_reload" });
+      expect(reload.ok).toBe(true);
+      if (reload.confirmation?.token) reload = await r.console_.request({ t: "settings_reload", confirm: reload.confirmation.token });
+      expect(reload.ok).toBe(true); expect(reload.applied).toContain("visuals.retention_days");
+    }
     release(); operationalRefusal(await request, /generation, task or policy changed/);
     expect(r.store.list()).toEqual([]); expect(r.receiver.received).toEqual([]);
   } finally { release(); await request; }

@@ -6731,8 +6731,8 @@ caption/text/alt record readable but cannot serve its old bytes.
 
 A recovery refusal asks you to retry after `ahub status` shows the hold released.
 Role or membership refusals name the missing authority, and a task/config change
-asks for a retry. If the privacy screen is unavailable, retry when its model is
-back or omit text that needs screening. Private context, paths and pattern hits
+asks for a retry. If the privacy screen is unavailable, restore the configured screen and retry;
+if the visual exceeds its input limit, shorten the text first. Private context, paths and pattern hits
 retain a uniform privacy refusal. Rate limits are checked before expensive
 screening or file reads and checked again at publication.
 

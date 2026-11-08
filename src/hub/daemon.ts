@@ -4870,7 +4870,7 @@ export async function startDaemon(opts: DaemonOptions) {
     observer: "visual publication is held by an open review observer scope; finish or settle the review and start an ordinary turn",
     storage: "visual delivery storage is unavailable; inspect ahub status and retry after storage recovers",
     concurrency: "visual generation, task or policy changed while checking; inspect current task/session and retry",
-    screen: "visual privacy screen is unavailable or returned no clear verdict; restore the configured screen, check ahub status and retry",
+    screen: "visual privacy screen is unavailable or returned no clear verdict; shorten the visual if it exceeds the screen limit, or restore the configured screen, check ahub status and retry",
     policy: "visual file policy is unavailable; repair the project configuration and retry",
   }[cause]);
   type VisualFilePolicy = { pii: string[]; deny: string[] };
