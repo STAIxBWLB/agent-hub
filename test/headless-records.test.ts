@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CaptureStore, RECORD_INSTRUCTION, parseRecordLines } from "@staix/agent-mem";
+import { Capture } from "../src/memory/capture.ts";
 import { RecordCapture, stripRecordLines, type RecordCaptureCounts, type RecordCapturePolicy } from "../src/memory/records.ts";
 
 const roots: string[] = [];
@@ -121,4 +122,22 @@ test("strip handles LF, CRLF and bare CR without changing other bytes, including
   const ordinary = "Shared  \r\nnext\nlast\rfinal"; expect(stripRecordLines(ordinary)).toBe(ordinary);
   expect(stripRecordLines("Shared\ramem: invalid\rnext\r\namem: also invalid\r\nlast\namem: invalid")).toBe("Shared\rnext\r\nlast\n");
   expect(stripRecordLines("amem: invalid\n  amem: invalid\r> amem: invalid\r\nShared")).toBe("Shared");
+});
+
+test("legacy Stop capture strips internal record lines and preserves ordinary answer bytes through its existing client", () => {
+  const f = fixture();
+  type Client = ConstructorParameters<typeof Capture>[0];
+  type Input = Parameters<Client["appendCapture"]>[0];
+  const written: Input[] = [];
+  const client = { appendCapture: async (input: Input) => { written.push(input); return undefined; } } as unknown as Client;
+  const capture = new Capture(client, { project: "synthetic-project", cwd: f.cwd, agentId: "local" });
+  capture.init("synthetic-legacy-session", "unchanged prompt");
+  const ordinary = "Shared  \r\nnext\nlast\rfinal";
+  capture.summarize(ordinary);
+  capture.summarize(`Head\r${record}\rtail\r\namem: invalid\r\nlast\n`);
+  expect(written).toHaveLength(3);
+  expect(written[0]).toMatchObject({ event: "SessionStart", excerpt: "unchanged prompt" });
+  expect(written[1]).toMatchObject({ event: "Stop", excerpt: ordinary, sessionId: "synthetic-legacy-session", agent: "local", toolUseId: "summary:1", platformSource: "agent-hub" });
+  expect(written[2]).toMatchObject({ event: "Stop", excerpt: "Head\rtail\r\nlast\n", toolUseId: "summary:2" });
+  expect(existsSync(f.memoryDir)).toBe(false);
 });

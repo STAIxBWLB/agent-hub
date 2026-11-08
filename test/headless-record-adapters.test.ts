@@ -49,7 +49,7 @@ test("final answers retain options, partial status and hook return value while e
 });
 
 test("Codex's real renderer decorates delivered turns without decorating native steer prompts", () => {
-  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, preamble: "fixed role" });
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, cwd: process.cwd(), preamble: "fixed role" });
   const renderer = peer as unknown as { render(envs: Envelope[], record?: boolean): string; primed: boolean };
   const envs = [newEnvelope("user", "ordinary delivery")];
   const initial = renderer.render(envs);
@@ -78,7 +78,7 @@ test("ACP's actual delivered turns use one instruction and classify native parti
     return request(method, params);
   };
   let reads = 0;
-  peer.recordInstruction = () => { reads++; return RECORD_INSTRUCTION; };
+  peer.recordInstruction = () => { expect(peer.state).toBe("busy"); reads++; return RECORD_INSTRUCTION; };
   peer.onMessage = body => ordinary.push(body);
   peer.onFinalAnswer = (body, opts, complete) => answers.push({ body, opts, complete });
   try {
@@ -87,7 +87,7 @@ test("ACP's actual delivered turns use one instruction and classify native parti
       const idle = new Promise<void>(resolve => { peer.onState = state => { if (state === "idle") resolve(); }; });
       const env = newEnvelope("user", text);
       await peer.deliver([env]); await idle;
-      expect(answers.at(-1)!.opts?.inReplyTo).toBe(env.id);
+      expect(answers.at(-1)!.opts?.inReplyTo?.id).toBe(env.id);
       expect(answers.at(-1)!.opts?.to).toEqual(["user"]);
     }
     expect(reads).toBe(2); expect(prompts).toHaveLength(2);
@@ -113,9 +113,10 @@ test("Local keeps one fixed Record prompt through tool rounds and marks a step-c
         return { message: { role: "assistant", content: "reading", tool_calls: [{ id: "r1", type: "function", function: { name: "read", arguments: '{"path":"a.txt"}' } }] } };
       },
     };
+    let inputBound = false;
     const peer = new LocalPeer("local", { cwd, fixedModel: "fixture", omni: transport as unknown as OmniRoute,
-      maxSteps, tools: { deny: [], permit: async () => true } });
-    peer.recordInstruction = () => { reads++; return RECORD_INSTRUCTION; };
+      beforeInput: () => { inputBound = true; }, maxSteps, tools: { deny: [], permit: async () => true } });
+    peer.recordInstruction = () => { expect(inputBound).toBe(true); expect(peer.state).toBe("busy"); reads++; return RECORD_INSTRUCTION; };
     peer.onFinalAnswer = (text, _opts, complete) => answers.push({ text, complete });
     try {
       await peer.start();
@@ -132,4 +133,30 @@ test("Local keeps one fixed Record prompt through tool rounds and marks a step-c
       expect(answers[0]!.text).toBe(maxSteps === 2 ? "finished" : "(stopped after 1 steps) reading");
     } finally { await peer.stop(); rmSync(cwd, { recursive: true, force: true }); }
   }
+});
+
+
+test("Codex samples the Record getter after busy establishes the new host-owned turn", async () => {
+  class ReadyCodex extends CodexPeer {
+    ready(): void { this.setState("idle"); }
+    finish(): void { this.setState("offline"); }
+  }
+  const peer = new ReadyCodex("codex", { proxyPort: 0, appPort: 0, cwd: process.cwd() });
+  const port = peer as unknown as { link: unknown; threadId: string; pending: Map<number, { resolve(result: unknown): void }> };
+  const requests: { method: string; id: number; params: { input: { text: string }[] } }[] = [];
+  port.link = { up: { readyState: WebSocket.OPEN, send(raw: string) {
+    const request = JSON.parse(raw) as typeof requests[number]; requests.push(request);
+    port.pending.get(request.id)!.resolve({ turn: { id: "owned-codex-turn" } });
+  } } };
+  port.threadId = "owned-thread";
+  let ownedTurn = false, reads = 0;
+  peer.onState = state => { if (state === "busy") ownedTurn = true; };
+  peer.recordInstruction = () => { expect(peer.state).toBe("busy"); expect(ownedTurn).toBe(true); reads++; return RECORD_INSTRUCTION; };
+  peer.ready();
+  try {
+    await peer.deliver([newEnvelope("user", "ordinary delivery")]);
+    expect(reads).toBe(1); expect(requests).toHaveLength(1);
+    expect(requests[0]!.method).toBe("turn/start");
+    expect(requests[0]!.params.input[0]!.text.split(RECORD_INSTRUCTION)).toHaveLength(2);
+  } finally { peer.finish(); }
 });

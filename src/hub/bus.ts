@@ -344,7 +344,7 @@ export class Bus {
         let observable = !this.closed && this.peers.get(peer.id) === peer && !!context && !remoteId(peer.id) && !answerParent;
         try {
           observable &&= this.opts.reviewObserverInputExcluded?.(peer.id, context!.originals) !== true &&
-            ![...context!.out, ...context!.originals].some(env => env.private || isReviewObserverExcluded(env) || isInvocationKind(env.kind) || remoteId(env.from) || env.to?.some(remoteId));
+            ![...context!.out, ...context!.originals].some(env => env.private || isReviewObserverExcluded(env) || isInvocationKind(env) || remoteId(env.from) || env.to?.some(remoteId));
         } catch { observable = false; }
         if (observable) {
           if (complete) try { this.onFinalAnswer?.(peer.id, raw, context!); } catch { /* capture is optional and never changes answer routing */ }

@@ -657,7 +657,6 @@ export class AcpPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "ACP retained model selection is unavailable; inspect model status, clear the override or restart before retrying" });
       throw new Error("ACP retained model selection is unavailable; inspect model status, clear the override or restart before retrying");
     }
-    const fixedPreamble = this.turnRecordPrompt(this.primed ? "" : this.opts.preamble ?? "");
     const target = selection?.model ?? this.modelBaseline;
     if (selection && (!target || !this.acceptsModelOverride(target))) {
       selection.rejected?.();
@@ -698,6 +697,7 @@ export class AcpPeer extends BasePeer {
       }
       if (this.modelTurn?.turn === turn) this.modelTurn.sent = true;
     }
+    const fixedPreamble = this.turnRecordPrompt(this.primed ? "" : this.opts.preamble ?? "");
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
     const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: fixedPreamble ? `${fixedPreamble}\n\n${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
     const reported = () => { if (this.cancelWait?.turn === turn) this.cancelWait.reported = true; };

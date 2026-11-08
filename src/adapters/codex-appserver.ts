@@ -270,7 +270,6 @@ export class CodexPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not injectable` });
       return Promise.reject(new Error(`${this.id} is not injectable`));
     }
-    const text = this.render(envs, true);
     const id = this.nextId--, epoch = this.deliveryEpoch, session = this.contextEpoch;
     this.setState("busy"); // claim the turn now so the bus stops draining
     return new Promise<void>((resolve, reject) => {
@@ -334,6 +333,7 @@ export class CodexPeer extends BasePeer {
         const pending = this.pending.get(id); this.pending.delete(id);
         pending?.reject(new Error(`${this.id} is not injectable`)); return;
       }
+      const text = this.render(envs, true);
       link.up.send(
         JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }], ...(selection?.model === undefined ? {} : { model: selection.model }) }, id) }),
       );

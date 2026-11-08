@@ -31,9 +31,9 @@ test("completed final text is captured before stripping, while envelopes, queued
   const answers = f.events.filter((e): e is Extract<BusEvent, { t: "envelope" }> => e.t === "envelope" && e.env.from === "kimi");
   expect(answers).toHaveLength(1); expect(answers[0]!.env.body).toBe("Done.");
   await f.recipient.start(); await f.recipient.delivered;
-  expect(renderDigest(f.recipient.got)).not.toContain("amem:");
-  const beforeDigestBytes = Buffer.byteLength(renderDigest([{ ...answers[0]!.env, body: raw }]));
-  const afterDigestBytes = Buffer.byteLength(renderDigest(f.recipient.got));
+  expect(renderDigest(f.recipient.got, true)).not.toContain("amem:");
+  const beforeDigestBytes = Buffer.byteLength(renderDigest([{ ...answers[0]!.env, body: raw }], true));
+  const afterDigestBytes = Buffer.byteLength(renderDigest(f.recipient.got, true));
   expect(afterDigestBytes).toBeLessThan(beforeDigestBytes);
   await f.worker.stop(); await f.recipient.stop(); f.bus.closeJournal();
 });

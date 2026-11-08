@@ -207,7 +207,6 @@ export class LocalPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
       throw new Error(`${this.id} is ${this.state}`);
     }
-    const fixedPrompt = this.turnRecordPrompt(system(this.opts.cwd, this.opts.preamble));
     const inputContext: OwnedInputContext = Object.freeze({ sessionId: this.observerSessionId, inputId: randomUUID() });
     try { this.opts.beforeInput?.(inputContext, envs); }
     catch {
@@ -249,7 +248,7 @@ export class LocalPeer extends BasePeer {
     // A PII turn speaks to the console user only, and privately: its answer must not be broadcast to cloud-hosted peers.
     // The task id travels with it, so the board can keep the text (`ahub task show`) while tail and log show a stub.
     const reply: EnvelopeOpts = { inReplyTo: replyParent(envs), to: replyAudience(envs), ...(policy?.pii ? { to: [USER], private: true, priority: "important" as const, ...(policy.task ? { refs: { task: policy.task } } : {}) } : {}) };
-    this.run(envs, turn, msgs, progress, policy, reply, reviewScope, fixedPrompt, selection, modelFailure)
+    this.run(envs, turn, msgs, progress, policy, reply, reviewScope, selection, modelFailure)
       .then((answer) => {
         if (turn !== this.turn) return;
         if (preserveHistory && !reviewScope.excluded) this.commit(msgs); // Private, remote and review turns never enter later local capture through model history.
@@ -314,7 +313,6 @@ export class LocalPeer extends BasePeer {
     policy: { route?: string; fixedModel?: string; pii: boolean; task?: string } | undefined,
     reply: EnvelopeOpts,
     reviewScope: { excluded: boolean },
-    fixedPrompt: string,
     selection?: ModelOverrideSelection,
     modelFailure?: Error,
   ): Promise<string> {
@@ -331,6 +329,8 @@ export class LocalPeer extends BasePeer {
     this.routeEnvs = envs;
     this.routePii = !!policy?.pii;
     this.routeReviewScope = reviewScope;
+    if (turn !== this.turn || turnSignal.aborted) return "";
+    const fixedPrompt = this.turnRecordPrompt(system(this.opts.cwd, this.opts.preamble));
     const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
     let usedTools = false;
     let captureInvocation = 0;
