@@ -12,7 +12,7 @@ const dirs: string[] = [];
 const servers: { stop(force?: boolean): void }[] = [];
 interface AnswerGate { entered: Promise<void>; readonly released: boolean; wait(): Promise<void>; release(): void }
 const gates: AnswerGate[] = [];
-afterEach(() => { for (const gate of gates.splice(0)) gate.release(); setSystemTime(); for (const s of servers.splice(0)) s.stop(true); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+afterEach(() => { for (const gate of gates.splice(0)) gate.release(); jest.useRealTimers(); setSystemTime(); for (const s of servers.splice(0)) s.stop(true); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 function answerGate(): AnswerGate {
   let arrived!: () => void, release!: () => void, released = false;
@@ -158,13 +158,14 @@ test("an action drops the cache: the approval just given is gone from the very n
 });
 
 test("a computation that started before an action never becomes the cache: the next poll recomputes", async () => {
+  jest.useFakeTimers({ now: Date.now() });
   const f = fleet([{ id: "a", permissions: 1 }], { inboxFreshMs: 60_000, inboxStaleMs: 60_000 });
   const answer = answerGate(); f.live.a!.gate = answer;
   const early = f.inbox();                                        // captures permissions = 1 before the action
   await answer.entered;
   f.live.a!.permissions = 0;
   await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);   // any action drops the cache
-  answer.release(); await early;
+  answer.release(); expect((await early).items).toHaveLength(1);
   expect((await f.inbox()).items).toEqual([]);                    // had the early result been cached, this would still show the approval
 });
 
@@ -247,17 +248,22 @@ test("a settled approval does not come back from the per-project fallback when t
 });
 
 test("a computation that started before an action cannot repopulate the per-project fallback after it", async () => {
+  jest.useFakeTimers({ now: Date.now() });
   const f = fleet([{ id: "a", permissions: 1 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 200 });
   const answer = answerGate(); f.live.a!.gate = answer;
   const early = f.inbox();                                        // asked while the approval exists
   await answer.entered;
   await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);   // an action lands while it is in flight
-  f.live.a!.permissions = 0; f.live.a!.hang = true;               // the approval is settled and the project is now slow
-  answer.release(); await early;                                  // finishes in an older generation: it must not write the fallback
-  expect((await f.inbox()).items).toEqual([]);                    // the slow project is left out; had the early run stored its row it would come back here
+  f.live.a!.permissions = 0;
+  const lateAnswer = answerGate(); f.live.a!.gate = lateAnswer;
+  answer.release(); expect((await early).items).toHaveLength(1);   // proves the old answer completed, rather than timing out
+  const late = f.inbox(); await lateAnswer.entered;
+  jest.advanceTimersByTime(200);                                 // the project's own deadline, while its new answer is held
+  expect((await late).items).toEqual([]);                         // the old generation must not repopulate the fallback
 });
 
 test("a slow computation from before an action does not overwrite the newer fallback when it finally finishes", async () => {
+  jest.useFakeTimers({ now: Date.now() });
   // The early computation reads TWO approvals on arrival and waits behind a gate. An action lands, the hub settles one approval, and a newer computation stores ONE row.
   // When the early one finishes last it must not replace that entry with its two older rows: the next slow poll must fall back to the newer single row.
   const f = fleet([{ id: "a", permissions: 2 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 5_000 });
@@ -267,11 +273,12 @@ test("a slow computation from before an action does not overwrite the newer fall
   await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);
   f.live.a!.permissions = 1; delete f.live.a!.gate;
   expect((await f.inbox()).items).toHaveLength(1);                // the newer generation stores one row
-  answer.release(); await early;                                  // the older one ends last
-  // A hung project reaches the existing project budget; await that fallback directly.
-  f.live.a!.hang = true;
-  const outcome = await f.inbox();
-  expect(outcome?.items).toHaveLength(1);                         // one row from the newer entry, never the older two
+  answer.release(); expect((await early).items).toHaveLength(2);   // the older answer really completes last
+  const lateAnswer = answerGate(); f.live.a!.gate = lateAnswer;
+  const poll = f.inbox(); await lateAnswer.entered;
+  jest.advanceTimersByTime(5_000);                               // drive the existing project deadline without sleeping
+  const outcome = await poll;
+  expect(outcome.items).toHaveLength(1);                         // one row from the newer entry, never the older two
 }, 15_000);
 
 // #730 r1200-m1: the project listing is bounded like space()'s, and a slow one falls back to the last listing.
@@ -305,7 +312,7 @@ test("a slow project is asked once while its snapshot is pending, across several
   // Join the pending answer through the real Agents snapshot path before asking afresh.
   const joined = f.inbox();
   answer.release(); await joined;
-  await until(async () => { await f.inbox(); return f.asked.slow === before + 2; });
+  if (f.asked.slow === before + 1) await f.inbox();
   expect(f.asked.slow).toBe(before + 2);
 });
 
