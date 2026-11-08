@@ -10648,7 +10648,12 @@ export async function startDaemon(opts: DaemonOptions) {
             return;
           }
           queueMicrotask(tally);
-          const offered = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
+          const offeredFacts = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
+          // #1280 P2: agy is pull-only, so a model boundary is the one place the hub can tell it mail waits. Counts only, never a body or sender.
+          const modelBoundary = native.event === "PreInvocation" || native.event === "SessionStart";
+          const waiting = bus.queued(peer), important = bus.queuedImportant(peer);
+          const inboxHint = modelBoundary && waiting ? `[agent-hub: ${waiting} message(s) waiting${important ? ` (${important} important)` : ""}; call hub_inbox]` : undefined;
+          const offered = offeredFacts || inboxHint ? { ...(offeredFacts ?? {}), text: [offeredFacts?.text, inboxHint].filter(Boolean).join("\n") } : undefined;
           // The decoded native read (agy view_file or read_file, as `Read`) is a peer fact: its target is observed before it runs and the
           // view moves after it. Nothing is offered here: agy's hook encodes an offer only on SessionStart/PreInvocation.
           if (factsOn() && native.event === "PreToolUse") factsFor(peer).preTool(peer, native.toolUseId, native.tool, native.input);
