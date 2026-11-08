@@ -34,10 +34,26 @@ Bun 1.4.2 and agent-mem 0.23.0. Existing memory, recall, intent-library brief an
 corpus concurrency assertions were retained. The initial optional-await dedupe
 regression was corrected in the implementation.
 
-The same run reached inventory checking, which reported twelve new unclassified
-constants. They are not added to the baseline. Fresh blind calibration scored
-64/80 and 67/80 on distinct samples, below the 85% batch gate; targeted
-classification guidance is pending.
+The same run reached inventory checking and identified twelve new feature keys.
+The reviewer's direct ruling clarifies that the blind-80 gate applies to batches
+relabeling existing baseline keys, not new author-added feature literals. The
+informational blind samples scored 64/80 and 67/80. New keys use the call-site
+labels below; the baseline is unchanged.
+
+| New key / call site | Label | Reason |
+| --- | --- | --- |
+| `projectRecordRecall` original length 64 KiB | safety floor | recalled peer text admission |
+| `projectRecordRecall` original byte length 64 KiB | safety floor | recalled peer text admission |
+| `projectRecordRecall` items 32 | operational | host result-list cap |
+| `projectRecordRecall` preferRecordItems 32 | operational | host result-list cap |
+| `kind` regex group 2 | contract | parsed structure position |
+| `Tasks.note` about length below 64 | operational | same label as committed saveNative slice64 |
+| Registry notes 1024 | safety floor | entries originate in another process's calls |
+| Registry anchors 64 | safety floor | peer-supplied references |
+| Registry anchor bytes 512 | safety floor | peer-supplied references |
+| Registry query anchors 1024 | safety floor | derived peer-supplied references |
+| Registry matches 32 | operational | host result-list cap |
+| Registry matching limit below 1 | contract | parameter meaning |
 
 ## Synthetic byte measurements
 
@@ -58,7 +74,7 @@ and verifies conservative fallback after the registry is cleared.
 
 - Published 0.23.1 pin and real effective-policy export, including machine/repo
   `records: false` inheritance; no copied parser or private import is used.
-- Inventory classifications under the repository's calibration/ruling process.
+- Final inventory check of the new keys under the call-site ruling.
 - Final pinned bundle freshness and canonical changed-scope check.
 - Final-head hosted CI and review.
 - Native/provider-backed Record generation and real-home/coordinated-upgrade
