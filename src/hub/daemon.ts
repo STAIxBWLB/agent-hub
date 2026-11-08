@@ -8499,6 +8499,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const policy = routing.hub_routes![route]!;
       required.add(policy.efficient ?? "fast"); required.add(policy.capable ?? "coding");
       if (policy.judge) required.add(policy.judge);
+      if (policy.type === "decision") for (const candidate of policy.candidates ?? []) required.add(candidate.alias);
     }
     for (const model of required) await omni.checkModel(model, models);
   }

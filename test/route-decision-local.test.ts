@@ -86,7 +86,7 @@ test("the production worker's evidence screen can omit all public fragments with
 test("a real daemon wires current public-view policy into decision evidence and writes metadata-only route events", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-adec-daemon-")), stateDir = join(cwd, "state");
   clean.push(() => rmSync(cwd, { recursive: true, force: true })); mkdirSync(join(cwd, ".agenthub"));
-  const model = startFakeModelServer({ key: "fake-adec-gateway-key", script: () => ({ content: "done" }) }); clean.push(model.stop);
+  const model = startFakeModelServer({ key: "fake-adec-gateway-key", models: ["fast", "coding"], script: () => ({ content: "done" }) }); clean.push(model.stop);
   process.env.OMNIROUTE_API_KEY = "fake-adec-gateway-key";
   const requests: any[] = [];
   const service = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
@@ -113,7 +113,8 @@ candidates = [{alias="coding", efforts=["high"]}]
   clean.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); clean.push(() => client.close());
   const routeEvents: any[] = []; client.onPush = message => { if (message.t === "event" && message.e?.type === "route") routeEvents.push(message.e); }; client.send({ t: "tail" });
-  expect((await client.request({ t: "start", peer: "local", args: {} })).ok).toBe(true);
+  const started = await client.request({ t: "start", peer: "local", args: {} });
+  expect(started).toMatchObject({ ok: true });
   let finished!: () => void;
   const done = new Promise<void>(resolve => { finished = resolve; });
   daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "local" && event.env.body === "done") finished(); });
