@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { processTable } from "../src/hub/child-process.ts";
@@ -866,4 +867,46 @@ test("Pi captures override before model preparation and clear restores the separ
     await peer.deliver([newEnvelope("user", "clear")]); expect(peer.getRequestedModel()).toBe("dgx/coding"); await settle();
     expect(gets).toBe(3); expect(applied).toEqual(["dgx/runtime-a", "dgx/runtime-b", undefined]);
   } finally { release(); await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+}, 20_000);
+
+test("Pi model ACK invalidated by roster change is not reported applied before the outer guard", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "pi-late-model-")), owner = Bun.spawn(["sleep", "60"]);
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  let applied = 0;
+  const receipts: { state: string; reason?: string }[] = [];
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "tui", backend: "dgx", stopGraceMs: 100,
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/baseline" }] }, tools: [], executeTool: async () => "ok",
+    getModelOverride: () => ({ model: undefined, applied: () => { applied++; } }), selectModel: async () => "dgx/baseline" });
+  peer.onDelivery = receipt => { receipts.push(receipt); };
+  let delivery: Promise<unknown> | undefined;
+  let post: ((route: string, body: unknown) => Promise<Response>) | undefined;
+  try {
+    await peer.start();
+    const launch = peer.tuiLaunch!, url = launch.env.AGENTHUB_PI_BRIDGE_URL!;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    post = (route, body) => fetch(`${url}${route}`, { method: "POST", headers, body: JSON.stringify(body) });
+    expect((await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid,
+      signature: currentSignature(owner.pid), sessionId: "late-model-session", sessionFile: join(stateDir, "personal.jsonl"), fencedPrompt: true })).ok).toBe(true);
+    const setModel = peer.setRequestedModel.bind(peer);
+    // Keep real protocol/owner verification; hold only the outer method's return after its native ACK.
+    peer.setRequestedModel = async model => { await setModel(model); enter(); await held; };
+    delivery = peer.deliver([newEnvelope("user", "withdraw before prompt")], "late-model").then(() => undefined, error => error);
+    const command = (await (await fetch(`${url}/commands`, { headers })).json() as any).command;
+    expect(command.type).toBe("set_model");
+    expect((await post("/ack", { id: command.id, ok: true })).ok).toBe(true);
+    await entered; expect(peer.getRequestedModel()).toBe("dgx/baseline");
+    await peer.detachForRoster(); release(); await delivery;
+    expect(applied).toBe(0); expect(peer.state).toBe("offline");
+    expect(receipts).toContainEqual(expect.objectContaining({ state: "failed_safe", reason: "Pi withdrawn before native dispatch" }));
+  } finally {
+    release();
+    try {
+      owner.kill(); await owner.exited;
+      if (post) await post("/event", { type: "session_shutdown" }).catch(() => undefined);
+    } finally {
+      try { await peer.stop(); }
+      finally { await delivery; rmSync(stateDir, { recursive: true, force: true }); }
+    }
+  }
 }, 20_000);
