@@ -144,3 +144,30 @@ passing source checkpoint; incoming changes are Orca O2 and the CI fix. No
 unmerged fix branch is imported. Two new seeded guards target person-only model
 control and the reproduced accepted-ACK ordering defect, using existing named
 Linux tests. Their actual seeded results follow separately.
+
+
+## Integration checkpoint and remaining gate
+
+At `15cb959eab3b7e5796e3df4c50046d8447fe801c`, all 561 anchors matched.
+Seed shards 48/64 and 49/64 passed all 18 original-green / named-mutant-detected
+pairs, including both new model guards (46 s total). The separate existing
+Office/role/pet/motion/UI integration tests passed 101/0, with 140,310 assertions
+across five files (17 s). Logs: scratchpad `temp/task808-seeds.log` and
+`temp/task808-ui-integration.log`. These are focused shards, not a claim that
+all 561 mutants ran.
+
+The initial 44-file independent source/test/doc review had no confirmed
+Important finding; its CLI 30-second timeout nit was corrected to the repository
+20-second ceiling. Subsequent delta reviews covered all nongenerated changes
+and confirmed the model ACK, cached metadata and UI fences. The unavailable
+cause nit is fixed. The generated bundle is checked by the gate rather than
+claimed manually reviewed. A provisional token-newline alert was retracted
+against the actual pinned runtime and ECMAScript semantics, with no source change
+or pass claim based on it.
+
+The final report-only head starts canonical `scripts/check.sh --changed` on
+DGX. Its result and exact-head hosted CI remain unverified until recorded. The
+known inherited Herdr `/home/dev` fixture defect (#807) is outside this feature.
+No test is excluded or weakened for it. Native/provider-backed model acceptance,
+real UI browser interaction and installed-hub rollout remain unrun. No release,
+upgrade, restart or model change was performed on the person's running hub.
