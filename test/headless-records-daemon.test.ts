@@ -55,7 +55,9 @@ function fixture(policy: "enabled" | "disabled" | "missing" | "throw" = "enabled
   const ports = (state as typeof state & { records: { bind(owner: PeerAdapter, cwd: string, session: () => string | undefined): void; inputs: Map<string, { owner: PeerAdapter; originals: Envelope[]; tainted?: true }>; steer(peer: string, originals: Envelope[]): void; close(peer: string): void; read(task?: { owner?: string; title: string; refs: { paths?: string[] } }): RecordBriefSnapshot | undefined; project(peer: string, original: string, tokens: number): { before: string; after: string } | undefined } }).records;
   const hookStart = source.indexOf("onGeneratedNote: "), hookEnd = source.indexOf(", onNote:", hookStart);
   expect(hookStart).toBeGreaterThan(0); expect(hookEnd).toBeGreaterThan(hookStart);
-  const generatedNote = runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync("(" + source.slice(hookStart + "onGeneratedNote: ".length, hookEnd) + ")"), state) as (proof: { id: string; anchors: string[] }) => void;
+  runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync("globalThis.generatedNote = " + source.slice(hookStart + "onGeneratedNote: ".length, hookEnd) + ";"), state);
+  const generatedNote = (state as typeof state & { generatedNote: (proof: { id: string; anchors: string[] }) => void }).generatedNote;
+  expect(typeof generatedNote).toBe("function");
   ports.bind(owner, executionCwd, () => owner.nativeSession); ports.inputs.set(owner.id, { owner, originals: [original] });
   cleanups.push(() => ports.close(owner.id));
   const rows = () => {
