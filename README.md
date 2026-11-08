@@ -59,6 +59,9 @@ defaults. The
 - **Peers, not a pipeline.** Any agent can message the others. Messages are batched
   into digests, priorities decide what interrupts a turn, and delivery survives
   restarts.
+- **Optional decision routing.** Hub-owned routes can consult a loopback adec
+  policy in shadow mode while keeping the existing model choice unchanged.
+  See [configuration and privacy limits](docs/operations.md#optional-adec-decision-route-554).
 - **Live model selection.** A person can set a supported peer's next-turn model
   with `ahub model set`, without restart or reload. Active turns stay unchanged;
   [status distinguishes pending and unsupported selection](docs/operations.md#live-peer-model-overrides-1317).

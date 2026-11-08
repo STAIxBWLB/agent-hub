@@ -64,10 +64,13 @@ export class DecisionRouteController {
     if (!context.current()) throw ended();
     if (!result.ok) return { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: result.reason, decisionLatencyMs: Math.max(0, performance.now() - began) } };
     const d = result.decision, apply = config.decision_mode === "enforce" && d.alias !== null && d.effort !== null ? { alias: d.alias, effort: d.effort } : undefined;
+    let decider: DecisionTrace["decider"];
+    if (d.decider === null) decider = null;
+    else if (this.host.publicDecisionText?.(JSON.stringify(d.decider)) === true) decider = { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs };
     return { ...(apply ? { apply } : {}), applied: () => { if (context.current()) state.currentPair = apply ? { turn: turn.context.turn, pair: apply } : undefined; },
       trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: d.alias, chosenEffort: d.effort, margin: d.margin,
         decisionLatencyMs: Math.max(0, performance.now() - began), decisionReason: d.reason, fallbackApplied: d.fallbackApplied,
-        decider: d.decider ? { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs } : null } };
+        ...(decider === undefined ? {} : { decider }) } };
   }
   private async request(config: HubRoute, context: Context, privateTurn: boolean, state: State, key: string): Promise<AdecResult> {
     await this.host.admitDecision?.();

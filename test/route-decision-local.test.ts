@@ -1,7 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
 import { LocalPeer, type LocalOptions } from "../src/adapters/local-worker.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
@@ -67,7 +69,7 @@ test("local private input releases metadata only to adec and review packages rel
     expect(request.evidence).not.toContain("PRIVATE_SENTINEL"); expect(request.evidence).not.toContain("ordinary fixture output");
   }
   const review = await fixture("shadow");
-  await review.run([newEnvelope("hub", "REVIEW_PACKAGE_SENTINEL", { kind: "review" })]);
+  await review.run([newEnvelope("hub", "REVIEW_PACKAGE_SENTINEL", { kind: "review", refs: { reviewPackage: "review:decision-fixture" } })]);
   expect(review.requests).toHaveLength(0);
 });
 
@@ -79,3 +81,47 @@ test("the production worker's evidence screen can omit all public fragments with
     const state = JSON.parse(request.evidence); expect(state.toolNames).toEqual([]);
   }
 });
+
+
+test("a real daemon wires current public-view policy into decision evidence and writes metadata-only route events", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-adec-daemon-")), stateDir = join(cwd, "state");
+  clean.push(() => rmSync(cwd, { recursive: true, force: true })); mkdirSync(join(cwd, ".agenthub"));
+  const model = startFakeModelServer({ key: "fake-adec-gateway-key", script: () => ({ content: "done" }) }); clean.push(model.stop);
+  process.env.OMNIROUTE_API_KEY = "fake-adec-gateway-key";
+  const requests: any[] = [];
+  const service = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const body: any = await req.json(); requests.push(body);
+    return Response.json({ id: "0123456789abcdef0123456789abcdef", policyId: "ahub.local", alias: "coding", effort: "high", margin: 0.8, abstain: false, reason: "ok", fallbackApplied: false, pinned: false, rules: [], decider: null });
+  } }); clean.push(() => service.stop(true));
+  const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace('route = "hub/stage"', 'route = "hub/decision"');
+  writeFileSync(join(cwd, ".agenthub/routing.toml"), routing + `
+[hub_routes."hub/decision"]
+type = "decision"
+decision_backend = "adec"
+decision_mode = "shadow"
+policy_id = "ahub.local"
+adec_endpoint = "http://127.0.0.1:${service.port}/v1/route"
+candidates = [{alias="coding", efforts=["high"]}]
+`);
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0,
+      pii: { ...DEFAULT_CONFIG.pii, paths: ["private/**"] },
+      specs: { ...DEFAULT_CONFIG.specs, enabled: false },
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
+      inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
+      pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] } } });
+  clean.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" }); clean.push(() => client.close());
+  const routeEvents: any[] = []; client.onPush = message => { if (message.t === "event" && message.e?.type === "route") routeEvents.push(message.e); }; client.send({ t: "tail" });
+  expect((await client.request({ t: "start", peer: "local", args: {} })).ok).toBe(true);
+  let finished!: () => void;
+  const done = new Promise<void>(resolve => { finished = resolve; });
+  daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "local" && event.env.body === "done") finished(); });
+  expect((await client.request({ t: "send", body: "inspect private/DECISION_PATH_CANARY.txt", to: ["local"] })).ok).toBe(true);
+  await done; await client.request({ t: "status" }); // consumed control reply follows the route event frames
+  expect(requests).toHaveLength(1); expect(requests[0].evidence).not.toContain("DECISION_PATH_CANARY");
+  expect(routeEvents).toHaveLength(1); expect(routeEvents[0].source).toBe("decision"); expect(routeEvents[0].decisionMode).toBe("shadow");
+  expect(routeEvents[0].tier).toBe("fast"); expect(routeEvents[0].chosenAlias).toBe("coding");
+  expect(JSON.stringify(routeEvents)).not.toContain("DECISION_PATH_CANARY");
+  expect(model.requests[0]!.body.model).toBe("fast"); expect(model.requests[0]!.body.reasoning_effort).toBeUndefined();
+}, 20_000);
