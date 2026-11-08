@@ -171,3 +171,22 @@ known inherited Herdr `/home/dev` fixture defect (#807) is outside this feature.
 No test is excluded or weakened for it. Native/provider-backed model acceptance,
 real UI browser interaction and installed-hub rollout remain unrun. No release,
 upgrade, restart or model change was performed on the person's running hub.
+
+
+## Unchanged covering contracts
+
+The parent agent-hub goal spec is unchanged: this refines existing native
+adapters and person-owned control without changing task/peer authority,
+account ownership or the deployment boundary. The owning adapter and
+architecture specs carry the new model state, turn and evidence contract.
+The bus spec is unchanged: reset clears an additional independent runtime table,
+while message addressing, queue/journal disposition, receipts, TTL, broker and
+reset admission semantics remain as before. Model selection is not a task or
+delivery effect.
+
+This acknowledgement was omitted from the first board completion. The final
+document-only correction carries the same runtime and test bytes. Canonical
+verification continues at parent `2f311bf61c6c77636aeb54a5ad249838b8ea0ee5`;
+it is not an exact-head canonical pass for the corrected document head. Hosted
+CI must verify the final head before merge. No duplicate canonical run or empty
+retry commit is introduced for this bookkeeping correction.
