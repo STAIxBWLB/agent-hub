@@ -101,6 +101,8 @@ The hub imports contract types only, with no renderer or new runtime dependency.
 Image bytes use the existing guarded deliverable reader and current hash/policy
 checks; console asset identifiers bind their originating project and instance.
 Raw visual tool arguments/results never enter observer capture, even on refusal.
+Held controlled recovery compares retained visual integrity before startup
+retention pruning; normal retention resumes only after recovery release.
 
 ## Models and memory
 

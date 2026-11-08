@@ -2230,7 +2230,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const board = new Board(join(opts.stateDir, "hub.db"));
   const visuals = new VisualStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => visuals.close());
-  visuals.prune(config.visuals.retention_days, Date.now(), task => !!board.get(task));
+  // Held recovery must compare the source's exact rows before any retention mutation.
+  if (!recoveryActive() && !bus.isRecoveryHeld) visuals.prune(config.visuals.retention_days, Date.now(), task => !!board.get(task));
   startupTimings.mark("board");
   const reviewInputHeld = (peer: PeerId, envs: readonly Envelope[]): boolean => {
     if (envs.some(isReviewObserverExcluded)) return true;

@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../src/hub/bus.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+import type { Envelope } from "../src/hub/envelope.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { readRestartSnapshot, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
@@ -12,7 +14,13 @@ import { openHubDatabase } from "../src/hub/db-schema.ts";
 
 const VISUAL = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const OPERATION = "visual-recovery";
-async function fixture(retained = false) {
+class VisualRecoveryPublisher extends BasePeer {
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+  async deliver(_envs: Envelope[]) {}
+}
+
+async function fixture(retained = false, created = Date.now()) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-visual-recovery-"))), stateDir = join(root, "state"), configDir = join(root, ".agenthub");
   mkdirSync(stateDir); mkdirSync(configDir);
   const keys = ["HOME", "CLAUDE_CONFIG_DIR", "AGENTHUB_HOME", "AMEM_HOME", "KIMI_CODE_HOME"] as const;
@@ -34,7 +42,7 @@ async function fixture(retained = false) {
   try {
     if (retained) {
       const store = new VisualStore(join(stateDir, "hub.db"));
-      try { store.insert({ id: VISUAL, from: "codex", kind: "mermaid", title: "Recovery fixture", payload: { kind: "mermaid", title: "Recovery fixture", source: "flowchart LR\nA-->B" }, files: [], created: Date.now() }); }
+      try { store.insert({ id: VISUAL, from: "codex", kind: "mermaid", title: "Recovery fixture", payload: { kind: "mermaid", title: "Recovery fixture", source: "flowchart LR\nA-->B" }, files: [], created }); }
       finally { store.close(); }
     }
     daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, config });
@@ -42,13 +50,13 @@ async function fixture(retained = false) {
     const status = (await client.request({ t: "status" })).status;
     const request = (op: string, targetFeatures?: readonly string[]) => client!.request({ t: "recovery", op, operationId: OPERATION,
       expectedInstanceId: status.instanceId, ...(targetFeatures === undefined ? {} : { targetFeatures }) });
-    const restart = async (mutate?: () => void) => {
+    const restart = async (mutate?: () => void, retentionDays = config.visuals.retention_days) => {
       await daemon!.stopped; client!.close();
       const snapshot = readRestartSnapshot(stateDir, { projectRoot: root, projectId: status.projectId, operationId: OPERATION });
       expect(snapshot?.sourceInstanceId).toBe(status.instanceId);
       mutate?.();
       const previous = process.env.AGENTHUB_RECOVERY_OPERATION; process.env.AGENTHUB_RECOVERY_OPERATION = OPERATION;
-      try { daemon = await startDaemon({ cwd: root, stateDir, projectId: status.projectId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, config }); }
+      try { daemon = await startDaemon({ cwd: root, stateDir, projectId: status.projectId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, config: { ...config, visuals: { retention_days: retentionDays } } }); }
       finally { if (previous === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previous; }
       client = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
       const targetStatus = (await client.request({ t: "status" })).status;
@@ -112,6 +120,34 @@ for (const change of ["unchanged", "payload", "row-loss"] as const) test(`suppor
     if (change === "unchanged") { expect(released).toMatchObject({ ok: true, released: true }); expect(target.daemon.bus.isRecoveryHeld).toBe(false); }
     else { expect(released.ok).toBe(false); expect(released.error).toContain("integrity changed"); expect(target.daemon.bus.isRecoveryHeld).toBe(true); }
   } finally { await f.close(); }
+}, 20_000);
+
+test("target retention defers expired-row pruning until held recovery is verified and released", async () => {
+  // Synthetic age is valid under source policy (30 days), expired under target policy (1 day), without sleeping or changing a row after capture.
+  const f = await fixture(true, Date.now() - 2 * 86_400_000);
+  let tools: ControlClient | undefined, store: VisualStore | undefined;
+  try {
+    const before = (await f.request("inspect")).recovery.integrity.current.visuals;
+    expect(before).toMatchObject({ count: 1 });
+    expect(await f.request("prepare", DAEMON_FEATURES)).toMatchObject({ ok: true });
+    expect(await f.request("commit", DAEMON_FEATURES)).toMatchObject({ ok: true, committed: true });
+    const target = await f.restart(undefined, 1);
+    store = new VisualStore(join(f.stateDir, "hub.db"));
+    expect(target.daemon.bus.isRecoveryHeld).toBe(true);
+    expect(store.get(VISUAL)).toBeDefined(); expect(store.integrity()).toEqual(before);
+    expect((await target.request("inspect")).recovery.integrity.current.visuals).toEqual(before);
+    expect(await target.request("release")).toMatchObject({ ok: true, released: true });
+    expect(target.daemon.bus.isRecoveryHeld).toBe(false);
+    // Register an ordinary passive owner explicitly; the tools socket does not stand in for a native launch.
+    const publisher = new VisualRecoveryPublisher("codex");
+    target.daemon.bus.add(publisher); await publisher.start();
+    expect(target.daemon.bus.peers.get("codex")).toBe(publisher); expect(publisher.state).toBe("idle");
+    // The existing post-retention pass is an explicit deterministic trigger; no maintenance timer is shortened.
+    tools = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" });
+    const posted = await tools.request({ t: "task", op: "hub_visual", args: { payload: { kind: "mermaid", source: "flowchart LR; A-->B" } } });
+    expect(posted.ok, String(posted.error)).toBe(true);
+    expect(store.get(VISUAL)).toBeUndefined(); expect(store.list()).toHaveLength(1);
+  } finally { tools?.close(); store?.close(); await f.close(); }
 }, 20_000);
 
 test("restart visual integrity is optional and rejects malformed or expanded shapes", () => {
