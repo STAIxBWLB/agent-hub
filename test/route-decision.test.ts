@@ -175,9 +175,9 @@ test("privacy and observer upgrades during held admission release no decision ev
     const pending = h.runtime.call("hub/test", { ...s.config, decision_mode: "enforce" }, [{ role: "user", content: "ADMISSION_SOURCE_CANARY" }], "scope", false, signal());
     const settled = pending.then(() => undefined, error => error);
     await entered; facts[field] = true; release(); const error = await settled;
-    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy");
     expect(s.requests).toHaveLength(0); expect(screens).toBe(0);
     expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy");
   }
 });
 
@@ -190,7 +190,7 @@ test("privacy changes during campus admission build no evidence or request", asy
   const pending = h.runtime.call("hub/test", s.config, messages, "scope", true, signal());
   const settled = pending.then(() => undefined, error => error);
   await entered; facts.excluded = true; release(); const error = await settled;
-  expect(error).toBeInstanceOf(Error); expect(s.requests).toHaveLength(0); expect(screens).toBe(0);
+  expect(s.requests).toHaveLength(0); expect(screens).toBe(0); expect(error).toBeInstanceOf(Error);
   expect(h.events).toHaveLength(0); expect(h.calls).toHaveLength(0);
 });
 
@@ -207,8 +207,8 @@ test("changed current board facts suppress a held service pick and its decider m
     const pending = h.runtime.call("hub/test", { ...s.config, decision_mode: "enforce", adec_endpoint: `http://127.0.0.1:${held.port}/v1/route` }, messages, "scope", false, signal());
     const settled = pending.then(() => undefined, error => error);
     await entered; facts[field] = true; release(); const error = await settled;
-    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy");
     expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy");
     expect(JSON.stringify(h.events)).not.toContain("DISCARDED_DECIDER_LABEL");
   }
 });
