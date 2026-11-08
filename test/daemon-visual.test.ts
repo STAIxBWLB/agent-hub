@@ -235,7 +235,7 @@ function operationalRefusal(result: { ok: boolean; error?: string }, cause: RegE
   expect(result.error).not.toContain("PRIVATE-VISUAL"); expect(result.error).not.toContain("PRIVATE-ERROR");
 }
 for (const kind of ["role", "membership", "recovery", "storage"] as const) test(`nonprivacy visual refusal names its cause and next step: ${kind}`, async () => {
-  const r = await rig(undefined, undefined, undefined, kind === "role" ? { capabilities: { ...DEFAULT_CONFIG.capabilities, codex: [] } } : {});
+  const r = await rig(undefined, undefined, kind === "membership" ? { shared: {}, local: {} } : undefined, kind === "role" ? { capabilities: { ...DEFAULT_CONFIG.capabilities, codex: [] } } : {});
   // Connect first, then withdraw the actual roster membership. An initially off-roster peer cannot complete hello.
   if (kind === "membership") {
     expect(await r.console_.request({ t: "settings_set", key: "roster.codex", value: false, confirm: "codex" })).toMatchObject({ ok: true });
