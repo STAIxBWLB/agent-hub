@@ -32,25 +32,25 @@ async function fixture(extra: Partial<AcpOptions> = {}, fault = "", identity = P
   const nativeModels = { currentModelId: encode("baseline"), availableModels: wireIds.map(modelId => ({ modelId, name: modelId })) };
   const nativeConfigOptions = [{ id: "model", type: "select", currentValue: encode("baseline"), options: wireIds.map(value => ({ value, name: value })) }];
   if (policy.admission.compatId !== undefined) writeTrust(policy.admission.compatId, policy.version, false, trust);
-  const records = join(root, "records.jsonl"), release = join(root, "release"), script = join(root, "fixture.ts");
+  const records = join(root, "records.jsonl"), script = join(root, "fixture.ts");
   writeFileSync(records, "");
   writeFileSync(script, `import {createInterface} from 'node:readline';
-import {appendFileSync,existsSync,watch} from 'node:fs';
-const records=${JSON.stringify(records)},release=${JSON.stringify(release)},root=${JSON.stringify(root)},fault=${JSON.stringify(fault)};
-let model=${JSON.stringify(encode('baseline'))};let waiting;let setter;
+import {appendFileSync} from 'node:fs';
+const records=${JSON.stringify(records)},fault=${JSON.stringify(fault)};
+let model=${JSON.stringify(encode('baseline'))};let waiting;let setter;let released=false;
 const send=v=>process.stdout.write(JSON.stringify(v)+'\\n');
 const update=u=>send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'session',update:u}});
 const modelNotice=()=>{send({jsonrpc:'2.0',method:'qwen/notify/session/model-update',params:{v:1,sessionId:'foreign',currentModelId:'not-advertised'}});send({jsonrpc:'2.0',method:'qwen/notify/session/model-update',params:{v:2,sessionId:'session',currentModelId:'not-advertised'}});send({jsonrpc:'2.0',method:'qwen/notify/session/model-update',params:{v:1,sessionId:'session',currentModelId:model}})};
-const finish=()=>{if(!existsSync(release))return;if(setter){send({jsonrpc:'2.0',id:setter.id,result:{}});setter=undefined;}if(!waiting)return;const m=waiting;waiting=undefined;update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'done'}});send({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn'}})};
-watch(root,finish);
+const finish=()=>{if(!released)return;if(setter){send({jsonrpc:'2.0',id:setter.id,result:{}});setter=undefined;}if(!waiting)return;const m=waiting;waiting=undefined;update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'done'}});send({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn'}})};
 createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line),p=m.params||{};
 const answer=result=>send({jsonrpc:'2.0',id:m.id,result});
-if(m.method==='initialize')answer({protocolVersion:1,agentInfo:{name:'fixture ACP',version:${JSON.stringify(identity)}}});
+if(m.method==='fixture/release'){released=true;answer({released:true});finish();}
+else if(m.method==='initialize')answer({protocolVersion:1,agentInfo:{name:'fixture ACP',version:${JSON.stringify(identity)}}});
 else if(m.method==='session/new')answer({sessionId:'session',models:${JSON.stringify(nativeModels)},configOptions:${JSON.stringify(nativeConfigOptions)}});
 else if(m.method==='session/set_model'||m.method==='session/set_config_option'){
 appendFileSync(records,JSON.stringify({method:m.method,model:p.modelId??p.value})+'\\n');
 if(fault==='hang')return;if(fault==='reject'){send({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'synthetic refusal'}});return;}
-model=p.modelId??p.value;update({sessionUpdate:'current_model_update',currentModelId:model});modelNotice();if(fault==='setter-held'&&!existsSync(release)){setter=m;return;}answer(m.method==='session/set_config_option'?{configOptions:[{id:'model',type:'select',currentValue:model,options:${JSON.stringify(wireIds)}.map(value=>({value,name:value}))}]}:{});}
+model=p.modelId??p.value;update({sessionUpdate:'current_model_update',currentModelId:model});modelNotice();if(fault==='setter-held'&&!released){setter=m;return;}answer(m.method==='session/set_config_option'?{configOptions:[{id:'model',type:'select',currentValue:model,options:${JSON.stringify(wireIds)}.map(value=>({value,name:value}))}]}:{});}
 else if(m.method==='session/prompt'){
 appendFileSync(records,JSON.stringify({method:m.method,model})+'\\n');
 if(fault==='prompt-reject'){send({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'synthetic prompt refusal'}});return;}
@@ -63,9 +63,12 @@ else if(m.id!==undefined)answer({});});`);
     getModelOverride: () => { const selected = desired; return { model: selected, applied: () => applied.push(selected ?? "clear"), rejected: () => rejected.push(selected ?? "clear") }; }, ...extra });
   cleanup.push(() => peer.stop());
   await peer.start();
+  // A fake-only RPC shares the actual receive lane and runs after the held setter handler has returned.
+  // Filesystem notifications are observation hints, not an acknowledgement/release protocol.
+  const transport = peer as unknown as { request(method: string, params: unknown): Promise<unknown> };
   const rows = () => readFileSync(records, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method: string; model: string });
   const idle = () => peer.state === "idle" ? Promise.resolve() : new Promise<void>(resolve => { const old = peer.onState; peer.onState = state => { old?.(state); if (state === "idle") { peer.onState = old; resolve(); } }; });
-  return { root, trust, peer, rows, applied, rejected, choose: (model: string | undefined) => { desired = model; }, release: () => writeFileSync(release, "release"), idle,
+  return { root, trust, peer, rows, applied, rejected, choose: (model: string | undefined) => { desired = model; }, release: async () => { expect(await transport.request("fixture/release", {})).toEqual({ released: true }); }, idle,
     waitPrompts: (count: number) => observed(root, () => rows().filter(row => row.method === "session/prompt").length === count) };
 }
 
@@ -89,7 +92,7 @@ test("captured A remains current while B is desired; setter ACK/control updates 
   await f.peer.deliver([newEnvelope("user", "synthetic A")]); await f.waitPrompts(1);
   expect(f.applied).toEqual([]); expect(f.peer.modelOverrideState.baseline).toBe("baseline"); f.choose("B");
   expect(f.rows().filter(row => row.method === "session/prompt")).toEqual([{ method: "session/prompt", model: "A" }]);
-  const idle = f.idle(); f.release(); await idle; expect(f.applied).toEqual(["A"]);
+  const idle = f.idle(); await f.release(); await idle; expect(f.applied).toEqual(["A"]);
   await f.peer.deliver([newEnvelope("user", "synthetic B")]); await f.idle();
   f.choose(undefined); await f.peer.deliver([newEnvelope("user", "synthetic clear")]); await f.idle();
   expect(f.rows().filter(row => row.method === "session/prompt").map(row => row.model)).toEqual(["A", "B", "baseline"]);
@@ -99,7 +102,7 @@ test("set_config_option uses only the model option with the same turn admission 
   const f = await fixture({ modelPolicy: { ...POLICY, setter: "set_config_option", modelUpdate: "config_option_update" } });
   await f.peer.deliver([newEnvelope("user", "synthetic config")]); await f.waitPrompts(1);
   expect(f.rows()[0]).toEqual({ method: "session/set_config_option", model: "A" }); expect(f.applied).toEqual([]);
-  const idle = f.idle(); f.release(); await idle; expect(f.applied).toEqual(["A"]);
+  const idle = f.idle(); await f.release(); await idle; expect(f.applied).toEqual(["A"]);
 });
 test("unknown models and mismatched native versions refuse before setter or prompt effects", async () => {
   const f = await fixture(); f.choose("not-advertised");
@@ -123,12 +126,13 @@ test("selection is captured before an awaited setter; stop invalidates the held 
   const delivery = f.peer.deliver([newEnvelope("user", "synthetic held setter")]);
   await observed(f.root, () => f.rows().length === 1); f.choose("B");
   expect(f.rows()[0]?.model).toBe("A");
-  f.release(); await delivery; await f.idle(); expect(f.applied).toEqual(["A"]);
+  await f.release(); await delivery; await f.idle(); expect(f.applied).toEqual(["A"]);
   await f.peer.deliver([newEnvelope("user", "synthetic next turn")]); await f.idle();
   expect(f.rows().filter(row => row.method === "session/prompt").map(row => row.model)).toEqual(["A", "B"]);
   const stopped = await fixture({}, "setter-held");
-  const rejected = expect(stopped.peer.deliver([newEnvelope("user", "synthetic stop")])).rejects.toThrow();
-  await observed(stopped.root, () => stopped.rows().length === 1); await stopped.peer.stop(); await rejected;
+  const rejected = stopped.peer.deliver([newEnvelope("user", "synthetic stop")]).then(() => undefined, (error: unknown) => error);
+  await observed(stopped.root, () => stopped.rows().length === 1); await stopped.peer.stop();
+  expect(await rejected).toBeInstanceOf(Error);
   expect(stopped.rows().some(row => row.method === "session/prompt")).toBe(false); expect(stopped.applied).toEqual([]);
 }, 20000);
 test("prompt rejection after setter success does not certify application", async () => {
@@ -143,25 +147,26 @@ test("an unavailable optional setter leaves ordinary no-override ACP delivery un
   expect(f.peer.modelOverrideState.available).toBe(false);
   await f.peer.deliver([newEnvelope("user", "synthetic legacy")]); await f.waitPrompts(1);
   expect(f.rows().map(row => row.method)).toEqual(["session/prompt"]);
-  const idle = f.idle(); f.release(); await idle; expect(f.applied).toEqual([]);
+  const idle = f.idle(); await f.release(); await idle; expect(f.applied).toEqual([]);
 });
 
 test("Qwen versioned model notifications require the current session and never admit a prompt", async () => {
   const f = await fixture({ modelPolicy: { ...POLICY, setter: "set_config_option", modelUpdate: "qwen/notify/session/model-update" } });
   await f.peer.deliver([newEnvelope("user", "synthetic model notice")]); await f.waitPrompts(1);
   expect(f.peer.modelOverrideState.available).toBe(true); expect(f.applied).toEqual([]);
-  const idle = f.idle(); f.release(); await idle; expect(f.applied).toEqual(["A"]);
+  const idle = f.idle(); await f.release(); await idle; expect(f.applied).toEqual(["A"]);
 });
 
 test("person-trusted admission and the exact setter receipt are independent; revocation during setter blocks the prompt", async () => {
   const version = "99.0.0", policy: AcpModelPolicy = { ...POLICY, version, admission: { compatId: "qwen" } };
   const f = await fixture({ modelPolicy: policy }, "setter-held", version);
   expect(f.peer.modelOverrideState.available).toBe(true);
-  const failed = expect(f.peer.deliver([newEnvelope("user", "synthetic revoked trust")])).rejects.toThrow("changed");
+  const failed = f.peer.deliver([newEnvelope("user", "synthetic revoked trust")]).then(() => undefined, (error: unknown) => error);
   await observed(f.root, () => f.rows().length === 1);
   writeTrust("qwen", version, true, f.trust);
   expect(f.peer.modelOverrideState.available).toBe(false);
-  f.release(); await failed;
+  await f.release(); const failure = await failed;
+  expect(failure).toBeInstanceOf(Error); expect((failure as Error).message).toContain("changed");
   expect(f.rows().some(row => row.method === "session/prompt")).toBe(false); expect(f.applied).toEqual([]);
   const mismatch = await fixture({ modelPolicy: policy }, "", "99.0.1");
   expect(mismatch.peer.modelOverrideState.available).toBe(false);
@@ -173,7 +178,7 @@ test("explicit native-identity admission does not inherit reviewer compatibility
   const f = await fixture({ modelPolicy: { ...POLICY, admission: { nativeIdentity: true }, version } }, "", version);
   expect(f.peer.modelOverrideState.available).toBe(true);
   await f.peer.deliver([newEnvelope("user", "synthetic identity-only admission")]); await f.waitPrompts(1);
-  expect(f.applied).toEqual([]); const idle = f.idle(); f.release(); await idle; expect(f.applied).toEqual(["A"]);
+  expect(f.applied).toEqual([]); const idle = f.idle(); await f.release(); await idle; expect(f.applied).toEqual(["A"]);
 });
 
 test("optional Qwen OpenAI codec binds logical tokens to exact advertised wire ids without changing person grammar", () => {
@@ -194,7 +199,7 @@ test("actual ACP codec path sends advertised OpenAI wire ids while retaining log
   expect(f.peer.modelOverrideState.baseline).toBe("baseline");
   await f.peer.deliver([newEnvelope("user", "synthetic encoded override")]); await f.waitPrompts(1);
   expect(f.rows()[0]).toEqual({ method: "session/set_config_option", model: "A(openai)" }); expect(f.applied).toEqual([]);
-  const idle = f.idle(); f.release(); await idle; expect(f.applied).toEqual(["A"]);
+  const idle = f.idle(); await f.release(); await idle; expect(f.applied).toEqual(["A"]);
   f.choose(undefined); await f.peer.deliver([newEnvelope("user", "synthetic encoded clear")]); await f.idle();
   expect(f.rows().filter(row => row.method === "session/set_config_option").map(row => row.model)).toEqual(["A(openai)", "baseline(openai)"]);
   expect(f.peer.modelOverrideState.baseline).toBe("baseline"); expect(f.applied).toEqual(["A", "clear"]);
