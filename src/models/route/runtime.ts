@@ -18,7 +18,7 @@ export interface RouteEvent extends Partial<SwitchTrace>, Partial<DecisionTrace>
 export interface AdvisorEvent { route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
 interface RouteState { fingerprint: string; stage: StageState; pin?: Tier; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate }
 export interface RouteHost extends DecisionHost {
-  execute: (model: string, messages: ChatMessage[], judge: boolean, signal: AbortSignal, maxTokens?: number, reasoningEffort?: string) => Promise<ChatResult>;
+  execute: (model: string, messages: ChatMessage[], judge: boolean, signal: AbortSignal, maxTokens?: number, reasoningEffort?: string, beforeRequest?: () => void) => Promise<ChatResult>;
   /** Read on every stage call (#197); absent is the shadow default. */
   staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
@@ -84,13 +84,14 @@ export class HubRouteRuntime {
       state.plan = decision.state;
       if (decision.planningPrompt) sent = [{ role: "system", content: decision.planningPrompt }, ...messages];
     } else if (config.type === "escalation" && state.escalation.snapshot().latched) model = capable;
-    const picked: Awaited<ReturnType<DecisionRouteController["pick"]>> = config.type === "decision" ? await this.decisions.pick(config, { route, scope, turn: labelTurn, messages, dimensions, pii, signal,
+    const proposed: Awaited<ReturnType<DecisionRouteController["pick"]>> = config.type === "decision" ? await this.decisions.pick(config, { route, scope, turn: labelTurn, messages, dimensions, pii, signal,
       current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn }) : {};
+    const picked = this.decisions.confirm(config, proposed);
     model = picked.apply?.alias ?? model;
     source = picked.trace ? "decision" : source;
     let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
     const result = picked?.apply
-      ? await this.host.execute(model, sent, false, signal, undefined, picked.apply.effort)
+      ? await this.host.execute(model, sent, false, signal, undefined, picked.apply.effort, picked.handoff)
       : await this.host.execute(model, sent, false, signal);
     picked.applied?.();
     if (config.type !== "escalation" || state.escalation.snapshot().latched) return this.withDecision(result, decisionId);

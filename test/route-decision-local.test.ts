@@ -36,7 +36,7 @@ async function fixture(mode: "off" | "shadow" | "enforce", extra: Partial<LocalO
     await peer.deliver(envs); await idle;
     expect(peer.state).toBe("idle"); expect(diagnostics).toEqual([]);
   };
-  return { peer, run, model, requests, answers, units };
+  return { peer, run, model, requests, answers, units, omni, diagnostics };
 }
 
 test("local off/shadow preserve normal wire, enforce forwards effort, and the service sees one stable user-turn identity", async () => {
@@ -127,3 +127,21 @@ candidates = [{alias="coding", efforts=["high"]}]
   expect(JSON.stringify(routeEvents)).not.toContain("DECISION_PATH_CANARY");
   expect(model.requests[0]!.body.model).toBe("fast"); expect(model.requests[0]!.body.reasoning_effort).toBeUndefined();
 }, 20_000);
+
+
+test("an enforce handoff rechecks current privacy after gateway discovery and sends no model request", async () => {
+  const facts = { pii: false, private: false, excluded: false };
+  const f = await fixture("enforce", { routeDecisionContext: () => ({ ...facts }) });
+  let arrived!: () => void, release!: () => void, idle!: () => void, failures = 0;
+  const entered = new Promise<void>(resolve => { arrived = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  clean.push(release);
+  const base = f.omni.base.bind(f.omni);
+  f.omni.base = async () => { const url = await base(); arrived(); await gate; return url; };
+  const finished = new Promise<void>(resolve => { idle = resolve; });
+  f.peer.onState = state => { if (state === "idle") idle(); }; f.peer.onFailed = () => { failures++; };
+  await f.peer.deliver([newEnvelope("user", "GATEWAY_HANDOFF_SOURCE_CANARY")]);
+  await entered; facts.pii = true; release(); await finished;
+  expect(f.requests).toHaveLength(1); // the earlier decision was public when released
+  expect(f.model.requests).toHaveLength(0); expect(f.answers).toEqual([]); expect(failures).toBe(1);
+  expect(f.diagnostics.some(line => line.includes("policy changed or is unavailable"))).toBe(true);
+});

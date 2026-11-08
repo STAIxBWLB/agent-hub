@@ -4619,8 +4619,11 @@ shadow evidence. It applies a validated alias and effort to the next gateway
 call through `reasoning_effort`; it does not edit a native peer or provider.
 No route is enabled by default or deployed by this feature.
 
-The configured alias/effort list has at most 26 pairs and narrows the adec
-policy; it cannot add a policy candidate. The service assembles its question and
+The configured alias/effort list has at most 26 pairs. Aliases narrow the adec
+policy; efforts are an additional hub-side response allowlist and are not sent
+as a policy override. Align the lists with the service policy: an unconfigured
+effort is refused as `outside_options`, keeping the heuristic. The request
+cannot add a policy candidate. The service assembles its question and
 owns its hard rules, margin threshold, in-memory pins and fallback. A valid
 `fallbackApplied` pair is its policy fallback even when `abstain` is true.
 `no_candidate` keeps the hub heuristic. An HTTP 400 is a caller/configuration
@@ -4652,7 +4655,13 @@ A PII/private turn needs positive `onCampus()` before any evidence build or
 service call. Even on campus, its evidence is dimensions only, its context size
 is redacted to 0, and its separate `pii`/`private` flags reach adec so the service
 can enforce on-prem candidates/decider rules. The ordinary gateway campus and
-execution-budget checks still apply. Source text, tool arguments, credentials
+execution-budget checks still apply. Current board/turn privacy and observer
+facts are checked again across admission, campus and service awaits. A changed
+or unavailable authority refuses the stale turn instead of turning into a
+service-error fallback; inspect current task policy and retry. Accepted advice
+is checked again before telemetry and, for enforcement, after model admission
+and gateway discovery immediately before HTTP release. The host-only gateway
+refusal callback is never serialized. Source text, tool arguments, credentials
 and server error prose never enter route events.
 
 This delivery is the adec consumer slice of #554. The direct System One backend,

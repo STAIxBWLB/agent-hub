@@ -8277,6 +8277,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(route ? { route } : {}),
         hubRoutes: () => activeRouting().hub_routes ?? {},
         routeEvidencePublic: boundedSafe,
+        routeDecisionContext: () => ({ pii: contextPii(peer), private: turns.get(peer)?.private === true, excluded: reviewObserverHeld(peer) }),
         staySwitch: () => activeRouting(),
         onRoute: record => event({ type: "route", peer, ...record }),
         onAdvisor: record => event({ type: "advisor", peer, ...record }),

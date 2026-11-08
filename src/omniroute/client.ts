@@ -39,6 +39,8 @@ export interface ChatResult {
   provider?: string;
 }
 export interface ChatOptions {
+  /** Host-only refusal fence after gateway discovery, before model HTTP effects; never part of the payload. */
+  beforeRequest?: () => void;
   /** Refuse a changed/off-campus gateway immediately before transport. */
   onCampusOnly?: boolean;
   signal?: AbortSignal;
@@ -157,6 +159,7 @@ export class OmniRoute {
     const base = await this.base();
     if (!base) throw new Error("no model gateway is configured or reachable (omniroute.urls in .agenthub/config.json; see ahub doctor)");
     if (opts.onCampusOnly && this.isAccessHost(base)) throw new Error("PII model calls require the confirmed campus gateway");
+    opts.beforeRequest?.();
     const headers: Record<string, string> = { "content-type": "application/json" };
     const key = this.apiKey();
     if (!key) throw new Error("no OmniRoute API key (set OMNIROUTE_API_KEY or omniroute.api_key_file)");

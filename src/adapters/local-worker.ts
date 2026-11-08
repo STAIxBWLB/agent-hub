@@ -1,6 +1,7 @@
 import type { ModelOverrideSelection } from "./registry-types.ts";
 import { isNativeModelToken } from "./model-token.ts";
 import { isReviewObserverExcluded, reviewCaptureExcluded } from "../hub/memory-policy.ts";
+import { DecisionPolicyChangedError, type DecisionHost } from "../models/route/decision.ts";
 import { HubRouteRuntime, type RouteEvent, type AdvisorEvent } from "../models/route/runtime.ts";
 import type { HubRoute } from "../models/route/config.ts";
 import type { RouteLabelEvent, RouteTurnOutcome } from "../models/route/labels.ts";
@@ -39,6 +40,7 @@ export interface LocalOptions {
   hubRoutes?: () => Record<string, HubRoute>;
   /** Current host public-view screen for bounded decision evidence; absent means no text is released. */
   routeEvidencePublic?: (text: string) => boolean;
+  routeDecisionContext?: DecisionHost["decisionContext"];
   /** routing.toml `stay_switch` for hub stage routes (#197). */
   staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
@@ -145,22 +147,23 @@ export class LocalPeer extends BasePeer {
   ) {
     super(id, opts.watchdogMs);
     this.routes = new HubRouteRuntime({
-      execute: async (model, messages, judge, signal, maxTokens, reasoningEffort) => {
+      execute: async (model, messages, judge, signal, maxTokens, reasoningEffort, beforeRequest) => {
         if (signal.aborted) throw new Error("turn cancelled before model request");
         const envs = this.routeEnvs, pii = this.routePii, generation = this.turn, task = this.routeTask;
         await this.requireBudget(envs, "model_calls");
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
+        beforeRequest?.();
         if (signal.aborted) throw new Error("turn cancelled before model request");
         const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
         this.releaseObserverInput(this.currentObserverInputContext, envs);
-        const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}), ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
+        const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}), ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}), ...(beforeRequest ? { beforeRequest } : {}) });
         this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         this.lastServedBy = `hub ${model} (provider ${result.provider ?? "?"})`;
         return result;
       },
       onCampus: () => this.opts.omni.onCampus(),
-      decisionContext: () => ({ private: this.routeEnvs.some(env => env.private === true), excluded: this.routeEnvs.some(env => remoteEnvelope(env) || isReviewObserverExcluded(env)) || this.routeReviewScope?.excluded === true }),
+      decisionContext: () => this.decisionContext(),
       publicDecisionText: text => this.opts.routeEvidencePublic?.(text) === true,
       admitDecision: () => this.requireBudget(this.routeEnvs, "model_calls"),
       staySwitch: () => this.opts.staySwitch?.(),
@@ -169,6 +172,13 @@ export class LocalPeer extends BasePeer {
       onRouteOutcome: event => this.opts.onRouteOutcome?.(event),
     });
     this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny, opts.tools.readOnly);
+  }
+
+  private decisionContext(): { pii: boolean; private: boolean; excluded: boolean } {
+    const current = this.opts.routeDecisionContext?.();
+    if (this.opts.routeDecisionContext && (!current || typeof current.private !== "boolean" || typeof current.excluded !== "boolean" || current.pii !== undefined && typeof current.pii !== "boolean")) throw new DecisionPolicyChangedError();
+    return { pii: this.routePii || current?.pii === true, private: this.routeEnvs.some(env => env.private === true) || current?.private === true,
+      excluded: this.routeEnvs.some(env => remoteEnvelope(env) || isReviewObserverExcluded(env)) || this.routeReviewScope?.excluded === true || current?.excluded === true };
   }
 
   recoveryMetadata(): Record<string, unknown> {
@@ -528,7 +538,7 @@ export class LocalPeer extends BasePeer {
     if (!route || !config) return undefined;
     try { return await this.routes.call(route, config, messages, this.routeScope(!!policy?.pii), !!policy?.pii, signal); }
     catch (error) {
-      if (signal.aborted || error instanceof ExecutionBudgetStop) throw error;
+      if (signal.aborted || error instanceof ExecutionBudgetStop || error instanceof DecisionPolicyChangedError) throw error;
       this.opts.log?.(`hub route ${route} unavailable; using fixed model`);
       return undefined;
     }

@@ -163,3 +163,52 @@ test("a closed turn or cancellation during a held decision cannot execute or emi
   const outcome = await settled; expect(outcome.error).toBeInstanceOf(Error); expect(outcome.error.message).toContain("turn ended");
   expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
 });
+
+test("privacy and observer upgrades during held admission release no decision evidence", async () => {
+  for (const field of ["pii", "private", "excluded"] as const) {
+    let arrived!: () => void, release!: () => void, screens = 0;
+    const entered = new Promise<void>(resolve => { arrived = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    close.push(release);
+    const facts = { pii: false, private: false, excluded: false }, s = service();
+    const h = host({ decisionContext: () => ({ ...facts }), publicDecisionText: () => { screens++; return true; }, admitDecision: async () => { arrived(); await gate; } });
+    h.runtime.beginTurn({ turn: "admission-upgrade", pii: false });
+    const pending = h.runtime.call("hub/test", { ...s.config, decision_mode: "enforce" }, [{ role: "user", content: "ADMISSION_SOURCE_CANARY" }], "scope", false, signal());
+    const settled = pending.then(() => undefined, error => error);
+    await entered; facts[field] = true; release(); const error = await settled;
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy");
+    expect(s.requests).toHaveLength(0); expect(screens).toBe(0);
+    expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
+  }
+});
+
+test("privacy changes during campus admission build no evidence or request", async () => {
+  let arrived!: () => void, release!: () => void, screens = 0;
+  const entered = new Promise<void>(resolve => { arrived = resolve; }), gate = new Promise<void>(resolve => { release = resolve; }); close.push(release);
+  const facts = { private: false, excluded: false }, s = service();
+  const h = host({ decisionContext: () => ({ ...facts }), onCampus: async () => { arrived(); await gate; return true; }, publicDecisionText: () => { screens++; return true; } });
+  h.runtime.beginTurn({ turn: "campus-upgrade", pii: true });
+  const pending = h.runtime.call("hub/test", s.config, messages, "scope", true, signal());
+  const settled = pending.then(() => undefined, error => error);
+  await entered; facts.excluded = true; release(); const error = await settled;
+  expect(error).toBeInstanceOf(Error); expect(s.requests).toHaveLength(0); expect(screens).toBe(0);
+  expect(h.events).toHaveLength(0); expect(h.calls).toHaveLength(0);
+});
+
+test("changed current board facts suppress a held service pick and its decider metadata", async () => {
+  for (const field of ["pii", "private", "excluded"] as const) {
+    let arrived!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { arrived = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    const held = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
+      arrived(); await gate;
+      return Response.json({ id: "0123456789abcdef0123456789abcdef", policyId: "ahub.test", alias: "coding", effort: "high", margin: 0.8, abstain: false, reason: "ok", fallbackApplied: false, pinned: false, rules: [], decider: { provider: "local", model: "DISCARDED_DECIDER_LABEL", latencyMs: 1 } });
+    } }); close.push(() => { release(); held.stop(true); });
+    const facts = { pii: false, private: false, excluded: false }, s = service(), h = host({ decisionContext: () => ({ ...facts }) });
+    h.runtime.beginTurn({ turn: "service-upgrade", pii: false });
+    const pending = h.runtime.call("hub/test", { ...s.config, decision_mode: "enforce", adec_endpoint: `http://127.0.0.1:${held.port}/v1/route` }, messages, "scope", false, signal());
+    const settled = pending.then(() => undefined, error => error);
+    await entered; facts[field] = true; release(); const error = await settled;
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy");
+    expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
+    expect(JSON.stringify(h.events)).not.toContain("DISCARDED_DECIDER_LABEL");
+  }
+});
