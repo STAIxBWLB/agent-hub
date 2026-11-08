@@ -23,6 +23,7 @@ class TestHost {
   readonly terminals: { workspaceId: string; title?: string; command?: string }[] = [];
   readonly calls: string[] = [];
   terminalCreate = true;
+  duringWorkspaceOpen: (() => Promise<void>) | undefined;
   constructor(readonly fake: FakeOrcaCompanionHost) {}
   has(method: string) { return method === "terminal.create" ? this.terminalCreate : this.fake.has(method); }
   async call(method: string, params?: unknown) {
@@ -32,7 +33,9 @@ class TestHost {
       this.terminals.push(structuredClone(params) as { workspaceId: string });
       return { terminalId: "t-1" };
     }
-    return this.fake.call(method, params);
+    const result = await this.fake.call(method, params);
+    if (method === "workspace.open") await this.duringWorkspaceOpen?.();
+    return result;
   }
 }
 
@@ -88,6 +91,34 @@ test("AC1: duplicate, missing, truncated, malformed and changed identity each fa
   s.fake.setRoster([{ ...s.rows[0]!, path: s.other }, s.rows[1]!]); await refused("changed");
   s.fake.setRoster([{ ...s.rows[0]!, kind: "folder" }, s.rows[1]!]); await refused("changed");
   s.fake.setRoster([{ ...s.rows[0]!, hostId: "other-host" }, s.rows[1]!]); await refused("remote");
+});
+
+for (const change of ["root", "host", "kind", "truncated", "missing", "settings"] as const) test(`terminal creation rechecks identity and context after workspace.open yields: ${change}`, async () => {
+  const settings = { localHostIds: "local" }, s = setup({ settings });
+  let entered!: () => void, release!: () => void;
+  const opened = new Promise<void>(resolve => { entered = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  s.host.duringWorkspaceOpen = async () => { entered(); await held; };
+  const opening = s.instance.open({ kind: "console", snapshot: s.snapshot("ws-a", s.root) });
+  try {
+    await opened;
+    expect(s.host.terminals).toEqual([]);
+    const row = s.rows[0]!;
+    if (change === "root") s.fake.setRoster([{ ...row, path: s.other }]);
+    else if (change === "host") s.fake.setRoster([{ ...row, hostId: "other-host" }]);
+    else if (change === "kind") s.fake.setRoster([{ ...row, kind: "folder" }]);
+    else if (change === "truncated") s.fake.setRoster(s.rows, true);
+    else if (change === "missing") s.fake.setRoster([s.rows[1]!]);
+    else settings.localHostIds = "other-host";
+    release();
+    const result = await opening;
+    const refusal = change === "host" || change === "settings" ? "remote" : change === "truncated" || change === "missing" ? change : "changed";
+    expect(result).toMatchObject({ ok: false, refusal });
+    expect(result.guidance).toBe(companion.REFUSALS[refusal]);
+    expect(s.host.calls).toEqual(["workspace.list", "workspace.open", "workspace.list"]);
+    expect(s.settingsReads).toHaveLength(2);
+    expect(s.host.terminals).toEqual([]); expect(s.cli.calls).toEqual([]);
+    expect(s.fake.openedWorkspaceIds).toEqual(["ws-a"]);
+  } finally { release(); await opening; }
 });
 
 test("a selection snapshot with extra, missing or odd fields is refused before anything is read", async () => {

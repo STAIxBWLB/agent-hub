@@ -39,6 +39,7 @@ const rows = $("rows"), status = $("status"), link = $("link");
 let selected = null;          // { id, hostId, root, kind } the person chose; the worker verifies it again before acting
 let pendingLink = null;       // a one-time `ahub ui` link, held only until it is used or has expired
 let linkTimer = 0;
+let generation = 0;          // selection, refresh and open responses belong only to their initiating UI state
 const LINK_LIVES_MS = 55_000; // ahub's own link expires after 60 seconds
 
 const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
@@ -64,6 +65,7 @@ function renderRows(list) {
       const choose = document.createElement("button");
       choose.type = "button"; choose.textContent = "Select";
       choose.addEventListener("click", () => {
+        generation++;
         for (const other of rows.children) other.setAttribute("aria-selected", "false");
         li.setAttribute("aria-selected", "true");
         selected = { id: row.id, hostId: row.hostId, root: row.root, kind: row.kind };
@@ -81,20 +83,25 @@ function renderRows(list) {
 }
 
 async function refresh() {
+  const requestGeneration = ++generation;
+  selected = null; setActions(false); dropLink();
   say("Reading Orca's workspaces...");
   try {
     const result = await ask("workspaces.list", undefined);
+    if (requestGeneration !== generation) return;
     if (!result.ok) { renderRows([]); say(result.guidance, true); return; }
     renderRows(result.rows);
     say(result.rows.length ? "Select the workspace to open." : "Orca lists no workspaces.");
-  } catch { renderRows([]); say("The companion did not answer. Disable and re-enable it from Orca's plugin list.", true); }
+  } catch { if (requestGeneration === generation) { renderRows([]); say("The companion did not answer. Disable and re-enable it from Orca's plugin list.", true); } }
 }
 
 async function open(kind) {
   if (!selected) { say("Select a workspace first.", true); return; }
+  const snapshot = Object.freeze({ ...selected }), requestGeneration = ++generation;
   dropLink(); setActions(false); say("Opening...");
   try {
-    const result = await ask("entry.open", { kind, snapshot: selected });
+    const result = await ask("entry.open", { kind, snapshot });
+    if (requestGeneration !== generation) return;
     if (!result.ok) {
       say(result.guidance + (result.command ? "  Run this in a terminal there: " + result.command : ""), true);
     } else if (result.status === "terminal_created") {
@@ -102,20 +109,22 @@ async function open(kind) {
     } else if (result.status === "link") {
       // ahub could not open its own browser: the link is held in memory until the next click (a gesture is required to open it) and is never written anywhere.
       pendingLink = result.url; link.hidden = false;
-      linkTimer = setTimeout(() => { dropLink(); say("The one-time link expired. Open the dashboard again."); }, LINK_LIVES_MS);
+      linkTimer = setTimeout(() => { if (requestGeneration === generation) { dropLink(); say("The one-time link expired. Open the dashboard again."); } }, LINK_LIVES_MS);
       say("ahub printed a one-time link. Click \"Open the link\" within a minute.");
     } else say("The dashboard was opened by ahub in your browser.");
-  } catch { say("The companion did not answer. Nothing was opened.", true); }
-  finally { if (selected) setActions(true); }
+  } catch { if (requestGeneration === generation) say("The companion did not answer. Nothing was opened.", true); }
+  finally { if (requestGeneration === generation && selected) setActions(true); }
 }
 
 link.addEventListener("click", async () => {
+  const requestGeneration = ++generation;
   const url = pendingLink; dropLink();
   if (!url) { say("The link is gone. Open the dashboard again.", true); return; }
   try {
     const opened = await orca.shell.openExternal(url);
+    if (requestGeneration !== generation) return;
     say(opened && opened.opened ? "Opened in your browser." : "Orca did not open the link (it may have asked and been declined). Open the dashboard again.", !(opened && opened.opened));
-  } catch { say("Orca could not open the link here. Run `ahub ui` in a terminal.", true); }
+  } catch { if (requestGeneration === generation) say("Orca could not open the link here. Run `ahub ui` in a terminal.", true); }
 });
 $("refresh").addEventListener("click", refresh);
 $("dashboard").addEventListener("click", () => open("dashboard"));

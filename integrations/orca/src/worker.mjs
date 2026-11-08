@@ -78,7 +78,15 @@ export function createCompanion(ports) {
     if (!ports.host.has("workspace.open") || !ports.host.has("terminal.create")) return done("entry.open", { ...refuse("not_offered"), command: terminalCommand(entry.argv) });
     try {
       await ports.host.call("workspace.open", { workspaceId: entry.workspaceId });
-      await ports.host.call("terminal.create", { workspaceId: entry.workspaceId, title: entry.title, command: terminalCommand(entry.argv) });
+      // Opening the workspace yields to the host. Its identity or local-host settings may change during that await.
+      const freshContext = await context();
+      if (freshContext.settings.ahubInvalid) return done("entry.open", refuse("invalid_setting"));
+      const freshInventory = await inventory();
+      if (freshInventory === undefined) return done("entry.open", refuse("inventory_unavailable"));
+      const fresh = verifyBinding(verified.binding, freshInventory, freshContext);
+      if (!fresh.ok) return done("entry.open", fresh);
+      const terminal = entryFor(value.kind, fresh.binding, freshContext.settings);
+      await ports.host.call("terminal.create", { workspaceId: terminal.workspaceId, title: terminal.title, command: terminalCommand(terminal.argv) });
     } catch { return done("entry.open", { ...refuse("not_offered"), command: terminalCommand(entry.argv) }); }
     return done("entry.open", { ok: true, status: "terminal_created" });
   }
