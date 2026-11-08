@@ -100,6 +100,22 @@ test("adec fallback is authoritative, while no_candidate keeps the hub heuristic
   }
 });
 
+test("client failures keep the same heuristic and are not retried inside that user turn", async () => {
+  for (const [status, payload, reason] of [[400, { error: "SERVER_SECRET_CANARY" }, "caller_error"], [503, { error: "SERVER_SECRET_CANARY" }, "http"], [200, { error: "SERVER_SECRET_CANARY" }, "malformed"]] as const) {
+    let count = 0;
+    const failed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { count++; return Response.json(payload, { status }); } }); close.push(() => failed.stop(true));
+    const s = service(), h = host(), config = { ...s.config, adec_endpoint: `http://127.0.0.1:${failed.port}/v1/route` };
+    h.runtime.beginTurn({ turn: "failure", pii: false });
+    await h.runtime.call("hub/test", config, messages, "scope", false, signal());
+    await h.runtime.call("hub/test", config, messages, "scope", false, signal());
+    expect(h.calls.map(call => [call.model, call.effort])).toEqual([["fast", undefined], ["fast", undefined]]);
+    expect(count).toBe(1); expect(h.events.map(event => event.decisionReason)).toEqual([reason, reason]);
+    expect(JSON.stringify(h.events)).not.toContain("SERVER_SECRET_CANARY");
+    h.runtime.endTurn("failure", "completed"); h.runtime.beginTurn({ turn: "retry-after-new-user-turn", pii: false });
+    await h.runtime.call("hub/test", config, messages, "scope", false, signal()); expect(count).toBe(2);
+  }
+});
+
 test("off-campus private or PII requests never build evidence; on-campus sensitive state is metadata only", async () => {
   for (const privateTurn of [false, true]) {
     const s = service(); let screens = 0;
