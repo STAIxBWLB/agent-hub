@@ -52,7 +52,7 @@ function fixture(policy: "enabled" | "disabled" | "missing" | "throw" = "enabled
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
   const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.records = {bind:bindRecordOwner, inputs:recordInputs, close:closeRecordFrame, read:readRecordSnapshot, steer:noteRecordSteered, project:projectRecordRecall};");
   runInNewContext(script, state);
-  const ports = (state as typeof state & { records: { bind(owner: PeerAdapter, cwd: string, session: () => string | undefined): void; inputs: Map<string, { owner: PeerAdapter; originals: Envelope[]; tainted?: true }>; steer(peer: string, originals: Envelope[]): void; close(peer: string): void; read(task?: { owner?: string; title: string; refs: { paths?: string[] } }): RecordBriefSnapshot | undefined; project(peer: string, original: string, tokens: number): { before: string; after: string } | undefined } }).records;
+  const ports = (state as typeof state & { records: { bind(owner: PeerAdapter, cwd: string, session: () => string | undefined): void; inputs: Map<string, { owner: PeerAdapter; originals: Envelope[]; tainted?: true }>; steer(peer: string, originals: Envelope[]): void; close(peer: string): void; read(task?: { owner?: string; title: string; refs: { paths?: string[] } }): RecordBriefSnapshot | undefined; project(peer: string, original: string, tokens: number): { before: string; after: string; records?: number; current?: () => boolean } | undefined } }).records;
   const hookStart = source.indexOf("onGeneratedNote: "), hookEnd = source.indexOf(", onNote:", hookStart);
   expect(hookStart).toBeGreaterThan(0); expect(hookEnd).toBeGreaterThan(hookStart);
   runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync("globalThis.generatedNote = " + source.slice(hookStart + "onGeneratedNote: ".length, hookEnd) + ";"), state);
@@ -243,12 +243,38 @@ test("proven generated-note overlap reduces actual brief and recall bytes while 
   expect(Buffer.byteLength(after!)).toBeLessThan(Buffer.byteLength(before!)); expect(after).not.toContain(old);
   console.info(`Record overlap fixture bytes: brief ${Buffer.byteLength(originalItems.map(item => item.line).join("\n"))} -> ${Buffer.byteLength(brief.items.map(item => item.line).join("\n"))}; recall ${Buffer.byteLength(before!)} -> ${Buffer.byteLength(after!)}`);
   expect(after).toContain(unrelated); expect(after).toContain("Coverage notice stays exact."); expect(after).toContain("Trailing notice stays exact.");
-  const projected = f.ports.project("codex", context, 10_000); expect(projected?.before).toBe(context);
+  const projected = f.ports.project("codex", context, 10_000); expect(projected?.before).toBe(context); expect(projected?.records).toBeGreaterThan(0);
   expect(projected?.after.startsWith("# [amem] recent curated context\n\n### Curated short-term notes\n")).toBe(true);
   f.generatedRecordNotes.clear();
   const restarted = f.ports.read({ owner: "codex", title: "Synthetic task", refs: { paths: ["src/main.ts"] } });
   expect(restarted?.replaceable).toEqual([]);
   const fallback = f.ports.project("codex", context, Math.floor(Buffer.byteLength(context) / 3));
-  expect(fallback).toEqual({ before: context, after: context });
+  expect(fallback).toMatchObject({ before: context, after: context, records: 0 }); expect(fallback?.current?.()).toBe(true);
   expect(f.ports.project("codex", context.replace(`mem:${id}`, "mem:not-a-full-id"), 10_000)).toBeUndefined();
+});
+
+
+test("snapshot and recall current guards rescreen current amem PII policy without a config fingerprint", () => {
+  const f = fixture(); expect(f.owner.recordInstruction?.()).toBe(RECORD_INSTRUCTION); f.finish(record);
+  const task = { owner: "codex", title: "Synthetic task", refs: { paths: ["src/main.ts"] } }, snapshot = f.ports.read(task);
+  const original = `# [amem] recent curated context\n\n### Curated short-term notes\nmem:${"d".repeat(32)} contract: Unrelated public contract.`;
+  const projected = f.ports.project("codex", original, 10_000);
+  expect(snapshot?.current?.()).toBe(true); expect(projected?.current?.()).toBe(true);
+  const logs = [...f.logs];
+  writeFileSync(join(f.memoryDir, "amem.config.json"), JSON.stringify({ piiPatterns: ["synthetic failure"] }));
+  expect(snapshot?.current?.()).toBe(false); expect(projected?.current?.()).toBe(false);
+  expect(f.logs).toEqual(logs); expect(f.logs.join("\n")).not.toContain("synthetic failure");
+});
+
+test("snapshot current guard rechecks execution-repository deny policy and capture rechecks fresh PII before append", () => {
+  const f = fixture("enabled", true); mkdirSync(join(f.executionCwd, ".git")); mkdirSync(join(f.executionCwd, ".amem"));
+  expect(f.owner.recordInstruction?.()).toBe(RECORD_INSTRUCTION); f.finish(record);
+  const snapshot = f.ports.read({ owner: "codex", title: "Synthetic task", refs: { paths: ["src/main.ts"] } });
+  expect(snapshot?.current?.()).toBe(true);
+  writeFileSync(join(f.executionCwd, ".amem/config"), JSON.stringify({ denyPaths: ["src/"] }));
+  expect(snapshot?.current?.()).toBe(false);
+  const capture = fixture(); expect(capture.owner.recordInstruction?.()).toBe(RECORD_INSTRUCTION);
+  mkdirSync(capture.memoryDir); writeFileSync(join(capture.memoryDir, "amem.config.json"), JSON.stringify({ piiPatterns: ["synthetic failure"] }));
+  capture.finish(record); expect(existsSync(join(capture.memoryDir, "projects"))).toBe(false);
+  expect(capture.logs.join("\n")).not.toContain("synthetic failure");
 });

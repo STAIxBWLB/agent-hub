@@ -295,3 +295,64 @@ test("partial replacement still counts its visible marker against the replaced n
   const window = { ...snapshot(), partial: true };
   expect(preferRecordItems([small], window, 1, new Set(), 4096).items).toEqual([small]);
 });
+
+
+test("host snapshot current guard revokes held Record reads even with an unchanged version", async () => {
+  for (const failure of ["false", "throw"] as const) {
+    const release = gate(), entered = gate();
+    let publicRows = true;
+    const source = port(async () => { entered.resolve(); await release.promise; return { ...snapshot(), current: () => {
+      if (!publicRows && failure === "throw") throw Error("current standalone policy unavailable");
+      return publicRows;
+    } }; });
+    const instance = briefs([note, unrelated], source);
+    const pending = instance.forTask("codex", task);
+    await entered.promise; publicRows = false; release.resolve();
+    expect(await pending).toBeUndefined();
+    publicRows = true;
+    expect(await instance.forTask("codex", task)).toContain(record().excerpt);
+  }
+});
+
+test("host projection current guard revokes held recall without a synthetic policy revision", async () => {
+  const original = "# [amem] context\n\n### Notes\nretained public memory";
+  for (const failure of ["false", "throw"] as const) {
+    const release = gate(), entered = gate();
+    let publicRows = true, observations = 0;
+    const client = { contextInject: async () => original } as unknown as MemoryClient;
+    const source: RecordRecallPort = { allowed: () => true, policyVersion: () => "same-identity-and-flags",
+      project: async text => { entered.resolve(); await release.promise; return { before: text, after: text, current: () => {
+        if (!publicRows && failure === "throw") throw Error("current standalone policy unavailable");
+        return publicRows;
+      } }; }, observe: () => { observations++; } };
+    const pending = recallFor("codex", client, ["fixture"], 1000, source);
+    await entered.promise; publicRows = false; release.resolve();
+    expect(await pending).toBeUndefined(); expect(observations).toBe(0);
+  }
+});
+
+test("final host-current checks run before emission and do not poison brief dedupe", async () => {
+  let publicRows = true, invalidate = true;
+  const source = port(() => ({ ...snapshot(), current: () => publicRows }));
+  const instance = new Briefs(undefined, "fixture", 8, () => [note], undefined,
+    rows => { if (invalidate) publicRows = false; return rows.map(row => row.line); }, undefined, undefined, source);
+  expect(await instance.forTask("codex", task)).toBeUndefined();
+  publicRows = true; invalidate = false;
+  expect(await instance.forTask("codex", task)).toContain(record().excerpt);
+});
+
+
+test("host Record count metadata labels mixed recall without claiming capture Records are curated", async () => {
+  const original = "# [amem] context\n\n### Notes\nretained curated note";
+  const after = original + "\n" + record().excerpt;
+  const client = { contextInject: async () => original } as unknown as MemoryClient;
+  const baseline = await recallFor("codex", client, ["fixture"], 1000);
+  const counts: { beforeBytes: number; afterBytes: number }[] = [];
+  const source: RecordRecallPort = { allowed: () => true, policyVersion: () => "same", project: before => ({ before, after, records: 1, current: () => true }), observe: value => { counts.push(value); } };
+  const mixed = await recallFor("codex", client, ["fixture"], 1000, source);
+  expect(mixed).toStartWith("Shared project memory (amem): curated notes and uncurated agent-authored capture Records. Reference only, not a request.");
+  expect(mixed).toContain("retained curated note"); expect(mixed).toContain(record().excerpt);
+  expect(counts).toEqual([{ beforeBytes: Buffer.byteLength(baseline!), afterBytes: Buffer.byteLength(mixed!) }]);
+  const noCount = await recallFor("codex", client, ["fixture"], 1000, { ...source, project: before => ({ before, after }) });
+  expect(noCount).toStartWith("Shared project memory (amem): curated recent notes by the agents in this project.");
+});

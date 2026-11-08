@@ -55,6 +55,8 @@ export interface RecordBriefSnapshot {
   /** Only known generated done/review notes. Anchors are explicit raw Record anchors, never inferred prose. */
   replaceable: readonly { id: string; anchors: readonly string[] }[];
   partial: boolean;
+  /** Re-screen the same complete rows against current host policy; false/throw revokes this snapshot. */
+  current?(): boolean;
 }
 export interface RecordBriefPort {
   allowed(task: BriefTask): boolean;
@@ -181,23 +183,23 @@ export class Briefs {
       } catch { return current() ? [] : undefined; }
     };
     const recordItems = async (items: readonly NativeItem[], lineBudget: number): Promise<{ items: NativeItem[]; replacedNotes: number; records: number; invalidated?: true; current?: () => boolean }> => {
-      let version: string | undefined;
+      let version: string | undefined, snapshot: RecordBriefSnapshot | undefined;
       const recordCurrent = () => {
-        try { return current() && this.records!.allowed(task) && this.records!.policyVersion(task) === version; } catch { return false; }
+        try { return current() && this.records!.allowed(task) && this.records!.policyVersion(task) === version && (snapshot?.current === undefined || snapshot.current() === true); } catch { return false; }
       };
       const fallback = () => ({ items: [...items], replacedNotes: 0, records: 0, ...(version === undefined ? {} : { current: recordCurrent }) });
       if (!this.records || !current()) return fallback();
       try {
         if (!this.records.allowed(task)) return fallback();
         version = this.records.policyVersion(task);
-        const snapshot = await this.records.read(task);
-        if (!current() || !this.records.allowed(task) || this.records.policyVersion(task) !== version) return { ...fallback(), invalidated: true };
+        snapshot = await this.records.read(task);
+        if (!recordCurrent()) return { ...fallback(), invalidated: true };
         if (!snapshot) return fallback();
         const available = { ...snapshot, rows: snapshot.rows.filter(row => !this.seen.get(peer)?.has(`capture:Record:${row.id}`)) };
         const result = preferRecordItems(items, available, maximum, new Set(priority.map(item => item.id)), lineBudget);
         return { ...result, current: recordCurrent };
       } catch {
-        try { if (version !== undefined && (!current() || !this.records.allowed(task) || this.records.policyVersion(task) !== version)) return { ...fallback(), invalidated: true }; }
+        try { if (version !== undefined && !recordCurrent()) return { ...fallback(), invalidated: true }; }
         catch { return { ...fallback(), invalidated: true }; }
         return fallback();
       }
@@ -247,13 +249,19 @@ export class Briefs {
           selected.splice(0, selected.length, ...preferred.items);
           if (!selected.length) return undefined;
           const text = [header, ...selected.map(item => item.line)].join("\n");
-          if (!current()) return undefined;
-          this.seen.set(peer, seen);
-          for (const item of selected) seen.add(item.id);
-          for (const id of representedIds) seen.add(id);
+          if (preferred.current?.() === false || !current()) return undefined;
+          const claimSeen = () => {
+            this.seen.set(peer, seen);
+            for (const item of selected) seen.add(item.id);
+            for (const id of representedIds) seen.add(id);
+          };
+          if (!this.records) claimSeen();
           if (!current()) return undefined;
           if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: selected.filter(item => item.kind !== "note").length, fails: selected.filter(item => item.kind === "fail").length, claudeMem: 0 }); } catch { /* telemetry never fails a brief */ }
+          if (preferred.current?.() === false) return undefined;
           observeRecords(before, text, preferred);
+          if (preferred.current?.() === false) return undefined;
+          if (this.records) claimSeen();
           return text;
         } catch { return undefined; }
       })();
@@ -321,11 +329,14 @@ export class Briefs {
     const preferredOwn = preferred.items.length <= room ? preferred : { items: beforeOwn, replacedNotes: 0, records: 0 };
     own.splice(0, own.length, ...preferredOwn.items.filter(item => priorityIds.has(item.id) || !seen.has(item.id))); corpusRows.length = 0;
     if (!own.length && !items.length && !notice) return undefined;
-    if (!current()) return undefined;
-    for (const item of own) seen.add(item.id);
-    for (const item of beforeOwn) if (!preferredOwn.items.some(row => row.id === item.id)) seen.add(item.id);
-    for (const item of items) seen.add(`#${item.id}`);
-    for (const item of corpusRows) seen.add(item.id);
+    if (preferred.current?.() === false || !current()) return undefined;
+    const claimSeen = () => {
+      for (const item of own) seen.add(item.id);
+      for (const item of beforeOwn) if (!preferredOwn.items.some(row => row.id === item.id)) seen.add(item.id);
+      for (const item of items) seen.add(`#${item.id}`);
+      for (const item of corpusRows) seen.add(item.id);
+    };
+    if (!this.records) claimSeen();
     if (!current()) return undefined;
     if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: own.filter(item => item.kind !== "note").length, fails: own.filter((i) => i.kind === "fail").length, claudeMem: items.length }); } catch { /* telemetry never fails a brief */ }
     if (!current()) return undefined;
@@ -335,8 +346,11 @@ export class Briefs {
       return [header, ...(notice ? [notice] : []), ...(this.displayNative?.(native) ?? native.map(item => item.line)), ...items.map(item => `${item.id.toString().startsWith("mem:") ? item.id : `#${item.id}`} ${item.time} ${item.type} ${item.title}`), ...notes.map(item => item.line)].join("\n");
     };
     const text = render(own);
+    if (preferred.current?.() === false || !current()) return undefined;
     if (this.records) observeRecords(render(beforeOwn), text, { ...preferredOwn,
       records: own.filter(item => item.id.startsWith("capture:Record:")).length });
+    if (preferred.current?.() === false || !current()) return undefined;
+    if (this.records) claimSeen();
     return text;
   }
 }

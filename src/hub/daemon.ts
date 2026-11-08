@@ -3359,7 +3359,8 @@ export async function startDaemon(opts: DaemonOptions) {
         try { binding.assertCurrent(); return memoryProjectFor(opts.cwd) === memoryProject; } catch { return false; }
       };
       const policy: RecordCapturePolicy = { records: true, current, project: memoryProject, cwd, peer: owner.id, turn: turn.id, session, at: new Date(turn.start).toISOString(), memoryDir: binding.home,
-        publicText: recordPublic, denyPath: path => recordPathDenied(path, cwd) };
+        publicText: text => { try { return current() && configuredPolicy(binding.home, cwd).screenStandalone(text) && recordPublic(text) && current(); } catch { return false; } },
+        denyPath: path => recordPathDenied(path, cwd) };
       const capture = new RecordCapture({ eligible: () => recordOwnerEligible(owner) && turns.get(owner.id) === turn, policy: () => current() ? policy : undefined,
         observe: counts => { if (current()) log(`records capture accepted=${counts.accepted} dropped=${counts.dropped} bytes=${counts.bytes}`); } });
       recordFrames.set(owner.id, { owner, turn, capture });
@@ -3376,8 +3377,9 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function recordReadVersion(task?: BriefTask): string { const cwd = recordReadCwd(task); return JSON.stringify([configRevision, memorySyncPolicyVersion(), cwd, recordPolicy(cwd)]); }
   function readRecordSnapshot(task?: BriefTask, peer?: PeerId): import("../memory/brief.ts").RecordBriefSnapshot | undefined {
-    if (peer && (reviewOnlyPeer(peer) || contextPii(peer) || reviewObserverInput(peer))) return;
-    const context = task ?? (peer ? { owner: peer, title: "", refs: {} } : undefined), cwd = recordReadCwd(context);
+    const selectedPeer = task?.owner ?? peer;
+    if (selectedPeer && (reviewOnlyPeer(selectedPeer) || contextPii(selectedPeer) || reviewObserverInput(selectedPeer))) return;
+    const context = task ?? (peer ? { owner: peer, title: "", refs: {} } : undefined), cwd = recordReadCwd(context), owner = selectedPeer ? bus.peers.get(selectedPeer) : undefined;
     if (!recordReadAllowed(task, cwd)) return;
     const version = recordReadVersion(context), binding = captureBinding!;
     let store: CaptureStore | undefined;
@@ -3388,12 +3390,22 @@ export async function startDaemon(opts: DaemonOptions) {
       const snapshot = store.readBriefRecords(32);
       if (!recordReadAllowed(task, cwd) || recordReadVersion(context) !== version) return;
       const paths = task ? [...task.refs.paths ?? [], ...task.plan?.paths ?? []] : undefined;
-      const rows = snapshot.rows.filter(row => row.event === "Record" && !row.subagent && Array.isArray(row.paths) && policy.screenStandalone(row) && policy.screenStandalone(row.excerpt) && policy.screenStandalone(row.paths) && recordPublic(JSON.stringify(row))
-        && sanitize(row.excerpt) === row.excerpt && row.paths.every(anchor => typeof anchor === "string" && !recordPathDenied(anchor.split("#")[0]!, cwd))
+      const publicRow = (row: (typeof snapshot.rows)[number], currentPolicy: ReturnType<typeof configuredPolicy>) => row.event === "Record" && !row.subagent && Array.isArray(row.paths)
+        && currentPolicy.screenStandalone(row) && currentPolicy.screenStandalone(row.excerpt) && currentPolicy.screenStandalone(row.paths) && recordPublic(JSON.stringify(row))
+        && sanitize(row.excerpt) === row.excerpt && row.paths.every(anchor => typeof anchor === "string" && !recordPathDenied(anchor.split("#")[0]!, cwd));
+      const rows = snapshot.rows.filter(row => publicRow(row, policy)
         && (!paths || row.paths.length === 0 || row.paths.some(anchor => paths.some(path => anchor === path || anchor.split("#")[0] === path))));
-      binding.assertCurrent();
-      if (!recordReadAllowed(task, cwd) || recordReadVersion(context) !== version || memoryProjectFor(opts.cwd) !== memoryProject) return;
-      return { rows, replaceable: generatedRecordNotes.matching([...new Set(rows.flatMap(row => row.paths))], 32), partial: snapshot.partial };
+      const current = () => {
+        try {
+          if (selectedPeer && (bus.peers.get(selectedPeer) !== owner || reviewOnlyPeer(selectedPeer) || contextPii(selectedPeer) || reviewObserverInput(selectedPeer))) return false;
+          if (captureBinding !== binding || recordReadCwd(context) !== cwd || !recordReadAllowed(task, cwd) || recordReadVersion(context) !== version) return false;
+          binding.assertCurrent(); if (memoryProjectFor(opts.cwd) !== memoryProject) return false;
+          const fresh = configuredPolicy(binding.home, cwd);
+          return rows.every(row => publicRow(row, fresh));
+        } catch { return false; }
+      };
+      if (!current()) return;
+      return { rows, replaceable: generatedRecordNotes.matching([...new Set(rows.flatMap(row => row.paths))], 32), partial: snapshot.partial, current };
     } catch { return; } finally { try { store?.close(); } catch { /* Read preference never changes the old brief. */ } }
   }
   function projectRecordRecall(peer: PeerId, original: string, tokens: number): import("../memory/recall.ts").RecordRecallProjection | undefined {
@@ -3415,10 +3427,11 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!generatedRecordNotes.get(id)) protectedIds.add(id);
     }
     const snapshot = readRecordSnapshot(undefined, peer);
-    if (!snapshot || !current()) return;
+    const projectionCurrent = () => current() && (snapshot?.current === undefined || snapshot.current() === true);
+    if (!snapshot || !projectionCurrent()) return;
     const staticBytes = Buffer.byteLength(original) - Buffer.byteLength(items.map(item => item.line).join("\n"));
     const preferred = preferRecordItems(items, snapshot, 32, protectedIds, Math.max(0, tokens * 3 - staticBytes));
-    if (!current()) return;
+    if (!projectionCurrent()) return;
     const output: string[] = []; let index = 0;
     for (const line of body) {
       const match = row.exec(line);
@@ -3433,8 +3446,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     while (index < preferred.items.length) { const item = preferred.items[index++]!; if (ids.has(item.id)) return; output.push(item.line); }
     const after = header + output.join("\n");
-    if (!current() || Buffer.byteLength(after) > Math.max(Buffer.byteLength(original), tokens * 3)) return;
-    return { before: original, after };
+    if (!projectionCurrent() || Buffer.byteLength(after) > Math.max(Buffer.byteLength(original), tokens * 3)) return;
+    return { before: original, after, records: preferred.records, current: projectionCurrent };
   }
   bus.onFinalAnswer = (peer, raw, input) => {
     const frame = recordFrames.get(peer);
