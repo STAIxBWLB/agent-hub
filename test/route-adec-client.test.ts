@@ -165,9 +165,10 @@ test("a connection closed before HTTP headers becomes a closed transport failure
 test("merged adec policy terminal rule markers are accepted as closed metadata", async () => {
   for (const rule of ["explicit", "no_candidate", "pinned", "single"]) {
     const expected = rule === "no_candidate"
-      ? { ...answer(), alias: null, effort: null, reason: "no_candidate", abstain: true, decider: null, rules: [rule] }
+      ? { id: answer().id, policyId: answer().policyId, alias: null, effort: null, reason: "no_candidate", margin: 0, abstain: true, fallbackApplied: false, pinned: false, decider: null, rules: [rule] }
       : { ...answer(), reason: rule, pinned: rule === "pinned", decider: null, rules: [rule] };
-    const f = await fake((_req, res) => json(res, expected));
-    expect(await call(f.endpoint)).toEqual({ ok: true, decision: expected });
+    const f = await fake((_req, res) => json(res, expected)), request = input();
+    if (rule === "explicit") request.constraints.explicit = { alias: "fast", effort: "low" };
+    expect(await call(f.endpoint, request)).toEqual({ ok: true, decision: expected });
   }
 });
