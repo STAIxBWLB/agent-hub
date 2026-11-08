@@ -28,8 +28,8 @@ native account, model, provider or person profile was used.
 
 ## Checks
 
-At `cd6d87de595f1ba8247ddab577e85457151242d7`, the committed source passed strict
-typechecking and 109 tests across ten files in a disposable Linux runner using
+At `1ac11d3a2ad6d2d889329f959880596e712e8c05`, the committed source passed strict
+typechecking, inventory and 117 tests across ten files in a disposable Linux runner using
 Bun 1.4.2 and agent-mem 0.23.0. Existing memory, recall, intent-library brief and
 corpus concurrency assertions were retained. The initial optional-await dedupe
 regression was corrected in the implementation.
@@ -62,9 +62,11 @@ labels below; the baseline is unchanged.
 | Shared final-answer body | 60 | 5 |
 | Rendered digest | 155 | 100 |
 | Proven-overlap brief lines | 261 | 178 |
-| Rendered recall block | 523 | 440 |
+| Rendered recall block | 523 | 387 |
 
-These are actual callback/rendered values from the deterministic fixtures,
+These are actual callback/rendered values from the deterministic fixtures.
+Recall includes the mixed-source header identifying capture Records as uncurated;
+its change contributes to the byte difference. These are
 not production averages or model-quality measurements. The recall fixture uses
 the existing generated-title ceiling of 120 characters. The same fixture retains
 the unrelated contract and coverage/trailing notices, calls context injection once,
