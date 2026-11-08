@@ -28,6 +28,8 @@ export type HubEvent =
   | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string; origin?: import("./provenance.ts").Origin }
   /** #604 PR B: one per peer-role or tools-role hello, with the same fields an envelope's `origin` carries. No cwd, root or token. */
   | ({ type: "attach" } & import("./provenance.ts").Origin)
+  /** Visual payloads and paths stay local; observer events carry counts only. */
+  | { type: "visual"; id: string; kind: "mermaid" | "comparison" | "table" | "beforeAfter"; bytes: number; files: number; task?: number }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "stale"; id: string; from: string; peer: string; task?: string }
   | { type: "quiet"; id: string; from: string; peers: string[] }

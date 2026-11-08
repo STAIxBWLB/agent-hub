@@ -228,8 +228,8 @@
     {
       "id": "roster-request-fence",
       "file": "src/hub/daemon.ts",
-      "search": "    if (c.role !== \"console\" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });",
-      "replacement": "    if (c.role !== \"console\" && c.peer && false) return void reply({ ok: false, error: `${c.peer} is off roster` });",
+      "search": "    if (c.role !== \"console\" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: msg.t === \"task\" && (msg.op === \"hub_visual\" || msg.op === \"hub_visual_show\") ? visualOperational(\"membership\").message : `${c.peer} is off roster` });",
+      "replacement": "    if (c.role !== \"console\" && c.peer && false) return void reply({ ok: false, error: msg.t === \"task\" && (msg.op === \"hub_visual\" || msg.op === \"hub_visual_show\") ? visualOperational(\"membership\").message : `${c.peer} is off roster` });",
       "testFile": "test/roster.test.ts",
       "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
     },

@@ -7,7 +7,7 @@ import { isDenied } from "../local/deny.ts";
 import { isHubWritePath } from "./permission-mode.ts";
 import { realPath } from "./project.ts";
 import { insideRoot } from "./path-policy.ts";
-import { DELIVERABLE_LIMITS, deliverableId, type DeliverableClaim, type DeliverableRecord, type DeliverableState } from "./deliverables.ts";
+import { DELIVERABLE_LIMITS, deliverableId, parseDeliverableClaims, type DeliverableClaim, type DeliverableRecord, type DeliverableState } from "./deliverables.ts";
 
 /**
  * The only code that opens a deliverable (#509a). The hub hashes the bytes itself; nothing an agent says about a file is used.
@@ -67,7 +67,7 @@ function locate(path: string, ports: DeliverablePorts): Located {
 const sameFile = (a: Pick<Stats, "dev" | "ino">, b: Pick<Stats, "dev" | "ino">) => a.dev === b.dev && a.ino === b.ino;
 
 /** sha256 and size of one vetted file, or a refusal. */
-async function digest(path: string, found: Located): Promise<{ sha256: string; bytes: number }> {
+async function digest(path: string, found: Located, read?: { limit: number; current: () => void }): Promise<{ sha256: string; bytes: number; data?: Uint8Array; identity: { dev: number; ino: number } }> {
   let handle;
   deliverableHooks.beforeOpen?.(path);
   try { handle = await open(found.real, constants.O_RDONLY | NOFOLLOW); }
@@ -75,19 +75,52 @@ async function digest(path: string, found: Located): Promise<{ sha256: string; b
   try {
     const before = await handle.stat();
     if (!before.isFile() || !sameFile(before, found.stat) || before.size !== found.stat.size || before.mtimeMs !== found.stat.mtimeMs) return refuse(path, "the file changed while it was being checked");
-    const hash = createHash("sha256"), buffer = Buffer.allocUnsafe(CHUNK);
+    if (read && before.ctimeMs !== found.stat.ctimeMs) return refuse(path, "the file changed while it was being checked");
+    const hash = createHash("sha256"), buffer = Buffer.allocUnsafe(CHUNK), chunks: Uint8Array[] = [];
+    const limit = read?.limit ?? DELIVERABLE_LIMITS.fileBytes;
     let bytes = 0;
     for (;;) {
+      read?.current();
       const { bytesRead } = await handle.read(buffer, 0, CHUNK, bytes);
       if (!bytesRead) break;
       bytes += bytesRead;
-      if (bytes > DELIVERABLE_LIMITS.fileBytes) return refuse(path, "larger than the size limit");
+      if (bytes > limit) return refuse(path, "larger than the size limit");
       hash.update(buffer.subarray(0, bytesRead));
+      if (read) chunks.push(Uint8Array.from(buffer.subarray(0, bytesRead)));
     }
     const after = await handle.stat();
     if (after.size !== bytes || after.size !== before.size || after.mtimeMs !== before.mtimeMs) return refuse(path, "the file changed while it was being read");
-    return { sha256: hash.digest("hex"), bytes };
+    if (read && (!sameFile(after, before) || after.ctimeMs !== before.ctimeMs)) return refuse(path, "the file changed while it was being read");
+    read?.current();
+    return { sha256: hash.digest("hex"), bytes, identity: { dev: before.dev, ino: before.ino }, ...(read ? { data: Buffer.concat(chunks, bytes) } : {}) };
   } finally { await handle.close().catch(() => {}); }
+}
+
+export interface GuardedDeliverableRead {
+  data: Uint8Array;
+  sha256: string;
+  bytes: number;
+  /** Host-only physical identity; never stored as a visual record or used as content proof. */
+  identity: { dev: number; ino: number };
+}
+
+/** Reuse the deliverable guard and opened-descriptor reader; this export refuses private files before reading any bytes. */
+export async function readGuardedDeliverable(path: string, ports: DeliverablePorts, limit = DELIVERABLE_LIMITS.fileBytes): Promise<GuardedDeliverableRead> {
+  parseDeliverableClaims([{ path, format: "bin" }]);
+  if (!Number.isSafeInteger(limit) || limit < 0 || limit > DELIVERABLE_LIMITS.fileBytes) return refuse(path, "invalid read limit; use the deliverable size limit or a smaller bound");
+  const privacy = (real?: string) => {
+    try {
+      if (ports.private(path) || real !== undefined && ports.private(relative(realPath(ports.cwd), real))) return refuse(path, "private file; choose a public project file and retry");
+    } catch { return refuse(path, "private file or unavailable privacy policy; choose a public project file and retry"); }
+  };
+  privacy();
+  const found = locate(path, ports); privacy(found.real);
+  if (found.stat.size > limit) return refuse(path, "larger than the read limit; choose a smaller file and retry");
+  const result = await digest(path, found, { limit, current: () => privacy(found.real) });
+  const current = locate(path, ports); privacy(current.real);
+  if (!sameFile(current.stat, result.identity) || current.stat.size !== found.stat.size || current.stat.mtimeMs !== found.stat.mtimeMs || current.stat.ctimeMs !== found.stat.ctimeMs)
+    return refuse(path, "the file changed while it was being read; retry with a stable file");
+  return { data: result.data!, sha256: result.sha256, bytes: result.bytes, identity: result.identity };
 }
 
 /** Refuse a bad claim before any effect, without hashing: the path must be inside the project, allowed, and a regular file of a usable size. */

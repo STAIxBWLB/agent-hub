@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "issue": 1198,
+  "stage": "O3",
+  "rule": "A combination is `supported` only when its receipt file exists and no longer says NOT RUN. Every other combination keeps the verdict below. No identity check is loosened for any combination to make it pass.",
+  "verdicts": ["supported", "fixture_only", "unsupported"],
+  "combinations": [
+    {
+      "id": "macos-local-desktop",
+      "verdict": "fixture_only",
+      "receipt": "../native-receipt.md",
+      "reason": "Behaviour is checked against the O0 fake host and CLI and against real scripts. No call from this code has reached a real Orca plugin host; the native open, status and disable receipt is person-run and NOT RUN.",
+      "behaviour": "Workspaces bind to the exact id, host and real root; the dashboard, console and family console open; status reads on a click."
+    },
+    {
+      "id": "remote-workspace",
+      "verdict": "unsupported",
+      "receipt": "receipts/remote.md",
+      "reason": "No remote receipt. A workspace whose host id is not declared to be this Mac is refused before anything runs, and the person is shown the existing remote console command to run on that host. A remote loopback link is never opened locally.",
+      "behaviour": "Refused with `remote`; the manual command is `'ahub' 'console'`, to run on the workspace's own host."
+    },
+    {
+      "id": "windows-desktop",
+      "verdict": "unsupported",
+      "receipt": "receipts/windows.md",
+      "reason": "No Windows receipt. The entries build a POSIX-quoted command line and expect an `ahub` executable, which are not right for a Windows shell. On win32 every workspace is refused with `unsupported_platform` and nothing runs.",
+      "behaviour": "Refused with `unsupported_platform`."
+    },
+    {
+      "id": "browser-or-mobile-client",
+      "verdict": "unsupported",
+      "receipt": "receipts/browser-mobile.md",
+      "reason": "No receipt. Orca's own references say a browser client has no desktop external navigation (`shell.openExternal` is desktop-only), and Orca's CLI offers mobile pairing for its server (`orca serve --mobile-pairing`) but that says nothing about plugin availability on mobile. Mobile availability is not inferred from SSH reachability or from a pairing option.",
+      "behaviour": "The dashboard button holds and shows no link in a client without external navigation; it says to run `ahub ui` on the machine that runs the project."
+    },
+    {
+      "id": "linux-desktop",
+      "verdict": "unsupported",
+      "receipt": null,
+      "reason": "Never exercised and not claimed. The code is POSIX-based and may work, but no leg was run and none is named, so it is marked unsupported rather than left unsaid."
+    }
+  ]
+}

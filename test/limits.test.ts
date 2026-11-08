@@ -92,3 +92,39 @@ test("an adapter's refused message is not published, and the sender hears why on
   await Bun.sleep(10);
   expect(a.got[0]!.body).toContain("note from hub [decision]: your message was not delivered: the same message went to claude");
 });
+
+function limiterState(limiter: Limiter): string {
+  // Structural nonmutation evidence: neither bucket/refill timestamps nor repeat/group keys may change on a peek.
+  const state = limiter as unknown as { buckets: Map<string, unknown>; recent: Map<string, number> };
+  return JSON.stringify({ buckets: [...state.buckets], recent: [...state.recent] });
+}
+for (const scenario of ["fresh", "pair", "group-pair", "important", "group-important", "repeat", "refill"] as const) test(`peek predicts consuming admission without mutating any limiter state: ${scenario}`, () => {
+  const { c, now } = clock();
+  const config = { sender_per_min: 2, pair_per_min: 1, important_per_hour: 1, repeat_window_s: 60 };
+  const subject = new Limiter(config, now), control = new Limiter(config, now);
+  if (scenario !== "fresh") for (const limiter of [subject, control]) expect(limiter.admit("codex", ["claude"], "important", "first", "parent", "reviewers")).toBeUndefined();
+  if (scenario === "refill") c.now += 3_600_001;
+  const from = scenario.startsWith("group-") ? "kimi" : "codex";
+  const to = [scenario === "important" || scenario === "group-important" ? "pi" : "claude"];
+  const priority = scenario.includes("important") || scenario === "repeat" ? "important" as const : "status" as const;
+  const body = scenario === "repeat" ? "first" : "new message";
+  const before = limiterState(subject);
+  const expected = control.admit(from, to, priority, body, "parent", "reviewers");
+  if (scenario === "fresh" || scenario === "refill") expect(expected).toBeUndefined();
+  else expect(expected).toMatch(scenario === "repeat" ? /^the same message/ : /^rate limited/);
+  for (let index = 0; index < 3; index++) {
+    expect(subject.peek(from, to, priority, body, "parent", "reviewers")).toBe(expected);
+    expect(limiterState(subject)).toBe(before);
+  }
+  expect(subject.admit(from, to, priority, body, "parent", "reviewers")).toBe(expected);
+  expect(limiterState(subject)).toBe(limiterState(control));
+});
+
+test("peek does not reserve a fresh repeat key or spend a shared sender bucket", () => {
+  const { now } = clock(), l = new Limiter({ ...DEFAULT_LIMITS, sender_per_min: 1, repeat_window_s: 60 }, now);
+  for (let index = 0; index < 3; index++) expect(l.peek("codex", ["claude"], "status", "candidate", "", "shared")).toBeUndefined();
+  expect(l.admit("kimi", ["pi"], "status", "actual", "", "shared")).toBeUndefined();
+  expect(l.peek("codex", ["claude"], "status", "candidate", "", "shared")).toMatch(/^rate limited/);
+  expect(l.admit("codex", ["claude"], "status", "candidate")).toBeUndefined();
+  expect(l.peek("codex", ["claude"], "status", "candidate")).toMatch(/^the same message/);
+});

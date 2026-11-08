@@ -1,3 +1,6 @@
+import { VisualStore, validateVisualInput, validateVisualPayload, VISUAL_ID_PATTERN, type VisualRecord, type VisualSummary } from "./visual.ts";
+import { resolveVisualAssets } from "./visual-assets.ts";
+import type { DeliverablePorts } from "./deliverable-files.ts";
 import { readStartupEventSeeds } from "./startup-event-seeds.ts";
 import { StartupTimings } from "./startup-timing.ts";
 import { repoGitArgs, repoGitEnv } from "./snapshots.ts";
@@ -58,7 +61,7 @@ import { listenWithoutPortCollision } from "./listen.ts";
 import { needs, type NeedsInput } from "../ui/needs.ts";
 import { loadPetConfig, PET_WINDOW_RETIRED_NOTICE, stripLegacyPetWindow } from "../pet/config.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
-import { policyPaths, matchesPolicy } from "./path-policy.ts";
+import { policyPaths, policyRealPath, matchesPolicy } from "./path-policy.ts";
 import { CodeFacts, type CodeFactResult, type CodeSymbol } from "./code-facts.ts";
 import { buildReviewBrief, withCodeSymbols } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
@@ -107,7 +110,7 @@ import { QuestionDesk } from "./question-desk.ts";
 import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
 import { ALL_MACHINE_LOCAL, configRefusal, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
-import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
+import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateRawConfig, validateEffectiveConfig, validateOperationalConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSourceTexts, type ConfigSources } from "./config-reload.ts";
 import { issueConductorRecoveryAuthority, authorizeConductorRecovery, assertConductorRecovery, RecoveryAuthorityError, type ConductorRecoveryBinding } from "./recovery-authority.ts";
@@ -232,7 +235,7 @@ import { START_AGENTS_DEFAULT, checkStartAgents } from "./start-agents.ts";
 import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
-import { grantablePath, instructionProtection, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
+import { isHubWritePath, grantablePath, instructionProtection, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, readNativeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
@@ -314,6 +317,8 @@ export interface HubConfig {
   checks: { timeout_s: number; runner?: "container" | "remote"; remote?: RemoteRunnerConfig; [cls: string]: string | number | RemoteRunnerConfig | undefined };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
   snapshots: { enabled: boolean; keep: number };
+  /** Unbound visuals expire; task-bound records retain the task lifetime. */
+  visuals: { retention_days: number };
   /** #1057: the worktree shelf. `quiet_days` shelves a worktree idle that long (0 = never); `alert_over` is the settled count that raises one inbox alert (0 = never). */
   worktrees: { quiet_days: number; alert_over: number };
   /** #1053: `ttl_s` expires an unanswered question (default 86400); `wait_ms` overrides an adapter definition's `questionWaitMs` per kind. */
@@ -392,6 +397,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   snapshots: { enabled: false, keep: 20 },
   worktrees: { quiet_days: 7, alert_over: 10 },
   questions: { ttl_s: 86_400, wait_ms: {} },
+  visuals: { retention_days: 30 },
   research: { enabled: false },
   bench: { enabled: false },
   peers: {},
@@ -407,14 +413,14 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "worktrees", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet", "questions"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "bus", "adapter_timing", "model_relay", "console", "corpus", "specs", "checks", "snapshots", "worktrees", "visuals", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "start", "pet", "questions"];
 
 /** Older targets parse raw keys before placement/trust checks, so even an empty or refused declaration needs the floor. */
 function rawResearchRunnersPresent(cwd: string): boolean {
@@ -429,6 +435,18 @@ function rawResearchRunnersPresent(cwd: string): boolean {
     present ||= research !== undefined && Object.hasOwn(research, "runners");
   }
   return present;
+}
+
+/** Raw declaration presence is the floor: defaults in the in-memory config are not an opt-in. */
+function rawVisualsPresent(cwd: string): boolean {
+  const texts = configSourceTexts(cwd);
+  for (const name of CONFIG_FILES) {
+    if (texts[name] === null) continue;
+    const raw: unknown = JSON.parse(texts[name]!);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid configuration");
+    if (Object.hasOwn(raw, "visuals")) return true;
+  }
+  return false;
 }
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
@@ -657,6 +675,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     worktrees: { quiet_days: wholeDays(file.worktrees?.quiet_days, DEFAULT_CONFIG.worktrees.quiet_days), alert_over: wholeDays(file.worktrees?.alert_over, DEFAULT_CONFIG.worktrees.alert_over) },
     questions: questionsConfig(file.questions),
+    visuals: { retention_days: typeof file.visuals?.retention_days === "number" && Number.isSafeInteger(file.visuals.retention_days) && file.visuals.retention_days >= 1 && file.visuals.retention_days <= 3650 ? file.visuals.retention_days : DEFAULT_CONFIG.visuals.retention_days },
     research: { enabled: file.research?.enabled === true, ...(file.research?.runners !== undefined ? { runners: parseResearchRunners(file.research.runners) } : {}) }, // opt-in: anything but true is off
     bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
     peers: { ...instanceModes, ...peerStartConfig(file.peers, instances, adapterCatalog) },
@@ -2214,6 +2233,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const inboxPolling = new InboxPolling();
   startupTimings.mark("model_runtime");
   const board = new Board(join(opts.stateDir, "hub.db"));
+  const visuals = new VisualStore(join(opts.stateDir, "hub.db"));
+  startupCleanup.push(() => visuals.close());
+  // Held recovery must compare the source's exact rows before any retention mutation.
+  if (!recoveryActive() && !bus.isRecoveryHeld) visuals.prune(config.visuals.retention_days, Date.now(), task => !!board.get(task));
   startupTimings.mark("board");
   const reviewInputHeld = (peer: PeerId, envs: readonly Envelope[]): boolean => {
     if (envs.some(isReviewObserverExcluded)) return true;
@@ -4259,6 +4282,10 @@ export async function startDaemon(opts: DaemonOptions) {
       void tasks.runSecurityScan().catch(error => log(`sdlc security scan failed: ${sanitize((error as Error).message).slice(0, 160)}`));
     }, opts.securityScanEveryMs ?? 3_600_000),
     setInterval(() => {
+      if (!stopping && !recoveryActive() && !bus.isRecoveryHeld) {
+        try { visuals.prune(config.visuals.retention_days, Date.now(), task => !!board.get(task)); }
+        catch { /* retention retries on the existing maintenance tick */ }
+      }
       if (!ready || !memoryBinding) return;
       const before = memoryProblem;
       memoryBinding.status(memoryStore);
@@ -4646,7 +4673,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const conductedMutations = new Set(["hub_task_propose", "hub_task_accept", "hub_task_decline", "hub_task_done", "hub_review", "hub_checkpoint", "hub_remember"]);
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
     const [by, op, input] = args;
-    if (readOnlyPeer(by) && !READ_ONLY_HUB_TOOLS.has(op)) throw new PreEffectToolRefusal("read-only instance cannot mutate hub state");
+    if (readOnlyPeer(by) && !READ_ONLY_HUB_TOOLS.has(op)) throw op === "hub_visual" ? visualOperational("role") : new PreEffectToolRefusal("read-only instance cannot mutate hub state");
     const sourceCurrent = op === "hub_source_read" ? sourceReadCurrent(by, args[3] ?? false, args[4] ?? false) : undefined;
     const nativeTurn = turns.get(by);
     const effectful = ownerToolEffect(op, input);
@@ -4669,13 +4696,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
       if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
@@ -4841,7 +4868,197 @@ export async function startDaemon(opts: DaemonOptions) {
         catch (error) { finishInvocation(row, "refused", { reason: "the hub could not queue the request; nothing ran" }); throw new PreEffectToolRefusal(error instanceof Error ? error.message : "the request could not be queued"); }
         return JSON.stringify({ invocation: row.id, state: "queued", note: "the result arrives later as one message from the hub, addressed to you only; do not wait for it in this turn" });
   }
+  const visualUnavailable = () => new PreEffectToolRefusal("visual unavailable under the current privacy or project policy; use a public visual in an ordinary context and retry");
+  const visualOperational = (cause: "stopping" | "recovery" | "authority" | "role" | "membership" | "observer" | "storage" | "concurrency" | "screen" | "policy") => new PreEffectToolRefusal({
+    stopping: "visual unavailable: hub is stopping; wait for the hub to restart and retry",
+    recovery: "visual operation is held by controlled recovery; check ahub status, wait for recovery release and retry",
+    authority: "visual request authority changed; reconnect your current peer session and retry",
+    role: "visual publication requires remember capability and a writable peer role; ask the person to update the peer role or capability and retry",
+    membership: "visual peer is off roster; ask the person to enable it and retry",
+    observer: "visual publication is held by an open review observer scope; finish or settle the review and start an ordinary turn",
+    storage: "visual delivery storage is unavailable; inspect ahub status and retry after storage recovers",
+    concurrency: "visual generation, task or policy changed while checking; inspect current task/session and retry",
+    screen: "visual privacy screen is unavailable or returned no clear verdict; shorten the visual if it exceeds the screen limit, or restore the configured screen, check ahub status and retry",
+    policy: "visual file policy is unavailable; repair the project configuration and retry",
+  }[cause]);
+  type VisualFilePolicy = { pii: string[]; deny: string[] };
+  let visualPolicyCache: { key: string; value: VisualFilePolicy } | undefined;
+  // These two non-machine-local path policies use ordinary per-key local-over-shared precedence.
+  // Reading a candidate cannot relax accepted runtime restrictions until they are actually adopted.
+  const visualFilePolicy = (): VisualFilePolicy => {
+    try {
+      const texts = configSourceTexts(opts.cwd);
+      const key = JSON.stringify([texts["config.json"], texts["config.local.json"], config.pii?.paths ?? [], config.local.deny]);
+      if (visualPolicyCache?.key === key) return visualPolicyCache.value;
+      let pii: string[] = [], deny: string[] = [];
+      for (const name of CONFIG_FILES) {
+        if (texts[name] === null) continue;
+        const raw: unknown = JSON.parse(texts[name]!);
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw visualOperational("policy");
+        const input = raw as Record<string, unknown>;
+        if (input.pii !== undefined) {
+          const policies: Record<string, unknown> = { pii: input.pii };
+          validateRawConfig(policies, declarations, adapterCatalog);
+          const value = input.pii as Record<string, unknown>;
+          if (Object.hasOwn(value, "paths")) pii = policyPaths(value.paths, "pii.paths");
+        }
+        if (input.local !== undefined) {
+          if (!input.local || typeof input.local !== "object" || Array.isArray(input.local)) throw visualOperational("policy");
+          const value = input.local as Record<string, unknown>;
+          if (Object.hasOwn(value, "deny")) {
+            const localPolicy: Record<string, unknown> = { deny: value.deny }, policies: Record<string, unknown> = {};
+            policies.local = localPolicy;
+            validateRawConfig(policies, declarations, adapterCatalog);
+            deny = value.deny as string[];
+          }
+        }
+      }
+      const value = { pii: [...new Set([...(config.pii?.paths ?? []), ...pii])], deny: [...new Set([...config.local.deny, ...deny])] };
+      visualPolicyCache = { key, value }; return value;
+    } catch { throw visualOperational("policy"); }
+  };
+  const visualSafeText = (text: string, policy: VisualFilePolicy): boolean => boundedSafe(text) && tasks.publicMetadataText(text)
+    && !mentionsPrivatePath(text, [], [...policy.pii, ...policy.deny], opts.cwd);
+  const visualPathPublic = (path: string, policy: VisualFilePolicy): boolean => {
+    try {
+      const root = realPath(opts.cwd), typed = resolve(root, path);
+      const publicName = (value: string) => {
+        const name = relative(root, value);
+        return insideRoot(name) && !isHubWritePath(name) && !isDenied(name, policy.deny) && !isDenied(value, policy.deny)
+          && !matchesPolicy(root, name, policy.pii, true) && visualSafeText(name, policy);
+      };
+      return publicName(typed) && publicName(policyRealPath(typed));
+    } catch { return false; }
+  };
+  const visualTaskPublic = (task?: number, captured?: VisualFilePolicy): boolean => {
+    try {
+      const policy = captured ?? visualFilePolicy();
+      if (task === undefined) return true;
+      const current = board.get(task);
+      return !!current && !tasks.isPii(current) && [...(current.refs.paths ?? []), ...(current.plan?.paths ?? [])].every(path =>
+        visualPathPublic(path, policy));
+    } catch { return false; }
+  };
+  const visualPorts = (policy = visualFilePolicy()): DeliverablePorts => ({ cwd: opts.cwd, deny: policy.deny, private: path =>
+    !visualPathPublic(path, policy) });
+  const visualPublic = (record: VisualRecord | VisualSummary, policy?: VisualFilePolicy): boolean => {
+    try {
+      return !stopping && (record.task !== undefined || record.created >= Date.now() - config.visuals.retention_days * 86_400_000) && !turns.get(record.from)?.private && !contextPii(record.from) && visualTaskPublic(record.task, policy)
+        && visualSafeText(record.title, policy ?? visualFilePolicy()) && visualSafeText(record.from, policy ?? visualFilePolicy());
+    } catch { return false; }
+  };
+  const visualRecord = (id: unknown, captured?: VisualFilePolicy): VisualRecord | undefined => {
+    if (typeof id !== "string" || !new RegExp(VISUAL_ID_PATTERN).test(id)) return undefined;
+    try {
+      const policy = captured ?? visualFilePolicy(), record = visuals.get(id);
+      if (!record || !visualPublic(record, policy)) return undefined;
+      validateVisualPayload(record.payload, text => visualSafeText(text, policy));
+      const ports = visualPorts(policy);
+      for (const file of record.files) {
+        if (ports.private(file.path)) return undefined;
+      }
+      return record;
+    } catch { return undefined; }
+  };
+  const visualView = (record: VisualRecord) => ({ id: record.id, ...(record.task === undefined ? {} : { task: record.task }), from: record.from,
+    kind: record.kind, title: record.title, payload: record.payload, created: record.created });
+  const visualList = (task?: number): VisualSummary[] => {
+    try { const policy = visualFilePolicy(); return visuals.list({ ...(task === undefined ? {} : { task }), limit: 20 },
+      (record, paths) => visualPublic(record, policy) && paths.every(path => visualPathPublic(path, policy))); }
+    catch { return []; }
+  };
+  async function visualTool(by: PeerId, op: string, a: Record<string, unknown>, piiTurn: boolean): Promise<string> {
+    if (!a || typeof a !== "object" || Array.isArray(a)) throw new PreEffectToolRefusal("visual arguments must be an object; retry with the documented fields");
+    const authority = childToolAuthority.getStore();
+    const actor = (publishing: boolean) => {
+      if (stopping) throw visualOperational("stopping");
+      let current = false;
+      try { current = !authority || authority.by === by && authority.current(); } catch { /* stale authority */ }
+      if (!current) throw visualOperational("authority");
+      if (piiTurn || turns.get(by)?.private || contextPii(by)) throw visualUnavailable();
+      if (!membershipAllowed(by)) throw visualOperational("membership");
+      if (!publishing) return;
+      if (recoveryActive() || bus.isRecoveryHeld) throw visualOperational("recovery");
+      if (readOnlyPeer(by) || !may(by, "remember")) throw visualOperational("role");
+      if (reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded)) throw visualOperational("observer");
+      if (!bus.deliveryJournalAvailable()) throw visualOperational("storage");
+    };
+    actor(op !== "hub_visual_show");
+    if (op === "hub_visual_show") {
+      if (Object.keys(a).some(key => key !== "id")) throw new PreEffectToolRefusal("visual show takes only id; retry with a visual id");
+      const record = visualRecord(a.id, visualFilePolicy());
+      if (!record) throw visualUnavailable();
+      return JSON.stringify(visualView(record));
+    }
+    if (Object.keys(a).some(key => !["payload", "task", "to"].includes(key))) throw new PreEffectToolRefusal("visual has an unsupported field; use payload, task and to only");
+    if (a.task !== undefined && (!Number.isSafeInteger(a.task) || Number(a.task) < 1)) throw new PreEffectToolRefusal("visual task must be a positive integer; retry with a task id");
+    const task = a.task as number | undefined, before = task === undefined ? undefined : board.get(task);
+    if (task !== undefined && !before) throw new PreEffectToolRefusal("visual task is unavailable; choose an existing public task and retry");
+    const generation = connectionGeneration(by), turn = turns.get(by);
+    const policyVersion = (filePolicy: VisualFilePolicy) => JSON.stringify({ revision: configRevision, filePolicy, pii: config.pii, deny: config.local.deny, signals: activeRouting().signals, constraints: activeRouting().constraints, mlx: config.mlx, model: activeRouting().local.fixed_model });
+    const initialPolicy = visualFilePolicy(), policy = policyVersion(initialPolicy);
+    const current = (): VisualFilePolicy => {
+      actor(true);
+      const filePolicy = visualFilePolicy();
+      if (policyVersion(filePolicy) !== policy || connectionGeneration(by) !== generation || turns.get(by) !== turn)
+        throw visualOperational("concurrency");
+      if (task !== undefined) {
+        const now = board.get(task);
+        if (!before || !now || now.created !== before.created || now.updated !== before.updated || now.history.length !== before.history.length)
+          throw visualOperational("concurrency");
+      }
+      if (!visualTaskPublic(task, filePolicy)) throw visualUnavailable();
+      return filePolicy;
+    };
+    current();
+    const recipients = typeof a.to === "string" && a.to.length ? [a.to] : a.to;
+    if (a.to !== undefined && (!Array.isArray(recipients) || recipients.some(id => typeof id !== "string" || !id.length)))
+      throw new PreEffectToolRefusal("visual to must be a peer id or array of peer ids; retry with local recipients");
+    const to = a.to === undefined ? [USER] : Array.isArray(recipients) && recipients.length ? [...new Set(recipients as string[])] : bus.knownPeers().filter(id => !parseRemotePeerId(id));
+    if (to.some(id => id !== USER && (!bus.knownPeers().includes(id) || parseRemotePeerId(id)))) throw new PreEffectToolRefusal("visual recipient unavailable; choose a known local peer or user and retry");
+    const id = randomUUID(), priority = a.to === undefined ? "fyi" : "status";
+    const early = newEnvelope(by, `[visual ${id}]`, { priority, to, refs: { visual: id, ...(task === undefined ? {} : { task: String(task) }) } });
+    const preflight = (stub: Envelope, dry: boolean) => {
+      try { bus.checkRemotePublication(stub); } catch { throw new PreEffectToolRefusal("visual delivery unavailable; choose local recipients and retry"); }
+      const offRoster = bus.offRosterRecipients(stub).filter(peer => peer !== USER);
+      const audience = new Set(stub.to?.filter(peer => peer !== by && peer !== USER));
+      if (offRoster.length && offRoster.length === audience.size) throw new PreEffectToolRefusal("visual recipients are off roster; choose an available local peer and retry");
+      const hushed = bus.hushed(stub);
+      if (hushed.length && hushed.length === bus.audience(stub).length) throw new PreEffectToolRefusal("visual delivery is held by the current silence policy; wait for the hold to clear");
+      const effective = offRoster.length ? { ...stub, to: stub.to!.filter(peer => !offRoster.includes(peer)) } : stub;
+      const refused = dry
+        ? (by === USER || by === HUB || by === DIGEST || stub.priority === "fyi" ? undefined : limiter.peek(by, effective.to, effective.priority, effective.body))
+        : admit(effective);
+      if (refused) throw new PreEffectToolRefusal("visual delivery is rate limited; wait before retrying");
+    };
+    // No screen, image read, or consuming admission has occurred at this point.
+    preflight(early, true);
+    const input = validateVisualInput(a.payload, text => visualSafeText(text, initialPolicy));
+    if (tasks.screenOn()) {
+      const screen = opts.piiScreen ?? ((value: string) => screenPii(value, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model }));
+      const verdict = await screen(JSON.stringify(input)).catch(() => undefined);
+      current();
+      if (verdict?.label === "pii") throw visualUnavailable();
+      if (verdict?.label !== "clear") throw visualOperational("screen");
+    }
+    const beforeRead = current(), resolved = await resolveVisualAssets(input, id, visualPorts(beforeRead));
+    const finalPolicy = current();
+    const payload = validateVisualPayload(resolved.payload, text => visualSafeText(text, finalPolicy));
+    const title = "title" in payload ? payload.title ?? "" : "caption" in payload ? payload.caption ?? "" : "";
+    const record: VisualRecord = { id, ...(task === undefined ? {} : { task }), from: by, kind: payload.kind, title, payload, files: resolved.files, created: Date.now() };
+    if (!visualPublic(record, finalPolicy) || resolved.files.some(file => !visualPathPublic(file.path, finalPolicy))) throw visualUnavailable();
+    const stub = newEnvelope(by, `[visual ${id}] ${payload.kind}: ${sanitize(title)}`, { priority, to, refs: { visual: id, ...(task === undefined ? {} : { task: String(task) }) } });
+    preflight(stub, false); // Recheck after every await; consume shared admission exactly once.
+    if (!recoveryActive() && !bus.isRecoveryHeld) visuals.prune(config.visuals.retention_days, Date.now(), task => !!board.get(task));
+    visuals.insert(record);
+    try {
+      event({ type: "visual", id, kind: payload.kind, bytes: Buffer.byteLength(JSON.stringify(payload)), files: resolved.files.length, ...(task === undefined ? {} : { task }) });
+      bus.publish(stub);
+    } catch { throw new Error(`visual ${id} was stored but its stub delivery failed; inspect the visual before posting again`); }
+    return `visual ${id}`;
+  }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+    if (op === "hub_visual" || op === "hub_visual_show") return visualTool(by, op, a, piiTurn);
     const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
     if (op === "hub_ask") {
@@ -6233,7 +6450,10 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchEvidence = board.researchEvidenceIntegrity();
     const reviewComments = board.reviewCommentsIntegrity();
     const modelState = modelOverrides.integrity();
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    const visualIntegrity = visuals.integrity();
+    if (!Number.isSafeInteger(visualIntegrity.count) || visualIntegrity.count < 0 || !/^[a-f0-9]{64}$/.test(visualIntegrity.digest))
+      throw new Error("visual recovery integrity unavailable; inspect the retained store before recovery");
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -8595,6 +8815,20 @@ export async function startDaemon(opts: DaemonOptions) {
     const start = input?.view === "memory" && query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
     const code = start ? await memoryCode([start]).catch(() => unavailableMemoryCodeOverlay()) : undefined;
     const snapshot = uiSnapshot(after, input, session);
+    if (input?.visual !== undefined) {
+      const record = visualRecord(input.visual);
+      return { ...snapshot, visual: record ? visualView(record) : null };
+    }
+    if (input?.visualTask !== undefined) {
+      const task = input.visualTask;
+      return { ...snapshot, visuals: Number.isSafeInteger(task) && Number(task) > 0 ? visualList(Number(task)) : [] };
+    }
+    if (input?.visualAsset !== undefined) {
+      const match = typeof input.visualAsset === "string" ? /^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}):(before|after)$/.exec(input.visualAsset) : null;
+      const record = match ? visualRecord(match[1]) : undefined;
+      const file = record?.files.find(file => file.asset === input.visualAsset);
+      return { ...snapshot, visualAsset: record && file ? { id: record.id, ...(record.task === undefined ? {} : { task: record.task }), from: record.from, created: record.created, file } : null };
+    }
     if (code && "memory" in snapshot && snapshot.memory && typeof snapshot.memory === "object") {
       const published = currentMemoryCode(code), tier = query?.tier === "goals" ? "goals" : query?.tier === "short" ? "short" : "long";
       const search = typeof query?.q === "string" ? query.q.toLowerCase() : undefined;
@@ -8684,6 +8918,7 @@ export async function startDaemon(opts: DaemonOptions) {
       status: { peers: peerView, pendingRestart: allPendingRestart(), retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo, ownerIsolation: attentionStatus.ownerIsolation, ownerIsolationNotes: attentionStatus.ownerIsolationNotes },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
+      visuals: visualList(),
       // #1144: source metadata only, including private records; never expose origins or stored text.
       sources: sourceRegistry.list().map(({ id, kind, bytes, sha256, added_at }) => ({ id, kind, bytes, hashPrefix: sha256.slice(0, 12), added_at })),
       releases: tasks.releaseList(USER),
@@ -9651,6 +9886,12 @@ export async function startDaemon(opts: DaemonOptions) {
     };
     const incompatibleRecoveryTarget = () => {
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("model_overrides")) && modelOverrides.hasRecords()) return "target lacks model_overrides; retained runtime model choices require a supporting daemon; clear them with ahub model clear or choose a supporting target";
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("visuals")) {
+        try {
+          if (visuals.hasRecords()) return "target lacks visuals; retained visual records require a supporting daemon; choose a target with visuals";
+          if (rawVisualsPresent(opts.cwd)) return "target lacks visuals; explicit visuals configuration requires a supporting daemon; choose a target with visuals or remove the explicit configuration";
+        } catch { return "visuals compatibility is unknown; the store or configuration could not be read; inspect them or choose a target with visuals"; }
+      }
       if (config.specs.enabled && config.specs.review === "require" && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("design_specs"))) return "target lacks design_specs; specs.enabled is on and specs.review is require; use a supporting release or explicitly change specs.enabled/specs.review";
       if (board.hasConductorManualState() && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("conductor_recovery"))) return "target lacks conductor_recovery; open conductor manual-assignment intent cannot be preserved";
       if (allExternalInstanceIds().length && (!Array.isArray(msg.targetFeatures) || !["external_adapter_instances", "external_adapter_modules", "peer_instances"].every(feature => msg.targetFeatures.includes(feature)))) return "target lacks external_adapter_instances or its module/instance prerequisites";
@@ -10260,9 +10501,9 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     const committedSourceProof = c.role === "tools" && msg.t === "recovery_authority" && msg.op === "verify" && recoveryCommitted
       && msg.binding?.operationId === recoveryOperationId && msg.binding?.sourceInstanceId === instanceId;
-    if (stopping && !committedSourceProof && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: "hub is stopping" });
+    if (stopping && !committedSourceProof && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: msg.t === "task" && (msg.op === "hub_visual" || msg.op === "hub_visual_show") ? visualOperational("stopping").message : "hub is stopping" });
     if (c.role === "peer" && c.detachedByPerson) return void reply({ t: msg.t, ok: false, error: "detached by the person; stop using this peer connection and tell the person; inspect ahub status before opening a fresh session" });
-    if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
+    if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: msg.t === "task" && (msg.op === "hub_visual" || msg.op === "hub_visual_show") ? visualOperational("membership").message : `${c.peer} is off roster` });
     if (c.role === "peer" && c.peer) {
       const currentPeer = bus.peers.get(c.peer);
       if (c.standbyId && currentPeer?.ownsSocket?.(sock) !== true) return void reply({ t: msg.t, ok: false, error: "peer is standing by; a person must request takeover" });
@@ -11363,7 +11604,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
-        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || msg.reviewRefresh === true || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(msg.reviewRefresh === true && msg.reviewTask !== undefined ? { reviewTask: msg.reviewTask, reviewRefresh: true } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
+        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || msg.reviewRefresh === true || dashboardView(msg.view) || msg.visual !== undefined || msg.visualTask !== undefined || msg.visualAsset !== undefined ? { ...(msg.visual !== undefined ? { visual: msg.visual } : {}), ...(msg.visualTask !== undefined ? { visualTask: msg.visualTask } : {}), ...(msg.visualAsset !== undefined ? { visualAsset: msg.visualAsset } : {}), ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(msg.reviewRefresh === true && msg.reviewTask !== undefined ? { reviewTask: msg.reviewTask, reviewRefresh: true } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
         return;
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
@@ -11487,7 +11728,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // #601: ahub study is the person's. A tools connection (any agent) may use the hub_study_* tools, never these op names, whatever Tasks would answer.
         if (String(msg.op).startsWith("study_") && c.role !== "console") return void reply({ t: "task", ok: false, error: "ahub study draft, revise, approve and close are console commands; agents use the hub_study_* tools" });
         if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
-        if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: "recovery is holding mutations" });
+        if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: msg.op === "hub_visual" || msg.op === "hub_visual_show" ? visualOperational("recovery").message : "recovery is holding mutations" });
         if (c.role === "tools" && c.peer && Object.hasOwn(CONDUCTOR_TASK_OPS, String(msg.op))) {
           // #933: a console task op the conductor may run: admitted (role recheck and one audit row) before Tasks sees it; Tasks asks `operational` again.
           let current: () => void;
@@ -11819,6 +12060,7 @@ export async function startDaemon(opts: DaemonOptions) {
       candidates?.close();
       memoryStore?.close();
       modelPreviews.clear(); modelOverrides.close();
+      visuals.close();
       board.close();
       turnLog?.close();
       server.stop(true);
