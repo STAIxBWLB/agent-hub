@@ -413,12 +413,12 @@ test("a card with a long title keeps the whole title in the DOM and clamps it to
   const rule = /\.task-card\.compact \.card-title\{([^}]*)\}/.exec(css)![1]!;
   expect(rule).toContain("-webkit-line-clamp:2");expect(rule).toContain("line-clamp:2");expect(rule).toContain("overflow:hidden");
 });
-test("the detail groups its metadata into Status, People, Dates and Links without losing or duplicating a line (#469 R3 AC5)", () => {
-  const { api, get, all, peers, snapshot } = page({ now: () => 10_000 });
+test("the detail groups its metadata and offers on-demand Visuals without losing or duplicating a line (#469 R3 AC5, #1058)", () => {
+  const { api, get, all, peers, snapshot, reviewRequests } = page({ now: () => 10_000 });
   api.draw({ ...snapshot, releases: [{ id: 2, name: "phase two" }], tasks: [{ id: 7, state: "in_progress", title: "grouped", class: "implement", owner: "codex", reviewer: "claude", release: 2, role: "backend-engineer", reworkRound: 2, checking: true, pinned: true, plannedStart: 1000, due: 2000, actualDates: { startedAt: 1500 }, external: { provider: "github", issue: 12, url: "https://example.invalid/12" }, detail: "the description" }] }, peers, Object.keys(peers));
   api.open(7);
   const detail = all(get("task-detail-content")).find(node => node.tag === "article")!, groups = detail.children.filter(node => node.tag === "section");
-  expect(groups.map(node => node.children[0]!.textContent)).toEqual(["Status", "People", "Dates", "Links"]);
+  expect(groups.map(node => node.children[0]!.textContent)).toEqual(["Status", "People", "Dates", "Links", "Visuals"]);
   const text = (node: Node) => all(node).map(child => child.textContent).join("\n");
   const [status, people, dates, links] = groups.map(text) as [string, string, string, string];
   expect(status).toContain("Rework round 2");expect(status).toContain("Check running");expect(status).toContain("Overdue");
@@ -428,11 +428,16 @@ test("the detail groups its metadata into Status, People, Dates and Links withou
   // Each fact appears once, in its own group; the description stays directly under the head.
   for (const line of ["Rework round 2", "Planned ", "Release #2 phase two", "Pinned", "owner: codex"]) expect(text(detail).split(line).length - 1, line).toBe(1);
   expect(detail.children.find(node => node.textContent === "the description")).toBeDefined();
-  // A group with nothing to show is left out rather than shown empty.
+  const visuals = groups[4]!;
+  expect(all(visuals).filter(node => node.tag === "button").map(node => node.textContent)).toEqual(["Show task visuals"]);
+  expect(visuals.children.find(node => node.tag === "div")?.children).toEqual([]);
+  expect(all(visuals).some(node => ["pre", "img", "iframe"].includes(node.tag))).toBe(false);
+  expect(reviewRequests.some(input => { const request = input as Record<string, unknown>; return "visualTask" in request || "visual" in request; })).toBe(false);
+  // Optional metadata groups with nothing to show are omitted; Visuals retains only its explicit load control.
   api.draw({ ...snapshot, tasks: [{ id: 8, state: "backlog", title: "bare", class: "implement" }] }, peers, Object.keys(peers));
   api.open(8);
   const bare = all(get("task-detail-content")).find(node => node.tag === "article")!;
-  expect(bare.children.filter(node => node.tag === "section").map(node => node.children[0]!.textContent)).toEqual(["Status", "People"]);
+  expect(bare.children.filter(node => node.tag === "section").map(node => node.children[0]!.textContent)).toEqual(["Status", "People", "Visuals"]);
 });
 
 // #469 R3 (AC6): the five board forms live in the Plan sheet with the same fields, names and actions as before. The expected
