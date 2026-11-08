@@ -2,7 +2,7 @@
 // default export is the thin `activate(orca)` that Orca calls, wired to the real host, the real filesystem and the real child process. See README.md for what is and is not proven.
 import { spawn } from "node:child_process";
 import { classifyStatusRun, projectStatus } from "./status.mjs";
-import { REFUSALS, CLI_LIMITS, ENTRY_KINDS, bindWorkspace, canonicalizeHere, entryFor, parseSettings, readInventory, readSnapshot, refuse, runCli, terminalCommand, verifyBinding } from "./companion.mjs";
+import { REMOTE_COMMAND, REFUSALS, CLI_LIMITS, ENTRY_KINDS, bindWorkspace, canonicalizeHere, entryFor, parseSettings, readInventory, readSnapshot, refuse, runCli, terminalCommand, verifyBinding } from "./companion.mjs";
 
 const HANDLERS = Object.freeze(["workspaces.list", "workspace.bind", "entry.open", "status.read"]);
 /** What `ahub` prints, as its first words, when no hub runs for the project (src/hub/control-client.ts). Tested as a prefix and never returned. */
@@ -28,7 +28,7 @@ export function createCompanion(ports) {
   const context = async () => {
     let raw;
     try { raw = await ports.readSettings(); } catch { raw = {}; }
-    return { settings: parseSettings(raw), canonicalize };
+    return { settings: parseSettings(raw), canonicalize, platform: ports.platform ?? process.platform };
   };
   const inventory = async () => {
     if (!ports.host.has("workspace.list")) return undefined;
@@ -71,7 +71,8 @@ export function createCompanion(ports) {
     const raw = await inventory();
     if (raw === undefined) return done("entry.open", refuse("inventory_unavailable"));
     const verified = verifyBinding(value.snapshot, raw, ctx);
-    if (!verified.ok) return done("entry.open", verified);
+    // A workspace on another host is never run here and its loopback link is never opened here: the person gets the existing remote console command to run there.
+    if (!verified.ok) return done("entry.open", verified.refusal === "remote" ? { ...verified, command: REMOTE_COMMAND } : verified);
     const entry = entryFor(value.kind, verified.binding, ctx.settings);
     if (entry.via === "cli") {
       const result = await runCli(ports.spawnCli, entry);

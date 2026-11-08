@@ -57,6 +57,8 @@ export interface RestartSnapshot {
     researchRunners?: { count: number; digest: string };
     researchEvidence?: { links: number; revisions: number; digest: string };
     reviewComments?: { comments: number; packages: number; digest: string };
+    /** Stored visual payloads and image metadata, never external image bytes. */
+    visuals?: { count: number; digest: string };
   };
 }
 
@@ -148,6 +150,12 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     const value = s.integrity.reviewComments;
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["comments", "packages", "digest"].includes(key))
       || ![value.comments, value.packages].every(count => Number.isSafeInteger(count) && count >= 0)
+      || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "visuals")) {
+    const value = s.integrity.visuals;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["count", "digest"].includes(key))
+      || !Number.isSafeInteger(value.count) || value.count < 0
       || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }

@@ -52,6 +52,10 @@ defaults. The
 
 ## What you get
 
+- **Bounded visual explanations.** Ordinary local peers can post a diagram,
+  comparison, table or before/after view with `hub_visual`. acon renders the
+  screened record; the standalone dashboard shows text/source, and peers receive
+  only a stub. [Limits and privacy](docs/operations.md#bounded-visual-attachments-1058).
 - **Peers, not a pipeline.** Any agent can message the others. Messages are batched
   into digests, priorities decide what interrupts a turn, and delivery survives
   restarts.

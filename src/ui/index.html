@@ -576,6 +576,7 @@ let ticket = location.hash.slice(1);
 history.replaceState(null, '', location.pathname);
 const $ = (id) => document.getElementById(id);
 const reviewKit = null;
+const visualKit = null;
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
 let stopped = false, cursor = 0, timer, projectsTimer, eventCount = 0;
 const setConnection = (text, state) => { const node = $('connection'); node.textContent = text; node.dataset.state = state; };
@@ -1281,6 +1282,61 @@ function deliverableLabel(d) {
   const says = { changed: ', changed since review', missing: ', a file is missing', unknown: ', could not be measured', unchanged: ', unchanged when last checked' };
   return base + (says[d.checked.result] ?? says.unknown);
 }
+/* Visual payloads are fetched only by an explicit person click. Source text never becomes HTML. */
+function sameVisualContext(expected) {
+  return !stopped && expected.generation === viewGeneration && expected.projectId === selectedProjectId && expected.instanceId === selectedInstanceId;
+}
+function visualSource(payload) {
+  if (payload.kind === 'mermaid') return payload.source;
+  if (payload.kind === 'comparison') return payload.options.map(option => [option.title,option.summary,...(option.pros || []).map(text => '+ ' + text),...(option.cons || []).map(text => '- ' + text)].filter(Boolean).join('\n')).join('\n\n');
+  if (payload.kind === 'table') return [payload.caption || '', payload.columns.map(column => column.label).join(' | '),...payload.rows.map(row => payload.columns.map(column => String(row[column.key] ?? '')).join(' | '))].filter(Boolean).join('\n');
+  if (payload.kind === 'beforeAfter') { const text = side => 'text' in side ? side.text : 'Image: ' + side.alt + ' (open in agent-console to view)'; return [payload.caption || '', 'Before: ' + text(payload.before), 'After: ' + text(payload.after)].filter(Boolean).join('\n'); }
+  return 'Visual unavailable. Reopen its current project and retry.';
+}
+function renderVisualPayload(mount, payload) {
+  mount.replaceChildren();
+  if (visualKit) {
+    try { const rendered = visualKit(payload); if (rendered) { mount.append(rendered); return; } } catch { /* Older or unavailable host kit falls back to safe source text. */ }
+  }
+  mount.append(el('p', 'Source view. Open this visual in an updated agent-console for rendering.', 'meta'), el('pre', visualSource(payload), 'visual-source'));
+}
+function visualCard(stub) {
+  const captured = context(), card = el('section', undefined, 'detail-group visual-card'), mount = el('div');
+  card.append(el('h4', stub.title || stub.kind || 'Visual', 'detail-heading'));
+  const open = el('button', 'Show visual'); open.type = 'button';
+  open.addEventListener('click', async () => {
+    if (!sameVisualContext(captured)) return;
+    open.disabled = true;
+    const input = {after:0, visual:stub.id};
+    if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+    try {
+      const result = await post('/snapshot', input);
+      if (!sameVisualContext(captured) || !card.isConnected) return;
+      if (result.ok === false || !result.visual || result.visual.id !== stub.id || (managerMode && (result.projectId !== captured.projectId || result.instanceId !== captured.instanceId))) throw new Error('Visual no longer available. Refresh this project and retry.');
+      renderVisualPayload(mount, result.visual.payload);
+    } catch { if (sameVisualContext(captured) && card.isConnected) mount.replaceChildren(el('p','Visual unavailable or no longer public. Refresh this project and retry.','meta')); }
+    finally { if (sameVisualContext(captured)) open.disabled = false; }
+  });
+  card.append(open, mount); return card;
+}
+function taskVisualsSection(task) {
+  const captured = context(), section = el('section', undefined, 'detail-group task-visuals'), mount = el('div'), open = el('button','Show task visuals'); open.type = 'button';
+  section.append(el('h4','Visuals','detail-heading'),open,mount);
+  open.addEventListener('click', async () => {
+    if (!sameVisualContext(captured) || taskDetailId !== task.id) return;
+    open.disabled = true;
+    const input = {after:0, visualTask:task.id}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+    try {
+      const result = await post('/snapshot',input);
+      if (!sameVisualContext(captured) || taskDetailId !== task.id || !section.isConnected) return;
+      if (result.ok === false || !Array.isArray(result.visuals) || (managerMode && (result.projectId !== captured.projectId || result.instanceId !== captured.instanceId))) throw new Error('unavailable');
+      mount.replaceChildren(...result.visuals.map(visualCard));
+      if (!result.visuals.length) mount.append(el('p','No public visuals for this task.','meta'));
+    } catch { if (sameVisualContext(captured) && section.isConnected) mount.replaceChildren(el('p','Visuals unavailable. Refresh the task and retry.','meta')); }
+    finally { if (sameVisualContext(captured)) open.disabled = false; }
+  });
+  return section;
+}
 function deliverablesSection(task) {
   const d = task.deliverables; if (!d?.files?.length) return null;
   const section = el('section', undefined, 'detail-group'); section.append(el('h4', 'Deliverables', 'detail-heading'));
@@ -1387,6 +1443,7 @@ function taskDetail(task, card, stage, ids, overdue) {
     assign.addEventListener('click', () => { if(!sameBoardContext(expected))return notice('The project changed. Use its current board.',true);if(select.value)void action({action:'assign',id:task.id,peer:select.value},assign);else notice('Select a peer before assigning this task.',true); }); controls.append(select,assign);
   }
   if (controls.children.length) row.append(controls);
+  row.append(taskVisualsSection(task));
   return row;
 }
 function taskCard(task, card, stage, ids, overdue, compact = true) {
@@ -2013,7 +2070,8 @@ function render(snapshot) {
     node.dataset.kind = kind; applyStreamFilter(node);
     if (event.env) { const env = event.env, meta = el('div', '', 'meta'), stamp = el('span'); stamp.dataset.ts = env.ts; stamp.title = time(env.ts); stamp.textContent = rel(env.ts);
       meta.append(stamp, el('span', ' / ' + env.from + ' '), icon('i-arrow', 'to'), el('span', ' ' + (env.to ? env.to.join(', ') : 'all') + ' / ' + env.kind + (event.t !== 'envelope' ? ' / ' + event.t : '') + (event.dropped ? ' / ' + event.dropped : '')));
-      node.append(meta, el('div', env.body, 'body')); }
+      node.append(meta, el('div', env.body, 'body'));
+      if (typeof env.refs?.visual === 'string') node.append(visualCard((snapshot.visuals || []).find(row => row.id === env.refs.visual) || {id:env.refs.visual,kind:'Visual'})); }
     else node.append(el('div', event.peer + ' / ' + event.state, 'meta'));
     stream.append(node); eventCount++; while (stream.children.length > 200) stream.firstElementChild.remove();
   }

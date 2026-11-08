@@ -226,6 +226,7 @@ const schema: Record<string, Check> = {
     else if (key === "remote") remoteRunnerConfig(value);
     else if (/^[a-z][a-z0-9_]{0,47}$/.test(key)) text(value, `${k}.${key}`); else fail(`${k}.${key}`, "unknown key");
   } },
+  visuals: block({ retention_days: number(1, 3650, true) }),
   snapshots: block({ enabled: bool, keep: number(1, 1_000_000, true) }), research: block({ enabled: bool, runners: researchRunners }), bench: block({ enabled: bool }),
   worktrees: block({ quiet_days: number(0, 3650, true), alert_over: number(0, 100_000, true) }),
   // #1053: how long an unanswered question waits (`ttl_s`, 1 minute to 30 days) and, per adapter kind, how long a `hub_ask` call waits for the person before it answers `pending`.
@@ -276,7 +277,7 @@ const restart: Record<string, string> = {
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
-const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "worktrees", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "questions", "pet", "specs"]);
+const live = new Set(["visuals", "action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "invocation", "research", "snapshots", "worktrees", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "tasks.queue_backpressure", "schedules", "approvals.notify", "questions", "pet", "specs"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {

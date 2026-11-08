@@ -80,6 +80,7 @@ export const SETTINGS: readonly SettingDef[] = [
   ...ADAPTERS.flatMap(adapter => adapter.configuration?.settings ?? []),
   { key: "routing.stay_switch", group: "Routing", label: "Stay or switch (hub/auto and stage routes)", type: "enum", values: ["off", "shadow", "enforce"], store: "routing", applies: "live", risk: "raises", path: ["stay_switch"] },
   ...CLASSES.flatMap(perClass),
+  { key: "visuals.retention_days", group: "Switches", label: "Unbound visual retention (days)", type: "integer", min: 1, max: 3650, store: "config", applies: "live", risk: "raises", floor: 1, path: ["visuals", "retention_days"] },
   { key: "research.enabled", group: "Switches", label: "Research records", type: "boolean", store: "config", applies: "live", risk: "safe", path: ["research", "enabled"] },
   // #1292: the quota share at which a peer checkpoints and pauses (resume is below gate - 0.1); default 0.99 in DEFAULT_BUDGET. Raising it is guarded.
   { key: "budget.gate", group: "Routing", label: "Budget gate: pause a peer when a fresh quota window reaches this share (0..1)", type: "number", min: 0, max: 1, store: "config", applies: "next use", risk: "raises", path: ["budget", "gate"] },

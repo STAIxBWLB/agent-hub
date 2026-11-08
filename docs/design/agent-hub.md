@@ -25,6 +25,12 @@ The core loop is to propose and assign work, exchange addressed messages while p
 
 The hub also owns a local worker and optional model calls for its own inference. It does not replace every native agent with that loop, pool subscription credentials, or make native behavior identical across vendors. Native adapters preserve those differences behind explicit contracts ([#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
+Bounded local visual attachments let ordinary peers explain public work with a
+diagram, comparison, table or before/after view. The hub stores and screens the
+record while acon renders it; recipients receive a text stub, and the standalone
+dashboard retains a readable source fallback. This adds no renderer, native-agent
+authority or cross-project board to the hub ([#1058](https://github.com/STAIxBWLB/agent-hub/issues/1058)).
+
 ## Product decisions
 
 | Current rule | Reason and deciding issue |
