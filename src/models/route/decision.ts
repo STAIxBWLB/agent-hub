@@ -109,8 +109,9 @@ export class DecisionRouteController {
     if (!context.current()) throw ended();
     const privacy = this.privacy(context.pii);
     if (!this.same(initial, privacy)) throw new DecisionPolicyChangedError();
-    if ((privacy.pii || privacy.private) && !(await this.host.onCampus())) return { skipped: "off_campus" };
+    const campus = privacy.pii || privacy.private ? await this.host.onCampus() === true : true;
     this.fence(context, privacy);
+    if (!campus) return { skipped: "off_campus" };
     const sensitive = privacy.pii || privacy.private;
     const evidence = buildDecisionEvidence(sensitive ? [] : context.messages, context.dimensions, text => this.host.publicDecisionText?.(text) === true);
     const pairs = config.candidates?.flatMap(candidate => candidate.efforts.map(effort => ({ alias: candidate.alias, effort }))) ?? [];
