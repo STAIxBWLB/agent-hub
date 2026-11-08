@@ -212,3 +212,39 @@ and identifies a cleared Codex override retained by the native thread as
 history; clear still cannot reconstruct a previous thread model. Unsupported
 reviewer surfaces keep their original no-override review behavior and do not
 gain a model-setting capability.
+
+Concurrent definitive rejections drain a single bounded retirement candidate,
+including when an explicit client-model request is the last one to reject.
+Native acceptance or a native start protects the current boundary. Reused RPC
+ids remain ambiguous: their tombstone is retained until client reattachment,
+rather than treating the first response as proof all duplicate requests failed.
+No retirement callback grants model authority or overwrites an explicit client
+choice.
+
+The first correction check at `f7e84a200a494c4566f71915260f96dbf0318e5a`
+passed typecheck, inventory and bundle comparison, then reported 172 pass and
+1 fail (2,100 assertions, ten files; remote exit 1 in 76 s). The failure was in
+the new Pi acceptance fixture: its synthetic settlement omitted the required
+native generation, so the existing fence correctly ignored it. Commit
+`8f8c9794f0b71d52bca6a8983598e34968edd134` supplies the actual generation-bound
+start/settled lifecycle. It changes only that fixture, preserving every existing
+assertion, deadline and production lifecycle check.
+
+Committed-head DGX verification at `8f8c9794f0b71d52bca6a8983598e34968edd134`
+passed typecheck, inventory (3,496 entries; 2,491 classified; unchanged 1,005
+baseline entries), bundle comparison, and all 173 tests across ten files
+(2,103 assertions). This includes the original failing reviewer daemon suites,
+the actual proxy correction, concurrent rejection cases and Pi acceptance and
+rejection. Seed shards 48/64 and 49/64 passed all 18 original-green /
+named-mutant-detected pairs, including both model guards. The combined remote
+command exited 0 in 109 seconds; log: `scratchpad/temp/task808-review-final-focused.log`.
+
+The independent correction review covered all 16 nongenerated changed files
+and found the explicit-last rejection gap before verification; it was corrected
+and reread with no further finding. The generated bundle is verified by
+comparison. The final report-only head has identical runtime, test and script
+bytes to that focused-tested commit. Its canonical changed-scope gate and
+hosted exact-head CI remain separate, unverified gates until their results are
+recorded; neither the focused pass nor the interrupted earlier run substitutes
+for them. Native/provider-backed acceptance and real dashboard interaction
+remain unrun.
