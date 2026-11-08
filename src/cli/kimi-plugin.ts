@@ -107,7 +107,7 @@ export function kimiPluginPreview(home: string, hookScript: string): { file: str
   if (!isAbsolute(home) || !isAbsolute(hookScript)) throw new Error("Kimi home and hook bundle must be absolute paths");
   directory(home, false);
   if (!file(hookScript, MAX_HOOK)) throw new Error("Kimi hook bundle is missing");
-  return { file: join(home, "plugins", "managed", ID), changed: true, action: "install the launch-scoped native completion plugin and remove it on exit" };
+  return { file: join(home, "plugins", "managed", ID), changed: true, action: "only after Kimi 2.5.2 is confirmed, install the launch-scoped completion plugin and remove it on exit; other versions keep the existing TUI with no plugin" };
 }
 
 export function kimiPluginPlan(options: KimiPluginOptions): { file: string; changed: boolean; action: string } {
@@ -115,28 +115,43 @@ export function kimiPluginPlan(options: KimiPluginOptions): { file: string; chan
   return { file: current.managed, changed: current.changed, action: current.changed ? "create or update the launch-scoped Kimi plugin" : "keep the launch-scoped Kimi plugin" };
 }
 
+function locked<T>(options: KimiPluginOptions, run: () => T): T {
+  if (!isAbsolute(options.home)) throw new Error("Kimi home must be an absolute path");
+  directory(options.home);
+  const path = join(options.home, "agent-hub-plugin.lock");
+  let fd: number;
+  try { fd = openSync(path, "wx", 0o600); }
+  catch { throw new Error(`Another Kimi plugin replacement is active or left a stale lock; retry after it exits or inspect ${path}`); }
+  try { return run(); }
+  finally { closeSync(fd); unlinkSync(path); }
+}
+
 export function ensureKimiPlugin(options: KimiPluginOptions): { changed: boolean } {
-  const current = plan(options);
-  if (!current.changed) return { changed: false };
-  for (const path of [join(options.home, "plugins"), join(options.home, "plugins", "managed"), current.managed]) {
-    if (!directory(path, false)) mkdirSync(path, { mode: 0o700 });
-  }
-  for (const target of current.targets) atomic(target.path, target.next, target.before?.stat);
-  return { changed: true };
+  return locked(options, () => {
+    const current = plan(options);
+    if (!current.changed) return { changed: false };
+    for (const path of [join(options.home, "plugins"), join(options.home, "plugins", "managed"), current.managed]) {
+      if (!directory(path, false)) mkdirSync(path, { mode: 0o700 });
+    }
+    for (const target of current.targets) atomic(target.path, target.next, target.before?.stat);
+    return { changed: true };
+  });
 }
 
 export function cleanupKimiPlugin(options: KimiPluginOptions): void {
-  const current = plan({ ...options, replaceStale: false });
-  const installedBefore = file(current.installed, MAX_INSTALLED), document = parse(installedBefore, current.installed);
-  const records = document?.plugins;
-  if (!document || !Array.isArray(records) || records.some((row: unknown) => !object(row))) throw new Error(`${current.installed} changed during the launch`);
-  const record = records.find((row: JsonObject) => row.id === ID);
-  if (!record) return;
-  if (record.root !== current.managed || record.enabled !== true) throw new Error("Kimi's agent-hub plugin changed during the launch; leaving it installed");
-  const next = { version: 1, plugins: records.filter((row: JsonObject) => row.id !== ID) };
-  atomic(current.installed, Buffer.from(`${JSON.stringify(next, null, 2)}\n`), installedBefore?.stat);
-  const [manifestTarget, hookTarget] = current.targets;
-  removeFile(join(current.managed, "kimi.plugin.json"), manifestTarget!.next);
-  removeFile(join(current.managed, "kimi-hook.js"), hookTarget!.next);
-  try { rmdirSync(current.managed); } catch { /* foreign or changed files stay */ }
+  locked(options, () => {
+    const current = plan({ ...options, replaceStale: false });
+    const installedBefore = file(current.installed, MAX_INSTALLED), document = parse(installedBefore, current.installed);
+    const records = document?.plugins;
+    if (!document || !Array.isArray(records) || records.some((row: unknown) => !object(row))) throw new Error(`${current.installed} changed during the launch`);
+    const record = records.find((row: JsonObject) => row.id === ID);
+    if (!record) return;
+    if (record.root !== current.managed || record.enabled !== true) throw new Error("Kimi's agent-hub plugin changed during the launch; leaving it installed");
+    const next = { version: 1, plugins: records.filter((row: JsonObject) => row.id !== ID) };
+    atomic(current.installed, Buffer.from(`${JSON.stringify(next, null, 2)}\n`), installedBefore?.stat);
+    const [manifestTarget, hookTarget] = current.targets;
+    removeFile(join(current.managed, "kimi.plugin.json"), manifestTarget!.next);
+    removeFile(join(current.managed, "kimi-hook.js"), hookTarget!.next);
+    try { rmdirSync(current.managed); } catch { /* foreign or changed files stay */ }
+  });
 }

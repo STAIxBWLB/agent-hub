@@ -102,7 +102,7 @@ remains owed in #273.
 
 Run this only on Kimi 2.5.2 in a disposable Git project and an isolated `KIMI_CODE_HOME`; `compat.ts` `kimi-tui` refuses every other version. The launcher must print its launch-scoped plugin notice before the TUI starts, and `plugins/installed.json` must contain only that launch's `agentHubLaunch` plus its owner pid and process signature. Another project's active owner must not be replaced; only a proven-gone owner is stale. Do not use the person's project or global `config.toml`.
 
-1. `ahub up --no-console --no-agents` in the disposable project, then `ahub kimi --mode tui`. `--print-command` must describe the same plugin without writing it.
+1. `ahub up --no-console --no-agents` in the disposable project, then `ahub kimi --mode tui`. `--print-command` must describe the same conditional plugin without writing it. Refuse `native_hook_launch` once: the TUI still starts and reports that completion receipts are off. An unverified version also starts without them.
 2. Send an ordinary prompt. `ahub results --json` shows one private `done` only after `turn.ended`, with the same native turn id in `native_turn_end`.
 3. Start a real background `sleep 15` through Kimi's Bash tool. The results stay empty while `agents/main/tasks/<id>.json` says `running`; after the task and notification turn finish, exactly one `done` appears even if TaskStarted/Notification hooks never arrive.
 4. Queue a hub message with `ahub say @kimi native-origin-probe`, then call `mcp__agent-hub__hub_inbox` once. The pulled message creates no second person-originated run; the person's prompt that called the tool settles once.

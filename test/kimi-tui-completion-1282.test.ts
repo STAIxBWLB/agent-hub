@@ -70,6 +70,7 @@ test("a native person run settles only after final-turn readback and native-back
   expect(f.rows()[0]).toMatchObject({ peer: "kimi", outcome: "done", private: true });
   const events = readEvents(join(f.stateDir, "events.jsonl"));
   expect(events.filter(row => row.type === "completion")).toHaveLength(1);
+  expect(events.filter(row => row.type === "turn_end").length).toBe(events.filter(row => row.type === "turn_start").length);
   for (const sink of [JSON.stringify(events), JSON.stringify(f.rows()), readFileSync(join(f.stateDir, "hub.log"), "utf8")]) {
     expect(sink).not.toContain("TOPSECRET-NATIVE-PROMPT");
     expect(sink).not.toContain("TOPSECRET-NATIVE-ERROR");
@@ -86,6 +87,19 @@ test("StopFailure becomes failed only from the correlated final rows", async () 
   f.finish(1, "failed");
   await until(() => f.rows().length === 1, "failed completion");
   expect(f.rows()[0]).toMatchObject({ outcome: "failed", private: true });
+});
+
+test("a final row after the Stop poll deadline still settles the turn", async () => {
+  const f = await rig();
+  await f.start();
+  expect(await f.observe("Stop")).toMatchObject({ ok: true, pending: true });
+  await Bun.sleep(2100);
+  expect(f.rows()).toEqual([]);
+  f.finish(1, "completed");
+  await until(() => f.rows().length === 1, "completion after the Stop deadline");
+  expect(f.rows()[0]).toMatchObject({ outcome: "done", private: true });
+  const events = readEvents(join(f.stateDir, "events.jsonl"));
+  expect(events.filter(row => row.type === "turn_end").length).toBe(events.filter(row => row.type === "turn_start").length);
 });
 
 test("Interrupt produces no unread completion and launcher loss produces one interrupted result", async () => {

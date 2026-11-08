@@ -75,13 +75,21 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
     const otherRoot = join(root, "other-workspace"); mkdirSync(otherRoot);
     expect((await facts("PreInvocation", { workspacePaths: [root, otherRoot] })).ok).toBe(false);
     expect(daemon.bus.peers.get("agy")?.state).toBe("idle");
-    expect((await facts("PreInvocation")).ok).toBe(true); expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
+    // #1280 P2: a model boundary tells the pull-only peer that mail waits (counts only, never the body), and says nothing when the queue is empty.
+    daemon.bus.publish(newEnvelope("user", "secret body must not leak", { to: ["agy"] }));
+    const hinted = await facts("PreInvocation");
+    expect(hinted.ok).toBe(true); expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
+    expect(hinted.text).toContain("[agent-hub: 1 message(s) waiting"); expect(hinted.text).toContain("hub_inbox"); expect(hinted.text).not.toContain("secret body");
+    expect((await peer.request({ t: "inbox" })).envs.some((env: any) => env.body === "secret body must not leak")).toBe(true);
+    expect((await facts("PreInvocation", { invocationNum: 1 })).text).toBeUndefined();
     for (const phase of ["stop", "start", "session", "pre", "post"]) expect((await tools.request({ t: "facts", phase })).ok).toBe(false);
     expect(daemon.bus.peers.get("agy")?.state).toBe("busy");
     expect((await facts("Stop", { fullyIdle: false, terminationReason: "NO_TOOL_CALL" })).ok).toBe(false);
     writeFileSync(transcript, JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "complete" }) + "\n");
     expect((await facts("Stop", { fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
     await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    const ordinaryEvents = readEvents(join(stateDir, "events.jsonl"));
+    expect(ordinaryEvents.filter((ev: any) => ev.type === "turn_end").length).toBe(ordinaryEvents.filter((ev: any) => ev.type === "turn_start").length);
     // #1280: terminal non-normal Stop reasons (USER_CANCELED, ERROR, MAX_INVOCATIONS) with fullyIdle=true return agy to idle without a new completion row.
     for (const reason of ["USER_CANCELED", "ERROR", "MAX_INVOCATIONS"] as const) {
       expect((await facts("PreInvocation", { invocationNum: 0 })).ok).toBe(true);
@@ -143,6 +151,7 @@ for (const [version, name, args] of [["1.4.2", "view_file", (file: string) => ({
       payload: { conversationId: session, transcriptPath: transcript, workspacePaths: [root], invocationNum: 0, ...extra },
       nativeInstanceId: admission.instanceId, nativeLaunchId: admission.launchId });
     const call = { name, args: args(file) };
+    await peer.request({ t: "inbox" }); // the task notices queued so far are read, so no inbox hint rides on the fact assertions below
     expect((await hook("PreInvocation")).ok).toBe(true);
     expect((await hook("PreToolUse", { toolCall: call, stepIdx: 5 })).ok).toBe(true);
     expect((await hook("PostToolUse", { toolCall: call, stepIdx: 5 })).ok).toBe(true);
@@ -173,6 +182,51 @@ for (const [version, name, args] of [["1.4.2", "view_file", (file: string) => ({
     expect((await stopping).ok).toBe(true);
     await until(() => daemon.bus.peers.get("agy")?.state === "idle");
     expect(readEvents(join(stateDir, "events.jsonl")).some((ev: any) => ev.type === "fact_ack" && ev.peer === "agy" && ev.id === secondFactId && ev.via === "native-hook")).toBe(true);
+    // #1280 P1: native write_file and edit_file credit agy as author, advance agy's view, acknowledge 1.5.x SYSTEM_MESSAGE facts, bind nativeSession, and emit agy_transcript usage events.
+    expect((daemon.bus.peers.get("agy") as any)?.nativeSession).toBe(session);
+    const writeCall = { name: "write_file", args: { Path: file, Content: "alpha\nbeta\n" } };
+    expect((await hook("PreInvocation", { invocationNum: 3 })).text).toBeUndefined();
+    expect((await hook("PreToolUse", { invocationNum: 3, toolCall: writeCall, stepIdx: 10 })).ok).toBe(true);
+    writeFileSync(file, "alpha\nbeta\n");
+    expect((await hook("PostToolUse", { invocationNum: 3, toolCall: writeCall, stepIdx: 10 })).ok).toBe(true);
+    const editCall = { name: "edit_file", args: { Path: file, Target: "beta", Replacement: "BETA" } };
+    expect((await hook("PreToolUse", { invocationNum: 3, toolCall: editCall, stepIdx: 11 })).ok).toBe(true);
+    writeFileSync(file, "alpha\nBETA\n");
+    expect((await hook("PostToolUse", { invocationNum: 3, toolCall: editCall, stepIdx: 11 })).ok).toBe(true);
+    // agy's own credited write_file and edit_file moved its view, so its next invocation offers no self-diff.
+    expect((await hook("PreInvocation", { invocationNum: 4 })).text).toBeUndefined();
+    writeFileSync(file, "alpha\nBETA\ngamma\n");
+    const next3 = await hook("PreInvocation", { invocationNum: 5 });
+    expect(next3.text).toContain("+gamma");
+    const thirdFactId = /^agent-hub facts \[([^\]]+)\]:/.exec(next3.text)![1]!;
+    appendFileSync(transcript, [
+      JSON.stringify({ step_index: 12, source: "SYSTEM_SDK", type: "SYSTEM_MESSAGE", status: "DONE", content: next3.text }),
+      JSON.stringify({ step_index: 13, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-07T12:05:00Z", input_tokens: 400, output_tokens: 50, cache_read_tokens: 1000, content: "complete 3" }),
+    ].join("\n") + "\n");
+    expect((await hook("Stop", { invocationNum: 5, fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
+    await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    // Late flush after the task-1 turn ended, then task 1 is cancelled and task 3 is accepted before a new turn starts:
+    // leftover usage row 14 stays attributed to task 1 (the turn that produced it), never task 3 open at read time.
+    appendFileSync(transcript, JSON.stringify({ step_index: 14, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-07T12:06:00Z", input_tokens: 100, output_tokens: 20, content: "late flush from task 1 turn" }) + "\n");
+    await op(person, "hub_task_cancel", { id: 1, reason: "done testing task 1" });
+    await op(person, "hub_task_propose", { title: "agy second task", class: "implement", owner: "agy", refs: { paths: ["a.txt"] } });
+    await op(peer, "hub_task_accept", { id: 3 });
+    expect((await hook("PreInvocation", { invocationNum: 0 })).ok).toBe(true);
+    appendFileSync(transcript, JSON.stringify({ step_index: 15, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-07T12:07:00Z", input_tokens: 200, output_tokens: 30, content: "task 3 turn complete" }) + "\n");
+    expect((await hook("Stop", { invocationNum: 0, fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
+    await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    const eventsAfter = readEvents(join(stateDir, "events.jsonl"));
+    expect(eventsAfter.some((ev: any) => ev.type === "fact_ack" && ev.peer === "agy" && ev.id === thirdFactId && ev.via === "native-hook")).toBe(true);
+    expect(eventsAfter.filter((ev: any) => ev.type === "usage" && ev.peer === "agy" && ev.source === "agy_transcript")).toMatchObject([
+      { type: "usage", peer: "agy", source: "agy_transcript", inputTokens: 400, outputTokens: 50, cacheReadTokens: 1000, totalTokens: 1450, task: 1, attribution: "single_open", measuredAt: "2026-11-07T12:05:00Z" },
+      { type: "usage", peer: "agy", source: "agy_transcript", inputTokens: 100, outputTokens: 20, cacheReadTokens: 0, totalTokens: 120, task: 1, attribution: "single_open", measuredAt: "2026-11-07T12:06:00Z" },
+      { type: "usage", peer: "agy", source: "agy_transcript", inputTokens: 200, outputTokens: 30, cacheReadTokens: 0, totalTokens: 230, task: 3, attribution: "single_open", measuredAt: "2026-11-07T12:07:00Z" },
+    ]);
+    expect(eventsAfter.filter((ev: any) => ev.type === "tokens" && ev.peer === "agy")).toMatchObject([
+      { type: "tokens", peer: "agy", n: 1450, task: 1, attribution: "single_open" },
+      { type: "tokens", peer: "agy", n: 120, task: 1, attribution: "single_open" },
+      { type: "tokens", peer: "agy", n: 230, task: 3, attribution: "single_open" },
+    ]);
   } finally {
     for (const close of cleanup) close();
     peer?.close(); tools.close(); person.close(); await daemon.stop();

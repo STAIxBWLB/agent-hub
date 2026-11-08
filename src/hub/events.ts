@@ -40,7 +40,8 @@ export type HubEvent =
   | { type: "stuck"; peer: string; task: number; category: "repetition" | "false_progress" | "drift" | "desperation" | "capability_gap"; streak: number; latched: boolean }
   | { type: "capability"; peer: string; state: "verified" | "lost"; via?: string }
   /** A hub run began: every peer is detached until its next state event (#248: attachments never span a crash). */
-  | { type: "hub_start"; instance: string }
+  /** `personAttribution`: this run writes `task` and `attribution` on permission, question, completion and agent_cli events (#1278). A log with no such start says nothing about which task a person interaction belonged to. */
+  | { type: "hub_start"; instance: string; personAttribution?: true }
   /** #248: the add-ons a peer works with, names and versions from a closed list, at each attach. */
   | { type: "tooling"; peer: string; addons: import("./tooling.ts").Addon[] }
   /** #258: a task brief handed to its owner: how many hub-memory items (and fails among them) and supplemental items (legacy claudeMem field), never their text. New local-library records identify source amem. */
@@ -52,20 +53,20 @@ export type HubEvent =
   | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null } & Partial<TaskAttribution>)
   | { type: "native_turn_end"; peer: string; id?: string; reason?: "user_canceled" | "error" | "max_invocations" | "max_forced_invocations" | "max_token_budget_exceeded" | "terminal_step_type" | "terminal_custom_hook" }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
-  | { type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true }
-  | { type: "permission"; id: string; peer: string; event: "requested" | "answered" | "expired" | "cancelled"; latencyMs?: number; surface?: "console" | "dashboard" | "terminal"; option?: "allow_once" | "allow_always" | "reject_once" | "reject_always" }
+  | ({ type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true } & Partial<TaskAttribution>)
+  | ({ type: "permission"; id: string; peer: string; event: "requested" | "answered" | "expired" | "cancelled"; latencyMs?: number; surface?: "console" | "dashboard" | "terminal"; option?: "allow_once" | "allow_always" | "reject_once" | "reject_always" } & Partial<TaskAttribution>)
   /** #1053: one question a peer asked the person, and how it ended. Counts, ids and a closed reason only: never a prompt, an option, an answer or other text. */
-  | { type: "question"; set: string; peer: string; event: "asked" | "answered" | "pending" | "superseded" | "cancelled" | "expired" | "unavailable"; latencyMs?: number; surface?: "terminal" | "console" | "dashboard" | "acon"; person?: string; reason?: "superseded" | "stopped" | "turn_aborted" | "session_changed" | "expired" | "unattended"; questions?: number; private?: boolean }
+  | ({ type: "question"; set: string; peer: string; event: "asked" | "answered" | "pending" | "superseded" | "cancelled" | "expired" | "unavailable"; latencyMs?: number; surface?: "terminal" | "console" | "dashboard" | "acon"; person?: string; reason?: "superseded" | "stopped" | "turn_aborted" | "session_changed" | "expired" | "unattended"; questions?: number; private?: boolean } & Partial<TaskAttribution>)
   /** Completed native turns that received supervision, not feed enqueues or inferred costs. */
   | { type: "supervision_turn"; peer: string; turn: string; tokens?: number; ms?: number }
   /** #1054: a run a person started settled (or a restart cut it short). Ids, a closed outcome and a duration only: never the prompt or the reply. */
   /** #1054: a person (or the hub on a person's command) marked a result read. A receipt only: never read from a snapshot. */
   | { type: "completion_seen"; id: string; surface: "terminal" | "console" | "dashboard" | "acon" }
-  | { type: "completion"; id: string; peer: string; outcome: "done" | "failed" | "limit" | "interrupted"; ms: number }
+  | ({ type: "completion"; id: string; peer: string; outcome: "done" | "failed" | "limit" | "interrupted"; ms: number } & Partial<TaskAttribution>)
   | { type: "hook_stats"; peer: string; n: number; startupMs: number; hubMs: number; maxStartupMs: number }
   | { type: "cohort"; id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: string[] }
   | ({ type: "tokens"; peer: string; n: number } & Partial<TaskAttribution>)
-  | ({ type: "usage"; peer: string; source: "omniroute" | "claude_transcript" | "claude_result" | "codex_appserver" | "kimi_wire" | "jcode_acp"; id: string; reasoningTokens?: number; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number } & Partial<TaskAttribution>)
+  | ({ type: "usage"; peer: string; source: "omniroute" | "claude_transcript" | "claude_result" | "codex_appserver" | "kimi_wire" | "jcode_acp" | "agy_transcript"; id: string; reasoningTokens?: number; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number } & Partial<TaskAttribution>)
   | { type: "planning"; by: string; task?: number; release?: number; fields: string[]; revision: number }
   | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; profile?: string; profileClass?: string; role?: string; roleIdentity?: { id: string; layer: "shipped" | "project"; hash: string }; pii: boolean; reason?: string; release?: number | null; priority?: number | null; plannedStart?: number | null; due?: number | null }
   | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[]; symbols?: string[] }[] }

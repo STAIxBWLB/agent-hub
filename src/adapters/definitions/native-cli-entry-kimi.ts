@@ -89,7 +89,7 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
         const probe = kimiTuiVersionProbe(buildKimiTuiLaunch(command));
         const version = spawnSync(probe.cmd, probe.args, { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: nativeLaunchEnv("kimi", childEnv()) });
         const gate = kimiTuiVersionGate(version.status === 0 ? version.stdout : "");
-        if (version.status === 0 && version.stdout.trim() && gate.message) console.error(gate.message);
+        if (version.status === 0 && version.stdout.trim() && gate.message) console.error(`${gate.message}. Completion receipts are off; the TUI launches as before.`);
         // The daemon's own bundles, so the MCP server and native hook match the hub they talk to (#502, #1282).
         const serverBundle = bundleInStatus(snapshot) ?? resolve(cliDir, "../../plugins/agent-hub/server.js");
         const written = configureKimiMcp(cwd, stateDir, serverBundle, "tui");
@@ -99,19 +99,30 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
           result = await runKimiTui(launch.cmd, launch.args, cwd, nativeEnv);
         } else {
           const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join(nativeEnv.HOME ?? homedir(), ".kimi-code");
-          mkdirSync(nativeHome, { recursive: true, mode: 0o700 });
-          const native = await hub.request({ t: "native_hook_launch", op: "begin", peer, nativeHome });
-          if (!native.ok || typeof native.launchId !== "string" || typeof native.instanceId !== "string") fail(native.error ?? "native hook launch was not admitted");
-          const plugin: KimiPluginOptions = { home: nativeHome, hookScript: resolve(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
-          let pluginReady = false;
+          let nativeLaunchId: string | undefined, completionEnv: NodeJS.ProcessEnv | undefined, plugin: KimiPluginOptions | undefined;
           try {
-            console.error("Kimi TUI completion facts: installing a launch-scoped native plugin; it will be removed after this TUI exits");
+            mkdirSync(nativeHome, { recursive: true, mode: 0o700 });
+            const native = await hub.request({ t: "native_hook_launch", op: "begin", peer, nativeHome });
+            if (!native.ok || typeof native.launchId !== "string" || typeof native.instanceId !== "string") throw new Error(native.error ?? "native hook launch was not admitted");
+            nativeLaunchId = native.launchId;
+            plugin = { home: nativeHome, hookScript: resolve(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
+            console.error(`Kimi TUI completion facts: installing a launch-scoped native plugin under ${join(nativeHome, "plugins", "managed", "agent-hub")}; it will be removed after this TUI exits`);
             ensureKimiPlugin(plugin);
-            pluginReady = true;
-            result = await runKimiTui(launch.cmd, launch.args, cwd, { ...nativeEnv, AGENTHUB_INSTANCE_ID: native.instanceId, AGENTHUB_LAUNCH_ID: native.launchId, AGENTHUB_HOOK_PURPOSE: "facts" });
-          } finally {
-            await hub.request({ t: "native_hook_launch", op: "end", peer, launchId: native.launchId }).catch(() => {});
-            if (pluginReady) try { cleanupKimiPlugin(plugin); } catch { console.error("Managed Kimi plugin cleanup refused: files or ownership changed; inspect the launch-scoped plugin before removing it"); }
+            completionEnv = { ...nativeEnv, AGENTHUB_INSTANCE_ID: native.instanceId, AGENTHUB_LAUNCH_ID: native.launchId, AGENTHUB_HOOK_PURPOSE: "facts" };
+          } catch (error) {
+            console.error(`Kimi TUI completion facts are unavailable: ${(error as Error).message}. Continuing without completion receipts; resolve the cause and restart to enable them.`);
+            if (nativeLaunchId) await hub.request({ t: "native_hook_launch", op: "end", peer, launchId: nativeLaunchId }).catch(() => {});
+            if (plugin) try { cleanupKimiPlugin(plugin); } catch { console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join(nativeHome, "plugins", "managed", "agent-hub")} before removing it`); }
+          }
+          if (completionEnv) {
+            try {
+              result = await runKimiTui(launch.cmd, launch.args, cwd, completionEnv);
+            } finally {
+              if (nativeLaunchId) await hub.request({ t: "native_hook_launch", op: "end", peer, launchId: nativeLaunchId }).catch(() => {});
+              if (plugin) try { cleanupKimiPlugin(plugin); } catch { console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join(nativeHome, "plugins", "managed", "agent-hub")} before removing it`); }
+            }
+          } else {
+            result = await runKimiTui(launch.cmd, launch.args, cwd, nativeEnv);
           }
         }
       } finally {

@@ -101,6 +101,15 @@ test("a newly admitted launch replaces a stale record while the stale cleanup st
   expect(installed(f.home).plugins).toEqual([]);
 });
 
+test("a foreign replacement lock fails closed without changing the installed record", () => {
+  const f = fixture();
+  ensureKimiPlugin(f);
+  const before = readFileSync(join(f.home, "plugins", "installed.json"), "utf8");
+  writeFileSync(join(f.home, "agent-hub-plugin.lock"), "another-owner");
+  expect(() => ensureKimiPlugin({ ...f, launchId: "launch-b", replaceStale: true, liveness: () => "gone" })).toThrow("stale lock");
+  expect(readFileSync(join(f.home, "plugins", "installed.json"), "utf8")).toBe(before);
+});
+
 test("the native TUI stays in the foreground process group so its launcher socket stays live", () => {
   expect(kimiTuiSpawnOptions("/project", { AGENTHUB_PEER_ID: "kimi" })).toEqual({ cwd: "/project", env: { AGENTHUB_PEER_ID: "kimi" }, stdio: "inherit" });
   expect(kimiTuiSpawnOptions("/project", {})).not.toHaveProperty("detached");

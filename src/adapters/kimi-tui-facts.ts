@@ -139,11 +139,13 @@ export function readKimiTuiTranscript(session: string, index: string): NativeFac
       if (!prompt || promptReason !== undefined && promptReason !== end.reason || turnPromptId !== undefined && turnPromptId !== prompt.id) continue;
       completion = { id: createHash("sha256").update(`${session}:${turn}:${prompt.id}:${end.reason}`).digest("hex"), index: turn, reason: end.reason };
     }
+    let background: number | undefined;
+    try { background = taskInventory(join(directory, "agents")); } catch { /* an unknown inventory holds settlement, not the final turn evidence */ }
     return {
       factIds: [],
       ...(completion ? { completion } : {}),
       ...(started ? { started: { id: createHash("sha256").update(`${session}:${started.turn}:${started.id}`).digest("hex"), index: started.turn, origin: started.origin } } : {}),
-      background: taskInventory(join(directory, "agents")),
+      ...(background === undefined ? {} : { background }),
     };
   } catch { return empty(); }
 }

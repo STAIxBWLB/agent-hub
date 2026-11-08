@@ -58,6 +58,7 @@ test("a candidate turn has no completion until its correlated final rows arrive,
   expect(readKimiTuiTranscript(session, f.index).background).toBe(0);
   task(f.main, "bash-2", "mystery", null);
   expect(readKimiTuiTranscript(session, f.index).background).toBeUndefined();
+  expect(readKimiTuiTranscript(session, f.index)).toMatchObject({ completion: { index: 1, reason: "completed" }, started: { origin: "user" } });
 });
 
 test("final reason, prompt correlation, replay and task-origin facts stay closed", () => {

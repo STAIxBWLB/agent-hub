@@ -6493,7 +6493,7 @@ var init_permission_mode = __esm(() => {
   PERMISSION_MODES = ["ask", "ask-when-needed", "never-ask"];
   PI_EDIT_TOOLS = new Set(["edit", "write"]);
   AGENT_CONFIG_SEGMENTS = new Set([".claude", ".codex", ".qwen", ".kimi", ".kimi-code", ".jcode", ".pi", ".mcp.json", ".agents", ".agent", "_agents", "_agent", ".gemini", ".grok", ".claude.json"]);
-  INSTRUCTION_FILES = new Set(["agents.md", "claude.md", "qwen.md"]);
+  INSTRUCTION_FILES = new Set(["agents.md", "claude.md", "qwen.md", "gemini.md"]);
   HUB_WRITE_SEGMENTS = new Set([".git", ".agenthub"]);
 });
 
@@ -15822,7 +15822,19 @@ function decodeAgyHook(event, value) {
   const native = call?.args;
   const readPath = call?.name === "view_file" ? native?.AbsolutePath : call?.name === "read_file" ? native?.Path : undefined;
   const observedRead = typeof readPath === "string";
-  const range = observedRead && Number.isSafeInteger(native?.StartLine) && native.StartLine > 0 ? { offset: native.StartLine, ...Number.isSafeInteger(native?.EndLine) && native.EndLine >= native.StartLine ? { limit: native.EndLine - native.StartLine + 1 } : {} } : {};
+  const hasStart = observedRead && Number.isSafeInteger(native?.StartLine) && native.StartLine > 0;
+  const hasEnd = observedRead && Number.isSafeInteger(native?.EndLine) && native.EndLine > 0;
+  const hasByteOffset = observedRead && Number.isSafeInteger(native?.ByteOffset) && native.ByteOffset >= 0;
+  const range = hasStart ? { offset: native.StartLine, ...hasEnd && native.EndLine >= native.StartLine ? { limit: native.EndLine - native.StartLine + 1 } : {} } : hasEnd ? { offset: 1, limit: native.EndLine } : hasByteOffset ? { offset: native.ByteOffset + 1 } : {};
+  const writePath = call?.name === "write_file" ? native?.Path : call?.name === "write_to_file" ? native?.TargetFile : undefined;
+  const writeContent = call?.name === "write_file" ? native?.Content : call?.name === "write_to_file" ? native?.CodeContent : undefined;
+  const observedWrite = typeof writePath === "string";
+  const editPath = call?.name === "edit_file" ? native?.Path : call?.name === "replace_file_content" ? native?.TargetFile : undefined;
+  const oldStr = call?.name === "edit_file" ? native?.Target : call?.name === "replace_file_content" ? native?.TargetContent : undefined;
+  const newStr = call?.name === "edit_file" ? native?.Replacement : call?.name === "replace_file_content" ? native?.ReplacementContent : undefined;
+  const observedEdit = typeof editPath === "string";
+  const tool = observedRead ? "Read" : observedWrite ? "Write" : observedEdit ? "Edit" : typeof call?.name === "string" ? call.name : "";
+  const input = observedRead ? { file_path: readPath, ...range } : observedWrite ? { file_path: writePath, ...typeof writeContent === "string" && native?.Append !== true ? { content: writeContent } : {} } : observedEdit ? { file_path: editPath, ...typeof oldStr === "string" && typeof newStr === "string" ? { old_string: oldStr, new_string: newStr, replace_all: native?.AllowMultiple === true } : {} } : native ?? {};
   const phase = { SessionStart: "session", PreInvocation: "start", PostInvocation: "post", PreToolUse: "pre", PostToolUse: "post", Stop: "stop" }[event];
   return {
     event,
@@ -15830,8 +15842,8 @@ function decodeAgyHook(event, value) {
     sessionId: value.conversationId,
     transcriptPath: value.transcriptPath,
     workspacePaths: value.workspacePaths,
-    tool: observedRead ? "Read" : typeof call?.name === "string" ? call.name : "",
-    input: observedRead ? { file_path: readPath, ...range } : native ?? {},
+    tool,
+    input,
     ...Number.isSafeInteger(value.stepIdx) && value.stepIdx >= 0 ? { toolUseId: `${value.conversationId}:${value.stepIdx}` } : {},
     ...Number.isSafeInteger(value.invocationNum) && value.invocationNum >= 0 ? { invocation: value.invocationNum } : {},
     ...event === "Stop" ? { fullyIdle: value.fullyIdle, terminationReason: typeof value.terminationReason === "string" ? value.terminationReason : "" } : {}
@@ -15883,7 +15895,26 @@ function readAgyTranscript(session, transcript, options) {
 `);
       if (start)
         lines.shift();
-      const out = { factIds: [], size: stat.size, mtimeMs: stat.mtimeMs, scannedFrom: window === cap && hasSince ? Math.min(start, options.sinceOffset) : start };
+      let incompleteBytes = 0;
+      if (lines.length === 0) {
+        incompleteBytes = from + bytes - start;
+      } else {
+        const tail = lines[lines.length - 1], prev = lines.length > 1 ? lines[lines.length - 1 - 1] : "";
+        if (tail.length > 0) {
+          try {
+            JSON.parse(tail);
+          } catch {
+            incompleteBytes = Buffer.byteLength(tail, "utf8");
+          }
+        } else if (prev.length > 0) {
+          try {
+            JSON.parse(prev);
+          } catch {
+            incompleteBytes = Buffer.byteLength(prev, "utf8") + 1;
+          }
+        }
+      }
+      const out = { factIds: [], size: Math.max(resumeAt, from + bytes - incompleteBytes), mtimeMs: stat.mtimeMs, scannedFrom: window === cap && hasSince ? Math.min(start, options.sinceOffset) : start };
       for (const line of lines) {
         let row;
         try {
@@ -15893,9 +15924,18 @@ function readAgyTranscript(session, transcript, options) {
         }
         if (!record3(row) || row.status !== "DONE")
           continue;
-        if (row.source === "SYSTEM_SDK" && row.type === "EPHEMERAL_MESSAGE" && typeof row.content === "string") {
+        if (row.source === "SYSTEM_SDK" && (row.type === "EPHEMERAL_MESSAGE" || row.type === "SYSTEM_MESSAGE") && typeof row.content === "string") {
           for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g))
             out.factIds.push(match[1]);
+        }
+        if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && row.step_index >= 0 && Number.isSafeInteger(row.input_tokens) && row.input_tokens >= 0 && Number.isSafeInteger(row.output_tokens) && row.output_tokens >= 0) {
+          const inputTokens = row.input_tokens, outputTokens = row.output_tokens;
+          const cacheReadTokens = Number.isSafeInteger(row.cache_read_tokens) && row.cache_read_tokens >= 0 ? row.cache_read_tokens : 0;
+          const totalTokens = inputTokens + outputTokens + cacheReadTokens;
+          if (Number.isSafeInteger(totalTokens)) {
+            const at = typeof row.created_at === "string" && Number.isFinite(Date.parse(row.created_at)) ? row.created_at : undefined;
+            (out.usage ??= []).push({ id: createHash7("sha256").update(`${session}:usage:${row.step_index}`).digest("hex"), index: row.step_index, inputTokens, outputTokens, cacheReadTokens, totalTokens, ...at ? { at } : {} });
+          }
         }
         if (options?.completion !== false && row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
           out.completion = { id: createHash7("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
@@ -16266,40 +16306,62 @@ function kimiPluginPreview(home, hookScript) {
   directory(home, false);
   if (!file(hookScript, MAX_HOOK))
     throw new Error("Kimi hook bundle is missing");
-  return { file: join21(home, "plugins", "managed", ID2), changed: true, action: "install the launch-scoped native completion plugin and remove it on exit" };
+  return { file: join21(home, "plugins", "managed", ID2), changed: true, action: "only after Kimi 2.5.2 is confirmed, install the launch-scoped completion plugin and remove it on exit; other versions keep the existing TUI with no plugin" };
+}
+function locked(options, run) {
+  if (!isAbsolute7(options.home))
+    throw new Error("Kimi home must be an absolute path");
+  directory(options.home);
+  const path = join21(options.home, "agent-hub-plugin.lock");
+  let fd;
+  try {
+    fd = openSync9(path, "wx", 384);
+  } catch {
+    throw new Error(`Another Kimi plugin replacement is active or left a stale lock; retry after it exits or inspect ${path}`);
+  }
+  try {
+    return run();
+  } finally {
+    closeSync9(fd);
+    unlinkSync3(path);
+  }
 }
 function ensureKimiPlugin(options) {
-  const current = plan2(options);
-  if (!current.changed)
-    return { changed: false };
-  for (const path of [join21(options.home, "plugins"), join21(options.home, "plugins", "managed"), current.managed]) {
-    if (!directory(path, false))
-      mkdirSync11(path, { mode: 448 });
-  }
-  for (const target of current.targets)
-    atomic(target.path, target.next, target.before?.stat);
-  return { changed: true };
+  return locked(options, () => {
+    const current = plan2(options);
+    if (!current.changed)
+      return { changed: false };
+    for (const path of [join21(options.home, "plugins"), join21(options.home, "plugins", "managed"), current.managed]) {
+      if (!directory(path, false))
+        mkdirSync11(path, { mode: 448 });
+    }
+    for (const target of current.targets)
+      atomic(target.path, target.next, target.before?.stat);
+    return { changed: true };
+  });
 }
 function cleanupKimiPlugin(options) {
-  const current = plan2({ ...options, replaceStale: false });
-  const installedBefore = file(current.installed, MAX_INSTALLED), document = parse2(installedBefore, current.installed);
-  const records = document?.plugins;
-  if (!document || !Array.isArray(records) || records.some((row) => !object8(row)))
-    throw new Error(`${current.installed} changed during the launch`);
-  const record = records.find((row) => row.id === ID2);
-  if (!record)
-    return;
-  if (record.root !== current.managed || record.enabled !== true)
-    throw new Error("Kimi's agent-hub plugin changed during the launch; leaving it installed");
-  const next = { version: 1, plugins: records.filter((row) => row.id !== ID2) };
-  atomic(current.installed, Buffer.from(`${JSON.stringify(next, null, 2)}
+  locked(options, () => {
+    const current = plan2({ ...options, replaceStale: false });
+    const installedBefore = file(current.installed, MAX_INSTALLED), document = parse2(installedBefore, current.installed);
+    const records = document?.plugins;
+    if (!document || !Array.isArray(records) || records.some((row) => !object8(row)))
+      throw new Error(`${current.installed} changed during the launch`);
+    const record = records.find((row) => row.id === ID2);
+    if (!record)
+      return;
+    if (record.root !== current.managed || record.enabled !== true)
+      throw new Error("Kimi's agent-hub plugin changed during the launch; leaving it installed");
+    const next = { version: 1, plugins: records.filter((row) => row.id !== ID2) };
+    atomic(current.installed, Buffer.from(`${JSON.stringify(next, null, 2)}
 `), installedBefore?.stat);
-  const [manifestTarget, hookTarget] = current.targets;
-  removeFile(join21(current.managed, "kimi.plugin.json"), manifestTarget.next);
-  removeFile(join21(current.managed, "kimi-hook.js"), hookTarget.next);
-  try {
-    rmdirSync2(current.managed);
-  } catch {}
+    const [manifestTarget, hookTarget] = current.targets;
+    removeFile(join21(current.managed, "kimi.plugin.json"), manifestTarget.next);
+    removeFile(join21(current.managed, "kimi-hook.js"), hookTarget.next);
+    try {
+      rmdirSync2(current.managed);
+    } catch {}
+  });
 }
 var EVENTS3, ID2 = "agent-hub", MAX_INSTALLED, MAX_HOOK, object8 = (value) => !!value && typeof value === "object" && !Array.isArray(value), directory = (path, required = true) => {
   const stat = lstatSync17(path, { throwIfNoEntry: false });
@@ -16430,7 +16492,7 @@ async function runKimiEntry(ctx) {
         const version = spawnSync4(probe.cmd, probe.args, { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: nativeLaunchEnv("kimi", childEnv()) });
         const gate = kimiTuiVersionGate(version.status === 0 ? version.stdout : "");
         if (version.status === 0 && version.stdout.trim() && gate.message)
-          console.error(gate.message);
+          console.error(`${gate.message}. Completion receipts are off; the TUI launches as before.`);
         const serverBundle = bundleInStatus(snapshot) ?? resolve14(cliDir, "../../plugins/agent-hub/server.js");
         const written = configureKimiMcp(cwd, stateDir, serverBundle, "tui");
         if (written.tracked)
@@ -16440,25 +16502,43 @@ async function runKimiEntry(ctx) {
           result = await runKimiTui(launch.cmd, launch.args, cwd, nativeEnv);
         } else {
           const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join22(nativeEnv.HOME ?? homedir6(), ".kimi-code");
-          mkdirSync12(nativeHome, { recursive: true, mode: 448 });
-          const native = await hub.request({ t: "native_hook_launch", op: "begin", peer, nativeHome });
-          if (!native.ok || typeof native.launchId !== "string" || typeof native.instanceId !== "string")
-            fail(native.error ?? "native hook launch was not admitted");
-          const plugin = { home: nativeHome, hookScript: resolve14(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
-          let pluginReady = false;
+          let nativeLaunchId, completionEnv, plugin;
           try {
-            console.error("Kimi TUI completion facts: installing a launch-scoped native plugin; it will be removed after this TUI exits");
+            mkdirSync12(nativeHome, { recursive: true, mode: 448 });
+            const native = await hub.request({ t: "native_hook_launch", op: "begin", peer, nativeHome });
+            if (!native.ok || typeof native.launchId !== "string" || typeof native.instanceId !== "string")
+              throw new Error(native.error ?? "native hook launch was not admitted");
+            nativeLaunchId = native.launchId;
+            plugin = { home: nativeHome, hookScript: resolve14(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
+            console.error(`Kimi TUI completion facts: installing a launch-scoped native plugin under ${join22(nativeHome, "plugins", "managed", "agent-hub")}; it will be removed after this TUI exits`);
             ensureKimiPlugin(plugin);
-            pluginReady = true;
-            result = await runKimiTui(launch.cmd, launch.args, cwd, { ...nativeEnv, AGENTHUB_INSTANCE_ID: native.instanceId, AGENTHUB_LAUNCH_ID: native.launchId, AGENTHUB_HOOK_PURPOSE: "facts" });
-          } finally {
-            await hub.request({ t: "native_hook_launch", op: "end", peer, launchId: native.launchId }).catch(() => {});
-            if (pluginReady)
+            completionEnv = { ...nativeEnv, AGENTHUB_INSTANCE_ID: native.instanceId, AGENTHUB_LAUNCH_ID: native.launchId, AGENTHUB_HOOK_PURPOSE: "facts" };
+          } catch (error) {
+            console.error(`Kimi TUI completion facts are unavailable: ${error.message}. Continuing without completion receipts; resolve the cause and restart to enable them.`);
+            if (nativeLaunchId)
+              await hub.request({ t: "native_hook_launch", op: "end", peer, launchId: nativeLaunchId }).catch(() => {});
+            if (plugin)
               try {
                 cleanupKimiPlugin(plugin);
               } catch {
-                console.error("Managed Kimi plugin cleanup refused: files or ownership changed; inspect the launch-scoped plugin before removing it");
+                console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join22(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
               }
+          }
+          if (completionEnv) {
+            try {
+              result = await runKimiTui(launch.cmd, launch.args, cwd, completionEnv);
+            } finally {
+              if (nativeLaunchId)
+                await hub.request({ t: "native_hook_launch", op: "end", peer, launchId: nativeLaunchId }).catch(() => {});
+              if (plugin)
+                try {
+                  cleanupKimiPlugin(plugin);
+                } catch {
+                  console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join22(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
+                }
+            }
+          } else {
+            result = await runKimiTui(launch.cmd, launch.args, cwd, nativeEnv);
           }
         }
       } finally {
@@ -17665,11 +17745,15 @@ function readKimiTuiTranscript(session, index) {
         continue;
       completion = { id: createHash8("sha256").update(`${session}:${turn}:${prompt.id}:${end.reason}`).digest("hex"), index: turn, reason: end.reason };
     }
+    let background;
+    try {
+      background = taskInventory(join30(directory, "agents"));
+    } catch {}
     return {
       factIds: [],
       ...completion ? { completion } : {},
       ...started ? { started: { id: createHash8("sha256").update(`${session}:${started.turn}:${started.id}`).digest("hex"), index: started.turn, origin: started.origin } } : {},
-      background: taskInventory(join30(directory, "agents"))
+      ...background === undefined ? {} : { background }
     };
   } catch {
     return empty();
