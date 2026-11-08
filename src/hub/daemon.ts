@@ -3524,7 +3524,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   /** A peer whose definition keeps host-owned soft token accounting (Kimi): its rows are read at a turn start (the floor), a turn end, a usage_update and a bounded delayed drain. */
   const softTokenPeer = (peer: PeerId): boolean => !!definitionOf(peer)?.budget?.resetSoftTokensOnResume;
-  const collectKimiUsage = (peer: PeerId): void => { if (!softTokenPeer(peer)) return; try { kimiUsage.collect(peer); } catch (error) { log(`kimi usage: ${(error as Error).name}`); } };
+  const collectKimiUsage = (peer: PeerId, terminal = false): void => { if (!softTokenPeer(peer)) return; try { kimiUsage.collect(peer, false, terminal); } catch (error) { log(`kimi usage: ${(error as Error).name}`); } };
   startupCleanup.push(() => budget.close());
   // #683 U2: events.jsonl folded into hub.db, a bounded pass at a time, so `usage` never rescans the log.
   const usageRollup = new UsageRollup(join(opts.stateDir, "hub.db"), join(opts.stateDir, "events.jsonl"));
@@ -6991,7 +6991,7 @@ export async function startDaemon(opts: DaemonOptions) {
           try { tasks.recordOwnerTurn(e.peer, open.writeTasks, changed, !!open.taskEffect || !!open.effectsPending); } catch { /* advisory cannot fail native completion */ }
         }
       }
-      if (e.state === "offline" && softTokenPeer(e.peer)) { collectKimiUsage(e.peer); kimiUsage.drop(e.peer); }
+      if (e.state === "offline" && softTokenPeer(e.peer)) { collectKimiUsage(e.peer, true); kimiUsage.drop(e.peer); }
       // #636: a class-budget allowance belongs to the owner that earned it. A stopped, crashed or removed owner that later resumes the same native
       // session id starts from zero (a replaced adapter's own `offline` is muted, so a new owner also revokes where it is created).
       if (e.state === "offline") actionBudgets.revoke(e.peer);

@@ -9,14 +9,14 @@ Date: 2026-11-08. Scope: deterministic synthetic fixtures only. No personal wire
 | Measurement | Baseline | Sliced |
 | --- | ---: | ---: |
 | Slices | 16 | 16 |
-| Drain wall time | 34.020 ms | 33.969 ms |
-| Longest synchronous slice | 33.990 ms | 2.245 ms |
+| Drain wall time | 34.401 ms | 33.824 ms |
+| Longest synchronous slice | 34.373 ms | 3.296 ms |
 | Discovery calls | 32 | 32 |
 | Bytes read | 2,082,248 | 2,082,248 |
 | Yields | 0 | 15 |
 | Caught-up reports | 1 | 1 |
 
-These are one local run's raw values, not a production latency or percentage claim. Discovery and bytes are unchanged; each scheduled invocation returns after one bounded read/commit, and control traffic can run before the next slice.
+These are one local run's raw values, not a production latency or percentage claim. Discovery and bytes are unchanged; each scheduled invocation returns after one bounded read/commit, and control traffic can run before the next slice. All 16 continuation callbacks are timed individually. The terminal offline read still drains synchronously before drop, and a failed attempt uses the bounded 250 ms follow-up instead of an unbounded 0 ms retry.
 
 ## Acceptance criteria
 
@@ -28,4 +28,4 @@ These are one local run's raw values, not a production latency or percentage cla
 - [x] AC6: concurrent cues remain serialized at one pending drain, and stop/session replacement cannot rebind the old session.
 - [ ] AC7: final-head `scripts/check.sh --changed` is pending.
 
-Focused result: 41 tests across the benchmark, delayed-usage, daemon and wire suites passed, plus typecheck. Baseline/sliced receipt generation and the benchmark test also passed independently.
+Focused result: 43 tests across the benchmark, delayed-usage, daemon and wire suites passed, plus typecheck. Baseline/sliced receipt generation and the benchmark test also passed independently.

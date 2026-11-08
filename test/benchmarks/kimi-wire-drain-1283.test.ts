@@ -8,6 +8,8 @@ test("the same synthetic backlog reports baseline and sliced I/O counts and yiel
   expect(sliced.slices).toBe(16);
   expect(sliced.discovery).toBe(baseline.discovery);
   expect(sliced.bytes).toBe(baseline.bytes);
+  expect(baseline.sliceMs).toHaveLength(1);
+  expect(sliced.sliceMs).toHaveLength(16);
   expect(baseline.yields).toBe(0);
   expect(sliced.yields).toBeGreaterThan(0);
   expect(sliced.reports).toBe(1);

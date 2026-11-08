@@ -145,20 +145,21 @@ export class KimiUsage {
     return next;
   }
 
-  collect(peer: string, scheduled = false): void {
+  collect(peer: string, scheduled = false, terminal = false): void {
     const bound = this.bind(peer);
     if (!bound) return;
     try {
       if (bound.passes >= PASSES) bound.passes = 0;
       let added = 0, more = false;
-      // Without a scheduler, retain the original synchronous behavior. The daemon's scheduler makes one bounded slice per invocation.
-      for (let pass = 0, slices = this.ports.schedule ? 1 : PASSES; pass < slices; pass++) {
+      // Without a scheduler or for the terminal offline read, retain the bounded synchronous drain. Other scheduled work uses one slice per invocation.
+      for (let pass = 0, slices = terminal || !this.ports.schedule ? PASSES : 1; pass < slices; pass++) {
         const read = bound.reader.readSlice();
         // A successful slice records and commits every row before a later slice can fail. An event failure leaves the slice uncommitted,
         // so the next drain reads it again and the seen set removes only rows whose events already succeeded.
         if (read.status === "unknown") { bound.backlog = false; bound.passes = 0; this.unknown(peer, bound, read.reason); return; }
         this.ports.observe?.(bound.reader.stats());
-        added += this.record(peer, bound, read.rows);
+        try { added += this.record(peer, bound, read.rows); }
+        catch (error) { bound.backlog = false; bound.passes = 0; throw error; }
         read.commit();
         more = read.more;
         bound.backlog = more;

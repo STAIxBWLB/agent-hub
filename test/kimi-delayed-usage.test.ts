@@ -226,6 +226,16 @@ test("#1283 AC3: cancellation after offset advancement cannot discard the uncomm
   expect(r.log.recorded).toEqual([{ id: r.log.recorded[0]!.id, counted: 15, attribution: { task: 8, attribution: "delivery" }, turn: "turn-a" }]);
 });
 
+test("#1283: a failed backlog attempt uses bounded backoff instead of a zero-delay retry", () => {
+  const h = fixture(), s = h.makeSession(), r = rig(h, { failSecondRecord: true }), t = r.now();
+  r.bind(s.id); r.turn("turn-a", 8, t - 10);
+  const pad = () => `${JSON.stringify({ type: "prompt", text: "x".repeat(70_000) })}\n`;
+  appendFileSync(s.wire, pad() + wireRow(t - 5, 7, 3) + pad() + wireRow(t - 4, 3, 1) + pad() + wireRow(t - 3, 5, 1));
+  expect(() => r.usage.collect("kimi")).toThrow("injected event commit failure");
+  expect(r.log.recorded.map(row => row.counted)).toEqual([10]);
+  expect(r.timers.delays()).toEqual([250]);
+});
+
 test("#1283: a delayed timer contains an event failure and keeps its bounded retry", () => {
   const h = fixture(), s = h.makeSession(), r = rig(h, { failFirstRecord: true }), t = r.now();
   r.bind(s.id); r.turn("turn-a", 8, t - 10);

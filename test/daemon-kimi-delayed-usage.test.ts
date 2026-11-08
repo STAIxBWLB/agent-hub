@@ -126,6 +126,16 @@ test("#1281 AC2/AC4: a delayed row keeps task A while task B is open, never chan
   expect(events(r.file, "usage")).toHaveLength(2);
 });
 
+test("#1283: the terminal offline read finishes the bounded backlog before drop", async () => {
+  const r = await rig();
+  await r.turn("terminal backlog");
+  appendFileSync(r.wire, `${JSON.stringify({ type: "prompt", text: "x".repeat(1_100_000) })}\n`);
+  r.row(Date.now(), 4, 2);
+  await r.daemon.stop();
+  expect(events(r.file, "usage")).toHaveLength(1);
+  expect(events(r.file, "usage")[0]).toMatchObject({ inputTokens: 4, outputTokens: 2 });
+});
+
 test("#1281 immediate Kimi tokens count in the supervision receipt opened before the native turn", async () => {
   const r = await rig();
   await r.turn("supervised ordinary turn", { supervision: true, during: () => r.row(Date.now(), 5, 2) });

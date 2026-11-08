@@ -13,6 +13,7 @@ export interface KimiWireDrainMeasurement {
   slices: number;
   drainMs: number;
   longestSliceMs: number;
+  sliceMs: number[];
   discovery: number;
   bytes: number;
   yields: number;
@@ -45,7 +46,11 @@ export async function runKimiWireDrainBenchmark(mode: "baseline" | "sliced"): Pr
       observe: stats => observations.push(stats),
       ...(mode === "sliced" ? { schedule: (delay: number, run: () => void) => {
         const id = ++sequence;
-        if (delay === 0) pending.set(id, run);
+        if (delay === 0) pending.set(id, () => {
+          const before = observations.length, started = performance.now();
+          run();
+          if (observations.length > before) durations.push(performance.now() - started);
+        });
         return () => { pending.delete(id); };
       } } : {}),
       record: () => {}, report: () => { reports++; }, forget: () => {}, notice: () => {},
@@ -75,6 +80,7 @@ export async function runKimiWireDrainBenchmark(mode: "baseline" | "sliced"): Pr
     return {
       mode, slices: observations.length, drainMs: performance.now() - started,
       longestSliceMs: durations.length ? Math.max(...durations) : 0,
+      sliceMs: durations,
       discovery: observations.reduce((sum, row) => sum + row.discovery, 0),
       bytes: observations.reduce((sum, row) => sum + row.bytes, 0), yields, reports,
     };
