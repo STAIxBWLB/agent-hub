@@ -129,3 +129,18 @@ error and finally effects. Preview metadata must match the exact set value or
 null clear. Server refusals retain bounded plain error/repair text through the
 existing text-only surface; unsafe or malformed replies use fixed fallbacks.
 The UI error-text ceiling is a safety floor, not a new authority or model bound.
+
+
+At `8333ffcdfe05f373a7c58fa192a4efd7123c138e`, typecheck and inventory
+passed; all 25 changed state/UI tests passed (237 assertions, two files;
+39 s). This covers pending clear before first ACK, strict draft/token binding,
+late preview/confirmation success/error/finally, and specific safe server repair
+text without claiming native application.
+
+Main `6da56c7a3cc697d9401903b827897148e05826e9` was merged cleanly for
+integration, including the #1318 macOS typecheck heap fix. The model runtime,
+adapter, CLI/UI, package, lock and generated bundle bytes are unchanged from the
+passing source checkpoint; incoming changes are Orca O2 and the CI fix. No
+unmerged fix branch is imported. Two new seeded guards target person-only model
+control and the reproduced accepted-ACK ordering defect, using existing named
+Linux tests. Their actual seeded results follow separately.
