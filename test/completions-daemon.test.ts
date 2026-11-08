@@ -219,7 +219,9 @@ test("no prompt or reply text reaches hub.db completion rows, the log or events.
   expect(readFileSync(join(f.stateDir, "hub.log"), "utf8").split("\n").filter(line => /\bcompletion\b/i.test(line))).toEqual([]);
   const probe = new CompletionStore(join(f.stateDir, "hub.db"));
   try { expect(JSON.stringify(probe.list())).not.toContain("TOPSECRET-PROMPT-TEXT"); } finally { probe.close(); }
-  expect(Object.keys(f.completions()[0]!).sort()).toEqual(["at", "id", "ms", "outcome", "peer", "type", "v"]);
+  // #1278 added the token rule's answer: `attribution` (a closed word) and, when a task owns the run, `task` (an id). Every other key stays pinned, so a text field would still fail here.
+  expect(Object.keys(f.completions()[0]!).sort()).toEqual(["at", "attribution", "id", "ms", "outcome", "peer", "type", "v"]);
+  expect(["delivery", "single_open", "unattributed"]).toContain((f.completions()[0] as { attribution?: string }).attribution!);
 });
 
 test("a person-started run whose local worker stops at its step ceiling is stored `limit`, never `done`, and a run that concludes on its own is `done`", async () => {
@@ -321,3 +323,29 @@ test("a restart without a budget pause still settles the open run interrupted, o
   expect(again.completions()[0]).toMatchObject({ peer: "codex", outcome: "interrupted" });
   await again.close(); cleanup.length = 0;
 }, 30_000);
+
+// #1278: a run's completion is attributed when the run opens, so it keeps its task after the task has moved on.
+test("a completion is attributed to the peer's single open task at the start of its run, and a run with no open task is unattributed", async () => {
+  const f = await rig({});
+  await f.person.request({ t: "task", op: "hub_task_propose", args: { title: "owned work", class: "implement", owner: "codex" } });
+  const codex = await f.agent("codex");
+  await codex.request({ t: "task", op: "hub_task_accept", args: { id: 1 } });
+  await until(() => f.peers.codex!.state === "busy", "the task assignment turn");
+  f.peers.codex!.end();
+  await until(() => f.peers.codex!.state === "idle", "the idle peer");
+  await f.say("codex");                                                      // the person's message opens a run while task 1 is codex's only open task
+  await until(() => f.peers.codex!.state === "busy", "the person's turn");
+  // The task closes mid-run, so at settle time the peer holds no open task and the rule read then would say unattributed. The completion still belongs to the task the run opened under.
+  expect((await f.person.request({ t: "task", op: "hub_task_cancel", args: { id: 1, reason: "closed mid-run" } })).ok).toBe(true);
+  // The cancellation sends the owner a revision-bound stop notice, which starts a turn of its own: end turns until the peer rests, and the one completion is the person's run.
+  for (let i = 0; i < 5 && f.completions().length === 0; i++) { f.peers.codex!.end(); await Bun.sleep(40); }
+  await until(() => f.completions().length === 1, "the completion");
+  expect(f.completions()[0]).toMatchObject({ peer: "codex", outcome: "done", task: 1, attribution: "single_open" });
+  // A run that opens while the peer holds no open task at all names none: unattributed, with no task id.
+  await f.say("codex");
+  await until(() => f.peers.codex!.state === "busy", "the second turn");
+  f.peers.codex!.end();
+  await until(() => f.completions().length === 2, "the second completion");
+  expect(f.completions()[1]).toMatchObject({ peer: "codex", attribution: "unattributed" });
+  expect(f.completions()[1]).not.toHaveProperty("task");
+});

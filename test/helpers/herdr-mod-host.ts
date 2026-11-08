@@ -18,13 +18,16 @@ export interface HerdrFixtureSpace {
 export interface HerdrFixturePane { pane: string; terminal: string | null; tab: string; title: string; cwd: string | null; focused: boolean }
 export interface HerdrFixtureFocus { space: string; tab: string; pane: string | null; terminal: string | null; shown: string | null; agent: string | null; cwd: string | null }
 export interface HerdrFixtureMachine { name: string | null; layout: "loading" | "ready" | "unavailable" }
-export type HerdrFixtureFunction = "exec" | "run" | "spaces" | "panes" | "focused" | "machines" | "terminals" | "commands" | "openOverlay" | "closeOverlay" | "notify" | "props";
+export type HerdrFixtureFunction = "exec" | "run" | "hc" | "spaces" | "panes" | "focused" | "machines" | "terminals" | "commands" | "openOverlay" | "closeOverlay" | "notify" | "props";
+/** A row of `terminals()`: `hc ls --json` plus Herdr's own `status` word. Only `address` is required here; a test adds `state` and `status`. */
+export interface HerdrFixtureTerminal { address: string; state?: string; status?: string | null; [key: string]: unknown }
+export type HerdrFixtureHcGet = (address: string) => { code: number; stdout: string; stderr?: string } | "reject";
 export interface HerdrFixtureExecCall { command: string; args: readonly string[]; cwd: string | undefined; on: string | null | undefined; timeoutMs: number; maxOutputBytes: number }
 export interface HerdrFixtureCliResult { stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; truncated: boolean }
 export type HerdrFixtureCliPort = (call: HerdrFixtureExecCall) => Promise<HerdrFixtureCliResult>;
 export interface HerdrFixtureRun { name: string; args: Record<string, unknown> }
 export type HerdrFixtureErrorCode = "unknown_function" | "unknown_command" | "unknown_argument" | "missing_argument" | "invalid_params" | "exec_cannot_start"
-  | "exec_machine_unreachable" | "exec_timeout" | "exec_output_too_large" | "no_pane_target" | "disabled";
+  | "exec_machine_unreachable" | "exec_timeout" | "exec_output_too_large" | "no_pane_target" | "disabled" | "hc_unsupported" | "hc_cannot_start";
 export class HerdrFixtureError extends Error {
   constructor(readonly code: HerdrFixtureErrorCode) { super(code); this.name = "HerdrFixtureError"; }
 }
@@ -44,7 +47,7 @@ export const HERDR_FIXTURE_COMMANDS: Readonly<Record<string, readonly string[]>>
   "mod.open": ["name*"],
   "overlay.close": ["id"],
 };
-const FUNCTIONS: readonly HerdrFixtureFunction[] = ["exec", "run", "spaces", "panes", "focused", "machines", "terminals", "commands", "openOverlay", "closeOverlay", "notify", "props"];
+const FUNCTIONS: readonly HerdrFixtureFunction[] = ["exec", "run", "hc", "spaces", "panes", "focused", "machines", "terminals", "commands", "openOverlay", "closeOverlay", "notify", "props"];
 const fail = (code: HerdrFixtureErrorCode): never => { throw new HerdrFixtureError(code); };
 const ID_ARGS = new Set(["id", "pane", "space", "terminal"]);
 
@@ -56,7 +59,9 @@ export interface FakeHerdrModHostOptions {
   panes?: readonly HerdrFixturePane[];
   focused?: HerdrFixtureFocus | null;
   machines?: readonly HerdrFixtureMachine[];
-  terminals?: readonly { address: string }[];
+  terminals?: readonly HerdrFixtureTerminal[];
+  /** What `hc get <address> --json` answers. Unset: every address is `not_found` (exit 3, as observed). */
+  hcGet?: HerdrFixtureHcGet;
   cli: HerdrFixtureCliPort;
   enabled?: boolean;
   /** Functional state that must survive the mod being disabled or removed. */
@@ -66,13 +71,14 @@ export class FakeHerdrModHost {
   readonly execCalls: HerdrFixtureExecCall[] = [];
   readonly runs: HerdrFixtureRun[] = [];
   readonly opened: { name: string; args: Record<string, unknown> }[] = [];
+  readonly hcCalls: string[][] = [];
   private readonly offered: Set<string>;
   private readonly commands: Set<string>;
   private spaceList: HerdrFixtureSpace[];
   private paneList: HerdrFixturePane[];
   private focus: HerdrFixtureFocus | null;
   private machineList: HerdrFixtureMachine[];
-  private terminalList: { address: string }[];
+  private terminalList: HerdrFixtureTerminal[];
   private enabled: boolean;
   private readonly state: { terminals: string[]; agents: string[] };
   constructor(private readonly options: FakeHerdrModHostOptions) {
@@ -84,6 +90,7 @@ export class FakeHerdrModHost {
     this.focus = structuredClone(options.focused ?? null);
     this.machineList = structuredClone([...(options.machines ?? [{ name: null, layout: "ready" as const }])]);
     this.terminalList = structuredClone([...(options.terminals ?? [])]);
+    this.hcGetFn = options.hcGet;
     this.enabled = options.enabled ?? true;
     this.state = structuredClone(options.syntheticState ?? { terminals: [], agents: [] });
   }
@@ -101,7 +108,23 @@ export class FakeHerdrModHost {
   panes(): HerdrFixturePane[] { this.need("panes"); return structuredClone(this.paneList); }
   focused(): HerdrFixtureFocus | null { this.need("focused"); return structuredClone(this.focus); }
   machines(): HerdrFixtureMachine[] { this.need("machines"); return structuredClone(this.machineList); }
-  terminals(): { address: string }[] { this.need("terminals"); return structuredClone(this.terminalList); }
+  terminals(): HerdrFixtureTerminal[] { this.need("terminals"); return structuredClone(this.terminalList); }
+  setTerminals(terminals: readonly HerdrFixtureTerminal[]): void { this.terminalList = structuredClone([...terminals]); }
+  setHcGet(hcGet: HerdrFixtureHcGet | undefined): void { this.hcGetFn = hcGet; }
+  private hcGetFn: HerdrFixtureHcGet | undefined;
+  /**
+   * `hc(args)` runs herdr-core's CLI. Fixture strictness: ONLY `get <address> --json` is accepted. Every other hc command (send, keys, kill, run, label, ...) is refused as unsupported, so a test
+   * that passes proves the companion never reached for one. An address with a `/` is a remote terminal, which the fixture refuses because remote `hc get` was not observed.
+   */
+  async hc(args: unknown): Promise<{ code: number; stdout: string; stderr: string }> {
+    this.need("hc");
+    if (!Array.isArray(args) || !args.every(a => typeof a === "string")) return fail("invalid_params");
+    this.hcCalls.push([...(args as string[])]);
+    if (args.length !== 3 || args[0] !== "get" || args[2] !== "--json" || !/^t[0-9a-z]{1,10}$/.test(args[1]!)) return fail("hc_unsupported");
+    const answer = this.hcGetFn ? this.hcGetFn(args[1]!) : { code: 3, stdout: "", stderr: JSON.stringify({ error: { kind: "not_found", message: `no terminal "${args[1]}"` } }) };
+    if (answer === "reject") return fail("hc_cannot_start");
+    return { code: answer.code, stdout: answer.stdout, stderr: answer.stderr ?? "" };
+  }
   /** A space's machine layout is "ready" only when this reports it; an unknown machine is not a ready one. */
   async exec(command: unknown, args?: unknown, options?: unknown): Promise<{ code: number; stdout: string; stderr: string }> {
     this.need("exec");
