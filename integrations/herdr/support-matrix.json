@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "issue": 1199,
+  "stage": "H3",
+  "rule": "A combination is `supported` only when its receipt file exists and no longer says NOT RUN. Every other combination keeps the verdict below. No identity check is loosened for any combination to make it pass.",
+  "verdicts": ["supported", "fixture_only", "unsupported"],
+  "combinations": [
+    {
+      "id": "macos-local",
+      "verdict": "fixture_only",
+      "receipt": "native-receipt.md",
+      "reason": "Behaviour is checked against the H0 fake host and the real hc and herdr-app check in scratch homes. No call from this mod has reached a real Herdr window: the native open, focus and disable receipt is person-run and NOT RUN.",
+      "behaviour": "Selection binds the exact space, machine, project id and real root; Open console, local Open dashboard, Copy command, Status, Focus and Peek console."
+    },
+    {
+      "id": "remote-space",
+      "verdict": "unsupported",
+      "receipt": "receipts/remote.md",
+      "reason": "No remote receipt, and no remote machine is configured on the machine this was built on, so no remote command was ever run. The mod routes a remote space through Herdr's own tab.new in that space and reads on that machine with exec(on:), but nothing here observed exec(on:) or a remote tab. A remote dashboard link is never opened and a remote terminal is never focused.",
+      "behaviour": "Open console (new tab in that machine's space), Copy command and Status are designed for it; Open dashboard refuses with `remote`; Focus and Peek refuse with `remote_focus`."
+    },
+    {
+      "id": "windows",
+      "verdict": "unsupported",
+      "receipt": "receipts/windows.md",
+      "reason": "No Windows receipt. The mod's folder and quoting rules are POSIX. On a window whose platform is windows every action refuses with `unsupported_platform` and nothing runs.",
+      "behaviour": "Refused with `unsupported_platform`."
+    },
+    {
+      "id": "linux",
+      "verdict": "unsupported",
+      "receipt": null,
+      "reason": "Never exercised and not claimed. herdr.d.ts declares linux as a platform and the mod has no Linux-specific code, so it may work, but no leg was run and none is named, so it is marked unsupported rather than left unsaid."
+    },
+    {
+      "id": "browser-or-mobile",
+      "verdict": "unsupported",
+      "receipt": "receipts/browser-mobile.md",
+      "reason": "No receipt. Herdr's installed guide and declarations name no browser or mobile client for mods: window().platform is linux, macos or windows only. Mobile is not inferred from SSH reachability or from a machine being listed as ready.",
+      "behaviour": "Nothing is claimed. The existing ahub dashboard is loopback-only and is never converted for another device."
+    }
+  ]
+}

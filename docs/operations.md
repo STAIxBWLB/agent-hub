@@ -1669,6 +1669,7 @@ token counts, never message bodies or task titles.
 ahub report --since 7d          # turns, busy time and tokens per peer, messages, overlaps, task events
 ahub report --since 7d --json   # the same numbers as JSON
 ahub report --by task           # tokens, turns and wall time per task and class, with the unattributed share
+                                # and, from #1278, what the person was asked per task (permissions, questions, completions, CLI refusals, minutes from recorded latencies only), with the unattributed remainder apart
 ahub export --since 24h         # the raw events as JSON lines, for your own analysis
 ahub report --dogfood [--since 7d|<iso>] [--json]   # read-only scorecard: flow, quality, cost, delivery, performance, adoption
 ```
@@ -6626,3 +6627,39 @@ a folder the person adds and removes, and what removal does to a shown copy is f
 terminal focus is unbuilt until a Herdr terminal can be mapped to an ahub console. The three baseline journeys are
 procedure counts that have not been run in a native window.
 
+### Herdr project and machine entry (#1199 H1)
+
+[`integrations/herdr/`](../integrations/herdr/README.md) is an optional mod: three files the person copies to
+`mods/ahub` in the Herdr app home, which Herdr reads live and which declares `place: none`, so no layout changes.
+It lists the focused space's machine and folder and that machine's registered projects, and opens nothing until a
+row is selected. Open console starts one new tab in the selected space running `ahub --project <id> console`, with the project root
+as the tab's folder. Before every effect it re-reads the space, the machine and the registrations and runs
+`ahub status --json` from the project folder, and refuses a changed, duplicate, offline or unready target. The local
+dashboard runs the existing `ahub ui` and keeps no link or ticket. A remote space gets the console tab or a copyable
+command, never a dashboard link. Remove it by deleting the folder. It starts, stops and upgrades nothing and is not an
+ahub dependency. `herdr-app check` accepts it in a scratch home; the native open and disable receipt is a person-run
+leg that has not been run.
+
+### Herdr status card and existing-console focus (#1199 H2)
+
+The Herdr entry also offers three read-only actions. **Status** reads `ahub --project <id> status --json` from the project folder on the
+selected machine, on a click only, and shows task counts, peer states and queue lengths and the hub version from a closed
+allowlist, so no task or note text reaches it. Missing CLI, timeout, an exit error, no hub running, oversized or
+unrecognized output, an old hub, a partial reading and a stale one are distinct states. **Focus console** and **Peek
+console** (this computer only) accept a terminal only after `hc get` shows it live and running `ahub console` for the
+selected project, exactly one match, rechecked right before a single `pane.focus` or `terminal.peek`, and a focus is
+believed only after Herdr's `focused()` shows it. They never start, replace, type into or close a terminal, and
+Herdr's own working, blocked, done and idle words are shown, never sent to ahub. A console started through a wrapper is
+not recognized and the person uses Open console. The native focus receipt is a person-run leg that has not been run.
+
+### Herdr platform support matrix (#1199 H3)
+
+[`integrations/herdr/support-matrix.json`](../integrations/herdr/support-matrix.json) records one verdict per combination and a
+test enforces that `supported` needs a receipt that no longer says NOT RUN. Today none is supported: macOS local is
+fixture-only, and remote, Windows, Linux and browser or mobile are unsupported, each with a person-run receipt template under
+`integrations/herdr/receipts/`. The remote console workflow is designed (read on that machine, new tab in that machine's space,
+no dashboard link, no remote focus) and exercised against the fixture only, because no remote machine is configured on the
+machine it was built on. On Windows every action refuses. Mobile is not inferred from SSH reachability or a machine being ready.
+[`baseline-comparison.md`](../integrations/herdr/baseline-comparison.md) lays the entry's journeys beside the H0 baseline as
+procedure counts: the entry costs one more action than the baseline when the pane is already in the right project, and its value
+is the verified machine and root, not a shorter path.
