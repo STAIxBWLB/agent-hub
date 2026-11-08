@@ -5203,9 +5203,10 @@ export async function startDaemon(opts: DaemonOptions) {
         return line(reviewed);
       }
       case "hub_remember": {
-        const saved = await tasks.remember(by, a);
+        const { message: saved, outcome } = await tasks.rememberOutcome(by, a);
         // #1279: a saved note that names another entry cites it. `tasks.remember` already refused a PII task, a private path and a secret, so only a note it saved gets here.
-        if (!piiTurn && !reviewTurn && typeof a.text === "string" && a.text && !/not saved|nothing saved/.test(saved)) {
+        // #802: the structured outcome decides, never the reply wording. Only `not_saved` skips the citation: a candidate note held for a person's review was cited under the old wording test too, and stays so.
+        if (!piiTurn && !reviewTurn && typeof a.text === "string" && a.text && outcome !== "not_saved") {
           const task = a.task !== undefined && Number.isSafeInteger(Number(a.task)) ? Number(a.task) : undefined;
           citeMemory(by, a.text, `remember:${task ?? "none"}:${createHash("sha256").update(a.text).digest("hex").slice(0, 16)}`, task !== undefined ? [newEnvelope(by, "", { refs: { task: String(task) } })] : []);
         }

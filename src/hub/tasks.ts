@@ -104,6 +104,9 @@ function requireLocalTaskPeer(peer: unknown): void {
 
 export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
 
+/** What `hub_remember` carries (#802: one shape for `remember` and `rememberOutcome`). */
+export interface RememberInput { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown; approach?: unknown; symptom?: unknown; cause?: unknown; evidence?: unknown; retry_when?: unknown }
+
 interface PreparedSpecInspection {
   report?: SpecTaskReport;
   policyKey: string;
@@ -8019,7 +8022,13 @@ export class Tasks {
     return `candidate:${id}; a person reviews it with amem review; memory was not edited`;
   }
 
-  async remember(by: PeerId, input: { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown; approach?: unknown; symptom?: unknown; cause?: unknown; evidence?: unknown; retry_when?: unknown }): Promise<string> {
+  async remember(by: PeerId, input: RememberInput): Promise<string> { return (await this.rememberOutcome(by, input)).message; }
+
+  /**
+   * #802: what `remember` answered and whether it stored anything, so a caller never decides that from the wording. `saved` is a note in shared memory, `candidate` one held for a person's
+   * review (stored, not yet evidence), `not_saved` a note nothing took. A refusal still throws and never reaches here.
+   */
+  async rememberOutcome(by: PeerId, input: RememberInput): Promise<{ message: string; outcome: "saved" | "candidate" | "not_saved" }> {
     const requestCheck = this.requestCheck(by);
     const text = composeRememberText(input);
     const task = input.task !== undefined ? this.d.board.get(Number(input.task)) : undefined;
@@ -8034,7 +8043,7 @@ export class Tasks {
     if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: shared memory excludes private data");
     if (input.horizon !== undefined && input.horizon !== "short" && input.horizon !== "long") throw new Error('horizon is "short" or "long"');
     if (input.scope !== undefined && input.scope !== "project" && input.scope !== "shared") throw new Error('scope is "project" or "shared"');
-    if (!this.d.memory && !this.d.store) return "memory is disabled; nothing saved";
+    if (!this.d.memory && !this.d.store) return { message: "memory is disabled; nothing saved", outcome: "not_saved" };
     // Long-term notes can leave the machine (#258); local storage does not relax secret exclusion.
     if (looksSecret(`${title}\n${text}`)) throw new Error("this note looks like it holds a secret (a key, token or password) and is not saved");
     if (this.aboutPrivatePath(title, text, task)) throw new Error("this note is about a path the project keeps private (pii.paths) and is not saved");
@@ -8045,15 +8054,15 @@ export class Tasks {
     if (native && "refused" in native) throw new PreEffectToolRefusal(`${native.refused}; save it with horizon "short" or correct the machine/repository privacy policy, then retry`);
     if (task && this.d.memory) this.markMemoryReference(task, by);
     const res = !native && this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
-    if (!res && !native) return "memory store unavailable; nothing saved";
+    if (!res && !native) return { message: "memory store unavailable; nothing saved", outcome: "not_saved" };
     if (!native && res && typeof res === "object" && "status" in res && res.status === "candidate") {
-      return "saved as a pending memory candidate; a person must review it before it becomes shared evidence";
+      return { message: "saved as a pending memory candidate; a person must review it before it becomes shared evidence", outcome: "candidate" };
     }
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
     this.d.notify(line);
     // Display identity only: a queued recall may already contain this saved entry. Stored/captured text stays unchanged.
     this.d.share?.(by, native ? noteLine(by, kind, `mem:${native.id} ${title ? `${title}: ` : ""}${text}`) : line);
-    return `saved to shared memory${native ? ` (hub memory ${native.id.slice(0, 8)}, ${native.tier}-term)` : ""}; the other agents get it with their next message`;
+    return { message: `saved to shared memory${native ? ` (hub memory ${native.id.slice(0, 8)}, ${native.tier}-term)` : ""}; the other agents get it with their next message`, outcome: "saved" };
   }
 
   /** The task's key in the hub's store: unique across `ahub reset --all`, which restarts the ids. */
