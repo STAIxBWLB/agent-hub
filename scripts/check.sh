@@ -52,7 +52,12 @@ for fixture_dir in test/fixtures/protocol-v16 test/fixtures/release-n-1; do
   if [ -f "$fixture_dir/package.json" ]; then (cd "$fixture_dir" && bun install --frozen-lockfile >/dev/null); fi
 done
 if [ -z "$shard" ] || [ "${shard%%/*}" = "1" ]; then
-  bun x tsc --noEmit
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # ponytail: the 5120 MiB heap is about twice the measured 2.45 GiB peak and leaves headroom on the 7 GB runner; split the program with incremental builds or project references when it no longer fits.
+    NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=5120" bun x tsc --noEmit
+  else
+    bun x tsc --noEmit
+  fi
   bun scripts/check-roles.ts
   bun scripts/inventory-hardcoded-values.ts --check   # #719 (#1180): unknown keys may only shrink, never grow
   bun scripts/readme-facts.ts   # #1268: generated doc facts match package.json and .bun-version (`--write` fixes)
