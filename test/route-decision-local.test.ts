@@ -122,8 +122,8 @@ candidates = [{alias="coding", efforts=["high"]}]
   await done; await client.request({ t: "status" });
   const routeEvents = readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "route");
   expect(requests).toHaveLength(1); expect(requests[0].evidence).not.toContain("DECISION_PATH_CANARY");
-  expect(routeEvents).toHaveLength(1); expect(routeEvents[0].source).toBe("decision"); expect(routeEvents[0].decisionMode).toBe("shadow");
-  expect(routeEvents[0].tier).toBe("fast"); expect(routeEvents[0].chosenAlias).toBe("coding");
+  expect(routeEvents).toHaveLength(1); expect(routeEvents[0]!.source).toBe("decision"); expect(routeEvents[0]!.decisionMode).toBe("shadow");
+  expect(routeEvents[0]!.tier).toBe("fast"); expect(routeEvents[0]!.chosenAlias).toBe("coding");
   expect(JSON.stringify(routeEvents)).not.toContain("DECISION_PATH_CANARY");
   expect(model.requests[0]!.body.model).toBe("fast"); expect(model.requests[0]!.body.reasoning_effort).toBeUndefined();
 }, 20_000);
