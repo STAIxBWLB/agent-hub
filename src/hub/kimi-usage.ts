@@ -5,7 +5,8 @@ import { TokenWindow } from "./token-window.ts";
 /**
  * The hub's own count of Kimi's consumption (#285 phase 2): the wire-log rows of the session the adapter owns become `usage` and
  * `tokens` events and a rolling 5 h window against `budget.kimi_tokens_5h`. Read at a turn end, when a `usage_update` arrives and for
- * a bounded backoff after each cue. The ports keep the event log, the budget, the clock and delayed scheduling in the daemon.
+ * a bounded backoff after each cue. Each scheduled slice returns to the event loop before the next one. The ports keep the event log,
+ * the budget, the clock and delayed scheduling in the daemon.
  */
 export const KIMI_WINDOW_MS = 5 * 3_600_000;
 /** A turn's rows are written after it starts: a row older than the hub's first sight of the session (less this slack) is history. */
@@ -26,6 +27,8 @@ export interface KimiUsagePorts {
   home: string;
   /** Per-call byte bound of the reader (its default otherwise); a test shrinks it to force several passes. */
   maxBytes?: number;
+  /** Numeric I/O observations for deterministic benchmarks; no path, row or native text. */
+  observe?(stats: { bytes: number; discovery: number }): void;
   now(): number;
   /** `budget.kimi_tokens_5h`, read live: 0 turns the window off, never the events. */
   ceiling(): number;
@@ -49,6 +52,8 @@ interface Bound {
   floor: number;
   turns: KimiTurnInterval[];
   followUp: number;
+  passes: number;
+  backlog: boolean;
   burst: boolean;
   reportPending: boolean;
   pending?: () => void;
@@ -134,7 +139,7 @@ export class KimiUsage {
       session,
       reader: new KimiWireReader({ home: this.ports.home, sessionId: session, ...(this.ports.maxBytes ? { maxBytes: this.ports.maxBytes } : {}) }),
       floor: this.ports.now() - FLOOR_SLACK_MS,
-      turns: [], followUp: 0, burst: false, reportPending: false,
+      turns: [], followUp: 0, passes: 0, backlog: false, burst: false, reportPending: false,
     };
     this.bound.set(peer, next);
     return next;
@@ -144,21 +149,26 @@ export class KimiUsage {
     const bound = this.bind(peer);
     if (!bound) return;
     try {
+      if (bound.passes >= PASSES) bound.passes = 0;
       let added = 0, more = false;
-      for (let pass = 0; pass < PASSES; pass++) {
+      // Without a scheduler, retain the original synchronous behavior. The daemon's scheduler makes one bounded slice per invocation.
+      for (let pass = 0, slices = this.ports.schedule ? 1 : PASSES; pass < slices; pass++) {
         const read = bound.reader.readSlice();
-        // A successful pass records and commits every row before a later pass can fail. An event failure leaves the slice uncommitted,
+        // A successful slice records and commits every row before a later slice can fail. An event failure leaves the slice uncommitted,
         // so the next drain reads it again and the seen set removes only rows whose events already succeeded.
-        if (read.status === "unknown") { this.unknown(peer, bound, read.reason); return; }
+        if (read.status === "unknown") { bound.backlog = false; bound.passes = 0; this.unknown(peer, bound, read.reason); return; }
+        this.ports.observe?.(bound.reader.stats());
         added += this.record(peer, bound, read.rows);
         read.commit();
         more = read.more;
+        bound.backlog = more;
+        bound.passes = more ? bound.passes + 1 : 0;
         if (!more) break;
       }
       const recovered = bound.unknown !== undefined;
       bound.unknown = undefined;
-      // ponytail: PASSES x the reader's per-call bound. A longer unread backlog (a resumed session with a huge log) is finished by the next
-      // call, and no figure is reported until it is: a window that is still catching up would be short. Upgrade: seek to the end at bind.
+      // ponytail: PASSES slices per cue burst. A longer backlog continues in the next burst, and no figure is reported until it is
+      // caught up: a window that is still catching up would be short. Upgrade: seek to the end at bind.
       if (!more && (added > 0 || recovered || bound.reportPending)) { this.report(peer); bound.reportPending = false; }
     } finally {
       if (this.bound.get(peer) === bound) this.schedule(peer, bound, scheduled);
@@ -168,6 +178,14 @@ export class KimiUsage {
   private schedule(peer: string, bound: Bound, scheduled: boolean): void {
     const schedule = this.ports.schedule;
     if (!schedule || this.stopped) return;
+    const run = () => {
+      bound.pending = undefined;
+      if (this.bound.get(peer) === bound) try { this.collect(peer, true); } catch { /* scheduled retries stay bounded */ }
+    };
+    if (bound.backlog && bound.passes < PASSES) {
+      if (!bound.pending) bound.pending = schedule(0, run);
+      return;
+    }
     if (bound.pending) {
       // A fresh cue during the last pending follow-up still gets a complete bounded retry sequence, without adding another timer.
       if (!scheduled && bound.followUp >= FOLLOW_UP_DELAYS_MS.length - 1) { bound.burst = true; bound.followUp = 0; }
@@ -176,10 +194,7 @@ export class KimiUsage {
     if (!bound.burst) { bound.burst = true; bound.followUp = 0; }
     if (bound.followUp >= FOLLOW_UP_DELAYS_MS.length) { bound.burst = false; bound.followUp = 0; return; }
     const delay = FOLLOW_UP_DELAYS_MS[bound.followUp++]!;
-    bound.pending = schedule(delay, () => {
-      bound.pending = undefined;
-      if (this.bound.get(peer) === bound) this.collect(peer, true);
-    });
+    bound.pending = schedule(delay, run);
   }
 
   private record(peer: string, bound: Bound, rows: KimiWireRow[]): number {

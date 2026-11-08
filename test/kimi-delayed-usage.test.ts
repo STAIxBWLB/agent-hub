@@ -213,3 +213,26 @@ test("#1281 AC6: a retry after a cache-only row failure still reports earlier po
   r.usage.collect("kimi");
   expect(r.log.reports).toHaveLength(1);
 });
+
+test("#1283 AC3: cancellation after offset advancement cannot discard the uncommitted slice", () => {
+  const h = fixture(), s = h.makeSession(), r = rig(h, { failFirstRecord: true }), t = r.now();
+  r.bind(s.id); r.turn("turn-a", 8, t - 10);
+  appendFileSync(s.wire, wireRow(t - 5, 12, 3));
+  expect(() => r.usage.collect("kimi")).toThrow("injected event commit failure");
+  expect(r.log.recorded).toHaveLength(0);
+  r.usage.drop("kimi");
+  r.bind(s.id); r.turn("turn-a", 8, t - 10);
+  r.usage.collect("kimi");
+  expect(r.log.recorded).toEqual([{ id: r.log.recorded[0]!.id, counted: 15, attribution: { task: 8, attribution: "delivery" }, turn: "turn-a" }]);
+});
+
+test("#1283: a delayed timer contains an event failure and keeps its bounded retry", () => {
+  const h = fixture(), s = h.makeSession(), r = rig(h, { failFirstRecord: true }), t = r.now();
+  r.bind(s.id); r.turn("turn-a", 8, t - 10);
+  appendFileSync(s.wire, wireRow(t - 5, 12, 3));
+  expect(() => r.usage.collect("kimi")).toThrow("injected event commit failure");
+  expect(r.timers.size()).toBe(1);
+  expect(() => r.timers.fire()).not.toThrow();
+  expect(r.log.recorded).toHaveLength(1);
+  expect(r.timers.size()).toBe(1);
+});
