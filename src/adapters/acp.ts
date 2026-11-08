@@ -691,7 +691,7 @@ export class AcpPeer extends BasePeer {
           if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "ACP model change did not admit a prompt; inspect status and retry" });
           this.activeDeliveryId = undefined; this.activeLegacy = undefined; this.modelTurn = undefined;
           this.endActivity("model change refused", true);
-          if (!this.stopping && this.state === "busy") this.setState("idle");
+          if (!this.stopping && (this.state as PeerState) === "busy") this.setState("idle");
         }
         throw error;
       }
