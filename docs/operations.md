@@ -6630,3 +6630,15 @@ selected project, exactly one match, rechecked right before a single `pane.focus
 believed only after Herdr's `focused()` shows it. They never start, replace, type into or close a terminal, and
 Herdr's own working, blocked, done and idle words are shown, never sent to ahub. A console started through a wrapper is
 not recognized and the person uses Open console. The native focus receipt is a person-run leg that has not been run.
+
+### Herdr platform support matrix (#1199 H3)
+
+[`integrations/herdr/support-matrix.json`](../integrations/herdr/support-matrix.json) records one verdict per combination and a
+test enforces that `supported` needs a receipt that no longer says NOT RUN. Today none is supported: macOS local is
+fixture-only, and remote, Windows, Linux and browser or mobile are unsupported, each with a person-run receipt template under
+`integrations/herdr/receipts/`. The remote console workflow is designed (read on that machine, new tab in that machine's space,
+no dashboard link, no remote focus) and exercised against the fixture only, because no remote machine is configured on the
+machine it was built on. On Windows every action refuses. Mobile is not inferred from SSH reachability or a machine being ready.
+[`baseline-comparison.md`](../integrations/herdr/baseline-comparison.md) lays the entry's journeys beside the H0 baseline as
+procedure counts: the entry costs one more action than the baseline when the pane is already in the right project, and its value
+is the verified machine and root, not a shorter path.
