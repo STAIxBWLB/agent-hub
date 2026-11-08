@@ -37,6 +37,8 @@ export interface LocalOptions {
   /** Model alias sent straight to OmniRoute when no hub route is active or its call fails. */
   fixedModel: string;
   hubRoutes?: () => Record<string, HubRoute>;
+  /** Current host public-view screen for bounded decision evidence; absent means no text is released. */
+  routeEvidencePublic?: (text: string) => boolean;
   /** routing.toml `stay_switch` for hub stage routes (#197). */
   staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
@@ -120,6 +122,7 @@ export class LocalPeer extends BasePeer {
   private readonly warnedLegacyRoutes = new Set<string>();
   private routeEnvs: Envelope[] = [];
   private routePii = false;
+  private routeReviewScope: { excluded: boolean } | undefined;
   private routeTask?: number;
   private labelTurnId?: string;
   private turn = 0; // generation guard, as in acp.ts: a turn aborted by the watchdog must not touch the next one
@@ -142,7 +145,7 @@ export class LocalPeer extends BasePeer {
   ) {
     super(id, opts.watchdogMs);
     this.routes = new HubRouteRuntime({
-      execute: async (model, messages, judge, signal, maxTokens) => {
+      execute: async (model, messages, judge, signal, maxTokens, reasoningEffort) => {
         if (signal.aborted) throw new Error("turn cancelled before model request");
         const envs = this.routeEnvs, pii = this.routePii, generation = this.turn, task = this.routeTask;
         await this.requireBudget(envs, "model_calls");
@@ -150,13 +153,16 @@ export class LocalPeer extends BasePeer {
         if (signal.aborted) throw new Error("turn cancelled before model request");
         const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
         this.releaseObserverInput(this.currentObserverInputContext, envs);
-        const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
+        const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}), ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         this.lastServedBy = `hub ${model} (provider ${result.provider ?? "?"})`;
         return result;
       },
       onCampus: () => this.opts.omni.onCampus(),
+      decisionContext: () => ({ private: this.routeEnvs.some(env => env.private === true), excluded: this.routeEnvs.some(env => remoteEnvelope(env) || isReviewObserverExcluded(env)) || this.routeReviewScope?.excluded === true }),
+      publicDecisionText: text => this.opts.routeEvidencePublic?.(text) === true,
+      admitDecision: () => this.requireBudget(this.routeEnvs, "model_calls"),
       staySwitch: () => this.opts.staySwitch?.(),
       onRoute: event => this.opts.onRoute?.(event),
       onAdvisor: event => this.opts.onAdvisor?.(event),
@@ -312,6 +318,7 @@ export class LocalPeer extends BasePeer {
     }
     this.routeEnvs = envs;
     this.routePii = !!policy?.pii;
+    this.routeReviewScope = reviewScope;
     const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
     let usedTools = false;
     let captureInvocation = 0;

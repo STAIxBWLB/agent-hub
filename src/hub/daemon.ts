@@ -8276,6 +8276,7 @@ export async function startDaemon(opts: DaemonOptions) {
         admitBudget: async (envs, unit) => tasks.admitExecutionEnvelopes(envs, peer, unit),
         ...(route ? { route } : {}),
         hubRoutes: () => activeRouting().hub_routes ?? {},
+        routeEvidencePublic: boundedSafe,
         staySwitch: () => activeRouting(),
         onRoute: record => event({ type: "route", peer, ...record }),
         onAdvisor: record => event({ type: "advisor", peer, ...record }),
