@@ -995,9 +995,13 @@ test("hub turns carry one captured model override and steer never changes the ru
   r.tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => r.peer.state === "idle");
   await r.peer.deliver([newEnvelope("user", "first model turn")]);
   expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-a");
+  // RPC acceptance can precede turn/started; only the observed native turn id authorizes steering.
+  await until(() => r.seen.some(row => row.method === "turn/started" && row.params?.threadId === "th1"));
+  const started = r.seen.find(row => row.method === "turn/started" && row.params?.threadId === "th1");
   desired = "runtime-b";
   await r.peer.steer([newEnvelope("user", "steer same model")]);
   expect(r.fake.requests.filter(row => row.method === "turn/steer").at(-1).params.model).toBeUndefined();
+  expect(r.fake.requests.filter(row => row.method === "turn/steer").at(-1).params.expectedTurnId).toBe(started.params.turn.id);
   expect(gets).toBe(1); await until(() => r.peer.state === "idle");
   await r.peer.deliver([newEnvelope("user", "next model turn")]); await until(() => r.peer.state === "idle");
   expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-b");
@@ -1028,4 +1032,53 @@ test("forwarded turn/start honors an explicit client model and reports sticky cl
   desired = undefined; await start(5);
   expect(Object.hasOwn(r.fake.requests.find(row => row.id === 5).params, "model")).toBe(false);
   expect(applied.at(-1)).toEqual({ selected: undefined, native: "client-model" });
+});
+
+test("an older forwarded model ACK cannot replace a newer accepted hub model or its sticky clear hint", async () => {
+  let desired: string | undefined = "hub-newer";
+  const releases = new Map<string | number, () => void>(), applied: (string | undefined)[] = [], observed: string[] = [];
+  const requests: any[] = [];
+  let turns = 0;
+  const fake = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data)); requests.push(msg);
+      const reply = (result: unknown) => ws.send(JSON.stringify({ id: msg.id, result }));
+      const note = (method: string, params: unknown) => ws.send(JSON.stringify({ method, params }));
+      if (msg.method === "initialize") return void reply({ userAgent: "codex-cli/0.154.0" });
+      if (msg.method === "thread/start") return void reply({ thread: { id: "th1" } });
+      if (msg.method !== "turn/start") return;
+      const turn = { id: `ordered-${++turns}` };
+      note("turn/started", { threadId: "th1", turn });
+      // Every native turn really ends before its RPC reply is released; transport ACKs remain independently held.
+      note("turn/completed", { threadId: "th1", turn: { ...turn, status: "completed" } });
+      releases.set(msg.id, () => reply({ turn }));
+    } },
+  });
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: `ws://127.0.0.1:${fake.port}`, cwd: process.cwd(),
+    getModelOverride: () => { const model = desired; return { model, applied: native => { applied.push(native); } }; },
+    onNativeModelApplied: model => { observed.push(model); } });
+  let tui: WebSocket | undefined;
+  const seen: any[] = [];
+  try {
+    await peer.start(); tui = new WebSocket(peer.proxyUrl); tui.onmessage = event => seen.push(JSON.parse(String(event.data)));
+    await new Promise(resolve => { tui!.onopen = resolve; });
+    tui.send(JSON.stringify({ id: 1, method: "initialize", params: {} }));
+    tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => peer.state === "idle");
+    tui.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", model: "client-older", input: [{ type: "text", text: "A" }] } }));
+    await until(() => releases.has(3) && seen.some(row => row.method === "turn/completed"));
+    const later = peer.deliver([newEnvelope("user", "B")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 2);
+    const laterId = requests.filter(row => row.method === "turn/start")[1].id;
+    await until(() => releases.has(laterId)); releases.get(laterId)!(); await later;
+    expect(applied).toEqual(["hub-newer"]);
+    releases.get(3)!(); await until(() => seen.some(row => row.id === 3));
+    expect(observed).toEqual([]); expect(applied).toEqual(["hub-newer"]);
+    await until(() => peer.state === "idle"); desired = undefined;
+    const clear = peer.deliver([newEnvelope("user", "clear")]);
+    await until(() => requests.filter(row => row.method === "turn/start").length === 3);
+    const clearId = requests.filter(row => row.method === "turn/start")[2].id;
+    await until(() => releases.has(clearId)); releases.get(clearId)!(); await clear;
+    expect(applied).toEqual(["hub-newer", "hub-newer"]);
+  } finally { tui?.close(); await peer.stop(); fake.stop(true); }
 });
