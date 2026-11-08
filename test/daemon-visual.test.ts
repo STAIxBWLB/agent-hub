@@ -243,7 +243,8 @@ for (const kind of ["role", "membership", "recovery", "storage"] as const) test(
       ok: false, saved: true,
       error: "roster saved; codex stop is unconfirmed; permission reset and task handoff were not attempted; inspect ahub status and reapply roster.codex false to retry",
     });
-    expect((await r.console_.request({ t: "status" })).status.peers.codex.rostered).toBe(false);
+    const settings = await r.console_.request({ t: "settings_get" });
+    expect(settings.rows.find((row: { key: string }) => row.key === "roster.codex").value).toBe(false);
   }
   if (kind === "recovery") r.daemon.bus.setRecoveryHold(true);
   const journalAvailable = r.daemon.bus.deliveryJournalAvailable;
