@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { readEvents } from "../src/hub/events.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { LocalPeer, type LocalOptions } from "../src/adapters/local-worker.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
@@ -112,14 +113,14 @@ candidates = [{alias="coding", efforts=["high"]}]
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] } } });
   clean.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); clean.push(() => client.close());
-  const routeEvents: any[] = []; client.onPush = message => { if (message.t === "event" && message.e?.type === "route") routeEvents.push(message.e); }; client.send({ t: "tail" });
   const started = await client.request({ t: "start", peer: "local", args: {} });
   expect(started).toMatchObject({ ok: true });
   let finished!: () => void;
   const done = new Promise<void>(resolve => { finished = resolve; });
   daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "local" && event.env.body === "done") finished(); });
   expect((await client.request({ t: "send", body: "inspect private/DECISION_PATH_CANARY.txt", to: ["local"] })).ok).toBe(true);
-  await done; await client.request({ t: "status" }); // consumed control reply follows the route event frames
+  await done; await client.request({ t: "status" });
+  const routeEvents = readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "route");
   expect(requests).toHaveLength(1); expect(requests[0].evidence).not.toContain("DECISION_PATH_CANARY");
   expect(routeEvents).toHaveLength(1); expect(routeEvents[0].source).toBe("decision"); expect(routeEvents[0].decisionMode).toBe("shadow");
   expect(routeEvents[0].tier).toBe("fast"); expect(routeEvents[0].chosenAlias).toBe("coding");
