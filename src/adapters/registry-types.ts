@@ -330,7 +330,7 @@ export interface AdapterDefinition {
   };
   capabilities?: { manifest?(peer: PeerAdapter): Promise<CapabilityManifest>; watch?: boolean };
   /** Fixed factory support only; the host still checks the actual native surface and form. */
-  modelOverride?: { readonly boundary: "turn" };
+  modelOverride?: { readonly boundary: "turn"; readonly acp?: import("./acp-model-policy.ts").AcpModelPolicy };
   /** Stable host projection order and planner eligibility, independent of default task roles. */
   projection?: { roleRank?: number; startRank?: number; helpRank?: number; plannerEligible?: boolean };
   cli: {

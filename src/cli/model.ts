@@ -34,6 +34,17 @@ export function projectModelStatus(value: unknown): RuntimeModelStatus | null {
     if (kind !== undefined && !peerToken(kind)) return null;
     if (reasonCode === "unverified_setter") unsupported = { reasonCode, ...(kind ? { kind } : {}), reason: `unsupported live: ${kind ?? "retained peer"} (version unverified) has no verified model setter`, nextStep: `restart this peer with ahub restart ${row.peer}` };
     else if (reasonCode === "unmanaged_attachment") unsupported = { reasonCode, reason: "unsupported live: this attachment has no verified live model setter", nextStep: `change the native setting or restart this peer with ahub restart ${row.peer}` };
+    else if (reasonCode === "acp_setter_unavailable") {
+      if (!peerToken(kind)) return null;
+      let version: unknown;
+      try {
+        const descriptor = Object.getOwnPropertyDescriptor(row.unsupported, "version");
+        if (descriptor && !("value" in descriptor)) return null;
+        version = descriptor?.value;
+      } catch { return null; }
+      if (version !== undefined && !(isNativeModelToken(version) && /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version))) return null;
+      unsupported = { reasonCode, kind, ...(typeof version === "string" ? { version } : {}), reason: `unsupported live: ${kind} ${version ?? "unknown"} lacks a setter receipt or compat admission`, nextStep: `restart this peer with ahub restart ${row.peer}` };
+    }
     else return null;
   }
   return { peer: row.peer, effectiveModel: row.effectiveModel, desiredModel: row.desiredModel, source: row.source as RuntimeModelStatus["source"], pendingNextTurn: row.pendingNextTurn,

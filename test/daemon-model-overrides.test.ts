@@ -8,20 +8,22 @@ import { ModelOverrides, ModelOverrideLatches } from "../src/hub/model-overrides
 import { runInNewContext } from "node:vm";
 import { isNativeModelToken } from "../src/adapters/model-token.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import type { Envelope } from "../src/hub/envelope.ts";
+import { AcpPeer } from "../src/adapters/acp.ts";
+import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const stop of cleanup.splice(0).reverse()) await stop(); });
 class Passive extends BasePeer { async start() { this.setState("idle"); } async stop() { this.setState("offline"); } async deliver(_envs: Envelope[]) {} }
 async function fixture(configured = false, configure?: (root: string) => Partial<HubConfig>, appPort = 0) {
   const root = mkdtempSync(join(tmpdir(), "ahub-live-model-")), stateDir = join(root, "state"); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const adapters: NonNullable<HubConfig["adapters"]> = configured ? { fixture: { transport: "acp", command: process.execPath, args: [], displayName: "Fixture ACP", roles: ["implementer"] } } : {};
+  mkdirSync(join(root, "kimi-home"));
   mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.local.json"), configured ? JSON.stringify({ adapters }) : "{}");
   const config = { ...DEFAULT_CONFIG, adapters, roster: {}, start: { agents: [] }, batch_ms: 0, configWatch: false,
     memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
     mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, omniroute: { urls: [], access_hosts: [] },
     pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, specs: { ...DEFAULT_CONFIG.specs, enabled: false },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false }, ...configure?.(root) };
-  const start = () => startDaemon({ cwd: root, stateDir, config, configWatch: false, controlPort: 0, codexAppPort: appPort, codexProxyPort: 0, memorySyncTrigger: () => {} });
+  const start = () => startDaemon({ cwd: root, stateDir, kimiHome: join(root, "kimi-home"), config, configWatch: false, controlPort: 0, codexAppPort: appPort, codexProxyPort: 0, memorySyncTrigger: () => {} });
   let daemon = await start();
   cleanup.push(() => daemon.stop());
   let console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
@@ -225,7 +227,7 @@ test("actual model fallback repeatedly reads cached scalar metadata and never in
   const owner = { recoveryMetadata() { reads++; throw Error("model fallback invoked a recovery hook"); } }, external = { recoveryMetadata() { reads++; throw Error("external recovery hook invoked"); } };
   const cache = new WeakMap<object, string>([[owner, "launch-model"]]);
   const context = { declarations: { declared: { model: "instance-model" } }, isNativeModelToken,
-    bus: { peers: new Map([["codex", owner], ["external", external], ["declared", owner]]) }, modelLaunchModels: cache,
+    bus: { peers: new Map([["codex", owner], ["external", external], ["declared", owner]]) }, modelLaunchModels: cache, modelAcpOwners: new WeakMap(),
     fallback: undefined as unknown as (peer: string) => { model?: string; source: string } };
   const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.fallback = modelFallback;");
   runInNewContext(script, context);
@@ -277,3 +279,57 @@ await new Promise(()=>{});
   const row = (await f.request({ op: "list" })).models.find((value: { peer: string }) => value.peer === "codex");
   expect(row).toMatchObject({ effectiveModel: "corrected-choice", desiredModel: "corrected-choice", source: "override", pendingNextTurn: false });
 }, 20_000);
+
+test("ACP readiness claims cannot manufacture a missing fixed-builtin receipt capability", async () => {
+  const f = await fixture();
+  const fake = new AcpPeer("qwen", { cmd: ["not-executed"], cwd: f.root });
+  Object.defineProperty(fake, "modelOverrideState", { get: () => { throw new Error("untrusted readiness getter must not be reached"); } });
+  Object.defineProperty(fake, "acceptsModelOverride", { value: () => { throw new Error("untrusted readiness port must not be reached"); } });
+  f.daemon.bus.add(fake);
+  const auditBefore = readFileSync(join(f.stateDir, "events.jsonl"), "utf8");
+  expect(await f.request({ op: "set", peer: "qwen", model: "A" })).toMatchObject({ ok: false });
+  expect(f.store.list()).toEqual([]);
+  expect(readFileSync(join(f.stateDir, "events.jsonl"), "utf8")).toBe(auditBefore);
+});
+
+test("actual unsupported ACP factory preserves no-override work but refuses retained intent before prompt until person clears it", async () => {
+  const f = await fixture(false, () => ({ kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], peers: { kimi: { start_mode: "headless" } } }));
+  expect((await f.console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  const owner = f.daemon.bus.peers.get("kimi")!; expect(owner).toBeInstanceOf(AcpPeer);
+  expect((await f.request({ op: "list" })).models.find((row: { peer: string }) => row.peer === "kimi").unsupported).toMatchObject({ reasonCode: "acp_setter_unavailable", kind: "kimi", version: "2.1.1" });
+  let replies = 0; const originalMessage = owner.onMessage;
+  owner.onMessage = (...args) => { replies++; originalMessage?.(...args); };
+  const deliver = async (text: string) => {
+    const settled = new Promise<void>(resolve => {
+      const originalState = owner.onState;
+      owner.onState = state => { originalState?.(state); if (state === "idle") { owner.onState = originalState; resolve(); } };
+    });
+    await owner.deliver([newEnvelope("user", text, { to: ["kimi"] })]); await settled;
+  };
+  await deliver("synthetic ordinary before"); expect(replies).toBe(1);
+  f.store.set("kimi", "retained");
+  await expect(owner.deliver([newEnvelope("user", "synthetic blocked", { to: ["kimi"] })])).rejects.toThrow("retained");
+  expect(owner.state).toBe("idle"); expect(replies).toBe(1); expect(f.store.get("kimi")?.model).toBe("retained");
+  expect((await f.request({ op: "clear", peer: "kimi" })).ok).toBe(true);
+  await deliver("synthetic ordinary after clear"); expect(replies).toBe(2);
+}, 20000);
+
+test("actual fallback exposes only privately captured baseline after override clear, never a pending setter target", async () => {
+  // Unit metadata facts exercise the production closure and real latches, not native identity qualification.
+  const f = await fixture(), owner = {}, state = { available: true, baseline: "native-baseline" };
+  const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const start = source.indexOf("  const modelFallback ="), end = source.indexOf("  const registerModelOwner =", start);
+  expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  const context = { declarations: {}, isNativeModelToken, bus: { peers: new Map([["fixture", owner]]) }, modelLaunchModels: new WeakMap(),
+    modelAcpOwners: new WeakMap([[owner, { get modelOverrideState() { return state; } }]]),
+    fallback: undefined as unknown as (peer: string) => { model?: string; source: "native default" } };
+  runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.fallback = modelFallback;"), context);
+  const latches = new ModelOverrideLatches(f.store); f.store.set("fixture", "override-A");
+  const turn = {}; latches.capture("fixture", owner, turn, () => true).applied();
+  expect(latches.status("fixture", owner, context.fallback("fixture"))).toMatchObject({ effectiveModel: "override-A", source: "override" });
+  f.store.clear("fixture");
+  expect(latches.status("fixture", owner, context.fallback("fixture"))).toMatchObject({ effectiveModel: "override-A", pendingNextTurn: true });
+  latches.end("fixture", turn); latches.capture("fixture", owner, {}, () => true).applied();
+  expect(latches.status("fixture", owner, context.fallback("fixture"))).toMatchObject({ effectiveModel: "native-baseline", source: "native default", pendingNextTurn: false });
+  expect(context.fallback("unmanaged")).toEqual({ source: "native default" });
+});

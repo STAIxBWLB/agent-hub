@@ -243,6 +243,7 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["titlePersistence", definition.titlePersistence !== undefined],
     ["questionWaitMs", definition.questionWaitMs !== undefined],
     ["settle", definition.settle !== undefined],
+    ["modelOverride", definition.modelOverride !== undefined],
     ["start.acpCommand", declared(definition.start, "acpCommand")],
     ["attach.admission", declared(definition.attach, "admission")],
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],

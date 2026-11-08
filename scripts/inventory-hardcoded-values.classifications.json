@@ -372,6 +372,8 @@
   "scripts/smoke-recovery-09-10.ts:timeoutMs:constant:timeoutMs=45000#0": "operational",
   "scripts/smoke-recovery-09-10.ts:waitForControl:inline:Bun.sleep=100#0": "operational",
   "scripts/spec-dogfood-report.ts:sha:inline:row.sha.slice=8#0": "contract",
+  "src/adapters/acp-model-policy.ts:ACP_MODEL_OPTIONS_MAX:constant:ACP_MODEL_OPTIONS_MAX=256#0": "safety floor",
+  "src/adapters/acp-model-policy.ts:acpLogicalModelId:inline:wire.length > 128 + suffix.length=128#0": "safety floor",
   "src/adapters/acp-owned-group.ts:READ_MS:constant:READ_MS=1000#0": "operational",
   "src/adapters/acp-owned-group.ts:stop:inline:killMs > 10_000=10_000#0": "operational",
   "src/adapters/acp-quota.ts:windowMins:inline:windowMins=300#0": "operational",

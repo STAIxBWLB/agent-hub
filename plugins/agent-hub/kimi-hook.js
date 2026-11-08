@@ -3533,6 +3533,55 @@ var init_acp_owned_group = __esm(() => {
   };
 });
 
+// src/adapters/acp-model-policy.ts
+function acpLogicalModelId(policy, wire) {
+  if (policy.idCodec === "qwen-openai") {
+    const suffix = "(openai)";
+    if (typeof wire !== "string" || wire.length > 128 + suffix.length || !wire.endsWith(suffix))
+      return;
+    const logical = wire.slice(0, -suffix.length);
+    return isNativeModelToken(logical) ? logical : undefined;
+  }
+  return isNativeModelToken(wire) ? wire : undefined;
+}
+function acpModelAdvertisement(policy, session) {
+  if (!session || typeof session !== "object" || Array.isArray(session))
+    return;
+  const value = session;
+  let current, options;
+  if (policy.setter === "set_model") {
+    current = value.models?.currentModelId;
+    options = value.models?.availableModels;
+  } else {
+    if (!Array.isArray(value.configOptions) || value.configOptions.length > ACP_MODEL_OPTIONS_MAX)
+      return;
+    const models = value.configOptions.filter((option) => option?.id === "model");
+    if (models.length !== 1 || models[0]?.type !== "select")
+      return;
+    current = models[0].currentValue;
+    options = models[0].options;
+  }
+  const logicalCurrent = acpLogicalModelId(policy, current);
+  if (!logicalCurrent || !Array.isArray(options) || options.length === 0 || options.length > ACP_MODEL_OPTIONS_MAX)
+    return;
+  const ids = [], wire = Object.create(null);
+  for (const option of options) {
+    const id = policy.setter === "set_model" ? option?.modelId : option?.value;
+    const logical = acpLogicalModelId(policy, id);
+    if (!logical || ids.includes(logical))
+      return;
+    ids.push(logical);
+    wire[logical] = id;
+  }
+  if (!ids.includes(logicalCurrent))
+    return;
+  return Object.freeze({ current: logicalCurrent, available: Object.freeze(ids), wire: Object.freeze(wire) });
+}
+var ACP_MODEL_OPTIONS_MAX = 256;
+var init_acp_model_policy = __esm(() => {
+  init_model_token();
+});
+
 // src/adapters/acp.ts
 import { spawn as spawn5 } from "child_process";
 import { createInterface } from "readline";
@@ -3595,6 +3644,9 @@ var init_acp = __esm(() => {
   init_qwen_native();
   init_child_process();
   init_acp_owned_group();
+  init_compat();
+  init_acp_model_policy();
+  init_model_token();
   init_native_capabilities();
   TOOL_CEILING_MS = 30 * 60000;
   managedLaunches = new WeakMap;
@@ -3608,6 +3660,14 @@ var init_acp = __esm(() => {
     permissionMode;
     nativePolicy;
     modeUnknown = false;
+    modelUnknown = false;
+    modelPolicy;
+    modelAdvertisement;
+    modelBaseline;
+    modelSelected;
+    modelObservation = {};
+    modelBinding;
+    modelTurn;
     kimiAgent = false;
     qwenAgent = false;
     agentIdentity;
@@ -3719,6 +3779,9 @@ var init_acp = __esm(() => {
     constructor(id, opts) {
       super(id, opts.watchdogMs);
       this.opts = opts;
+      this.modelPolicy = opts.modelPolicy ? Object.freeze({ ...opts.modelPolicy, admission: Object.freeze({ ...opts.modelPolicy.admission }) }) : undefined;
+      if (opts.modelSetterTimeoutMs !== undefined && (!Number.isSafeInteger(opts.modelSetterTimeoutMs) || opts.modelSetterTimeoutMs <= 0 || opts.modelSetterTimeoutMs > HANDSHAKE_MS))
+        throw new Error("ACP model acknowledgement deadline must fit the handshake bound");
       this.nativePolicy = opts.nativePolicy === undefined ? undefined : { ...opts.nativePolicy, ...opts.nativePolicy.modes === undefined ? {} : { modes: { ...opts.nativePolicy.modes } } };
       this.permissionMode = this.nativePolicy?.lockedReadOnly ? "ask" : opts.permissionMode ?? "ask";
     }
@@ -3731,6 +3794,12 @@ var init_acp = __esm(() => {
     }
     async start() {
       managedLaunches.delete(this);
+      this.modelBinding = undefined;
+      this.modelAdvertisement = undefined;
+      this.modelBaseline = undefined;
+      this.modelSelected = undefined;
+      this.modelUnknown = false;
+      this.modelTurn = undefined;
       if (this.opts.requireOwnedGroup && this.proc)
         throw new Error("Configured ACP still has a process; stop it before starting another");
       this.stopping = false;
@@ -3752,7 +3821,10 @@ var init_acp = __esm(() => {
       });
       proc.stdin.on("error", () => {});
       proc.stderr.on("data", (d) => this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP stderr output withheld" : `[${this.id}] ${String(d).trimEnd()}`));
-      createInterface({ input: proc.stdout }).on("line", (line) => this.onLine(line));
+      createInterface({ input: proc.stdout }).on("line", (line) => {
+        if (!this.modelPolicy || this.proc === proc)
+          this.onLine(line);
+      });
       const handshake = async () => {
         const init = await this.request("initialize", {
           protocolVersion: 1,
@@ -3791,6 +3863,24 @@ var init_acp = __esm(() => {
           throw new Error("Configured ACP did not provide a valid native session identity");
         }
         this.sessionId = session.sessionId;
+        const modelPolicy = this.modelPolicy;
+        if (modelPolicy && this.modelAdmitted()) {
+          const advertisement = acpModelAdvertisement(modelPolicy, session);
+          if (advertisement && typeof this.sessionId === "string" && this.sessionId.length > 0) {
+            try {
+              const proof = await AcpOwnedGroup.capture(proc);
+              await proof.verify();
+              if (this.proc === proc && !this.stopping) {
+                this.modelBinding = { proc, session: this.sessionId, proof };
+                this.modelAdvertisement = advertisement;
+                this.modelSelected = advertisement.current;
+                this.modelBaseline = this.opts.launchModel === undefined ? advertisement.current : advertisement.available.includes(this.opts.launchModel) ? this.opts.launchModel : undefined;
+              }
+            } catch {
+              this.opts.log?.("ACP model process ownership is unverified; live model changes are unavailable, inspect status and restart before retrying");
+            }
+          }
+        }
         this.binding = false;
         this.adoptEarlyCommands(session.sessionId);
         this.onDoing?.("reset");
@@ -3850,6 +3940,94 @@ var init_acp = __esm(() => {
         throw e;
       }
       this.setState("idle");
+    }
+    modelAdmitted() {
+      const policy = this.modelPolicy;
+      if (!policy || !policy.receipt || this.agentIdentity?.name !== policy.agentName || this.agentIdentity.version !== policy.version)
+        return false;
+      if (policy.admission.compatId !== undefined) {
+        return assessVersion(policy.admission.compatId, policy.version, []).ok || assessVersion(policy.admission.compatId, policy.version, readTrust(this.opts.modelTrustFile)).ok;
+      }
+      return policy.admission.nativeIdentity === true;
+    }
+    get modelOverrideState() {
+      const binding = this.modelBinding;
+      const version = this.agentIdentity?.version;
+      const available = !!binding && this.modelAdmitted() && !this.modelUnknown && !this.stopping && this.state !== "offline" && this.proc === binding.proc && binding.proc.exitCode === null && binding.proc.signalCode === null && this.sessionId === binding.session && !!this.modelAdvertisement && !!this.modelBaseline;
+      return {
+        available,
+        ...available ? { baseline: this.modelBaseline } : {},
+        ...isNativeModelToken(version) && /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version) ? { version } : {}
+      };
+    }
+    acceptsModelOverride(model) {
+      return this.modelOverrideState.available && isNativeModelToken(model) && this.modelAdvertisement.available.includes(model);
+    }
+    observeModelId(model) {
+      this.modelObservation = {};
+      const logical = this.modelPolicy && acpLogicalModelId(this.modelPolicy, model);
+      if (!logical || !this.modelAdvertisement?.available.includes(logical)) {
+        this.modelAdvertisement = undefined;
+        this.modelSelected = undefined;
+      } else
+        this.modelSelected = logical;
+    }
+    acknowledgeModel() {
+      const selected = this.modelTurn;
+      if (!selected || !selected.sent || selected.acknowledged || selected.turn !== this.turn || this.stopping || this.modelUnknown || !this.modelOverrideState.available || this.modelSelected !== selected.target)
+        return;
+      selected.acknowledged = true;
+      selected.selection.applied();
+    }
+    async selectTurnModel(turn) {
+      const selected = this.modelTurn, binding = this.modelBinding, policy = this.modelPolicy;
+      if (!selected || !binding || !policy)
+        throw new Error("ACP model setter is unavailable; restart this peer before retrying");
+      const current = () => turn === this.turn && this.modelTurn === selected && this.modelBinding === binding && this.proc === binding.proc && this.sessionId === binding.session && !this.stopping && !this.modelUnknown;
+      const verify = async () => {
+        try {
+          await binding.proof.verify();
+        } catch {
+          if (this.modelBinding === binding)
+            this.modelBinding = undefined;
+          throw new Error("ACP model process ownership could not be verified; restart this peer before retrying");
+        }
+      };
+      await verify();
+      if (!current() || !this.acceptsModelOverride(selected.target))
+        throw new Error("ACP model session or advertisement changed; inspect status and retry");
+      if (this.modelSelected === selected.target)
+        return;
+      const observation = this.modelObservation;
+      const wire = this.modelAdvertisement?.wire[selected.target];
+      if (!wire)
+        throw new Error("ACP model has no exact advertised wire binding; inspect model choices and retry");
+      try {
+        const result = await this.request(policy.setter === "set_model" ? "session/set_model" : "session/set_config_option", policy.setter === "set_model" ? { sessionId: binding.session, modelId: wire } : { sessionId: binding.session, configId: "model", value: wire }, this.opts.modelSetterTimeoutMs ?? HANDSHAKE_MS);
+        if (policy.setter === "set_config_option" && this.modelObservation === observation && result?.configOptions !== undefined) {
+          this.modelAdvertisement = acpModelAdvertisement(policy, result);
+          this.modelSelected = this.modelAdvertisement?.current;
+          this.modelObservation = {};
+        }
+      } catch (error) {
+        if (error instanceof RpcTimeoutError && current()) {
+          if (this.activeDeliveryId)
+            this.delivery({ id: this.activeDeliveryId, state: "failed_safe", reason: "ACP model acknowledgement timed out before a prompt was sent; restart this peer before retrying" });
+          this.activeDeliveryId = undefined;
+          this.activeLegacy = undefined;
+          this.modelUnknown = true;
+          this.turn++;
+          this.setState("offline");
+          await this.stop();
+          throw new Error("ACP model change was not acknowledged; native selection is unknown, restart this peer before sending work");
+        }
+        throw new Error("ACP model setter refused the change; inspect model status and retry");
+      }
+      if (this.modelObservation === observation)
+        this.modelSelected = selected.target;
+      await verify();
+      if (!current() || !this.acceptsModelOverride(selected.target) || this.modelSelected !== selected.target)
+        throw new Error("ACP model session or advertisement changed; inspect status and retry");
     }
     getPermissionMode() {
       return this.permissionMode;
@@ -3953,7 +4131,23 @@ var init_acp = __esm(() => {
           this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
         throw new Error(`${this.id} is ${this.state}`);
       }
+      let selection;
+      try {
+        selection = this.opts.getModelOverride?.();
+      } catch {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason: "ACP retained model selection is unavailable; inspect model status, clear the override or restart before retrying" });
+        throw new Error("ACP retained model selection is unavailable; inspect model status, clear the override or restart before retrying");
+      }
+      const target = selection?.model ?? this.modelBaseline;
+      if (selection && (!target || !this.acceptsModelOverride(target))) {
+        selection.rejected?.();
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason: "ACP model is not advertised by this verified session; inspect model status and retry" });
+        throw new Error("ACP model is not advertised by this verified session; inspect model status and retry");
+      }
       const turn = ++this.turn;
+      this.modelTurn = selection && target ? { turn, selection, target, sent: false, acknowledged: false } : undefined;
       this.activeDeliveryId = deliveryId;
       this.activeLegacy = deliveryId ? undefined : { turn, envs };
       this.turnEnvs = envs;
@@ -3973,6 +4167,28 @@ var init_acp = __esm(() => {
       this.activityStarted = Date.now();
       this.setState("busy");
       this.emitActivity("delivery", envs.map((env) => `${env.from} ${env.id}`).join(", "));
+      if (selection) {
+        try {
+          await this.selectTurnModel(turn);
+          if (turn !== this.turn || this.stopping || !this.modelOverrideState.available || this.modelTurn?.turn !== turn || this.modelSelected !== target)
+            throw new Error("ACP model owner or selection changed before prompt admission; inspect status and retry");
+        } catch (error) {
+          if (turn === this.turn && !this.modelTurn?.sent) {
+            selection.rejected?.();
+            if (deliveryId && this.activeDeliveryId === deliveryId)
+              this.delivery({ id: deliveryId, state: "failed_safe", reason: "ACP model change did not admit a prompt; inspect status and retry" });
+            this.activeDeliveryId = undefined;
+            this.activeLegacy = undefined;
+            this.modelTurn = undefined;
+            this.endActivity("model change refused", true);
+            if (!this.stopping && this.state === "busy")
+              this.setState("idle");
+          }
+          throw error;
+        }
+        if (this.modelTurn?.turn === turn)
+          this.modelTurn.sent = true;
+      }
       const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}
 
 ${renderDigest(envs, false)}` }] });
@@ -3993,6 +4209,8 @@ ${renderDigest(envs, false)}` }] });
           try {
             this.opts.onTurnUsage?.(turnUsage, this.sessionId);
           } catch {}
+        if (result?.stopReason === "end_turn")
+          this.acknowledgeModel();
         this.primed = true;
         const body = this.chunks.join("").trim();
         const answering = this.turnEnvs.length ? this.turnEnvs : envs;
@@ -4011,6 +4229,8 @@ ${renderDigest(envs, false)}` }] });
             this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP cancelled prompt rejected; native details withheld" : `[${this.id}] cancelled prompt rejected: ${sanitize(e.message)}`);
           return;
         }
+        if (!this.modelTurn?.acknowledged)
+          this.modelTurn?.selection.rejected?.();
         this.endActivity("failed", true);
         const reason = this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP prompt failed" : sanitize(e.message);
         this.settleSteers("needs_review", reason);
@@ -4047,6 +4267,8 @@ ${renderDigest(envs, false)}` }] });
             this.setState("idle");
           return;
         }
+        if (this.modelTurn?.turn === turn)
+          this.modelTurn = undefined;
         if (turn === this.turn && !this.stopping && this.state === "busy")
           this.setState("idle");
         if (this.activeLegacy?.turn === turn)
@@ -4188,6 +4410,11 @@ ${renderDigest(envs, false)}` }] });
         this.lastSignAt = Date.now();
         this.touch();
       }
+      if (this.modelPolicy && msg.method === "qwen/notify/session/model-update") {
+        if (this.modelPolicy.modelUpdate === "qwen/notify/session/model-update" && msg.params?.v === 1 && msg.params.sessionId === this.sessionId)
+          this.observeModelId(msg.params.currentModelId);
+        return;
+      }
       if (msg.method === "session/update") {
         if (msg.params?.update?.sessionUpdate === "available_commands_update" && typeof msg.params.sessionId === "string") {
           const held = { sessionId: msg.params.sessionId, update: msg.params.update, at: Date.now() };
@@ -4211,8 +4438,21 @@ ${renderDigest(envs, false)}` }] });
             return;
           }
         }
-        if (this.state !== "busy" || this.cancelWait)
+        if (this.modelPolicy && (u?.sessionUpdate === "current_model_update" || u?.sessionUpdate === "config_option_update")) {
+          if (msg.params?.sessionId === this.sessionId && this.modelPolicy.modelUpdate === u.sessionUpdate) {
+            this.modelObservation = {};
+            if (u.sessionUpdate === "config_option_update") {
+              this.modelAdvertisement = acpModelAdvertisement(this.modelPolicy, { configOptions: u.configOptions });
+              this.modelSelected = this.modelAdvertisement?.current;
+            } else
+              this.observeModelId(u.currentModelId);
+          }
           return;
+        }
+        if (this.state !== "busy" || this.cancelWait || this.modelTurn && !this.modelTurn.sent)
+          return;
+        if (msg.params?.sessionId === this.sessionId && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(u?.sessionUpdate))
+          this.acknowledgeModel();
         this.promptActivity = true;
         this.acceptDelivery();
         this.updateWatch(u);
@@ -4248,6 +4488,8 @@ ${renderDigest(envs, false)}` }] });
         }
         if (this.state === "busy" && (!msg.params?.sessionId || msg.params.sessionId === this.sessionId))
           this.promptActivity = true;
+        if (this.state === "busy" && !this.cancelWait && msg.params?.sessionId === this.sessionId)
+          this.acknowledgeModel();
         this.answerPermission(msg);
       } else if (msg.method && msg.id !== undefined) {
         this.send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not supported by agent-hub" } });
@@ -16027,6 +16269,7 @@ function reviewerVariant(kind, displayName, reviewer, display) {
     turnEnd: "adapter",
     budget: { account: kind },
     routing: { reviewOnly: true },
+    modelOverride: undefined,
     reviewer,
     cli: { command: kind, startWords: () => [] },
     display
@@ -18188,6 +18431,14 @@ var init_builtin_metadata = __esm(() => {
       displayName: "Kimi Code",
       family: "kimi",
       transport: "acp",
+      modelOverride: { boundary: "turn", acp: {
+        admission: { nativeIdentity: true },
+        agentName: "Kimi Code CLI",
+        version: "2.5.2",
+        setter: "set_config_option",
+        modelUpdate: "config_option_update",
+        receipt: "docs/verification/2026-11-08-kimi-252-model-setter-1317.md"
+      } },
       roles: implementerRoles,
       defaultOnRoster: true,
       trust: { onPrem: false, hubSandboxed: false },
@@ -18866,6 +19117,7 @@ function assertNativeCapabilityScope(definition) {
     ["titlePersistence", definition.titlePersistence !== undefined],
     ["questionWaitMs", definition.questionWaitMs !== undefined],
     ["settle", definition.settle !== undefined],
+    ["modelOverride", definition.modelOverride !== undefined],
     ["start.acpCommand", declared(definition.start, "acpCommand")],
     ["attach.admission", declared(definition.attach, "admission")],
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],

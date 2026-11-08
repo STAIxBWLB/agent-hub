@@ -11,7 +11,7 @@ export interface RuntimeModelStatus {
   source: ModelSource;
   desiredModel: string | null;
   pendingNextTurn: boolean;
-  unsupported?: { reasonCode: "unverified_setter" | "unmanaged_attachment"; kind?: string; reason: string; nextStep: string };
+  unsupported?: { reasonCode: "unverified_setter" | "unmanaged_attachment" | "acp_setter_unavailable"; kind?: string; version?: string; reason: string; nextStep: string };
 }
 const MAX_OVERRIDE_ROWS = 128;
 const peerToken = (peer: unknown): peer is string => typeof peer === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(peer);
