@@ -126,7 +126,7 @@ export interface ContextReader {
 export type { Capability, CapabilityManifest, SideEffect } from "../hub/capabilities.ts";
 
 export interface NativeFactsInput {
-  event: "SessionStart" | "PreInvocation" | "PostInvocation" | "PreToolUse" | "PostToolUse" | "Stop";
+  event: "SessionStart" | "PreInvocation" | "PostInvocation" | "PreToolUse" | "PostToolUse" | "Stop" | "TurnStarted" | "StopFailure" | "Interrupt" | "SessionEnd" | "TaskStarted" | "Notification";
   phase: "session" | "start" | "pre" | "post" | "stop";
   sessionId: string;
   transcriptPath: string;
@@ -153,7 +153,9 @@ export interface NativeFactsUsage {
   at?: string;
 }
 export interface NativeFactsTranscript {
-  completion?: { id: string; index: number };
+  completion?: { id: string; index: number; reason?: "completed" | "failed" | "cancelled" };
+  started?: { id: string; index: number; origin: string };
+  background?: number;
   factIds: string[];
   usage?: NativeFactsUsage[];
   size?: number;

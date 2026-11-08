@@ -49,6 +49,11 @@ export const COMPAT = {
     parse: out => plain(out.trim()),
     trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven.",
     receipt: "docs/verification/2026-11-06-kimi-251-reviewer-compat.md" },
+  // The interactive TUI's native-turn and background readbacks are a separate contract from headless ACP and reviewer isolation.
+  "kimi-tui": { label: "Kimi TUI completion facts", verified: ["2.5.2"], gate: "contract", probe: ["kimi", "--version"],
+    parse: out => plain(out.trim()),
+    trustNote: "Only 2.5.2 has a live receipt for turn.prompt/turn.ended/prompt completion rows, background task inventory and launcher-bound plugin hooks. Another version keeps completion receipts disabled.",
+    receipt: "docs/verification/2026-11-08-kimi-tui-completion-1282.md" },
   jcode: { label: "Jcode", verified: ["0.98.1", "0.99.0", "0.99.1"], line: { min: "0.98.0", below: "1.0.0" }, gate: "contract", probe: ["jcode", "--quiet", "version", "--json"], config: "jcode_cmd",
     parse: out => { try { const v = JSON.parse(out).semver; return typeof v === "string" ? plain(v) : undefined; } catch { return undefined; } },
     trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and 0.99.1 and steering on 0.99.0 and 0.99.1; an untested version may change them.",

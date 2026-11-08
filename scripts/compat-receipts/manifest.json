@@ -1394,6 +1394,103 @@
         }
       ]
     },
+    "kimi-tui": {
+      "receipt": "docs/verification/2026-11-08-kimi-tui-completion-1282.md",
+      "runnerOS": [
+        "macos"
+      ],
+      "nativePlatform": "macos-arm64",
+      "install": {
+        "method": "github-release-asset-checksum",
+        "repository": "MoonshotAI/kimi-code",
+        "tagTemplate": "@moonshot-ai/kimi-code@{version}",
+        "asset": "kimi-code-darwin-arm64.tar.gz",
+        "checksumAsset": "kimi-code-darwin-arm64.tar.gz.sha256",
+        "integrityPolicy": "verify SHA-256 against the versioned checksum asset and GitHub asset digest before bounded extraction",
+        "referenceTag": "@moonshot-ai/kimi-code@2.5.2",
+        "metadataUrl": "https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai/kimi-code%402.5.2",
+        "observedAt": "2026-11-08"
+      },
+      "autoAdmit": false,
+      "autoAdmitReason": "The completion bridge requires an exact-version live interactive TUI and model receipt; model-free source checks alone cannot admit it.",
+      "legs": [
+        {
+          "id": "native-turn-readback",
+          "label": "Blocked Stop, final turn correlation and native origin evidence",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-08-kimi-tui-completion-1282.md",
+            "section": "## T0 native evidence",
+            "quote": "A blocked first Stop produced only the intermediate"
+          }
+        },
+        {
+          "id": "background-quiescence",
+          "label": "Live background inventory and person-origin settlement",
+          "category": "account-or-model",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-08-kimi-tui-completion-1282.md",
+            "section": "## Live implementation evidence",
+            "quote": "Real background `sleep 15`"
+          }
+        },
+        {
+          "id": "plugin-lifecycle",
+          "label": "Launch-scoped plugin installation, ownership and cleanup",
+          "category": "tui-desktop",
+          "runnerOS": [
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-08-kimi-tui-completion-1282.md",
+            "section": "## T0 native evidence",
+            "quote": "A launcher-scoped local plugin worked"
+          }
+        },
+        {
+          "id": "source-regression",
+          "label": "Completion, launcher, privacy and adapter regression suites",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux",
+            "macos"
+          ],
+          "requiredForAdmission": true,
+          "evidence": {
+            "path": "docs/verification/2026-11-08-kimi-tui-completion-1282.md",
+            "section": "## Live implementation evidence",
+            "quote": "Focused regression suites"
+          },
+          "note": "Source regressions supplement, but never replace, the exact-version live TUI legs."
+        }
+      ],
+      "unverifiedFollowups": [
+        {
+          "id": "other-versions-platforms",
+          "label": "Other native versions and non-Mac platforms",
+          "category": "linux-ci",
+          "runnerOS": [
+            "linux"
+          ],
+          "requiredForAdmission": false,
+          "evidence": {
+            "path": "docs/verification/2026-11-08-kimi-tui-completion-1282.md",
+            "section": "## Implementation boundary",
+            "quote": "An unverified TUI version or a launch without these readbacks declares no TUI settle."
+          },
+          "note": "Other versions and platforms retain the existing TUI behavior without the completion bridge."
+        }
+      ]
+    },
     "jcode": {
       "receipt": "docs/verification/2026-10-26-jcode-0.99.1.md",
       "runnerOS": [
