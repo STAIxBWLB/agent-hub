@@ -220,7 +220,8 @@ test("a 33-Record partial window preserves unproved notes and compacts only exac
 
 test("proven generated-note overlap reduces actual brief and recall bytes while preserving unproved context", async () => {
   const f = fixture(); expect(f.owner.recordInstruction?.()).toBe(RECORD_INSTRUCTION); f.finish(record);
-  const id = "a".repeat(32), unrelatedId = "b".repeat(32), old = `mem:${id} decision: ` + "Synthetic generated outcome detail ".repeat(40);
+  // The existing client renders a generated note's title, capped by Tasks.note at 120 characters.
+  const id = "a".repeat(32), unrelatedId = "b".repeat(32), old = `mem:${id} decision: ` + "agent-hub task #42: Synthetic generated outcome title ".padEnd(120, "x");
   const unrelated = `mem:${unrelatedId} contract: Keep this unrelated authored contract exactly.`;
   f.generatedNote({ id, anchors: ["src/main.ts#run"] });
   const snapshot = f.ports.read({ owner: "codex", title: "Synthetic task", refs: { paths: ["src/main.ts"] } });
@@ -238,6 +239,7 @@ test("proven generated-note overlap reduces actual brief and recall bytes while 
   const after = await recallFor("codex", client, ["synthetic-project"], 10_000, { allowed: () => true, policyVersion: () => "fixture-one", project: original => f.ports.project("codex", original, 10_000) });
   expect(contextCalls).toBe(1); expect(typeof before).toBe("string"); expect(typeof after).toBe("string");
   expect(Buffer.byteLength(after!)).toBeLessThan(Buffer.byteLength(before!)); expect(after).not.toContain(old);
+  console.info(`Record overlap fixture bytes: brief ${Buffer.byteLength(originalItems.map(item => item.line).join("\n"))} -> ${Buffer.byteLength(brief.items.map(item => item.line).join("\n"))}; recall ${Buffer.byteLength(before!)} -> ${Buffer.byteLength(after!)}`);
   expect(after).toContain(unrelated); expect(after).toContain("Coverage notice stays exact."); expect(after).toContain("Trailing notice stays exact.");
   const projected = f.ports.project("codex", context, 10_000); expect(projected?.before).toBe(context);
   expect(projected?.after.startsWith("# [amem] recent curated context\n\n### Curated short-term notes\n")).toBe(true);

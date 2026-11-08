@@ -35,6 +35,7 @@ test("completed final text is captured before stripping, while envelopes, queued
   const beforeDigestBytes = Buffer.byteLength(renderDigest([{ ...answers[0]!.env, body: raw }], true));
   const afterDigestBytes = Buffer.byteLength(renderDigest(f.recipient.got, true));
   expect(afterDigestBytes).toBeLessThan(beforeDigestBytes);
+  console.info(`Record forwarding fixture bytes: answer ${bytes!.before} -> ${bytes!.after}; digest ${beforeDigestBytes} -> ${afterDigestBytes}`);
   await f.worker.stop(); await f.recipient.stop(); f.bus.closeJournal();
 });
 test("observer failures cannot leak Record lines or change the existing reply audience", async () => {

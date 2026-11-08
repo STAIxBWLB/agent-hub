@@ -64,7 +64,7 @@ export class GeneratedNoteRegistry {
     return { id, anchors: [...proof.anchors] };
   }
   /** Shortlist by exact anchor intersection only; the consumer must separately prove full replacement coverage. */
-  matching(value: readonly string[], limit = GENERATED_NOTE_LIMITS.matches): GeneratedNoteProof[] {
+  matching(value: readonly string[], limit: number = GENERATED_NOTE_LIMITS.matches): GeneratedNoteProof[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > GENERATED_NOTE_LIMITS.matches) return [];
     const paths = anchors(value, GENERATED_NOTE_LIMITS.queryAnchors, true);
     if (!paths) return [];
