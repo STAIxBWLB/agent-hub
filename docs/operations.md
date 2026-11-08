@@ -2499,10 +2499,20 @@ callback cannot mark a newer desired value or another adapter owner applied.
 
 T1 supports headless Claude implementer turns, supported Codex app-server turns,
 fresh codex-review spawns, the local worker and Pi. Native account/provider
-availability is still the backend's responsibility. ACP Jcode/Kimi/Qwen and
-native TUI forms report `unsupported live` until a verified setter is available;
-a refused set writes no new override and never restarts a process. Follow the
-reported cause and `ahub restart <peer>` guidance for those native forms.
+availability is still the backend's responsibility. Headless Kimi Code CLI 2.5.2
+also supports next-turn selection through its receipt-backed ACP model setter.
+It requires the existing native identity admission, an exact-version receipt,
+an owned current session and advertised model choices. Clear restores the
+validated session baseline. Kimi reviewer isolation and version qualification
+are separate and unchanged.
+
+Jcode, Qwen, other Kimi versions and native TUI forms remain `unsupported live`.
+The [Jcode headless fixture](verification/2026-11-08-jcode-0991-model-setter-1317.md)
+passes, but does not fence a shared TUI turn across native failover. The
+[Qwen 0.26.9 setter fixture](verification/2026-11-08-qwen-0269-model-setter-1317.md)
+fails restoration of the original model. Neither enables a production setter.
+A refused set writes no new override and never restarts a process. Follow the
+reported cause and `ahub restart <peer>` guidance for unsupported forms.
 
 This does not make `instances.*.model` or `*_cmd` live or editable by agents.
 Their existing machine-local tier 3 confirmation and restart behavior remains.
