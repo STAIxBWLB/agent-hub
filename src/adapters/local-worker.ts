@@ -207,6 +207,7 @@ export class LocalPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
       throw new Error(`${this.id} is ${this.state}`);
     }
+    const fixedPrompt = this.turnRecordPrompt(system(this.opts.cwd, this.opts.preamble));
     const inputContext: OwnedInputContext = Object.freeze({ sessionId: this.observerSessionId, inputId: randomUUID() });
     try { this.opts.beforeInput?.(inputContext, envs); }
     catch {
@@ -237,7 +238,7 @@ export class LocalPeer extends BasePeer {
     // The turn works on its own message list and joins the history only as a whole, so a failed or aborted turn can
     // never leave a tool call without its result (strict servers reject that history forever after).
     const msgs: ChatMessage[] = [{ role: "user", content: [envs.some(env => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join("\n") }];
-    const progress = { sideEffects: 0, last: "" };
+    const progress = { sideEffects: 0, last: "", answerComplete: false };
     const requestedPolicy = this.opts.turnPolicy?.(envs);
     const policy = envs.some(env => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
     const remoteTurn = envs.some(remoteEnvelope);
@@ -248,11 +249,11 @@ export class LocalPeer extends BasePeer {
     // A PII turn speaks to the console user only, and privately: its answer must not be broadcast to cloud-hosted peers.
     // The task id travels with it, so the board can keep the text (`ahub task show`) while tail and log show a stub.
     const reply: EnvelopeOpts = { inReplyTo: replyParent(envs), to: replyAudience(envs), ...(policy?.pii ? { to: [USER], private: true, priority: "important" as const, ...(policy.task ? { refs: { task: policy.task } } : {}) } : {}) };
-    this.run(envs, turn, msgs, progress, policy, reply, reviewScope, selection, modelFailure)
+    this.run(envs, turn, msgs, progress, policy, reply, reviewScope, fixedPrompt, selection, modelFailure)
       .then((answer) => {
         if (turn !== this.turn) return;
         if (preserveHistory && !reviewScope.excluded) this.commit(msgs); // Private, remote and review turns never enter later local capture through model history.
-        if (answer) this.onMessage?.(answer, reply);
+        if (answer) this.finalAnswer(answer, reply, progress.answerComplete);
         if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "completed" });
         completed = true;
       })
@@ -309,10 +310,11 @@ export class LocalPeer extends BasePeer {
     envs: Envelope[],
     turn: number,
     msgs: ChatMessage[],
-    progress: { sideEffects: number; last: string },
+    progress: { sideEffects: number; last: string; answerComplete: boolean },
     policy: { route?: string; fixedModel?: string; pii: boolean; task?: string } | undefined,
     reply: EnvelopeOpts,
     reviewScope: { excluded: boolean },
+    fixedPrompt: string,
     selection?: ModelOverrideSelection,
     modelFailure?: Error,
   ): Promise<string> {
@@ -334,17 +336,18 @@ export class LocalPeer extends BasePeer {
     let captureInvocation = 0;
     for (let step = 0; step < maxSteps; step++) {
       this.elide(msgs);
-      const res = await this.call(msgs, policy, envs, selection);
+      const res = await this.call(msgs, policy, envs, selection, fixedPrompt);
       if (turn !== this.turn) return "";
       this.touch();
       msgs.push(res.message);
       progress.last = res.message.content?.trim() || progress.last;
       if (!res.message.tool_calls?.length) {
-        const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal, res.routeDecision, selection);
+        const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal, res.routeDecision, selection, fixedPrompt);
         if (turn !== this.turn) return "";
         if (concluded === undefined) continue;
-        if (usedTools && !reviewScope.excluded) capture?.summarize(concluded);
-        return concluded;
+        if (usedTools && !reviewScope.excluded) capture?.summarize(concluded.answer);
+        progress.answerComplete = concluded.complete;
+        return concluded.answer;
       }
       if (res.message.tool_calls.some(call => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments))) reviewScope.excluded = true;
       const results: ChatMessage[] = [];
@@ -478,7 +481,7 @@ export class LocalPeer extends BasePeer {
   }
 
   /** Hub-owned in-process policy, with a fixed OmniRoute alias as fallback. */
-  private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii?: boolean; task?: string } | undefined, envs: Envelope[], selection?: ModelOverrideSelection): Promise<ChatResult> {
+  private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii?: boolean; task?: string } | undefined, envs: Envelope[], selection?: ModelOverrideSelection, fixedPrompt = system(this.opts.cwd, this.opts.preamble)): Promise<ChatResult> {
     const { omni } = this.opts;
     const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined;
     if (route && !route.startsWith("hub/") && !this.warnedLegacyRoutes.has(route)) {
@@ -489,7 +492,7 @@ export class LocalPeer extends BasePeer {
     const task = policy?.task === undefined ? undefined : Number(policy.task);
     const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
     const signal = this.abort!.signal;
-    const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
+    const messages: ChatMessage[] = [{ role: "system", content: fixedPrompt }, ...this.history, ...turnMsgs];
     const routed = await this.hubCall(route, messages, policy, signal);
     if (routed) { selection?.applied(); return routed; }
     await this.requireBudget(envs, "model_calls");
@@ -544,15 +547,15 @@ export class LocalPeer extends BasePeer {
     }
   }
 
-  private async conclude(msgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii: boolean } | undefined, turn: number, step: number, maxSteps: number, answer: string, signal: AbortSignal, decisionId?: string, selection?: ModelOverrideSelection): Promise<string | undefined> {
+  private async conclude(msgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii: boolean } | undefined, turn: number, step: number, maxSteps: number, answer: string, signal: AbortSignal, decisionId?: string, selection?: ModelOverrideSelection, fixedPrompt = system(this.opts.cwd, this.opts.preamble)): Promise<{ answer: string; complete: boolean } | undefined> {
     const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined, config = this.hubConfig(route);
-    if (!route || !config) return answer;
-    const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...msgs];
+    if (!route || !config) return { answer, complete: true };
+    const messages: ChatMessage[] = [{ role: "system", content: fixedPrompt }, ...this.history, ...msgs];
     const feedback = await this.routes.review(route, config, messages, this.routeScope(!!policy?.pii, turn), !!policy?.pii, signal, decisionId);
-    if (turn !== this.turn || !feedback) return answer;
+    if (turn !== this.turn || !feedback) return { answer, complete: true };
     msgs.push({ role: "user", content: feedback });
     if (step + 1 >= maxSteps) this.opts.onLimit?.("steps");
-    return step + 1 < maxSteps ? undefined : `(review requested changes; step limit reached) ${answer}`;
+    return step + 1 < maxSteps ? undefined : { answer: `(review requested changes; step limit reached) ${answer}`, complete: false };
   }
 
   private observeTool(call: ToolCall, output: string, policy: { pii: boolean; task?: string } | undefined, nativeTurn: string): void {

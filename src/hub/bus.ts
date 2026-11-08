@@ -9,6 +9,7 @@ import { DELIVERY_RETRY_WARNING } from "./delivery-hints.ts";
 import { MAX_DEFERRED_HUB, RecoveryDeferredHubError, validateDeferredHub } from "./deferred-hub.ts";
 import { parseRemotePeerId } from "../rooms/application.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
+import { stripRecordLines } from "../memory/records.ts";
 
 export type { DeliveryReceipt } from "./peers.ts";
 
@@ -214,6 +215,10 @@ export class Bus {
    * peer was handed (the request is in it, never condensed), so a reply that answers an invocation is found by identity, not by addressing.
    */
   onAnswer?: (peer: PeerId, text: string, answers: readonly Envelope[]) => boolean;
+  /** Completed adapter answers only, under the same public-input observer ceiling as memory delivery. */
+  onFinalAnswer?: (peer: PeerId, text: string, context: { out: readonly Envelope[]; originals: readonly Envelope[] }) => void;
+  /** Count-only forwarding telemetry; never emitted for a private, review-scoped or unbound answer. */
+  onFinalAnswerBytes?: (peer: PeerId, counts: { before: number; after: number }) => void;
   /** Host ledger authority; absent or unknown never permits invocation replay. */
   canRetryInvocation?: (id: string) => boolean;
   onInvocationUncertain?: (id: string) => void;
@@ -315,7 +320,7 @@ export class Bus {
     peer.onDelivery = (receipt) => { if (this.peers.get(peer.id) === peer) this.deliveryReceipt(peer.id, receipt); };
     peer.onDoing = (kind, text) => { if (kind === "reset") this.clearReviewProvenance(peer.id); if (!this.closed && this.peers.get(peer.id) === peer) this.opts.doing?.(peer.id, kind, text); };
     this.opts.doing?.(peer.id, "reset"); // a new adapter never shows what the one it replaces was doing
-    peer.onMessage = (text, opts) => {
+    const receive = (text: string, opts?: EnvelopeOpts, final = false, complete = true) => {
       if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;
       // #445 C2: an answer to an invocation is found by what the peer was handed, never by how the answer is addressed, so a headless agent whose final answer is
       // normally shared with every peer cannot leak it. It is the invocation's answer when it names the request itself (an adapter may report its delivery complete before
@@ -331,6 +336,21 @@ export class Bus {
           : parentId === undefined && this.invocationTurnOpen(peer.id)
             ? pushedInvocation ? pushed : pulledInvocation ? pulled : undefined
             : undefined;
+      if (final) {
+        const context = parentId === undefined ? pulled ?? pushed : namedPush ? pushed : namedPull ? pulled : undefined;
+        const raw = text;
+        // Strip before invocation routing, publication, journaling, digests or the console event tap.
+        text = stripRecordLines(raw);
+        let observable = !this.closed && this.peers.get(peer.id) === peer && !!context && !remoteId(peer.id) && !answerParent;
+        try {
+          observable &&= this.opts.reviewObserverInputExcluded?.(peer.id, context!.originals) !== true &&
+            ![...context!.out, ...context!.originals].some(env => env.private || isReviewObserverExcluded(env) || isInvocationKind(env.kind) || remoteId(env.from) || env.to?.some(remoteId));
+        } catch { observable = false; }
+        if (observable) {
+          if (complete) try { this.onFinalAnswer?.(peer.id, raw, context!); } catch { /* capture is optional and never changes answer routing */ }
+          try { this.onFinalAnswerBytes?.(peer.id, { before: Buffer.byteLength(parseMarker(raw).body), after: Buffer.byteLength(parseMarker(text).body) }); } catch { /* count-only observer */ }
+        }
+      }
       if (this.onAnswer && answerParent && (namedPush || namedPull || parentId === undefined && this.invocationTurnOpen(peer.id))) {
         let taken = false;
         try { taken = this.onAnswer(peer.id, text, answerParent.out) === true; } catch { taken = true; } // a throwing host never turns a callee's answer into a broadcast
@@ -393,6 +413,8 @@ export class Bus {
       if (hushed.length) this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}`));
       return heldBack ? hushed[0]!.reason : published.dropped === "hop" ? published : undefined;
     };
+    peer.onMessage = (text, opts) => receive(text, opts);
+    peer.onFinalAnswer = (text, opts, complete = true) => receive(text, opts, true, complete);
     peer.onFailed = (envs, failure) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.
       const last = this.lastDelivery.get(peer.id);

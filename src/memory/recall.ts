@@ -25,12 +25,38 @@ const entries = (text: string) => {
   return start < 0 ? "" : text.slice(start + 1).trim();
 };
 
-export async function recallFor(_peer: PeerId, client: MemoryClient, chain: string[], tokens: number): Promise<string | undefined> {
+export interface RecordRecallProjection { before: string; after: string }
+/** Row/anchor proof and complete-row screening stay in the existing host; no new client read is added. */
+export interface RecordRecallPort {
+  allowed(): boolean;
+  policyVersion(): string;
+  project(text: string): RecordRecallProjection | undefined | Promise<RecordRecallProjection | undefined>;
+  observe?(counts: { beforeBytes: number; afterBytes: number }): void;
+}
+
+export async function recallFor(_peer: PeerId, client: MemoryClient, chain: string[], tokens: number, records?: RecordRecallPort): Promise<string | undefined> {
   // Curated amem notes are one project source, regardless of which native peer originally authored them.
-  const text = await client.contextInject(chain);
-  if (!hasContext(text)) return undefined;
-  const body = entries(text);
-  return body ? `${HEADER}\n\n${trimToTokens(body, tokens)}` : undefined;
+  const original = await client.contextInject(chain);
+  if (!hasContext(original)) return undefined;
+  let text = original;
+  const render = (source: string): string | undefined => { const body = entries(source); return body ? `${HEADER}\n\n${trimToTokens(body, tokens)}` : undefined; };
+  let revision: string | undefined;
+  if (records) try {
+    if (records.allowed()) {
+      revision = records.policyVersion();
+      const projected = await records.project(original);
+      if (!records.allowed() || records.policyVersion() !== revision) return undefined;
+      if (projected?.before === original && hasContext(projected.after)) text = projected.after;
+    }
+  } catch {
+    // An unavailable Record source falls back, but a changed privacy context cannot publish old recall.
+    try { if (revision !== undefined && (!records!.allowed() || records!.policyVersion() !== revision)) return undefined; }
+    catch { return undefined; }
+  }
+  const result = render(text);
+  if (records) try { records.observe?.({ beforeBytes: Buffer.byteLength(render(original) ?? ""), afterBytes: Buffer.byteLength(result ?? "") }); }
+  catch { /* Count-only telemetry cannot fail recall. */ }
+  return result;
 }
 
 /**

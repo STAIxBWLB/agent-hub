@@ -1,4 +1,4 @@
-import { buildIntentBrief, type IntentBriefOptions, type IntentBriefSource } from "@staix/agent-mem";
+import { buildIntentBrief, parseRecordLines, type CaptureRow, type IntentBriefOptions, type IntentBriefSource } from "@staix/agent-mem";
 import { controlWriteSpan } from "../hub/control-write-trace.ts";
 import type { PeerId } from "../hub/envelope.ts";
 import type { MemoryClient } from "./client.ts";
@@ -34,7 +34,7 @@ export async function related(client: MemoryClient, project: string, query: stri
 }
 
 /** A native memory line for a brief (#258): `mem:<id8> <kind> <tier>: <title or text>`, fails first. */
-export interface NativeItem { id: string; line: string; kind?: string; about?: readonly string[]; tier?: string; peer?: string; machine?: string; at?: string }
+export interface NativeItem { id: string; line: string; kind?: string; about?: readonly string[]; tier?: string; peer?: string; machine?: string; at?: string; anchors?: readonly string[] }
 export type NativeBrief = (task: BriefTask) => NativeItem[] | Promise<NativeItem[]>;
 export interface IntentBriefContext { source: IntentBriefSource; options: IntentBriefOptions }
 /** Host-owned policy and store binding; the library owns relevance, ordering and text. */
@@ -46,6 +46,57 @@ export interface CorpusBriefPort {
   allowed(task: BriefTask): boolean;
   policyVersion(): string;
   read(task: BriefTask): NativeItem[] | Promise<NativeItem[]>;
+}
+
+export interface RecordPreferenceCounts { beforeBytes: number; afterBytes: number; replacedNotes: number; records: number }
+export interface RecordBriefSnapshot {
+  /** Relevant complete rows already authorized and screened by the host, from readBriefRecords. */
+  rows: readonly CaptureRow[];
+  /** Only known generated done/review notes. Anchors are explicit raw Record anchors, never inferred prose. */
+  replaceable: readonly { id: string; anchors: readonly string[] }[];
+  partial: boolean;
+}
+export interface RecordBriefPort {
+  allowed(task: BriefTask): boolean;
+  policyVersion(): string;
+  read(task: BriefTask): RecordBriefSnapshot | undefined | Promise<RecordBriefSnapshot | undefined>;
+  observe?(peer: PeerId, task: number | undefined, counts: RecordPreferenceCounts): void;
+}
+const RECORD_ROWS = 32, RECORD_BYTES = 2048;
+
+/** Read-time display preference only; the package parser owns Record syntax and canonical anchors. */
+export function preferRecordItems(items: readonly NativeItem[], snapshot: RecordBriefSnapshot, maximum: number,
+  protectedIds: ReadonlySet<string> = new Set()): { items: NativeItem[]; replacedNotes: number; records: number } {
+  const original = () => ({ items: [...items], replacedNotes: 0, records: 0 });
+  if (snapshot.partial || snapshot.rows.length > RECORD_ROWS || snapshot.replaceable.length > RECORD_ROWS) return original();
+  const records: { item: NativeItem; anchors: readonly string[] }[] = [];
+  for (const row of snapshot.rows) {
+    if (row.event !== "Record" || row.subagent || !Number.isSafeInteger(row.id) || row.id < 1 || typeof row.excerpt !== "string"
+      || row.excerpt.length > RECORD_BYTES || Buffer.byteLength(row.excerpt) > RECORD_BYTES || !Array.isArray(row.paths)) continue;
+    const parsed = parseRecordLines(row.excerpt), record = parsed.records[0];
+    if (parsed.incomplete || Object.keys(parsed.drops).length || parsed.records.length !== 1 || !record || record.line !== row.excerpt
+      || record.anchors.length !== row.paths.length || !record.anchors.every((anchor, index) => anchor === row.paths[index])) continue;
+    const id = `capture:Record:${row.id}`;
+    if (records.some(value => value.item.id === id)) continue;
+    records.push({ item: { id, line: `${id} ${record.line}`, kind: record.kind, anchors: record.anchors }, anchors: record.anchors });
+  }
+  const selected = [...items]; let replacedNotes = 0;
+  for (const note of items) {
+    if (note.kind === "fail" || note.kind === "contract" || protectedIds.has(note.id)) continue;
+    const permitted = snapshot.replaceable.filter(value => value.id === note.id);
+    if (permitted.length !== 1 || !permitted[0]!.anchors.length) continue;
+    const anchors = permitted[0]!.anchors;
+    const covering = records.filter(record => record.anchors.some(anchor => anchors.includes(anchor)));
+    if (!anchors.every(anchor => covering.some(record => record.anchors.includes(anchor)))) continue;
+    const additions = covering.filter(record => !selected.some(item => item.id === record.item.id));
+    if (selected.length - 1 + additions.length > maximum) continue;
+    const position = selected.findIndex(item => item.id === note.id);
+    if (position < 0) continue;
+    selected.splice(position, 1, ...additions.map(record => record.item)); replacedNotes++;
+  }
+  // Host relevance is authoritative; spare room can carry Records without suppressing any original item.
+  for (const record of records) if (selected.length < maximum && !selected.some(item => item.id === record.item.id)) selected.push(record.item);
+  return { items: selected, replacedNotes, records: selected.filter(item => records.some(record => record.item.id === item.id)).length };
 }
 
 /**
@@ -68,6 +119,7 @@ export class Briefs {
     private readonly displayNative?: (items: readonly NativeItem[]) => string[],
     private readonly intent?: IntentBriefHost,
     private readonly corpus?: CorpusBriefPort,
+    private readonly records?: RecordBriefPort,
   ) {}
 
   async forTask(peer: PeerId, task: BriefTask, priority: readonly NativeItem[] = []): Promise<string | undefined> {
@@ -100,6 +152,28 @@ export class Briefs {
         return items;
       } catch { return current() ? [] : undefined; }
     };
+    const recordItems = async (items: readonly NativeItem[]): Promise<{ items: NativeItem[]; replacedNotes: number; records: number; invalidated?: true }> => {
+      const fallback = () => ({ items: [...items], replacedNotes: 0, records: 0 });
+      if (!this.records || !current()) return fallback();
+      let version: string | undefined;
+      try {
+        if (!this.records.allowed(task)) return fallback();
+        version = this.records.policyVersion();
+        const snapshot = await this.records.read(task);
+        if (!current() || !this.records.allowed(task) || this.records.policyVersion() !== version) return { ...fallback(), invalidated: true };
+        if (!snapshot) return fallback();
+        const available = { ...snapshot, rows: snapshot.rows.filter(row => !this.seen.get(peer)?.has(`capture:Record:${row.id}`)) };
+        return preferRecordItems(items, available, maximum, new Set(priority.map(item => item.id)));
+      } catch {
+        try { if (version !== undefined && (!current() || !this.records.allowed(task) || this.records.policyVersion() !== version)) return { ...fallback(), invalidated: true }; }
+        catch { return { ...fallback(), invalidated: true }; }
+        return fallback();
+      }
+    };
+    const observeRecords = (before: string, after: string, result: { replacedNotes: number; records: number }) => {
+      try { this.records?.observe?.(peer, task.id, { beforeBytes: Buffer.byteLength(before), afterBytes: Buffer.byteLength(after), replacedNotes: result.replacedNotes, records: result.records }); }
+      catch { /* count-only telemetry cannot fail a brief */ }
+    };
     if (this.intent) {
       // Serialize only this peer's library reads, so awaited policy cannot duplicate a delivered note.
       const previous = this.libraryRuns.get(peer);
@@ -129,16 +203,25 @@ export class Briefs {
           const corpus = await corpusItems(maximum - selected.length);
           if (corpus === undefined || !current()) return undefined;
           for (const item of corpus) if (selected.length < maximum && !seen.has(item.id) && !selected.some(row => row.id === item.id)) selected.push(item);
-          if (!selected.length) return undefined;
+          if (!selected.length && !this.records) return undefined;
           // Preserve complete library rows (including graph neighbours after a seen direct bridge).
           if (!current()) return undefined;
           const header = selected.some(item => item.kind === "note") ? "Knowledge brief (advice, not a block):" : lines[0] || "Live fail notes for this plan (advice, not a block):";
+          const before = [header, ...selected.map(item => item.line)].join("\n");
+          const preferred = await recordItems(selected);
+          if (preferred.invalidated || !current() || context.options.allowed?.() === false || context.options.policyVersion() !== revision) return undefined;
+          context.options.assertCurrent?.();
+          const representedIds = selected.filter(item => !preferred.items.some(row => row.id === item.id)).map(item => item.id);
+          selected.splice(0, selected.length, ...preferred.items);
+          if (!selected.length) return undefined;
           const text = [header, ...selected.map(item => item.line)].join("\n");
           if (!current()) return undefined;
           this.seen.set(peer, seen);
           for (const item of selected) seen.add(item.id);
+          for (const id of representedIds) seen.add(id);
           if (!current()) return undefined;
           if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: selected.filter(item => item.kind !== "note").length, fails: selected.filter(item => item.kind === "fail").length, claudeMem: 0 }); } catch { /* telemetry never fails a brief */ }
+          observeRecords(before, text, preferred);
           return text;
         } catch { return undefined; }
       })();
@@ -189,16 +272,29 @@ export class Briefs {
     }
     if (!current()) return undefined;
     const notice = this.client?.readNotice();
-    if (!own.length && !items.length && !corpusRows.length && !notice) return undefined;
+    const beforeOwn = [...own, ...corpusRows];
+    const preferred = await recordItems(beforeOwn);
+    if (preferred.invalidated || !current()) return undefined;
+    // The index/timeline bridge has no anchor metadata and is never removed by a Record preference.
+    const room = Math.max(0, maximum - items.length);
+    const preferredOwn = preferred.items.length <= room ? preferred : { items: beforeOwn, replacedNotes: 0, records: 0 };
+    own.splice(0, own.length, ...preferredOwn.items); corpusRows.length = 0;
+    if (!own.length && !items.length && !notice) return undefined;
     if (!current()) return undefined;
     for (const item of own) seen.add(item.id);
+    for (const item of beforeOwn) if (!preferredOwn.items.some(row => row.id === item.id)) seen.add(item.id);
     for (const item of items) seen.add(`#${item.id}`);
     for (const item of corpusRows) seen.add(item.id);
     if (!current()) return undefined;
     if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: own.filter(item => item.kind !== "note").length, fails: own.filter((i) => i.kind === "fail").length, claudeMem: items.length }); } catch { /* telemetry never fails a brief */ }
     if (!current()) return undefined;
-    const nativeRows = own.filter(item => item.kind !== "note"), noteRows = [...own.filter(item => item.kind === "note"), ...corpusRows];
-    const header = noteRows.length ? "Knowledge brief (advice, not a block):" : own.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; amem by mem:id):" : "Memory brief (amem curated notes; fetch details by mem:id):";
-    return [header, ...(notice ? [notice] : []), ...(this.displayNative?.(nativeRows) ?? nativeRows.map((i) => i.line)), ...items.map((i) => `${i.id.toString().startsWith("mem:") ? i.id : `#${i.id}`} ${i.time} ${i.type} ${i.title}`), ...noteRows.map(item => item.line)].join("\n");
+    const render = (rows: readonly NativeItem[]) => {
+      const native = rows.filter(item => item.kind !== "note"), notes = rows.filter(item => item.kind === "note");
+      const header = notes.length ? "Knowledge brief (advice, not a block):" : rows.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; amem by mem:id):" : "Memory brief (amem curated notes; fetch details by mem:id):";
+      return [header, ...(notice ? [notice] : []), ...(this.displayNative?.(native) ?? native.map(item => item.line)), ...items.map(item => `${item.id.toString().startsWith("mem:") ? item.id : `#${item.id}`} ${item.time} ${item.type} ${item.title}`), ...notes.map(item => item.line)].join("\n");
+    };
+    const text = render(own);
+    if (this.records) observeRecords(render(beforeOwn), text, preferredOwn);
+    return text;
   }
 }

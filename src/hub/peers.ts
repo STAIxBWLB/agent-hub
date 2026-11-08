@@ -122,6 +122,10 @@ export interface PeerAdapter {
   stop(reason?: string): Promise<void>;
   /** Set by the bus. The peer said something worth sharing. */
   onMessage?: (body: string, opts?: EnvelopeOpts) => unknown;
+  /** Host-only Record guidance for the next owned headless turn; never native-client configuration. */
+  recordInstruction?: () => string | undefined;
+  /** Raw model answer boundary, separate from explicit send tools and diagnostics. */
+  onFinalAnswer?: (body: string, opts?: EnvelopeOpts, complete?: boolean) => unknown;
   /** Set by the bus. */
   onState?: (state: PeerState) => void;
   /** Set by the bus. A delivery that had resolved turned out not to reach the agent: put it back. */
@@ -142,6 +146,10 @@ export const DEFAULT_WATCHDOG_MS = 300_000;
 export abstract class BasePeer implements PeerAdapter {
   /** Returns a reason (a string) when the hub refused the message (issue #38). */
   onMessage?: (body: string, opts?: EnvelopeOpts) => unknown;
+  /** Host-only Record guidance for the next owned headless turn; never native-client configuration. */
+  recordInstruction?: () => string | undefined;
+  /** Raw model answer boundary, separate from explicit send tools and diagnostics. */
+  onFinalAnswer?: (body: string, opts?: EnvelopeOpts, complete?: boolean) => unknown;
   onState?: (state: PeerState) => void;
   onFailed?: (envs: Envelope[], failure?: { quota?: true; failureCause?: DeliveryFailureCause }) => void;
   onDelivery?: (receipt: DeliveryReceipt) => void;
@@ -157,6 +165,18 @@ export abstract class BasePeer implements PeerAdapter {
 
   get state(): PeerState {
     return this._state;
+  }
+
+  /** Decorate only a fixed prompt, once at the delivered-turn boundary. */
+  protected turnRecordPrompt(base: string): string {
+    let instruction: string | undefined;
+    try { instruction = this.recordInstruction?.(); } catch { return base; }
+    if (!instruction || base.includes(instruction)) return base;
+    return base ? `${base}\n\n${instruction}` : instruction;
+  }
+
+  protected finalAnswer(text: string, opts?: EnvelopeOpts, complete = true): unknown {
+    return this.onFinalAnswer ? this.onFinalAnswer(text, opts, complete) : this.onMessage?.(text, opts);
   }
 
   /** Keep the active turn's inactivity bound; a changed setting belongs to the next busy turn. */

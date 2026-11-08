@@ -270,7 +270,7 @@ export class CodexPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not injectable` });
       return Promise.reject(new Error(`${this.id} is not injectable`));
     }
-    const text = this.render(envs);
+    const text = this.render(envs, true);
     const id = this.nextId--, epoch = this.deliveryEpoch, session = this.contextEpoch;
     this.setState("busy"); // claim the turn now so the bus stops draining
     return new Promise<void>((resolve, reject) => {
@@ -340,8 +340,10 @@ export class CodexPeer extends BasePeer {
     });
   }
 
-  private render(envs: Envelope[]): string {
-    return this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}`;
+  private render(envs: Envelope[], record = false): string {
+    const base = this.primed ? "" : this.opts.preamble ?? "";
+    const preamble = record ? this.turnRecordPrompt(base) : base;
+    return preamble ? `${preamble}\n\n${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
   }
 
   /** `important` while a turn runs: feed it into that turn. Rejects when there is no steerable turn or app-server refuses. */
@@ -998,7 +1000,7 @@ export class CodexPeer extends BasePeer {
       this.deltas.clear();
       // Addressed like every other adapter's answer (issue #3): each sender it answers, including one steered in;
       // the bus maps a condensed delivery's `digest` back to the senders it replaced, a steer beside it or not.
-      if (this.lastAnswer) this.onMessage?.(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {});
+      if (this.lastAnswer) this.finalAnswer(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {}, params.turn?.status === "completed");
       this.lastAnswer = "";
       this.setState("idle");
     }

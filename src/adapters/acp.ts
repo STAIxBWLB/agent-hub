@@ -657,6 +657,7 @@ export class AcpPeer extends BasePeer {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "ACP retained model selection is unavailable; inspect model status, clear the override or restart before retrying" });
       throw new Error("ACP retained model selection is unavailable; inspect model status, clear the override or restart before retrying");
     }
+    const fixedPreamble = this.turnRecordPrompt(this.primed ? "" : this.opts.preamble ?? "");
     const target = selection?.model ?? this.modelBaseline;
     if (selection && (!target || !this.acceptsModelOverride(target))) {
       selection.rejected?.();
@@ -698,7 +699,7 @@ export class AcpPeer extends BasePeer {
       if (this.modelTurn?.turn === turn) this.modelTurn.sent = true;
     }
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
-    const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}` }] });
+    const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: fixedPreamble ? `${fixedPreamble}\n\n${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
     const reported = () => { if (this.cancelWait?.turn === turn) this.cancelWait.reported = true; };
     void prompt.then(reported, reported);
     prompt
@@ -716,7 +717,7 @@ export class AcpPeer extends BasePeer {
         const body = this.chunks.join("").trim();
         // What was steered into the turn is answered by it too: its senders hear back, and the hop cap still holds.
         const answering = this.turnEnvs.length ? this.turnEnvs : envs;
-        if (body) this.onMessage?.(body, { inReplyTo: replyParent(answering), to: replyAudience(answering) });
+        if (body) this.finalAnswer(body, { inReplyTo: replyParent(answering), to: replyAudience(answering) }, result?.stopReason === "end_turn");
         // Partial output cannot certify normal completion (#160).
         if (result?.stopReason !== "end_turn") this.reportTurnFailure(envs, `ACP prompt ended without normal completion (${String(result?.stopReason ?? "unknown")})`);
         if (deliveryId && this.activeDeliveryId === deliveryId) {
