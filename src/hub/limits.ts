@@ -39,6 +39,15 @@ export class Limiter {
    * answers: "Yes." to two different questions is two messages, not a repeat.
    */
   admit(from: PeerId, to: PeerId[] | undefined, priority: Priority, body: string, parent = "", group?: string): string | undefined {
+    return this.decide(true, from, to, priority, body, parent, group);
+  }
+
+  /** Same decision without spending buckets, recording repeat keys, or pruning history. */
+  peek(from: PeerId, to: PeerId[] | undefined, priority: Priority, body: string, parent = "", group?: string): string | undefined {
+    return this.decide(false, from, to, priority, body, parent, group);
+  }
+
+  private decide(consume: boolean, from: PeerId, to: PeerId[] | undefined, priority: Priority, body: string, parent: string, group?: string): string | undefined {
     const now = this.now();
     const audience = to?.length ? [...new Set(to)].sort() : ["*"];
     const key = `${from}\0${audience.join(",")}\0${parent}\0${body.trim().replace(/\s+/g, " ")}`;
@@ -48,8 +57,8 @@ export class Limiter {
       if (last !== undefined && now - last < this.cfg.repeat_window_s * 1000) {
         return `the same message went to ${to?.length ? audience.join(", ") : "everyone"} ${Math.round((now - last) / 1000)} s ago`;
       }
-      for (const key of keys) this.recent.set(key, now);
-      if (this.recent.size > 1000) for (const [k, at] of this.recent) if (now - at >= this.cfg.repeat_window_s * 1000) this.recent.delete(k);
+      if (consume) for (const key of keys) this.recent.set(key, now);
+      if (consume && this.recent.size > 1000) for (const [k, at] of this.recent) if (now - at >= this.cfg.repeat_window_s * 1000) this.recent.delete(k);
     }
     const wanted: [string, number, number][] = []; // key, capacity, refill per ms
     if (this.cfg.sender_per_min > 0) wanted.push([`s\0${from}`, this.cfg.sender_per_min, this.cfg.sender_per_min / 60_000]);
@@ -68,11 +77,11 @@ export class Limiter {
     const short = filled.filter((f) => f.b.tokens < 1);
     if (short.length) {
       const wait = Math.max(...short.map((f) => Math.ceil(Math.round((1 - f.b.tokens) / f.rate) / 1000))); // whole ms first: 1/(1/x) is not always x
-      if (this.cfg.repeat_window_s > 0) for (const key of keys) this.recent.delete(key); // refused, so not sent
+      if (consume && this.cfg.repeat_window_s > 0) for (const key of keys) this.recent.delete(key); // refused, so not sent
       const what = short.some((f) => f.key.startsWith("i\0") || f.key.startsWith("gi\0")) ? "important messages" : "messages";
       return `rate limited: too many ${what} from ${from}; retry after ${wait} s${what === "important messages" ? ", or send it without [IMPORTANT]" : ""}`;
     }
-    for (const f of filled) this.buckets.set(f.key, { tokens: f.b.tokens - 1, at: now });
+    if (consume) for (const f of filled) this.buckets.set(f.key, { tokens: f.b.tokens - 1, at: now });
     return undefined;
   }
 }

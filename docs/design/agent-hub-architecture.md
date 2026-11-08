@@ -112,8 +112,20 @@ acon 0.1.7 visual cases are consumed directly; six named valid-acon cases are
 rejected only by these stricter source/caption/asset-ID ceilings. Historical
 hub-owned cases remain extra coverage, not a substitute for the shared fixture.
 
+Periodic dashboard snapshots and task lists project bounded, screened metadata
+only; they do not deserialize or screen complete visual payloads. Explicit show
+and asset requests perform the full current-policy checks. A missing image does
+not erase its visual's public explanation; asset existence and hash validation
+belong to the guarded asset read. Non-sensitive refusals identify recovery,
+authority, concurrent change or unavailable screening and their repair action;
+sensitive privacy refusals keep a uniform message.
+
+Publication does a non-consuming rate check before model screening or image
+reads and still consumes admission once immediately before publication. Visuals
+are explanatory output, not task progress for no-write detection.
 Held controlled recovery compares retained visual integrity before startup
-retention pruning; normal retention resumes only after recovery release.
+retention pruning; startup, periodic and tool pruning all wait until both the
+recovery transaction and bus recovery hold are clear.
 
 ## Models and memory
 

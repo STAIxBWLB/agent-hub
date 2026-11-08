@@ -37,6 +37,10 @@ explicit recipients use existing addressed-message rules. Neither Mermaid source
 table/comparison bodies nor image bytes are embedded in the envelope or delivery
 journal. A source read is explicit, local to the project and privacy-guarded.
 Visual publication grants no task, native-session, invocation or broker authority.
+Before expensive visual screening or image reads, `Limiter.peek` uses the same
+admission decision as `admit` without changing buckets or repeat history. The
+final `admit` still consumes once against current state before record/publication
+effects; a successful preflight never reserves or grants future delivery.
 
 
 The in-memory bus schedules messages; `DeliveryJournal` durably records an individual transport attempt and the original envelopes behind any rendered output. A peer receipt such as `accepted` or `completed` describes transport, not the corresponding task's acceptance, completion, or approval. That separation lets a timeout or restart remain explicitly uncertain without inventing a task outcome ([#37](https://github.com/STAIxBWLB/agent-hub/issues/37)).

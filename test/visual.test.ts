@@ -202,3 +202,23 @@ test("full reset archives bound visuals with the whole database; reused numeric 
   const reusedTask = row({ task: 7 }); fresh.insert(reusedTask);
   expect(fresh.list({ task: 7 }).map(value => value.id)).toEqual([reusedTask.id]); expect(retained.get(old.id)).toEqual(old);
 });
+
+test("metadata privacy callback receives bounded file paths without selecting or parsing any payload", () => {
+  const { file, store } = fixture(), id = crypto.randomUUID();
+  const image = row({ id, kind: "beforeAfter", payload: { kind: "beforeAfter", before: { asset: `${id}:before`, alt: "before" }, after: { text: "after" } },
+    files: [{ asset: `${id}:before`, path: "images/public.png", sha256: "a".repeat(64), bytes: 8, mime: "image/png" }] });
+  store.insert(image); const db = openHubDatabase(file);
+  try {
+    for (const payload of ["not-json", "x".repeat(VISUAL_LIMITS.payload + 1)]) {
+      db.query("UPDATE visuals SET payload_json=? WHERE id=?").run(payload, id);
+      const seen: { id: string; paths: readonly string[] }[] = [];
+      const listed = store.list({}, (metadata, paths) => { seen.push({ id: metadata.id, paths }); return true; });
+      expect(listed.map(value => value.id)).toEqual([id]); expect(seen).toEqual([{ id, paths: ["images/public.png"] }]);
+      expect(Object.keys(listed[0]!).sort()).toEqual(["created", "from", "id", "kind", "title"]);
+      expect(store.list({}, (_metadata, paths) => !paths.includes("images/public.png"))).toEqual([]);
+      expect(() => store.get(id)).toThrow("stored visual is corrupt");
+    }
+    db.query("UPDATE visuals SET files_json=? WHERE id=?").run("x".repeat(VISUAL_LIMITS.filesJson + 1), id);
+    expect(() => store.list({}, () => true)).toThrow("file metadata");
+  } finally { db.close(); }
+});

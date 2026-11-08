@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../src/hub/bus.ts";
@@ -167,3 +168,36 @@ test("restart visual integrity is optional and rejects malformed or expanded sha
     expect(readRestartSnapshot(stateDir, expected)?.integrity).toEqual(legacy);
   } finally { bus.closeJournal(); rmSync(stateDir, { recursive: true, force: true }); }
 });
+
+test("the actual maintenance callback preserves visual rows under either hold and prunes after both release", () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-visual-maintenance-"))), store = new VisualStore(join(root, "hub.db"));
+  const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const heldGuard = source.indexOf("if (!stopping && !recoveryActive() && !bus.isRecoveryHeld)");
+  const start = source.lastIndexOf("setInterval(() => {", heldGuard), end = source.indexOf("\n    }, 5_000)", heldGuard);
+  expect(heldGuard).toBeGreaterThan(0); expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(heldGuard);
+  let recovery = false, busHeld = false;
+  const tick = runInNewContext(`(function(){${source.slice(start + "setInterval(() => {".length, end)}})`, {
+    stopping: false, recoveryActive: () => recovery, bus: { get isRecoveryHeld() { return busHeld; } }, visuals: store,
+    config: { visuals: { retention_days: 1 } }, board: { get: () => undefined }, ready: false,
+  }) as () => void;
+  try {
+    store.insert({ id: VISUAL, from: "codex", kind: "mermaid", title: "", payload: { kind: "mermaid", source: "graph TD" }, files: [], created: Date.now() - 2 * 86_400_000 });
+    const before = store.integrity();
+    recovery = true; tick(); expect(store.integrity()).toEqual(before);
+    recovery = false; busHeld = true; tick(); expect(store.integrity()).toEqual(before);
+    busHeld = false; tick(); expect(store.get(VISUAL)).toBeUndefined(); expect(store.hasRecords()).toBe(false);
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("prepared recovery refuses an actual tools visual request with release guidance and unchanged retained rows", async () => {
+  const f = await fixture(true); let tools: ControlClient | undefined, store: VisualStore | undefined;
+  try {
+    tools = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" });
+    store = new VisualStore(join(f.stateDir, "hub.db")); const before = store.integrity();
+    expect(await f.request("prepare", DAEMON_FEATURES)).toMatchObject({ ok: true, recovery: { phase: "prepared" } });
+    const result = await tools.request({ t: "task", op: "hub_visual", args: { payload: { kind: "mermaid", source: "flowchart LR; A-->B" } } });
+    expect(result.ok).toBe(false); expect(result.error).toContain("held by controlled recovery");
+    expect(result.error).toContain("wait for recovery release and retry");
+    expect(store.integrity()).toEqual(before); expect(store.list().map(row => row.id)).toEqual([VISUAL]);
+  } finally { tools?.close(); store?.close(); await f.close(); }
+}, 20_000);

@@ -153,11 +153,8 @@ function summary(input: unknown): VisualSummary {
   const kind = row.kind; if (!["mermaid", "comparison", "table", "beforeAfter"].includes(kind as string)) fail("record.kind", "unknown visual kind");
   return { id: visualId(row.id), ...(Object.hasOwn(row, "task") ? { task: integer(row.task, "record.task", 1) } : {}), from: identityText(row.from, 128, "record.from", allow), kind: kind as VisualPayload["kind"], title: text(row.title, VISUAL_LIMITS.caption, "record.title", allow), created: integer(row.created, "record.created") };
 }
-function record(input: unknown): VisualRecord {
-  const row = object(jsonCopy(input, "record", VISUAL_LIMITS.payload + VISUAL_LIMITS.filesJson + 16 * 1024), ["id", "from", "kind", "title", "payload", "files", "created"], ["task"], "record");
-  const meta = summary(Object.fromEntries(Object.entries(row).filter(([key]) => key !== "payload" && key !== "files"))), payload = validateVisualPayload(row.payload, () => true);
-  if (meta.kind !== payload.kind || meta.title !== (payload.kind === "table" || payload.kind === "beforeAfter" ? payload.caption ?? "" : payload.title ?? "")) fail("record.title", "kind/title must agree with the stored payload");
-  const files = list(row.files, 2, "record.files").map((value, i): VisualFile => {
+function fileMetadata(input: unknown): VisualFile[] {
+  const files = list(input, 2, "record.files").map((value, i): VisualFile => {
     const field = `record.files[${i}]`, file = object(value, ["asset", "path", "sha256", "bytes", "mime"], [], field);
     if (typeof file.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(file.sha256)) fail(`${field}.sha256`, "expected lowercase SHA-256");
     if (!["image/png", "image/jpeg", "image/webp"].includes(file.mime as string)) fail(`${field}.mime`, "only PNG, JPEG and WebP are accepted");
@@ -165,6 +162,13 @@ function record(input: unknown): VisualRecord {
     return { asset: identityText(file.asset, VISUAL_LIMITS.asset, `${field}.asset`, () => true), path: pathText(file.path, `${field}.path`, () => true), sha256: file.sha256, bytes: size, mime: file.mime as VisualFile["mime"] };
   });
   if (files.length === 2 && files[0]!.path === files[1]!.path) fail("record.files", "before and after must name different files");
+  return files;
+}
+function record(input: unknown): VisualRecord {
+  const row = object(jsonCopy(input, "record", VISUAL_LIMITS.payload + VISUAL_LIMITS.filesJson + 16 * 1024), ["id", "from", "kind", "title", "payload", "files", "created"], ["task"], "record");
+  const meta = summary(Object.fromEntries(Object.entries(row).filter(([key]) => key !== "payload" && key !== "files"))), payload = validateVisualPayload(row.payload, () => true);
+  if (meta.kind !== payload.kind || meta.title !== (payload.kind === "table" || payload.kind === "beforeAfter" ? payload.caption ?? "" : payload.title ?? "")) fail("record.title", "kind/title must agree with the stored payload");
+  const files = fileMetadata(row.files);
   const expected = payload.kind === "beforeAfter" ? (["before", "after"] as const).flatMap(side => "asset" in payload[side] ? [{ asset: payload[side].asset, side }] : []) : [];
   if (files.length !== expected.length || new Set(files.map(file => file.asset)).size !== files.length || expected.some(value => value.asset !== `${meta.id}:${value.side}` || !files.some(file => file.asset === value.asset))) fail("record.files", "files must bind exactly the payload's originating visual asset sides");
   if (bytes(JSON.stringify(files)) > VISUAL_LIMITS.filesJson) fail("record.files", "file metadata exceeds its byte bound");
@@ -219,12 +223,22 @@ export class VisualStore {
     } finally { statement.finalize(); }
     return { count, digest: hash.digest("hex") };
   }
-  list(input: { task?: number; limit?: number } = {}): VisualSummary[] {
+  list(input: { task?: number; limit?: number } = {}, accept?: (summary: VisualSummary, paths: readonly string[]) => boolean): VisualSummary[] {
     const row = object(jsonCopy(input, "list", 1024), [], ["task", "limit"], "list"), limit = Object.hasOwn(row, "limit") ? integer(row.limit, "list.limit", 1) : DEFAULT_LIST_LIMIT;
     if (limit > MAX_LIST_LIMIT) fail("list.limit", "at most 100 metadata rows may be returned");
     const task = Object.hasOwn(row, "task") ? integer(row.task, "list.task", 1) : undefined;
-    return (task === undefined ? this.db.query<Raw, [number]>(`SELECT ${metadataColumns} FROM visuals ORDER BY created DESC,id LIMIT ?`).all(limit)
-      : this.db.query<Raw, [number, number]>(`SELECT ${metadataColumns} FROM visuals WHERE task=? ORDER BY created DESC,id LIMIT ?`).all(task, limit)).map(metaOf);
+    const columns = metadataColumns + (accept ? `,CASE WHEN typeof(files_json)='text' AND length(CAST(files_json AS BLOB))<=${VISUAL_LIMITS.filesJson} THEN files_json END AS files_json` : "");
+    const rows = task === undefined ? this.db.query<Raw, [number]>(`SELECT ${columns} FROM visuals ORDER BY created DESC,id LIMIT ?`).all(limit)
+      : this.db.query<Raw, [number, number]>(`SELECT ${columns} FROM visuals WHERE task=? ORDER BY created DESC,id LIMIT ?`).all(task, limit);
+    return rows.flatMap(raw => {
+      const meta = metaOf(raw);
+      if (!accept) return [meta];
+      if (typeof raw.files_json !== "string") fail("record.files", "stored file metadata exceeds its bound or is invalid");
+      let files: VisualFile[];
+      try { files = fileMetadata(JSON.parse(raw.files_json)); }
+      catch { fail("record.files", "stored file metadata is corrupt"); }
+      return accept(meta, files.map(file => file.path)) ? [meta] : [];
+    });
   }
   prune(retentionDays = DEFAULT_RETENTION_DAYS, now = Date.now(), taskExists?: (task: number) => boolean): number {
     const duration = integer(retentionDays, "retentionDays") * DAY_MS; integer(now, "now");

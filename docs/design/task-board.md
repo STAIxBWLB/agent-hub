@@ -66,7 +66,8 @@ outcome or evidence authority. Publication checks current role, turn, task and
 privacy admission before record/bus effects and after awaited file reads. A PII
 task or private turn refuses publication; a task becoming private also withholds
 its retained visual from public reads and assets. A visual id is not a verdict or
-deliverable receipt. Ordinary shared tools and the local worker can publish where
+deliverable receipt, and visual-only calls do not count as task progress for
+no-write detection. Ordinary shared tools and the local worker can publish where
 their role permits; isolated fresh-reviewer MCP keeps its exact two-tool contract.
 
 

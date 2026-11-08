@@ -6704,7 +6704,8 @@ select that project's asset: the acon provider binds the project and instance,
 then rechecks metadata/privacy after the guarded read before returning bytes.
 
 The default audience is the console, with an FYI chat stub. Explicit `to` uses
-local addressed delivery; an empty list broadcasts to local peers. An explicit
+local addressed delivery, including `to: "user"` for the console; an empty list
+broadcasts to local peers. An explicit
 remote recipient refuses the whole call, rather than silently dropping that
 target. The stub carries only `[visual <id>] <kind>: <title or caption>` and
 `refs.visual`. Peers receive no source, table/comparison body or inline image.
@@ -6720,7 +6721,20 @@ configuration-adoption boundary. The raw visual tool input/result is
 excluded from observer capture even when the call is refused; amem/delivery
 capture retains only the sanitized stub. `events.jsonl` records only id, kind,
 payload byte count, image count and optional task id, never title/source/path or
-image bytes. A visual is explanatory material, not approval or completion proof.
+image bytes. A visual is explanatory material, not approval or completion proof,
+and a visual-only turn does not clear the task's no-write advisory.
+
+Periodic snapshots and task lists read bounded metadata only. Full payload
+screening happens on an explicit show; image reads still check current privacy,
+existence and hash at the asset route. A moved or deleted image leaves the public
+caption/text/alt record readable but cannot serve its old bytes.
+
+A recovery refusal asks you to retry after `ahub status` shows the hold released.
+Role or membership refusals name the missing authority, and a task/config change
+asks for a retry. If the privacy screen is unavailable, retry when its model is
+back or omit text that needs screening. Private context, paths and pattern hits
+retain a uniform privacy refusal. Rate limits are checked before expensive
+screening or file reads and checked again at publication.
 
 Task-bound visuals live with their task. Unbound records expire after 30 days;
 `visuals.retention_days` is an integer setting from 1 to 3650 days, applied live,
