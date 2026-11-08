@@ -308,7 +308,10 @@ test("the manifest asks for exactly the host methods the worker uses and nothing
   const used = [...new Set([...source.matchAll(/host\.(?:call|has)\("([a-z.A-Z]+)"/g)].map(m => m[1]))].sort();
   expect(used).toEqual(["settings.get", "terminal.create", "workspace.list", "workspace.open"].filter(m => used.includes(m)));
   for (const verb of ["approve", "assign", "complete", "retry", "stop", "upgrade", "task", "agent.launch", "terminal.sendText"]) expect(source, verb).not.toMatch(new RegExp(`host\\.call\\("[^"]*${verb.replace(".", "\\.")}`));
-  expect(source).not.toMatch(/"--json"|'--json'/);
+  // `--json` is forbidden on `ahub ui` (it prints a link, not JSON). It is allowed on `ahub status` (O2). So: no argv that holds both "ui" and "--json", in the source or at runtime.
+  expect(source).not.toMatch(/\[\s*"ui"\s*,[^\]]*--json/);
+  const noComments = (text: string) => text.replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/ .*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(noComments(readFileSync(join(import.meta.dir, "../integrations/orca/src/companion.mjs"), "utf8"))).not.toMatch(/--json/);
 });
 
 test("the panel keeps nothing: no storage, no innerHTML of CLI or workspace text, and the link is dropped after use or expiry", () => {

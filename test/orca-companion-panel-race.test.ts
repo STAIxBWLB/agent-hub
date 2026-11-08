@@ -26,14 +26,19 @@ function deferred() {
 }
 const workspaces = ["a", "b"].map(id => ({ id, name: id, branch: "main", root: `/fixture/${id}`, hostId: "local", kind: "worktree", selectable: true }));
 function fixture() {
-  const elements = new Map(["rows", "status", "link", "refresh", "dashboard", "console", "family"].map(id => [id, new Element()]));
-  for (const id of ["dashboard", "console", "family"]) elements.get(id)!.disabled = true;
+  const elements = new Map(["rows", "status", "link", "refresh", "dashboard", "console", "family", "statusbtn", "statusbox", "statusline", "statuspeers", "statusnote"].map(id => [id, new Element()]));
+  for (const id of ["dashboard", "console", "family", "statusbtn"]) elements.get(id)!.disabled = true;
   elements.get("link")!.hidden = true;
+  elements.get("statusbox")!.hidden = true;
   const requests: { name: string; input: any; reply: ReturnType<typeof deferred> }[] = [];
   const external: { url: string; reply: ReturnType<typeof deferred> }[] = [];
   const timers = new Map<number, () => void>(); let nextTimer = 0;
+  const documentEvents = new Map<string, () => void>(), windowEvents = new Map<string, () => void>();
+  let now = 100000;
   const context = createContext({
-    document: { getElementById: (id: string) => elements.get(id), createElement: () => new Element() },
+    document: { hidden: false, getElementById: (id: string) => elements.get(id), createElement: () => new Element(), addEventListener: (name: string, handler: () => void) => documentEvents.set(name, handler) },
+    window: { addEventListener: (name: string, handler: () => void) => windowEvents.set(name, handler) },
+    Date: { now: () => now },
     orca: { plugin: { request(name: string, input: unknown) { const reply = deferred(); requests.push({ name, input, reply }); return reply.promise; } },
       shell: { openExternal(url: string) { const reply = deferred(); external.push({ url, reply }); return reply.promise; } } },
     setTimeout(callback: () => void) { const id = ++nextTimer; timers.set(id, callback); return id; },
@@ -46,9 +51,9 @@ function fixture() {
   runInContext(script.replace(/\nrefresh\(\);\s*$/, "\nglobalThis.initialRefresh = refresh();"), context);
   const get = (id: string) => elements.get(id)!;
   const choose = (index: number) => get("rows").children[index]!.children.at(-1)!.click();
-  const state = () => runInContext("({selected, pendingLink, generation})", context) as { selected: { id: string } | null; pendingLink: string | null; generation: number };
+  const state = () => runInContext("({selected, pendingLink, generation, reading})", context) as { selected: { id: string } | null; pendingLink: string | null; generation: number; reading: unknown };
   const initial = async () => { requests[0]!.reply.resolve({ ok: true, rows: workspaces }); await context.initialRefresh; };
-  return { requests, external, timers, get, choose, state, initial };
+  return { requests, external, timers, get, choose, state, initial, setNow: (value: number) => { now = value; }, focus: () => windowEvents.get("focus")?.(), visible: () => documentEvents.get("visibilitychange")?.() };
 }
 const linkReply = { ok: true, status: "link", url: "http://127.0.0.1:43111/auth?ticket=fixture-only" };
 function noLink(f: ReturnType<typeof fixture>) {
@@ -80,7 +85,7 @@ test("actual panel refresh invalidates selection immediately and rejects a late 
   old.reply.resolve(linkReply); await opening;
   expect(f.get("status").textContent).toBe("Reading Orca's workspaces..."); noLink(f);
   listing.reply.resolve({ ok: true, rows: workspaces }); await refresh; await f.choose(1);
-  expect(f.state().selected?.id).toBe("b"); expect(f.get("status").textContent).toBe("Selected. Choose a screen to open.");
+  expect(f.state().selected?.id).toBe("b"); expect(f.get("status").textContent).toBe("Selected. Choose a screen to open, or show its status.");
 });
 
 test("a new open invalidates the previous request even for the same selection", async () => {
@@ -111,5 +116,65 @@ test("a delayed failed refresh cannot erase a newer refresh and its selection", 
   const freshRefresh = f.get("refresh").click(); f.requests.at(-1)!.reply.resolve({ ok: true, rows: workspaces }); await freshRefresh;
   await f.choose(1); old.reply.reject(Error("fixture failure")); await oldRefresh;
   expect(f.get("rows").children).toHaveLength(2); expect(f.state().selected?.id).toBe("b");
-  expect(f.get("status").textContent).toBe("Selected. Choose a screen to open."); expect(f.get("console").disabled).toBe(false); noLink(f);
+  expect(f.get("status").textContent).toBe("Selected. Choose a screen to open, or show its status."); expect(f.get("console").disabled).toBe(false); noLink(f);
+});
+
+const statusReply = (tasks: number) => ({ ok: true, state: "running", version: "0.35.0", tasks: { pending: tasks }, peers: [{ id: "codex", state: "idle", attached: true, queued: 0 }], missing: [], fetchedAt: 100000 });
+function settleStatus(request: ReturnType<typeof fixture>["requests"][number], outcome: "success" | "refusal" | "error") {
+  if (outcome === "error") request.reply.reject(Error("old status fixture failure"));
+  else request.reply.resolve(outcome === "success" ? statusReply(41) : { ok: false, guidance: "OLD STATUS REFUSAL" });
+}
+for (const boundary of ["selection", "refresh", "new-status"] as const) {
+  for (const outcome of ["success", "refusal", "error"] as const) test(`actual panel discards delayed status ${outcome} after ${boundary}`, async () => {
+    const f = fixture(); await f.initial(); await f.choose(0);
+    const first = f.get("statusbtn").click(), old = f.requests.at(-1)!;
+    expect(old.name).toBe("status.read"); expect(old.input.snapshot.id).toBe("a"); expect(Object.isFrozen(old.input.snapshot)).toBe(true);
+    if (boundary === "refresh") {
+      const refreshing = f.get("refresh").click(), listing = f.requests.at(-1)!;
+      settleStatus(old, outcome); await first;
+      expect(f.state().selected).toBeNull(); expect(f.state().reading).toBeNull(); expect(f.get("statusbox").hidden).toBe(true);
+      expect(f.get("status").textContent).toBe("Reading Orca's workspaces..."); expect(f.get("statusbtn").disabled).toBe(true); noLink(f);
+      listing.reply.resolve({ ok: true, rows: workspaces }); await refreshing;
+      return;
+    }
+    if (boundary === "selection") await f.choose(1);
+    const current = f.get("statusbtn").click(), fresh = f.requests.at(-1)!;
+    expect(fresh.input.snapshot.id).toBe(boundary === "selection" ? "b" : "a"); expect(old.input.snapshot.id).toBe("a");
+    fresh.reply.resolve(statusReply(7)); await current;
+    const line = f.get("statusline").textContent;
+    expect(line).toContain("7 pending"); expect(f.get("statusbox").hidden).toBe(false);
+    settleStatus(old, outcome); await first;
+    expect<unknown>(f.state().reading).toEqual(statusReply(7)); expect(f.get("statusline").textContent).toBe(line);
+    expect(f.get("statusbox").hidden).toBe(false); expect(f.get("statuspeers").children).toHaveLength(1);
+    expect(f.get("status").textContent).toBe("Status read."); expect(f.get("status").className).toBe("");
+    expect(f.get("statusbtn").disabled).toBe(false); noLink(f);
+  });
+}
+for (const outcome of ["success", "refusal", "error"] as const) test(`old status ${outcome} cannot enable controls while B status is pending`, async () => {
+  const f = fixture(); await f.initial(); await f.choose(0);
+  const first = f.get("statusbtn").click(), old = f.requests.at(-1)!;
+  await f.choose(1); const current = f.get("statusbtn").click(), fresh = f.requests.at(-1)!;
+  settleStatus(old, outcome); await first;
+  expect(f.get("status").textContent).toBe("Reading status..."); expect(f.state().reading).toBeNull(); expect(f.get("statusbox").hidden).toBe(true);
+  for (const id of ["dashboard", "console", "family", "statusbtn"]) expect(f.get(id).disabled).toBe(true);
+  fresh.reply.resolve(statusReply(7)); await current; expect(f.get("statusbtn").disabled).toBe(false);
+});
+
+test("starting status drops the previous generation's ticket; its cleared timer cannot affect status", async () => {
+  const f = fixture(); await f.initial(); await f.choose(0);
+  const opening = f.get("dashboard").click(); f.requests.at(-1)!.reply.resolve(linkReply); await opening;
+  const expired = [...f.timers.values()][0]!;
+  const reading = f.get("statusbtn").click(); noLink(f); expired();
+  expect(f.get("status").textContent).toBe("Reading status..."); expect(f.external).toEqual([]);
+  f.requests.at(-1)!.reply.resolve(statusReply(7)); await reading; expect(f.get("status").textContent).toBe("Status read.");
+});
+
+test("status aging is context driven and refresh clears the old reading immediately without polling", async () => {
+  const f = fixture(); await f.initial(); await f.choose(0);
+  const reading = f.get("statusbtn").click(); f.requests.at(-1)!.reply.resolve(statusReply(7)); await reading;
+  const requests = f.requests.length; f.setNow(161001); f.focus(); f.visible();
+  expect(f.get("statusline").textContent).toContain("stale"); expect(f.get("statusnote").textContent).toContain("Click Show status");
+  expect(f.requests).toHaveLength(requests); expect(f.timers.size).toBe(0);
+  const refreshing = f.get("refresh").click(); expect(f.state().reading).toBeNull(); expect(f.get("statusbox").hidden).toBe(true);
+  f.requests.at(-1)!.reply.resolve({ ok: true, rows: workspaces }); await refreshing;
 });

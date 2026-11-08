@@ -6666,6 +6666,13 @@ output, one-time link or task text in plugin state or logs.
 Install is explicit and in an isolated Orca profile first (`orca plugin validate`, `orca plugin dev load`
 with the fingerprint Orca prints); remove it with `orca plugin disable` and `orca plugin dev unload`. The
 fake-host checks are `test/orca-companion-entry.test.ts` and `test/orca-companion-independence.test.ts`.
+A **Show status** button (O2) reads the selected project's public status on a click only: version, tasks by
+state, and peer state with queue length, copied from `ahub status --json` through a closed allowlist so no
+free-text field (task title, a peer's current line, a notice, a path) is read. Offline, unavailable version,
+partial, stale and unknown stay distinct states; there is no poller, no transcript read and no terminal read.
+There is **no terminal focus**: O0 found no proof that a plugin terminal id names an `orca terminal switch`
+handle, so the companion never calls it and never replaces a terminal.
+
 **The native open and disable receipt is a person-run leg that has not been run**
 ([`native-receipt.md`](../integrations/orca/native-receipt.md)): the action counts in the companion's README
 are procedure counts, remote, Windows and mobile stay unqualified (O3), and there is no focus-existing-console

@@ -19,6 +19,33 @@ A panel in Orca's right sidebar lists Orca's workspaces. You select one, and it 
 It never approves, assigns, completes, retries, stops or upgrades anything, starts a hub, or
 writes configuration. Those decisions stay in the screens it opens.
 
+## Read-only status (O2)
+
+"Show status" reads the selected project's public status and shows it as counts and closed words: the
+agent-hub version, tasks by state, and each peer's state with its queue length and whether it is attached.
+It is built by copying a closed list of fields out of `ahub status --json` (run with the folder as its working
+directory and nothing else). Every free-text field in that output is never read: no task title, no peer
+`doing` line, no notice, no path. The states stay distinct:
+
+| State | Meaning |
+| --- | --- |
+| running | read within the last minute, every field present |
+| stale | read more than a minute ago. Re-labelled from the panel's own clock when you return to it; nothing refreshes it |
+| partial | the hub answered but did not report some fields; the missing ones are named and never shown as 0 |
+| unavailable version | the hub answered without any field this view needs (an older agent-hub); it names the upgrade you can run, and does not run it |
+| offline | no hub is running for this project; it names `ahub up`, and does not start anything |
+| unknown | the reading carries no time |
+
+**Refresh is only your click** (and re-drawing the panel when you return to it, which makes no request).
+There is no poller, no timer that reads status, and no transcript or terminal output is read. The status
+call re-verifies the exact workspace binding first, so a changed, missing, remote or re-pointed workspace is
+refused before `ahub` runs.
+
+**There is no terminal focus.** O0 found no documented mapping from a plugin terminal id to an
+`orca terminal switch` handle, so this companion never calls `orca terminal switch`, never reads a terminal
+and never replaces one. The console buttons always create a new terminal; to reach an existing one, select its
+tab in Orca or run `ahub console` yourself. Verified focus stays unsupported until a mapping is proven.
+
 ## Selection is exact
 
 A row is chosen by Orca's **workspace id**. A name or a branch only labels a row and never

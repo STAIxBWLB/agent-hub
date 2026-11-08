@@ -30,6 +30,13 @@
   <button id="console" type="button" disabled>Open console</button>
   <button id="family" type="button" disabled>Open family console</button>
   <button id="link" type="button" hidden>Open the link</button>
+  <button id="statusbtn" type="button" disabled>Show status</button>
+</div>
+<div id="statusbox" aria-live="polite" hidden>
+  <h1>Status</h1>
+  <p id="statusline"></p>
+  <ul id="statuspeers" aria-label="Peers"></ul>
+  <p class="note" id="statusnote"></p>
 </div>
 <div id="status" role="status" aria-live="polite"></div>
 <script type="module">
@@ -44,12 +51,55 @@ const LINK_LIVES_MS = 55_000; // ahub's own link expires after 60 seconds
 
 const say = (text, bad = false) => { status.textContent = text; status.className = bad ? "bad" : ""; };
 const ask = (name, input) => orca.plugin.request(name, input, { timeoutMs: 30_000 });
-const setActions = on => { for (const id of ["dashboard", "console", "family"]) $(id).disabled = !on; };
+const setActions = on => { for (const id of ["dashboard", "console", "family", "statusbtn"]) $(id).disabled = !on; };
 const dropLink = () => { pendingLink = null; link.hidden = true; clearTimeout(linkTimer); };
+
+// The status reading (counts and closed words only). It is fetched ONLY when the person clicks "Show status"; nothing here polls and there is no recurring timer for it. An old reading is
+// re-labelled stale from the clock when the panel is drawn again, and it is drawn again when the person returns to it (focus or visibility): a context change, never a request.
+const STALE_AFTER_MS = 60_000;
+let reading = null;
+const WORDS = {
+  offline: "No agent-hub is running for this project. Start it yourself with `ahub up` in a terminal; this panel does not start anything.",
+  unavailable_version: "This project's agent-hub is too old to report these fields. Upgrade it yourself with `ahub upgrade`; this panel does not.",
+  unknown: "The reading has no time, so its age is unknown.",
+};
+function dropStatus() { reading = null; $("statusbox").hidden = true; $("statuspeers").replaceChildren(); }
+function drawStatus() {
+  const box = $("statusbox"), line = $("statusline"), peers = $("statuspeers"), note = $("statusnote");
+  if (!reading) { box.hidden = true; return; }
+  box.hidden = false; peers.replaceChildren(); note.textContent = "";
+  const age = Math.max(0, Math.round((Date.now() - reading.fetchedAt) / 1000));
+  let state = reading.state;
+  if (state === "running" && Date.now() - reading.fetchedAt > STALE_AFTER_MS) state = "stale";
+  if (state === "offline" || state === "unavailable_version" || state === "unknown") { line.textContent = state.replace("_", " ") + ": " + WORDS[state]; return; }
+  const tasks = reading.tasks ? Object.entries(reading.tasks).map(([k, n]) => n + " " + k).join(", ") || "none" : "unknown";
+  line.textContent = state + " (read " + age + " s ago" + (reading.version ? ", agent-hub " + reading.version : "") + "). Tasks: " + tasks + ".";
+  for (const peer of reading.peers ?? []) {
+    const li = document.createElement("li");
+    li.textContent = peer.id + ": " + peer.state + (peer.attached ? "" : " (not attached)") + (peer.queued === null ? "" : ", " + peer.queued + " queued");
+    peers.append(li);
+  }
+  if (reading.peers === null) note.textContent = "Peers: unknown (this hub did not report them).";
+  if (reading.missing.length) note.textContent += " Not reported by this hub: " + reading.missing.join(", ") + ".";
+  if (state === "stale") note.textContent += " This reading is old. Click Show status to read it again; nothing refreshes it for you.";
+}
+async function readStatus() {
+  if (!selected) { say("Select a workspace first.", true); return; }
+  const snapshot = Object.freeze({ ...selected }), requestGeneration = ++generation;
+  dropLink(); setActions(false); say("Reading status...");
+  try {
+    const result = await ask("status.read", { snapshot });
+    if (requestGeneration !== generation) return;
+    if (!result.ok) { dropStatus(); say(result.guidance, true); return; }
+    reading = result; drawStatus();
+    say(result.state === "offline" ? WORDS.offline : "Status read.");
+  } catch { if (requestGeneration === generation) { dropStatus(); say("The companion did not answer. Nothing was changed.", true); } }
+  finally { if (requestGeneration === generation && selected) setActions(true); }
+}
 
 function renderRows(list) {
   rows.replaceChildren();
-  selected = null; setActions(false); dropLink();
+  selected = null; setActions(false); dropLink(); dropStatus();
   for (const row of list) {
     const li = document.createElement("li");
     li.className = "row" + (row.selectable ? "" : " off");
@@ -69,8 +119,8 @@ function renderRows(list) {
         for (const other of rows.children) other.setAttribute("aria-selected", "false");
         li.setAttribute("aria-selected", "true");
         selected = { id: row.id, hostId: row.hostId, root: row.root, kind: row.kind };
-        setActions(true); dropLink();
-        say("Selected. Choose a screen to open.");
+        setActions(true); dropLink(); dropStatus();
+        say("Selected. Choose a screen to open, or show its status.");
       });
       li.append(choose);
     } else {
@@ -84,7 +134,7 @@ function renderRows(list) {
 
 async function refresh() {
   const requestGeneration = ++generation;
-  selected = null; setActions(false); dropLink();
+  selected = null; setActions(false); dropLink(); dropStatus();
   say("Reading Orca's workspaces...");
   try {
     const result = await ask("workspaces.list", undefined);
@@ -126,6 +176,9 @@ link.addEventListener("click", async () => {
     say(opened && opened.opened ? "Opened in your browser." : "Orca did not open the link (it may have asked and been declined). Open the dashboard again.", !(opened && opened.opened));
   } catch { if (requestGeneration === generation) say("Orca could not open the link here. Run `ahub ui` in a terminal.", true); }
 });
+$("statusbtn").addEventListener("click", readStatus);
+window.addEventListener("focus", drawStatus);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) drawStatus(); });
 $("refresh").addEventListener("click", refresh);
 $("dashboard").addEventListener("click", () => open("dashboard"));
 $("console").addEventListener("click", () => open("console"));
