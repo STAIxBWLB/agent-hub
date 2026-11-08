@@ -63,7 +63,8 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
       const from = parseExecutionReference(raw.from), to = parseExecutionReference(raw.to);
       const fromKey = executionReferenceKey(from), toKey = executionReferenceKey(to);
       if (!nodes.has(fromKey) || !nodes.has(toKey)) continue; // Filter privacy before relationship counts.
-      if (!RELATIONS.includes(raw.relation) || !STRENGTHS.includes(raw.strength)) return unavailable("corrupt");
+      if (!RELATIONS.includes(raw.relation) || !STRENGTHS.includes(raw.strength) ||
+          (raw.relation === "declared-external" && raw.strength !== "declared")) return unavailable("corrupt");
       const edge = { from, to, relation: raw.relation, strength: raw.strength }, key = JSON.stringify(edge);
       if (edgeKeys.has(key)) continue;
       edgeKeys.add(key); edges.push(edge); size += bytes(edge);

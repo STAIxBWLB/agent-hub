@@ -85,13 +85,13 @@ trace ids, current roles or matching hashes alone.
 | Task `offer.envelopeId` and matching journal `originals[].id` / `refs.task` | Task to dispatch | Dispatch/handout observation, not model consumption |
 | `ExperimentAttemptRecord.attempt.taskId` | Task to research attempt | Does not identify the dispatch that caused it |
 | Attempt id on output event and host observations | Attempt to output | Event is declared unless its stored owner observation proves more |
-| Verified runner receipt `attemptId`, `protocolHash`, output id/hash | Attempt/output evidence | Preserve verified runner provenance only |
+| Verified runner receipt `attemptId`, `protocolHash`, output name/hash | Attempt/output evidence | Preserve verified runner provenance; a runner output name is not a hub deliverable id |
 | Review history `deliverables[].id/sha256`, `reviewedHead` | Output to review | Historical exact-hash/head binding, not current approval of edited bytes |
 | Journal `previousId` | Exact predecessor metadata | `attempt` is a retry ordinal, not a research attempt id |
 
 There is currently no persisted dispatch-to-research-attempt relationship.
 `JournalDelivery.out` is rendered input handed to a peer, not produced output.
-The real-record fixture therefore leaves this gap. A separate deterministic
+The fixture modeling current record relationships therefore leaves this gap. A separate deterministic
 full-chain fixture supplies an explicit `declared-external` edge and keeps that
 edge declared. This proves traversal, not native causal coverage. T1 does not
 introduce a new relationship writer to make the gap disappear.

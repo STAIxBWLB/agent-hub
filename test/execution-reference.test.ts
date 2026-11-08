@@ -3,7 +3,7 @@ import vectors from "./fixtures/execution-reference-v1.json";
 import { parseExecutionReference } from "../src/hub/execution-reference.ts";
 
 for (const vector of vectors.vectors) test(`ExecutionReferenceV1: ${vector.name}`, () => {
-  if (vector.valid) expect(parseExecutionReference(vector.input)).toEqual(vector.input);
+  if (vector.valid) expect(parseExecutionReference(vector.input) as unknown).toEqual(vector.input);
   else expect(() => parseExecutionReference(vector.input)).toThrow("ExecutionReferenceV1 contract");
 });
 test("addresses are data: no accessors, symbols, inherited fields or resolver options", () => {

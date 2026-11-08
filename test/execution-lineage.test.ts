@@ -27,6 +27,12 @@ test("missing dispatch-to-attempt recording stays missing, with no time/title/pa
   const page = readExecutionLineage(source, { root: ref("task") });
   expect(page.state === "available" && page.nodes.map(n => n.ref.kind)).toEqual(["task", "dispatch"]);
 });
+test("external declarations cannot acquire runner or host attestation through a link", () => {
+  for (const strength of ["host-observed", "runner-attested"] as const) {
+    const source = fixture(); source.edges = source.edges.map(e => e.relation === "declared-external" ? { ...e, strength } : e);
+    expect(readExecutionLineage(source, { root: ref("task") })).toEqual({ state: "unavailable" });
+  }
+});
 test("AC3 authorization precedes existence, health and identifiers", () => {
   const denied = { ...fixture(), authorized: false };
   const absent = { ...denied, nodes: [], health: "missing" as const };
