@@ -13380,14 +13380,23 @@ class DecisionRouteController {
     }
     if (context.signal.aborted || context.turn?.closed)
       throw ended();
+    const privacy = this.privacy(context.pii);
+    const checked = (selection) => {
+      this.fence(context, privacy);
+      return { ...selection, check: () => {
+        this.fence(context, privacy);
+        selection.check?.();
+      } };
+    };
     try {
-      return await this.select(config, context);
+      return checked(await this.select(config, context));
     } catch (error) {
       if (context.signal.aborted || context.turn?.closed)
         throw ended();
+      this.fence(context, privacy);
       if (error instanceof DecisionPolicyChangedError || error && typeof error === "object" && "budgetStop" in error)
         throw error;
-      return this.skip(config, "unavailable");
+      return checked(this.skip(config, "unavailable"));
     }
   }
   issue(config, context, reason) {
