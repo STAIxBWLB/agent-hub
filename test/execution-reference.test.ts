@@ -11,6 +11,12 @@ test("addresses are data: no accessors, symbols, inherited fields or resolver op
   let invoked = false;
   expect(() => parseExecutionReference({ ...ref, get revision() { invoked = true; return "1"; } })).toThrow();
   expect(invoked).toBe(false);
+  let traps = 0;
+  expect(() => parseExecutionReference(new Proxy(ref, {
+    getPrototypeOf() { traps++; return Object.prototype; },
+    ownKeys(target) { traps++; return Reflect.ownKeys(target); }
+  }))).toThrow();
+  expect(traps).toBe(0);
   expect(() => parseExecutionReference({ ...ref, [Symbol("authority")]: true })).toThrow();
   expect(() => parseExecutionReference(Object.create(ref))).toThrow();
   expect(() => parseExecutionReference({ ...ref, resolve: true })).toThrow();

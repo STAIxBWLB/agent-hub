@@ -83,6 +83,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 
 | Feature | State here | Measured by |
 | --- | --- | --- |
+| Execution references and bounded lineage (#1220 T1) | source-only pure contract and fixtures; no running hub surface or native lineage receipt; Tasks admission and CLI/MCP are T2, console and performance are T3 | neutral address vectors, explicit and missing-edge fixtures, separate states/evidence, unavailable equivalence, page/byte caps and source-bound continuation invalidation in `test/execution-reference.test.ts` and `test/execution-lineage.test.ts` |
 | Optional changed-symbol advice (#682, #684 phase 1a) | on after release when ripwire 0.6.7 is installed; change kinds unknown | review brief symbol observations/unknowns; deleted definitions not covered, no gate |
 | Head-bound task symbol observations (#684 phase 2a) | on after release with optional code facts; observed names only | task/UI receipts and completed-change labels; unknown/filtered evidence keeps ordinary overlap, deleted definitions not covered |
 | Console changed-symbols block (#684 phase 2b) | on with 2a data; matching, unplanned and untouched against the plan; overlap lines follow in #379; related-note count remains phase 4 | task detail shows the block or `unknown (no code facts)`; no block for a private task |

@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { executionReferenceKey, executionText, parseExecutionReference, type ExecutionReferenceV1 } from "./execution-reference.ts";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { EXECUTION_REFERENCE_LIMITS, executionReferenceKey, executionText, parseExecutionReference, type ExecutionReferenceV1 } from "./execution-reference.ts";
 
 /** Snapshot admission is host-owned; never accept these authority flags from a caller or producer. */
 export const LINEAGE_LIMITS = Object.freeze({ nodes: 100, edges: 200, bytes: 256 * 1024, sourceNodes: 2048, sourceEdges: 4096, sourceBytes: 4 * 1024 * 1024, token: 128, state: 64, cursor: 512, minimumBytes: 4096 });
@@ -9,11 +9,14 @@ export interface LineageNode { ref: ExecutionReferenceV1; state: string; strengt
 export interface LineageEdge { from: ExecutionReferenceV1; to: ExecutionReferenceV1; relation: LineageRelation; strength: LineageStrength }
 export interface ExecutionLineageSource {
   id: string; revision: string; projectKey: string; scope: string;
+  /** Host-owned ephemeral signing key, never supplied by a query or persisted by this reader. */
+  cursorKey: string;
   authorized: boolean; diagnostics: boolean;
   health: "ready" | "missing" | "corrupt" | "unsupported" | "withheld";
-  /** Bounded, indexed root neighborhood, complete at this revision. No global board scan. */
-  nodes: readonly (LineageNode & { readable: boolean })[];
-  edges: readonly (LineageEdge & { readable: boolean })[];
+  /** Owner-authorized PUBLIC root neighborhood, complete at this revision. Apply privacy in the
+   * owner's indexed read before these arrays or their bounds exist; never pass hidden rows here. */
+  nodes: readonly LineageNode[];
+  edges: readonly LineageEdge[];
 }
 export interface LineageQuery { root: ExecutionReferenceV1; cursor?: string; nodes?: number; edges?: number; bytes?: number }
 export type LineageResult = { state: "unavailable"; reason?: "missing" | "corrupt" | "unsupported" | "withheld" | "cursor_invalid" | "invalid" }
@@ -40,29 +43,26 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
     const nodeLimit = limit(query.nodes, LINEAGE_LIMITS.nodes), edgeLimit = limit(query.edges, LINEAGE_LIMITS.edges);
     const byteLimit = limit(query.bytes, LINEAGE_LIMITS.bytes, LINEAGE_LIMITS.minimumBytes);
     if (![source.id, source.revision, source.scope].every(value => executionText(value, LINEAGE_LIMITS.token)) ||
-        !executionText(source.projectKey, 256) || root.projectKey !== source.projectKey) return unavailable("invalid");
+        !executionText(source.cursorKey, LINEAGE_LIMITS.token) || Buffer.byteLength(source.cursorKey) < 32 ||
+        !executionText(source.projectKey, EXECUTION_REFERENCE_LIMITS.projectKey) || root.projectKey !== source.projectKey) return unavailable("invalid");
+    // ponytail: oversized neighborhoods need source-owner indexed paging, never a larger inbox scan.
     if (source.nodes.length > LINEAGE_LIMITS.sourceNodes || source.edges.length > LINEAGE_LIMITS.sourceEdges) return unavailable("unsupported");
     const nodes = new Map<string, LineageNode>();
-    let size = 0, withheldRoot = false;
+    let size = 0;
     for (const raw of source.nodes) {
-      if (!raw.readable) {
-        if (source.diagnostics) withheldRoot ||= executionReferenceKey(raw.ref) === rootKey;
-        continue;
-      }
       const ref = parseExecutionReference(raw.ref), key = executionReferenceKey(ref);
       if (ref.projectKey !== source.projectKey || !executionText(raw.state, LINEAGE_LIMITS.state) ||
           !/^[a-z][a-z0-9_-]*$/.test(raw.state) || !STRENGTHS.includes(raw.strength) || nodes.has(key)) return unavailable("corrupt");
       const node = { ref, state: raw.state, strength: raw.strength };
       nodes.set(key, node); size += bytes(node);
     }
-    if (!nodes.has(rootKey)) return unavailable(withheldRoot ? "withheld" : "missing");
+    if (!nodes.has(rootKey)) return unavailable("missing");
     const edges: LineageEdge[] = [], edgeKeys = new Set<string>();
     const adjacent = new Map<string, string[]>();
     for (const raw of source.edges) {
-      if (!raw.readable) continue;
       const from = parseExecutionReference(raw.from), to = parseExecutionReference(raw.to);
       const fromKey = executionReferenceKey(from), toKey = executionReferenceKey(to);
-      if (!nodes.has(fromKey) || !nodes.has(toKey)) continue; // Filter privacy before relationship counts.
+      if (!nodes.has(fromKey) || !nodes.has(toKey)) return unavailable("corrupt");
       if (!RELATIONS.includes(raw.relation) || !STRENGTHS.includes(raw.strength) ||
           (raw.relation === "declared-external" && raw.strength !== "declared")) return unavailable("corrupt");
       const edge = { from, to, relation: raw.relation, strength: raw.strength }, key = JSON.stringify(edge);
@@ -80,20 +80,23 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
     const visibleNodes = queue.map(key => nodes.get(key)!);
     const visibleEdges = edges.filter(edge => seen.has(executionReferenceKey(edge.from)) && seen.has(executionReferenceKey(edge.to)));
     const binding = hash([source.id, source.revision, source.scope, root, nodeLimit, edgeLimit, byteLimit, visibleNodes, visibleEdges]);
+    const sign = (n: number, e: number): string => createHmac("sha256", source.cursorKey).update(JSON.stringify([binding, n, e])).digest("hex");
     let n = 0, e = 0;
     if (query.cursor !== undefined) {
       if (typeof query.cursor !== "string" || query.cursor.length > LINEAGE_LIMITS.cursor || !/^[A-Za-z0-9_-]+$/.test(query.cursor)) return unavailable("cursor_invalid");
       const cursor: unknown = JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8"));
-      if (!Array.isArray(cursor) || cursor.length !== 3 || cursor[0] !== binding ||
-          !Number.isSafeInteger(cursor[1]) || !Number.isSafeInteger(cursor[2]) || cursor[1] < 0 || cursor[2] < 0 ||
-          cursor[1] > visibleNodes.length || cursor[2] > visibleEdges.length) return unavailable("cursor_invalid");
-      n = cursor[1]; e = cursor[2];
+      if (!Array.isArray(cursor) || cursor.length !== 4) return unavailable("cursor_invalid");
+      const [cursorBinding, nextN, nextE, signature] = cursor;
+      if (cursorBinding !== binding || !Number.isSafeInteger(nextN) || !Number.isSafeInteger(nextE) || nextN < 0 || nextE < 0 ||
+          nextN > visibleNodes.length || nextE > visibleEdges.length || typeof signature !== "string" ||
+          !/^[0-9a-f]{64}$/.test(signature) || !timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(sign(nextN, nextE), "hex"))) return unavailable("cursor_invalid");
+      n = nextN; e = nextE;
     }
     const pageNodes: LineageNode[] = [], pageEdges: LineageEdge[] = [];
     const page = (nextN: number, nextE: number): Extract<LineageResult, { state: "available" }> => {
       const truncated = nextN < visibleNodes.length || nextE < visibleEdges.length;
       return { state: "available", nodes: pageNodes, edges: pageEdges, truncated,
-        ...(truncated ? { cursor: Buffer.from(JSON.stringify([binding, nextN, nextE])).toString("base64url") } : {}) };
+        ...(truncated ? { cursor: Buffer.from(JSON.stringify([binding, nextN, nextE, sign(nextN, nextE)])).toString("base64url") } : {}) };
     };
     while (n < visibleNodes.length && pageNodes.length < nodeLimit) {
       pageNodes.push(visibleNodes[n]!);

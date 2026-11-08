@@ -65,7 +65,7 @@ it must not scan the entire board on every inbox poll.
 The host pins `id`, `revision`, `projectKey` and caller `scope`, source `health`,
 source-read `authorized` authority and diagnostic authority. These are never
 accepted from a producer or query. A snapshot contains metadata nodes and explicit
-edges, with a host policy `readable` decision on each. Each node carries its own
+edges, already privacy-projected by the source owner. Each node carries its own
 source reference, state token and evidence strength; no title, note, path,
 session-native identifier or review body enters this projection. States keep
 their owner's meaning: a completed dispatch is not a successful attempt; an
@@ -105,7 +105,7 @@ continuations: a page's edge may refer to a node in another page. Consumers comb
 pages by the complete source reference and never label a truncated page complete.
 Traversal follows only explicit edges in either direction from the named root.
 
-Snapshot admission bounds query-local work to 2048 nodes, 4096 edges and 4 MiB of
+After owner privacy projection, snapshot admission bounds query-local work to 2048 nodes, 4096 edges and 4 MiB of
 projected metadata. Oversized sources are unavailable, not an empty or silently
 partial successful graph. The owner must supply a complete indexed neighborhood
 within this ceiling; larger graphs require a future owner paging contract.
@@ -117,13 +117,21 @@ return exactly `{state: "unavailable"}`. Ordinary authorized readers get the
 same shape for hidden or missing roots. Only an already authorized diagnostic
 operator can see the closed reason `missing`, `corrupt`, `unsupported`, `withheld`,
 `cursor_invalid` or `invalid`; never a hidden id, count or source prose.
-Host privacy applies before emitted ids, relationships, counts and pagination.
-Hidden records neither consume public page slots nor create dangling edges.
+Host privacy applies in the source owner's indexed read before assembling this
+snapshot, so hidden rows never enter even its bound calculations or cursor.
+Only the host supplies these snapshots; accepting a producer-supplied graph or
+policy flags would violate this boundary. A hidden requested root is a source
+`withheld` result. Hidden records neither consume public page slots nor create
+dangling edges; a dangling edge in an admitted public snapshot is corrupt.
 
 An available page has `{state: "available", nodes, edges, truncated, cursor?}`.
 The cursor is an opaque continuation bound to source id/revision, caller scope,
 root, limits and the visible graph. Changed source snapshots, privacy views,
 roots or limits invalidate it. Cursor contents grant no authority. A cursor
+is authenticated with a host-owned ephemeral HMAC key (32 to 128 UTF-8 bytes),
+never a key supplied by a query. This reader creates or persists no key; key
+rotation/restart invalidates prior cursors. Edited offsets are refused.
+A cursor
 must be used only with the same admitted source; on invalidation refresh from
 the root. Source health failure is never a complete empty graph. No cursor is
 returned on a complete page.

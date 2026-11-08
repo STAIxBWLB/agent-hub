@@ -1,3 +1,4 @@
+import { types } from "node:util";
 /** ExecutionReferenceV1 is an opaque address, never authority or a resolver instruction. */
 export const EXECUTION_PRODUCERS = ["ahub", "ares", "amem", "vmem"] as const;
 export interface ExecutionReferenceV1 {
@@ -16,7 +17,7 @@ export function executionText(value: unknown, max: number): value is string {
     Buffer.byteLength(value, "utf8") <= max && !/[\p{Cc}\p{Cs}]/u.test(value);
 }
 export function parseExecutionReference(input: unknown): ExecutionReferenceV1 {
-  if (!input || typeof input !== "object" || Array.isArray(input) ||
+  if (!input || typeof input !== "object" || types.isProxy(input) || Array.isArray(input) ||
       ![Object.prototype, null].includes(Object.getPrototypeOf(input)) || Object.getOwnPropertySymbols(input).length) return invalid();
   const fields = Object.getOwnPropertyDescriptors(input);
   const keys = ["v", "tool", "projectKey", "kind", "id", "revision", "sha256"];

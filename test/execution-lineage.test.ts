@@ -3,10 +3,10 @@ import { LINEAGE_LIMITS, readExecutionLineage, type ExecutionLineageSource, type
 import { type ExecutionReferenceV1 } from "../src/hub/execution-reference.ts";
 
 const ref = (kind: string, id = kind): ExecutionReferenceV1 => ({ v: 1, tool: "ahub", projectKey: "project-a", kind, id });
-const node = (kind: string, state: string, strength: LineageNode["strength"] = "host-observed") => ({ ref: ref(kind), state, strength, readable: true });
-const edge = (from: string, to: string, relation: LineageEdge["relation"], strength: LineageEdge["strength"] = "host-observed") => ({ from: ref(from), to: ref(to), relation, strength, readable: true });
+const node = (kind: string, state: string, strength: LineageNode["strength"] = "host-observed") => ({ ref: ref(kind), state, strength });
+const edge = (from: string, to: string, relation: LineageEdge["relation"], strength: LineageEdge["strength"] = "host-observed") => ({ from: ref(from), to: ref(to), relation, strength });
 function fixture(): ExecutionLineageSource {
-  return { id: "fixture", revision: "1", scope: "public-reader", projectKey: "project-a", authorized: true, diagnostics: false, health: "ready",
+  return { id: "fixture", revision: "1", scope: "public-reader", projectKey: "project-a", cursorKey: "fixture-only-not-a-credential-0001", authorized: true, diagnostics: false, health: "ready",
     nodes: [node("task", "approved"), node("dispatch", "completed"), node("attempt", "failed", "declared"), node("output", "recorded"), node("review", "approved")],
     edges: [edge("task", "dispatch", "dispatched"), edge("dispatch", "attempt", "declared-external", "declared"),
       edge("attempt", "output", "produced", "declared"), edge("output", "review", "reviewed")] };
@@ -17,7 +17,7 @@ test("AC1 explicit fixture traverses the chain without upgrading distinct states
   expect(page.state).toBe("available");
   if (page.state !== "available") throw new Error("fixture unavailable");
   expect(page.nodes.map(n => [n.ref.kind, n.state])).toEqual([["task", "approved"], ["dispatch", "completed"], ["attempt", "failed"], ["output", "recorded"], ["review", "approved"]]);
-  expect(page.edges).toEqual(source.edges.map(({ readable: _, ...e }) => e));
+  expect(page.edges).toEqual(source.edges);
   expect(page.edges[1]!.strength).toBe("declared");
   expect(page.truncated).toBe(false);
   expect(page.cursor).toBeUndefined();
@@ -48,17 +48,20 @@ test("authorized diagnostics are closed causes, never source prose", () => {
   }
 });
 test("privacy precedes identifiers, edges, counts and pagination", () => {
-  const source = fixture(), clean = fixture();
-  source.nodes = [...source.nodes, { ...node("secret", "recorded"), readable: false }];
-  source.edges = [...source.edges, edge("task", "secret", "produced")];
+  // Model the source-owner read boundary: its privacy index never hands hidden rows to the reader.
+  const owner = (hiddenCount: number, root = "task"): ExecutionLineageSource => {
+    const raw = [...fixture().nodes.map(value => ({ value, readable: true })),
+      ...Array.from({ length: hiddenCount }, () => ({ value: node("secret", "recorded"), readable: false }))];
+    return { ...fixture(), health: root === "secret" ? "withheld" : "ready", nodes: raw.filter(n => n.readable).map(n => n.value) };
+  };
+  const source = owner(LINEAGE_LIMITS.sourceNodes + 1), clean = owner(0);
   const query = { root: ref("task"), nodes: 1, edges: 1 };
   expect(readExecutionLineage(source, query)).toEqual(readExecutionLineage(clean, query));
-  expect(readExecutionLineage(source, { root: ref("secret") })).toEqual({ state: "unavailable" });
-  expect(readExecutionLineage({ ...source, diagnostics: true }, { root: ref("secret") })).toEqual({ state: "unavailable", reason: "withheld" });
-  source.nodes = source.nodes.map(n => n.ref.kind === "output" ? { ...n, readable: false } : n);
-  const page = readExecutionLineage(source, { root: ref("task") });
-  expect(JSON.stringify(page)).not.toContain('"kind":"output"');
-  expect(JSON.stringify(page)).not.toContain('"kind":"review"');
+  expect(readExecutionLineage(owner(1, "secret"), { root: ref("secret") })).toEqual({ state: "unavailable" });
+  expect(readExecutionLineage({ ...owner(1, "secret"), diagnostics: true }, { root: ref("secret") })).toEqual({ state: "unavailable", reason: "withheld" });
+  expect(JSON.stringify(readExecutionLineage(source, { root: ref("task") }))).not.toContain("secret");
+  const dangling = fixture(); dangling.nodes = dangling.nodes.filter(n => n.ref.kind !== "output");
+  expect(readExecutionLineage(dangling, { root: ref("task") })).toEqual({ state: "unavailable" });
 });
 test("bounded pages reconstruct the visible graph and cursor invalidates on source, scope, root or bytes changes", () => {
   const source = fixture(), query = { root: ref("task"), nodes: 2, edges: 1 };
@@ -76,6 +79,9 @@ test("bounded pages reconstruct the visible graph and cursor invalidates on sour
     expect(readExecutionLineage(changed, { ...query, cursor: first! })).toEqual({ state: "unavailable" });
   expect(readExecutionLineage(source, { ...query, root: ref("review"), cursor: first! })).toEqual({ state: "unavailable" });
   expect(readExecutionLineage(source, { ...query, bytes: 4096, cursor: first! })).toEqual({ state: "unavailable" });
+  const forged = JSON.parse(Buffer.from(first!, "base64url").toString("utf8")); forged[1] = source.nodes.length; forged[2] = source.edges.length;
+  expect(readExecutionLineage(source, { ...query, cursor: Buffer.from(JSON.stringify(forged)).toString("base64url") })).toEqual({ state: "unavailable" });
+  expect(readExecutionLineage({ ...source, cursorKey: "fixture-only-replacement-key-0001" }, { ...query, cursor: first! })).toEqual({ state: "unavailable" });
 });
 test("source caps fail closed, duplicate identities are corrupt, malformed cursors never become complete", () => {
   const source = fixture();
@@ -86,7 +92,7 @@ test("source caps fail closed, duplicate identities are corrupt, malformed curso
 test("response byte ceiling includes cursor and metadata; no ids or prose outside the closed projection", () => {
   const source = fixture();
   source.nodes = Array.from({ length: 300 }, (_, i) => ({ ...node("output", "recorded"), ref: ref("output", `${i}-${"x".repeat(245)}`) }));
-  source.edges = source.nodes.slice(1).map(n => ({ from: source.nodes[0]!.ref, to: n.ref, relation: "produced", strength: "declared", readable: true }));
+  source.edges = source.nodes.slice(1).map(n => ({ from: source.nodes[0]!.ref, to: n.ref, relation: "produced", strength: "declared" }));
   const page = readExecutionLineage(source, { root: source.nodes[0]!.ref, bytes: 4096 });
   expect(page.state).toBe("available"); expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(4096);
   expect(page.state === "available" && page.truncated).toBe(true);
