@@ -4593,6 +4593,97 @@ and doctor. Every route without the `hub/` prefix, including named legacy routes
 and `sy/` selections, uses the fixed alias with one warning. Loading or reloading
 never rewrites the operator's routing files.
 
+#### Optional adec decision route (#554)
+
+The optional `decision` route calls a separately managed, loopback-only
+`adec serve` using the [agent-decide route contract](https://github.com/STAIxBWLB/agent-decide/issues/4).
+The hub never starts or configures that service, reads its credentials, or calls
+its model directly. This backend is selected explicitly:
+
+```toml
+[hub_routes."hub/decision"]
+type = "decision"
+decision_backend = "adec"
+decision_mode = "shadow"
+policy_id = "ahub.chat"
+adec_endpoint = "http://127.0.0.1:8740/v1/route"
+decision_timeout_ms = 8000
+efficient = "fast"
+capable = "coding"
+candidates = [
+  { alias = "fast", efforts = ["low", "medium"] },
+  { alias = "coding", efforts = ["high"] },
+]
+```
+
+Select it by editing the existing `[local] route` or class `route` to
+`"hub/decision"`. Do not append a duplicate `[local]` table. Ordinary routes,
+class `fixed_model` selections and a person's explicit model override retain
+their existing behavior; an explicit model bypasses this route.
+
+Omitting `decision_mode` means `off`: no decision request or evidence is built.
+This delivery supports `shadow` only. It records the proposed alias/effort,
+margin, latency and decider while keeping the exact existing stage heuristic
+model, effort and conversation. `enforce` is explicitly refused at config load:
+`decision_mode enforce is not available yet; use shadow; tracked in #554`.
+There is no dormant application path or gateway effort plumbing. No route is
+enabled by default or deployed by this feature.
+
+The configured alias/effort list has at most 26 pairs. Aliases narrow the adec
+policy; efforts are an additional hub-side response allowlist and are not sent
+as a policy override. Align the lists with the service policy: an unconfigured
+effort is refused as `outside_options`, keeping the heuristic. The request
+cannot add a policy candidate. The service assembles its question and
+owns its hard rules, margin threshold, in-memory pins and fallback. A valid
+`fallbackApplied` pair is recorded as the service's proposed fallback even when
+`abstain` is true. Every proposal, failure and `no_candidate` keeps the hub
+heuristic unchanged. An HTTP 400 is a caller/configuration
+error; inspect the policy id and allowed pairs. Transport errors, timeout,
+malformed responses and an out-of-list pair also keep the hub heuristic, with a
+closed reason in the route event. A failed service is not asked again in the
+same user turn. Operational diagnostics contain a closed cause and repair step,
+and are emitted once per state/configuration change; a successful reply resets
+the diagnostic so a later recurrence is visible. Per-call route records remain
+available for outcome correlation. The default total timeout is 8 seconds (configurable from 1 to
+30000 ms), covering headers and the full bounded response. Redirects, ambient
+proxies, credentials and browser headers are not used. Endpoint URLs accept only
+HTTP numeric loopback with `/v1/route`, without userinfo, query or fragment.
+
+Each eligible tool round carries the same opaque, route/session/user-turn-bound
+`turnId`. adec therefore reuses its pin while rechecking current hard rules.
+The hub does not send a proposal as `current`: no pair is applied in shadow,
+and the native/default effort is unknown. Explicit model selections bypass the
+service.
+Changing a service, provider, model, version or policy threshold requires a new
+shadow period. The hub does not recalibrate a remote policy. The optional decider `version` is recorded when configured on the service;
+otherwise it stays unknown and is not inferred from the model id. Moving
+`latest` version aliases are refused.
+
+Evidence is a bounded data projection, never the forwarded conversation: a
+capped latest-user task fragment, the last assistant/tool tails, screened tool
+names and numeric stage dimensions. Whole selected sources pass the current
+public-view pattern/private-path/secret checks before UTF-8/JSON byte caps.
+Tool arguments, system/developer instructions and older history are not sent.
+The total evidence cap is 8 KiB; candidate and response payloads have finite
+bounds too. Evidence is labelled untrusted data, not instructions; injection
+resistance is not claimed. Review-observer-excluded and remote turns skip adec.
+A PII/private turn needs positive `onCampus()` before any evidence build or
+service call. Even on campus, its evidence is dimensions only, its context size
+is redacted to 0, and its separate `pii`/`private` flags reach adec so the service
+can enforce on-prem candidates/decider rules. The ordinary gateway campus and
+execution-budget checks still apply. Current board/turn privacy and observer
+facts are checked again across admission, campus and service awaits. A changed
+or unavailable authority refuses the stale turn instead of turning into a
+service-error fallback; inspect current task policy and retry. A returned proposal is checked again before telemetry. The original gateway
+execution path and its privacy/budget checks are unchanged. Source text, tool arguments, credentials
+and server error prose never enter route events.
+
+This delivery is the adec consumer slice of #554. The direct System One backend,
+enforcement application, optional stage classifier and manual offline triage
+evaluation remain separate unimplemented legs. Offline fake-service tests establish protocol and shadow
+behavior; no routing gain, native service/model run or production rollout is
+claimed.
+
 Migrate the retired settings as follows:
 
 | Retired setting or route | In-process replacement |

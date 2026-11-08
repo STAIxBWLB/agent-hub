@@ -1,6 +1,7 @@
 import type { ModelOverrideSelection } from "./registry-types.ts";
 import { isNativeModelToken } from "./model-token.ts";
 import { isReviewObserverExcluded, reviewCaptureExcluded } from "../hub/memory-policy.ts";
+import { DecisionPolicyChangedError, type DecisionHost } from "../models/route/decision.ts";
 import { HubRouteRuntime, type RouteEvent, type AdvisorEvent } from "../models/route/runtime.ts";
 import type { HubRoute } from "../models/route/config.ts";
 import type { RouteLabelEvent, RouteTurnOutcome } from "../models/route/labels.ts";
@@ -37,6 +38,9 @@ export interface LocalOptions {
   /** Model alias sent straight to OmniRoute when no hub route is active or its call fails. */
   fixedModel: string;
   hubRoutes?: () => Record<string, HubRoute>;
+  /** Current host public-view screen for bounded decision evidence; absent means no text is released. */
+  routeEvidencePublic?: (text: string) => boolean;
+  routeDecisionContext?: DecisionHost["decisionContext"];
   /** routing.toml `stay_switch` for hub stage routes (#197). */
   staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
@@ -120,6 +124,7 @@ export class LocalPeer extends BasePeer {
   private readonly warnedLegacyRoutes = new Set<string>();
   private routeEnvs: Envelope[] = [];
   private routePii = false;
+  private routeReviewScope: { excluded: boolean } | undefined;
   private routeTask?: number;
   private labelTurnId?: string;
   private turn = 0; // generation guard, as in acp.ts: a turn aborted by the watchdog must not touch the next one
@@ -157,12 +162,23 @@ export class LocalPeer extends BasePeer {
         return result;
       },
       onCampus: () => this.opts.omni.onCampus(),
+      decisionContext: () => this.decisionContext(),
+      publicDecisionText: text => this.opts.routeEvidencePublic?.(text) === true,
+      admitDecision: () => this.requireBudget(this.routeEnvs, "model_calls"),
+      onDecisionIssue: reason => this.opts.log?.(`decision route observation ${reason}; using the original heuristic; check adec serve and routing.toml policy settings, then retry`),
       staySwitch: () => this.opts.staySwitch?.(),
       onRoute: event => this.opts.onRoute?.(event),
       onAdvisor: event => this.opts.onAdvisor?.(event),
       onRouteOutcome: event => this.opts.onRouteOutcome?.(event),
     });
     this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny, opts.tools.readOnly);
+  }
+
+  private decisionContext(): { pii: boolean; private: boolean; excluded: boolean } {
+    const current = this.opts.routeDecisionContext?.();
+    if (this.opts.routeDecisionContext && (!current || typeof current.private !== "boolean" || typeof current.excluded !== "boolean" || current.pii !== undefined && typeof current.pii !== "boolean")) throw new DecisionPolicyChangedError();
+    return { pii: this.routePii || current?.pii === true, private: this.routeEnvs.some(env => env.private === true) || current?.private === true,
+      excluded: this.routeEnvs.some(env => remoteEnvelope(env) || isReviewObserverExcluded(env)) || this.routeReviewScope?.excluded === true || current?.excluded === true };
   }
 
   recoveryMetadata(): Record<string, unknown> {
@@ -312,6 +328,7 @@ export class LocalPeer extends BasePeer {
     }
     this.routeEnvs = envs;
     this.routePii = !!policy?.pii;
+    this.routeReviewScope = reviewScope;
     const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
     let usedTools = false;
     let captureInvocation = 0;
@@ -521,7 +538,7 @@ export class LocalPeer extends BasePeer {
     if (!route || !config) return undefined;
     try { return await this.routes.call(route, config, messages, this.routeScope(!!policy?.pii), !!policy?.pii, signal); }
     catch (error) {
-      if (signal.aborted || error instanceof ExecutionBudgetStop) throw error;
+      if (signal.aborted || error instanceof ExecutionBudgetStop || error instanceof DecisionPolicyChangedError) throw error;
       this.opts.log?.(`hub route ${route} unavailable; using fixed model`);
       return undefined;
     }

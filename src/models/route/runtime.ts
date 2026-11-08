@@ -1,3 +1,4 @@
+import { DecisionRouteController, type DecisionHost, type DecisionTrace } from "./decision.ts";
 import type { ChatMessage, ChatResult } from "../../omniroute/client.ts";
 import { AdvisorGate, buildAdvisorJudgeRequest, redoFeedback } from "./advisor.ts";
 import type { HubRoute } from "./config.ts";
@@ -10,15 +11,14 @@ import { EscalationState, SessionState } from "./state.ts";
 import { parseAdvisorVerdict } from "./text.ts";
 import { planExecutePhase, type PlanExecuteState } from "./plan-execute.ts";
 
-export interface RouteEvent extends Partial<SwitchTrace> {
-  route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default"; score: number; ms: number;
+export interface RouteEvent extends Partial<SwitchTrace>, Partial<DecisionTrace> {
+  route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default" | "decision"; score: number; ms: number;
   decision?: string; turn?: string; task?: number; pii?: boolean; severity?: number; spinning?: number; exploring?: number; production?: number;
 }
 export interface AdvisorEvent { route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
 interface RouteState { fingerprint: string; stage: StageState; pin?: Tier; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate }
-export interface RouteHost {
+export interface RouteHost extends DecisionHost {
   execute: (model: string, messages: ChatMessage[], judge: boolean, signal: AbortSignal, maxTokens?: number) => Promise<ChatResult>;
-  onCampus: () => Promise<boolean>;
   /** Read on every stage call (#197); absent is the shadow default. */
   staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
@@ -30,8 +30,10 @@ export interface RouteHost {
 export class HubRouteRuntime {
   private readonly states = new SessionState<RouteState>();
   private readonly labels: RouteLabelTracker;
+  private readonly decisions: DecisionRouteController;
   private judgeOffUntil = 0;
   constructor(private readonly host: RouteHost, private readonly judgeTimeoutMs = 8000) {
+    this.decisions = new DecisionRouteController(host, judgeTimeoutMs);
     this.labels = new RouteLabelTracker(event => this.host.onRouteOutcome?.(event));
   }
 
@@ -56,13 +58,14 @@ export class HubRouteRuntime {
   /** Executor failures retry the fixed model only in the caller; no tool has run yet. */
   async call(route: string, config: HubRoute, messages: ChatMessage[], scope: string, pii: boolean, signal: AbortSignal): Promise<ChatResult> {
     const labelTurn = this.labels.captureTurn();
+    this.decisions.checkEntry(config, pii);
     const started = performance.now(), state = this.state(route, config, scope);
     const conversation = normalizeConversation(messages), signals = extractToolSignals(conversation);
     const dimensions = dimensionsFromSignal(signals);
     const efficient = config.efficient ?? "fast", capable = config.capable ?? "coding";
     let model = efficient, source: RouteEvent["source"] = "default", score = 0;
     let sent = messages, trace: Partial<SwitchTrace> = {};
-    if (config.type === "stage") {
+    if (config.type === "stage" || config.type === "decision") {
       const decision = selectStage(signals, { confidenceThreshold: config.confidence_threshold, capableHoldTurns: config.hold_turns }, state.stage);
       state.stage = decision.state;
       // OmniRoute models publish no context limit to the hub, so every tier fits here; the estimate leaves out the tool
@@ -82,7 +85,11 @@ export class HubRouteRuntime {
       state.plan = decision.state;
       if (decision.planningPrompt) sent = [{ role: "system", content: decision.planningPrompt }, ...messages];
     } else if (config.type === "escalation" && state.escalation.snapshot().latched) model = capable;
-    let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace }, labelTurn, dimensions, pii, messages);
+    const proposed: Awaited<ReturnType<DecisionRouteController["pick"]>> = config.type === "decision" ? await this.decisions.pick(config, { route, scope, turn: labelTurn, messages, dimensions, pii, signal,
+      current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn }) : {};
+    const picked = this.decisions.confirm(proposed);
+    source = picked.trace ? "decision" : source;
+    let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
     const result = await this.host.execute(model, sent, false, signal);
     if (config.type !== "escalation" || state.escalation.snapshot().latched) return this.withDecision(result, decisionId);
     const request = buildEscalationJudgeRequest(normalizeConversation([...messages, result.message]), signals.assistantTurnCount + 1);

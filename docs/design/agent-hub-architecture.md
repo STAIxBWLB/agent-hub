@@ -130,7 +130,7 @@ recovery transaction and bus recovery hold are clear.
 ## Models and memory
 
 
-Peer selection, hub-owned model routing, and provider access are distinct layers. Task routing chooses a peer; the in-process route selects a model for hub-owned inference; OmniRoute owns provider keys, provider fallback, and usage. Native CLIs retain their own account and provider configuration; subscription OAuth credentials are not pooled through the gateway. The former Switchyard sidecar is retired; routing now runs in process. This keeps provider credentials and fallback policy in one gateway while avoiding a second routing service ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
+Peer selection, hub-owned model routing, and provider access are distinct layers. Task routing chooses a peer; the in-process route selects a model for hub-owned inference; OmniRoute owns provider keys, provider fallback, and usage. Native CLIs retain their own account and provider configuration; subscription OAuth credentials are not pooled through the gateway. The former Switchyard sidecar is retired; routing now runs in process. An opt-in `decision` route may consult the loopback agent-decide policy service; execution and provider access remain in the hub and OmniRoute, with the existing heuristic as the consumer fallback. This keeps worker-provider credentials and provider failover in one gateway; the optional policy consult does not proxy the worker's inference traffic ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
 Person-owned live model overrides (#1317) are runtime state in `hub.db`, not
 configuration edits. The host owns person admission, desired-versus-applied
@@ -144,6 +144,21 @@ defines supported turn paths and evidence limits.
 The hub's portable memory storage, sync, indexing, and project helpers come from the pinned first-party `@staix/agent-mem` package. `src/memory/` and `Tasks` provide hub-specific capture, recall, privacy screening, task briefs, and shared notes. Runtime memory is in-process: there is no claude-mem worker HTTP client or model summarizer. claude-mem is an off-by-default, import-only source. This removes a second capture path while keeping caller authority and task privacy in the hub ([#752](https://github.com/STAIxBWLB/agent-hub/issues/752), [agent-mem#13](https://github.com/STAIxBWLB/agent-mem/issues/13)).
 
 Long-term hub writes and core promotion callbacks use the configured standalone sync policy plus hub narrowing. Profile readiness is independent of the current daemon's last automatic sync result. Public status exposes safe cause/count/action metadata; person-only declined inspection exposes IDs and rule categories, with explicit incomplete state when the portable core cannot supply a bounded physical view. Portable row placement and physical sync inspection remain agent-mem responsibilities.
+
+
+The adec backend (#554) is default-off and shadow-first. A shadow pick changes
+neither the heuristic model/effort nor the forwarded conversation. The service
+owns question assembly, hard rules, thresholds, pins and policy fallback; the hub
+owns allowed-pair validation, its default-off shadow switch, current turn and
+budget/campus admission, and original gateway execution. `enforce` is refused at configuration load and
+no pick is applied in this delivery. The bounded evidence
+builder runs only after admission and uses the host public-view screen; it never
+sends tool arguments, system instructions or full history. Sensitive turns are
+campus-gated before evidence and carry dimensions only plus privacy flags.
+Review-observer and remote inputs do not reach this optional observer. Route
+records retain closed metadata, not evidence or service error prose. Direct
+System One integration, the optional stage classifier and the manual triage
+comparison remain outside this consumer slice.
 
 ## Privacy and recovery
 
