@@ -2452,6 +2452,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const modelOverrides = new ModelOverrides(join(opts.stateDir, "hub.db"));
   const modelLatches = new ModelOverrideLatches(modelOverrides);
   const modelManagedOwners = new WeakSet<PeerAdapter>();
+  const modelAcpOwners = new WeakMap<PeerAdapter, AcpPeer>();
   const modelLaunchModels = new WeakMap<PeerAdapter, string>();
   startupCleanup.push(() => modelOverrides.close());
   startupCleanup.push(() => codeFacts.close());
@@ -6075,6 +6076,14 @@ export async function startDaemon(opts: DaemonOptions) {
   const modelBoundaries = new Map<string, { owner: PeerAdapter; token: object; turn?: object; nativeStarted?: true }>();
   const modelUnsupported = (peer: string): RuntimeModelStatus["unsupported"] | undefined => {
     const definition = definitionOf(peer), owner = bus.peers.get(peer);
+    if (definition && isFixedBuiltinDefinition(definition) && definition.transport === "acp") {
+      const state = owner ? modelAcpOwners.get(owner)?.modelOverrideState : undefined;
+      if (!definition.modelOverride?.acp || !state?.available) return {
+        reasonCode: "acp_setter_unavailable", kind: definition.kind, ...(state?.version ? { version: state.version } : {}),
+        reason: `unsupported live: ${definition.kind} ${state?.version ?? "unknown"} lacks a setter receipt or compat admission`,
+        nextStep: `restart this peer with ahub restart ${peer}`,
+      };
+    }
     if (!definition || !isFixedBuiltinDefinition(definition) || !definition.modelOverride) return {
       reasonCode: "unverified_setter", ...(definition ? { kind: definition.kind } : {}),
       reason: `unsupported live: ${definition?.kind ?? "retained peer"} (version unverified) has no verified model setter`, nextStep: `restart this peer with ahub restart ${peer}`,
@@ -6082,16 +6091,23 @@ export async function startDaemon(opts: DaemonOptions) {
     if (owner && !modelManagedOwners.has(owner)) return { reasonCode: "unmanaged_attachment", kind: definition.kind, reason: "unsupported live: this attachment has no verified live model setter", nextStep: `change the native setting or restart this peer with ahub restart ${peer}` };
     return undefined;
   };
+  const modelTokenAvailable = (peer: string, model: string): boolean => {
+    if (!definitionOf(peer)?.modelOverride?.acp) return true;
+    const owner = bus.peers.get(peer);
+    return !!owner && modelAcpOwners.get(owner)?.acceptsModelOverride(model) === true;
+  };
   const modelFallback = (peer: string): { model?: string; source: Exclude<ModelSource, "override"> } => {
     const declared = declarations[peer]?.model;
     if (isNativeModelToken(declared)) return { model: declared, source: "instance" };
     const owner = bus.peers.get(peer), model = owner ? modelLaunchModels.get(owner) : undefined;
     if (model !== undefined) return { model, source: "launch" };
-    return { source: "native default" };
+    const baseline = owner ? modelAcpOwners.get(owner)?.modelOverrideState.baseline : undefined;
+    return { ...(baseline ? { model: baseline } : {}), source: "native default" };
   };
   const registerModelOwner = (owner: PeerAdapter): void => {
     const definition = definitionOf(owner.id);
     if (!definition || !isFixedBuiltinDefinition(definition) || !definition.modelOverride) return;
+    if (definition.modelOverride.acp && !modelAcpOwners.get(owner)?.modelOverrideState.available) return;
     modelManagedOwners.add(owner);
     try {
       const launch = owner.recoveryMetadata?.()?.launch;
@@ -6138,6 +6154,13 @@ export async function startDaemon(opts: DaemonOptions) {
       if (modelLatches.end(peer, captured.token, true)) { modelBoundaries.delete(peer); writeStatus(); }
     } };
   };
+  const acpModelSelection = (peer: string) => {
+    if (modelUnsupported(peer)) {
+      if (modelOverrides.get(peer)) throw new Error("retained model override has no current receipt-verified ACP setter; clear it with ahub model clear or restart a supported peer before retrying");
+      return undefined; // An unavailable optional setter must not break ordinary no-override ACP work.
+    }
+    return modelSelection(peer);
+  };
   type ModelGrant = { source: "cli" | "dashboard"; scope: object | string; current: () => boolean; expiresAt?: number };
   type ModelPreview = { peer: string; action: "set" | "clear"; model?: string; expiresAt: number; scope: object | string; source: "cli" | "dashboard";
     revision: string; runtime: string; config: number; owner: PeerAdapter | undefined; generation: string | undefined; afterTurn: string | undefined };
@@ -6166,6 +6189,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (action === "set" && !isNativeModelToken(input.model)) return modelFailure("invalid native model token; use 1 to 128 ASCII letters, digits or ._:/@+- with an initial letter or digit");
       const unsupported = modelUnsupported(peer);
       if (action === "set" && unsupported) return modelFailure(`${unsupported.reason}; ${unsupported.nextStep}`);
+      if (action === "set" && !modelTokenAvailable(peer, input.model as string)) return modelFailure("requested model is not advertised by this receipt-verified ACP session; inspect native model choices and retry");
       const expiresAt = Math.min(Date.now() + MODEL_CONFIRM_MS, grant.expiresAt ?? Infinity);
       preview = { peer, action, ...(action === "set" ? { model: input.model as string } : {}), expiresAt, scope: grant.scope, source: grant.source,
         revision: modelOverrides.revision(peer), runtime: JSON.stringify(runtimeModelRow(peer)), config: configRevision, owner: bus.peers.get(peer), generation: connectionGeneration(peer), afterTurn: turns.get(peer)?.id };
@@ -6181,6 +6205,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!grant.current()) return modelFailure("model authority expired before the write; reopen the person settings session and preview again");
     const unsupported = modelUnsupported(preview.peer);
     if (preview.action === "set" && unsupported) return modelFailure(`${unsupported.reason}; ${unsupported.nextStep}`);
+    if (preview.action === "set" && !modelTokenAvailable(preview.peer, preview.model!)) return modelFailure("requested model is not advertised by this receipt-verified ACP session; inspect native model choices and retry");
     const previousModel = modelOverrides.get(preview.peer)?.model ?? null;
     if (preview.action === "set") modelOverrides.set(preview.peer, preview.model!); else modelOverrides.clear(preview.peer);
     const audited = event({ type: "model_change", peer: preview.peer, previousModel, model: preview.model ?? null, by: "person", source: grant.source,
@@ -7491,6 +7516,8 @@ export async function startDaemon(opts: DaemonOptions) {
       if (instance?.jcode_home) { const refusal = jcodeHomeRefusal(peer, instance.jcode_home); if (refusal) return { ok: false, error: refusal }; }
       startCurrent?.();
       const jcode: JcodePeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["owned-acp"]({ peer, command: config.jcode_cmd, home: instance?.jcode_home ?? config.jcode_home,
+        getModelOverride: () => acpModelSelection(peer),
+        ...(isFixedBuiltinDefinition(adapter) && adapter.modelOverride?.acp ? { modelPolicy: adapter.modelOverride.acp } : {}),
         providerProfile: (args.providerProfile ?? instance?.provider_profile ?? config.jcode_provider_profile) || undefined,
         ...(instance?.provider ? { provider: instance.provider } : {}),
         ...(args.model ?? instance?.model ? { launchModel: (args.model ?? instance?.model)! } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
@@ -7511,9 +7538,10 @@ export async function startDaemon(opts: DaemonOptions) {
           event({ type: "usage", peer, source: "jcode_acp", id: `jcode:${runId}:${peer}:${++codexUsageSeq}`, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
             ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}), ...(usage.cacheWriteTokens !== undefined ? { cacheWriteTokens: usage.cacheWriteTokens } : {}), ...taskAttribution(peer) });
         } }) }) as JcodePeer;
+      if (isFixedBuiltinDefinition(adapter)) modelAcpOwners.set(jcode, jcode);
       jcodeLaunches.set(peer, jcode);
       recoveryTaskPreface(peer); await ensurePreface(peer); startCurrent?.();
-      try { startCurrent?.(); await jcode.start(); startCurrent?.(); await reconcileNativeStart(peer, jcode, startCurrent); }
+      try { startCurrent?.(); await jcode.start(); startCurrent?.(); registerModelOwner(jcode); await reconcileNativeStart(peer, jcode, startCurrent); }
       catch { await jcode.stop().catch(() => {}); if (jcodeLaunches.get(peer) === jcode) jcodeLaunches.delete(peer); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
       return { ok: true, policy: "unmanaged" };
     }
@@ -7526,6 +7554,8 @@ export async function startDaemon(opts: DaemonOptions) {
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
         actionGate: acpActionGate(peer),
         cmd, kind: adapter.kind,
+        getModelOverride: () => acpModelSelection(peer),
+        ...(isFixedBuiltinDefinition(adapter) && adapter.modelOverride?.acp ? { modelPolicy: adapter.modelOverride.acp } : {}),
         toolCeilingMs: adapterTiming.acpToolCeilingMs(), activityBatchMs: adapterTiming.acpActivityBatchMs(),
         permissionMode: permissionMode(peer),
         ...(args.model ? { launchModel: args.model } : {}),
@@ -7561,10 +7591,11 @@ export async function startDaemon(opts: DaemonOptions) {
         mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv(peer, true)).map(([name, value]) => ({ name, value })) }],
         preamble: sessionRoleContract(peer),
       }) }) as AcpPeer;
+      if (isFixedBuiltinDefinition(adapter)) modelAcpOwners.set(kimi, kimi);
       recoveryTaskPreface(peer);
       await ensurePreface(peer); startCurrent?.();
       try {
-        startCurrent?.(); await kimi.start(); startCurrent?.();
+        startCurrent?.(); await kimi.start(); startCurrent?.(); registerModelOwner(kimi);
         await reconcileNativeStart(peer, kimi, startCurrent);
       } catch (error) { await kimi.stop().catch(stop => log(`kimi stop after a failed start: ${(stop as Error).message}`)); throw error; }
       return { ok: true };
@@ -7582,6 +7613,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const externalLaunchId = externalBinding ? randomUUID() : undefined;
       if (externalLaunchId) for (const server of mcpServers) server.env.push({ name: "AGENTHUB_LAUNCH_ID", value: externalLaunchId });
       const acpOptions: AcpOptions = {
+        getModelOverride: () => acpModelSelection(peer),
+        ...(isFixedBuiltinDefinition(adapter) && adapter.modelOverride?.acp ? { modelPolicy: adapter.modelOverride.acp } : {}),
         toolCeilingMs: adapterTiming.acpToolCeilingMs(), activityBatchMs: adapterTiming.acpActivityBatchMs(),
         onActivity: item => activityRings[peer]?.append(item),
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
@@ -7614,6 +7647,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (externalBinding && externalLaunchId) externalLaunches.set(peer, { owner, options: acpOptions, launchId: externalLaunchId, binding: externalBinding, workspace: externalWorkspace! });
       assertNativeProofPorts(adapter, owner);
       if (!isAcpPeer(owner) || owner.id !== peer || owner.deliveryOnly !== true || owner.hubOwned !== true || owner.form !== "headless") throw new Error("ACP factory did not return its bound native transport");
+      if (isFixedBuiltinDefinition(adapter)) modelAcpOwners.set(owner, owner);
       recoveryTaskPreface(peer); await ensurePreface(peer); startCurrent?.();
       try {
         if (externalBinding && (!membershipAllowed(peer) || externalWorkspaceIdentity(executionCwd) !== externalWorkspace || !sameExternalInstanceBinding(externalBinding, captureExternalBinding(peer, args.sessionId)))) throw new Error("external instance binding changed before native spawn");
@@ -7628,6 +7662,7 @@ export async function startDaemon(opts: DaemonOptions) {
           externalSessions.set(peer, receipt.sessionId);
           writeExternalInstanceRecord(opts.stateDir, externalBinding, receipt.sessionId);
         }
+        registerModelOwner(owner);
         await reconcileNativeStart(peer, owner, startCurrent);
       }
       catch (error) {

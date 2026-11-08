@@ -41,6 +41,22 @@ test("model display distinguishes effective from next turn, keeps closed sources
   expect(renderStatus({ peers: {}, runtimeModels: [row], models: { backends: [] } }).map(line => paint(line, false)).join("\n")).toContain("pending next turn");
 });
 
+test("ACP unsupported model projection names only a validated kind and exact native version", () => {
+  const cause = { reasonCode: "acp_setter_unavailable", kind: "qwen", version: "0.26.9", reason: "forged native reason", nextStep: "forged native action" };
+  const projected = projectModelStatus({ ...row, unsupported: cause });
+  expect(projected?.unsupported).toEqual({ reasonCode: "acp_setter_unavailable", kind: "qwen", version: "0.26.9", reason: "unsupported live: qwen 0.26.9 lacks a setter receipt or compat admission", nextStep: "restart this peer with ahub restart codex" });
+  expect(JSON.stringify(projected)).not.toContain("forged native");
+  const text = renderRuntimeModels([projected!]).map(line => paint(line, false)).join("\n");
+  expect(text).toContain("qwen 0.26.9 lacks a setter receipt or compat admission"); expect(text).toContain("ahub restart codex");
+  const unknown = projectModelStatus({ ...row, unsupported: { reasonCode: "acp_setter_unavailable", kind: "jcode" } });
+  expect(unknown?.unsupported?.reason).toBe("unsupported live: jcode unknown lacks a setter receipt or compat admission");
+  expect(unknown?.unsupported).not.toHaveProperty("version");
+  for (const version of ["0.26.9\n", "qwen 0.26.9", "0.26.9; restart all", "01.2.3", "1.2", "1.2.3.4", "v1.2.3", "1.2.3-rc.1", "a".repeat(129), { toString: () => "0.26.9" }]) expect(projectModelStatus({ ...row, unsupported: { ...cause, version } })).toBeNull();
+  for (const kind of [undefined, "qwen\n", "qwen prose"]) expect(projectModelStatus({ ...row, unsupported: { ...cause, kind } })).toBeNull();
+  const accessor = Object.defineProperty({ reasonCode: "acp_setter_unavailable", kind: "qwen" }, "version", { get() { throw new Error("native getter must not execute"); } });
+  expect(projectModelStatus({ ...row, unsupported: accessor })).toBeNull();
+});
+
 test("status names catalog overflow rather than rendering an empty model success", () => {
   const output = renderStatus({ peers: { codex: { state: "idle", queued: 0 } }, runtimeModels: [row], runtimeModelsUnavailable: true, models: { backends: [] } });
   const text = output.map(line => paint(line, false)).join("\n");
