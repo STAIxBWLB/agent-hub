@@ -401,3 +401,18 @@ test("#722 the reason text for every class is a fixed sentence with no path, ver
   }
   expect(reviewerUnavailableReason("credential_root", "~/.docker: a dangling link")).toContain("(~/.docker: a dangling link)");
 });
+
+test("runtime review model adds only -m to the existing isolated launch and never runs during preparation", async () => {
+  const f = fixture();
+  try {
+    const plain = await codexReviewerBackend.prepare(f.ctx);
+    const selected = await codexReviewerBackend.prepare({ ...f.ctx, modelOverride: "runtime-review-model" });
+    expect("unavailable" in plain).toBe(false); expect("unavailable" in selected).toBe(false);
+    if ("unavailable" in plain || "unavailable" in selected) return;
+    expect(plain.args).not.toContain("-m");
+    expect(selected.args.slice(selected.args.indexOf("-m"), selected.args.indexOf("-m") + 2)).toEqual(["-m", "runtime-review-model"]);
+    expect(selected.args.filter(word => word !== "-m" && word !== "runtime-review-model").slice(0, 9)).toEqual(plain.args.slice(0, 9));
+    expect(selected.isolation).toMatchObject({ strictMcp: true, readOnly: true, ephemeral: true });
+    await plain.cleanup?.(); await selected.cleanup?.();
+  } finally { f.close(); }
+});

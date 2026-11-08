@@ -179,3 +179,22 @@ for (const mode of ["frame", "total"] as const) test(`reviewer ${mode} output ov
   expect(failures).toEqual([61, 62].map(task => ({ task, head: "a".repeat(40), flowRevision: 7, cause: "no_verdict" })));
   expect(diagnostics.join("\n")).not.toContain("PRIVATE_OUTPUT_CANARY");
 });
+
+test("review model selection is captured before asynchronous prepare and acknowledged only at spawn", async () => {
+  const dir = scratch(), log = join(dir, "calls.jsonl");
+  let desired: string | undefined = "review-a", gets = 0;
+  const seen: (string | undefined)[] = [], applied: (string | undefined)[] = [];
+  const peer = new ReviewerPrintPeer("fixture-review", { cwd: dir, mcpConfig: "{}", systemPrompt: "role", watchdogMs: 5000,
+    getModelOverride: () => { gets++; const model = desired; return { model, applied: () => { applied.push(model); } }; },
+    backend: { id: "fixture", prepare: async ctx => { seen.push(ctx.modelOverride); if (ctx.input !== undefined) desired = "review-b"; return plan(ctx, log); } },
+    verdictSince: () => true });
+  cleanup.push(() => peer.stop());
+  await peer.start(); expect(gets).toBe(0); expect(applied).toEqual([]);
+  await peer.deliver([request(1)]); await until(() => peer.state === "idle");
+  expect(seen).toEqual([undefined, "review-a"]); expect(applied).toEqual(["review-a"]);
+  await peer.deliver([request(2)]); await until(() => peer.state === "idle");
+  desired = undefined;
+  await peer.deliver([request(3)]); await until(() => peer.state === "idle");
+  expect(seen).toEqual([undefined, "review-a", "review-b", undefined]);
+  expect(applied).toEqual(["review-a", "review-b", undefined]); expect(gets).toBe(3);
+});

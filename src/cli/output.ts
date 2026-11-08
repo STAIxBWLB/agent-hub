@@ -1,3 +1,5 @@
+import { projectModelStatus } from "./model.ts";
+import type { RuntimeModelStatus } from "../hub/model-overrides.ts";
 import type { QueueBackpressureStatus } from "../hub/queue-backpressure.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { windowKind } from "../hub/window-kind.ts";
@@ -14,6 +16,8 @@ import type { SpecsStatus } from "../hub/specs-task.ts";
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
+  runtimeModels?: RuntimeModelStatus[];
+  runtimeModelsUnavailable?: boolean;
   roomsUnavailable?: unknown;
   roomsOpening?: boolean;
   controlWriteTiming?: { active: number; slowRequests: number; blockedLoopSamples: number; droppedActive: number; droppedRecent: number; droppedLogs: number; droppedSpans?: number; droppedMetadata?: number; expiredRequests?: number };
@@ -43,6 +47,14 @@ export interface StatusOutput {
 /** `peers`: one note per peer that shows no number, and why (no quota, nothing read yet); absent from an older hub. */
 export interface BudgetOutput { budget: Record<string, any>; gate?: number; peers?: { peer: string; kind?: string; note: string }[] }
 export interface RosterRow { peer: string; on: boolean; startMode: string; state: string; queued: number; tasks: number }
+export function renderRuntimeModels(models: readonly RuntimeModelStatus[], columns?: number): Span[][] {
+  const out = rows(["PEER", "EFFECTIVE MODEL", "SOURCE", "STATE"], models.map(row => [span(row.peer, "info", true), span(row.effectiveModel ?? "not reported"), span(row.source), span(row.pendingNextTurn ? "pending next turn" : "current")]), columns);
+  for (const row of models) {
+    if (row.pendingNextTurn) out.push(...lines(`${row.peer}: next turn ${row.desiredModel ?? "native default"}; the active turn is unchanged.`, columns, "attention"));
+    if (row.unsupported) out.push(...lines(`${row.peer}: ${row.unsupported.reason}; ${row.unsupported.nextStep}`, columns, "attention"));
+  }
+  return out;
+}
 export function renderRoster(data: RosterRow[], columns?: number): Span[][] {
   return rows(["PEER", "ROSTER", "START", "STATE", "Q", "TASKS"], data.map(row => [span(row.peer, "info", true), span(row.on ? "on" : "off", row.on ? "success" : "muted", true), span(row.startMode, undefined, true), span(row.state, stateTone(row.state), true), span(row.queued, undefined, true), span(row.tasks, undefined, true)]), columns);
 }
@@ -218,6 +230,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
   const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
   if (data.cwd) out.push(...lines(data.cwd, columns));
+  if (data.runtimeModelsUnavailable === true) out.push(...lines("Runtime models unavailable: could not read a bounded model catalog; run ahub model list for the cause. For a known peer, use ahub model set <peer> <model> or ahub model clear <peer>; repair storage or reduce the retained peer catalog as indicated before listing again.", columns, "attention"));
+  else if (Array.isArray(data.runtimeModels)) out.push(...renderRuntimeModels(data.runtimeModels.map(projectModelStatus).filter((row): row is RuntimeModelStatus => row !== null), columns));
   const timing = data.controlWriteTiming;
   if (full && timing && Object.values(timing).every(value => Number.isSafeInteger(value) && value >= 0)) {
     out.push(...lines(`control writes: active ${timing.active}, slow ${timing.slowRequests}, loop delays ${timing.blockedLoopSamples}, dropped ${timing.droppedActive + timing.droppedLogs + (timing.droppedSpans ?? 0) + (timing.droppedMetadata ?? 0)}, expired ${timing.expiredRequests ?? 0}; timings in hub.log`, columns, timing.slowRequests || timing.blockedLoopSamples ? "attention" : undefined));

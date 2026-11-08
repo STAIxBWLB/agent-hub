@@ -1,3 +1,11 @@
+/** One host-latched runtime choice; applied binds the captured revision and boundary, never a later value. */
+export interface ModelOverrideSelection {
+  readonly model: string | undefined;
+  applied(nativeModel?: string): void;
+  /** Retire only this still-unacknowledged capture after a definitive native pre-start rejection. */
+  rejected?(): void;
+}
+
 import type { ClaudeImplementerOptions } from "./claude-implementer.ts";
 import type { ReviewerBackend, ReviewerPrintOptions } from "./reviewer-print.ts";
 import type { SettingDef } from "../hub/settings.ts";
@@ -321,6 +329,8 @@ export interface AdapterDefinition {
     validateEffective?(raw: Record<string, unknown>, fail: (key: string, reason: string) => never): void;
   };
   capabilities?: { manifest?(peer: PeerAdapter): Promise<CapabilityManifest>; watch?: boolean };
+  /** Fixed factory support only; the host still checks the actual native surface and form. */
+  modelOverride?: { readonly boundary: "turn" };
   /** Stable host projection order and planner eligibility, independent of default task roles. */
   projection?: { roleRank?: number; startRank?: number; helpRank?: number; plannerEligible?: boolean };
   cli: {

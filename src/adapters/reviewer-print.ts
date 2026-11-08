@@ -1,3 +1,5 @@
+import type { ModelOverrideSelection } from "./registry-types.ts";
+import { isNativeModelToken } from "./model-token.ts";
 import type { ChildProcess } from "node:child_process";
 import { OwnedPrintChild, PrintChildCleanupError, type OwnedInputContext, type OwnedInputObserver } from "./claude-print-child.ts";
 import { randomUUID } from "node:crypto";
@@ -64,6 +66,8 @@ export interface ReviewerPrepareContext {
   /** Host-framed public review evidence, never configuration-selected argv. */
   input?: string;
   task?: number;
+  /** Captured host runtime override, absent leaves the backend's native default unchanged. */
+  modelOverride?: string;
 }
 export interface ReviewerLaunch {
   command: readonly string[];
@@ -126,6 +130,8 @@ export interface ReviewerFailure {
 
 export interface ReviewerReviewBinding { readonly head?: string; readonly flowRevision?: number }
 export interface ReviewerPrintOptions {
+  /** Host-only choice sampled once at the next turn/review boundary. */
+  getModelOverride?: () => ModelOverrideSelection;
   cwd: string;
   command?: readonly string[];
   mcpConfig: string;
@@ -385,14 +391,14 @@ export class ReviewerPrintPeer extends BasePeer {
     return reoffered;
   }
 
-  private prepare(sessionId: string, input?: string, task?: number, mcpConfig?: string): Promise<ReviewerLaunch> {
+  private prepare(sessionId: string, input?: string, task?: number, mcpConfig?: string, modelOverride?: string): Promise<ReviewerLaunch> {
     const abort = new AbortController();
     const done = (async () => {
       if (this.opts.backend.taskMcp && !this.opts.taskMcp) throw new Error("task-bound reviewer MCP is unavailable");
       const launch = await this.opts.backend.prepare({ peer: this.id, cwd: this.opts.cwd, sessionId,
         mcpConfig: this.opts.backend.taskMcp ? (mcpConfig ?? '{"mcpServers":{}}') : this.opts.mcpConfig,
         systemPrompt: this.opts.systemPrompt, privatePaths: this.opts.privatePaths ?? [], command: this.opts.command, signal: abort.signal,
-        ...(input === undefined ? {} : { input }), ...(task === undefined ? {} : { task }) });
+        ...(input === undefined ? {} : { input }), ...(task === undefined ? {} : { task }), ...(modelOverride === undefined ? {} : { modelOverride }) });
       if ("unavailable" in launch) throw new ReviewerUnavailableError(launch.unavailable, launch.causeClass ?? "unknown", launch.detail);
       const proof = launch.isolation;
       const policy = this.opts.backend.nativePolicy
@@ -420,6 +426,8 @@ export class ReviewerPrintPeer extends BasePeer {
     const revision=Number(env.refs?.reviewRevision);
     const binding: ReviewerReviewBinding=Object.freeze({head:env.refs?.commit,flowRevision:Number.isSafeInteger(revision)&&revision>0?revision:undefined});
     this.assertAdmission(env, task, binding);
+    const selection = this.opts.getModelOverride?.();
+    if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new ReviewerAdmissionError("policy_changed");
     let facts: string | undefined;
     try { facts = this.opts.facts?.(env); } catch (error) { this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${(error as Error).message}`); }
     const input = `${frame(env)}${facts ? `\n\n${facts}` : ""}`;
@@ -454,7 +462,7 @@ export class ReviewerPrintPeer extends BasePeer {
     let policyOwner: ReviewPolicyOwner | undefined;
     const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
     try {
-    launch = await this.prepare(sessionId, input, task, mcp?.config);
+    launch = await this.prepare(sessionId, input, task, mcp?.config, selection?.model);
     if (generation !== this.generation) throw new ReviewerAdmissionError("stale_binding");
     this.assertAdmission(env, task, binding);
     if (launch.current?.() === false) throw new ReviewerUnavailableError("reviewer isolation changed before child spawn", "binary");
@@ -466,6 +474,7 @@ export class ReviewerPrintPeer extends BasePeer {
       onInputReleased: () => { inputReleased = true; this.opts.inputReleased?.(inputContext, [env]); },
       onError: () => { if (this.child === child) this.child = undefined; },
       onSpawn: () => {
+        try { selection?.applied(); } catch { /* Native spawn remains authoritative. */ }
         this.runningBinding={task,binding};
         this.reviewing = task; this.reviewSeq++;
         if (launch!.watchCurrent) {

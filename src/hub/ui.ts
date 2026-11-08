@@ -11,7 +11,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 /** What a request's session may do (#269): `settings` while a session opened by `ahub ui --settings` is inside its window. */
-export interface DashboardSession { settings: boolean; settingsUntil?: number; liveTest?: true }
+export interface DashboardSession { settings: boolean; settingsUntil?: number; liveTest?: true; /** Host-only verified session identity; never browser input or public metadata. */ readonly authorityId?: string }
 export interface DashboardOptions {
   snapshot: (after: number, input?: Record<string, unknown>, session?: DashboardSession) => unknown | Promise<unknown>;
   action: (input: Record<string, unknown>, session?: DashboardSession) => unknown | Promise<unknown>;
@@ -51,7 +51,7 @@ export function renderDashboard(): { html: string; styles: string[]; markup: str
 export function startDashboard(options: DashboardOptions) {
   const now = options.now ?? Date.now;
   const tickets = new Map<string, { expires: number; settings: boolean; liveTest?: true }>();
-  const sessions = new Map<string, { expires: number; settingsUntil?: number; liveTest?: true }>();
+  const sessions = new Map<string, { expires: number; authorityId: string; settingsUntil?: number; liveTest?: true }>();
   // Inject the same pure public-board model used by the console before computing CSP hashes.
   const { html } = renderDashboard();
   const hashes = (tag: string) => [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))]
@@ -70,8 +70,12 @@ export function startDashboard(options: DashboardOptions) {
     for (const [key, entry] of map) if (entry.expires <= now()) map.delete(key);
   }
   const sessionOf = (cookie: string | undefined): DashboardSession => {
-    const until = cookie ? sessions.get(cookie)?.settingsUntil : undefined;
-    return { ...(until !== undefined && until > now() ? { settings: true, settingsUntil: until } : { settings: false }), ...(cookie && sessions.get(cookie)?.liveTest ? { liveTest: true as const } : {}) };
+    const verified = cookie ? sessions.get(cookie) : undefined, until = verified?.settingsUntil;
+    const session: DashboardSession = { ...(until !== undefined && until > now() ? { settings: true, settingsUntil: until } : { settings: false }), ...(verified?.liveTest ? { liveTest: true as const } : {}) };
+    // A separate opaque id binds previews to this verified cookie without exposing the credential.
+    // Non-enumerable metadata also stays out of accidental snapshot spreads and JSON serialization.
+    if (verified) Object.defineProperty(session, "authorityId", { value: verified.authorityId });
+    return session;
   };
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -113,7 +117,7 @@ export function startDashboard(options: DashboardOptions) {
         if (!issued || !tickets.delete(ticket)) return reject(401, "ticket expired or used; run ahub ui");
         if (sessions.size >= LIMIT) return reject(429, "too many sessions; try later");
         const session = secret();
-        sessions.set(session, { expires: now() + SESSION_MS, ...(issued.settings ? { settingsUntil: now() + SETTINGS_MS } : {}), ...(issued.liveTest ? { liveTest: true } : {}) });
+        sessions.set(session, { expires: now() + SESSION_MS, authorityId: secret(), ...(issued.settings ? { settingsUntil: now() + SETTINGS_MS } : {}), ...(issued.liveTest ? { liveTest: true } : {}) });
         return json({ ok: true }, 200, { "Set-Cookie": `${cookieName}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}` });
       }
       if (path === "/projects") {

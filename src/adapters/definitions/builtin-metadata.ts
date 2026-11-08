@@ -61,6 +61,7 @@ const CLAUDE_REVIEWER_VARIANT: AdapterDefinition = {
 /** #525 R5a: no idle child; the host binds an owned worktree and one native session per task. */
 const CLAUDE_IMPLEMENTER_VARIANT: AdapterDefinition = {
   api: 1, kind: "claude", displayName: "Claude Code implementer", family: "claude", transport: "hub-native",
+  modelOverride: { boundary: "turn" },
   roles: Object.freeze(["implementer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
   start: { create: createClaudeImplementer, daemonPort: "claude-implementer", forms: headlessForms, defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
   identity: { mcp: "env", currentChild: true }, instances: { mode: "headless", roles: ["implementer", "verifier"], modelSelect: true },
@@ -93,6 +94,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     reviewerVariant: CODEX_REVIEWER_VARIANT,
     projection: { roleRank: 1, startRank: 1, helpRank: 1, plannerEligible: true },
     api: 1, kind: "codex", questionWaitMs: 45000, displayName: "Codex", family: "codex", transport: "codex-appserver",
+    modelOverride: { boundary: "turn" },
     roles: Object.freeze(["implementer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
     start: { create: createCodex, daemonPort: "codex-appserver", forms: dualForms, defaultForm: "tui", launch: codexNativeLaunch, version: codexObservedVersion, ...CODEX_LAUNCH_POLICY, conductorStartable: true, upStart: { allowed: true, default: true },
       unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--remote", "--remote-auth-token-env", "--yolo", "--dangerously-bypass-approvals-and-sandbox"]) },
@@ -121,6 +123,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   {
     projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false },
     api: 1, kind: "pi", questionWaitMs: 300000, title: "hub", titlePersistence: "native", enabledSwitchStartOnly: true, displayName: "Pi", family: "pi", transport: "hub-native",
+    modelOverride: { boundary: "turn" },
     roles: implementerRoles, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: true },
     start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", conductorStartable: true, upStart: { allowed: true }, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" }, instances: { mode: "headless" },
@@ -134,6 +137,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
   {
     projection: { roleRank: 3, helpRank: 7, plannerEligible: false },
     api: 1, kind: "local", questionWaitMs: 300000, title: "hub", displayName: "Local worker", family: "local", transport: "hub-native",
+    modelOverride: { boundary: "turn" },
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: true, hubSandboxed: true },
     start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" }, instances: { mode: "headless" },

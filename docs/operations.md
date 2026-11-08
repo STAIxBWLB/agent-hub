@@ -2459,6 +2459,63 @@ roster setting do not change running participation: they take effect at the next
 hub start. The tracked config can provide defaults and config.local.json can
 override them.
 
+## Live peer model overrides (#1317)
+
+From a plain person terminal, select the next model of a supported peer without
+restarting the peer or reloading project configuration:
+
+```bash
+ahub model set claude-impl claude-sonnet-5-5
+ahub model set codex gpt-5.1-codex
+ahub model clear claude-impl
+ahub model list
+ahub model list --json
+```
+
+Use a model id available through the peer's existing provider.
+Model ids are one bounded token: letters, digits and `._:/@+-`, at most 128 bytes,
+no spaces and no leading dash. Agent shells and every hub-tool caller are
+refused, including list; a conductor role does not grant person authority.
+The dashboard Peers action uses a person settings session and preview/confirm,
+not an agent command or an ordinary dashboard permission escalation.
+
+An override is desired runtime state in `hub.db`. It survives daemon restart;
+`ahub reset` clears it with runtime state. Precedence is override, instance
+model, launch model, then native default where that surface supports them.
+Clear restores the existing lower-priority selection. For Codex app-server,
+an explicit client model always wins over hub injection. A `turn/start` model
+becomes the native thread default, so clear may retain that current default;
+it does not recover an earlier model. Raw/pull-only native TUI attachments remain
+unsupported. A retained former override is labelled `native thread default (was override)`;
+a rejected start leaves the next start free to sample a corrected selection.
+The model and its source appear in `ahub status` and JSON output. An unknown native default remains
+unknown. `pending next turn` means the desired value has not been acknowledged
+at an eligible boundary; it does not claim the current turn changed models.
+
+Changing a desired value during a turn leaves that turn unchanged. Steering and
+local tool rounds keep the captured selection. If the person changes it twice
+before the next turn, only the last desired value is selected there. A stale
+callback cannot mark a newer desired value or another adapter owner applied.
+
+T1 supports headless Claude implementer turns, supported Codex app-server turns,
+fresh codex-review spawns, the local worker and Pi. Native account/provider
+availability is still the backend's responsibility. ACP Jcode/Kimi/Qwen and
+native TUI forms report `unsupported live` until a verified setter is available;
+a refused set writes no new override and never restarts a process. Follow the
+reported cause and `ahub restart <peer>` guidance for those native forms.
+
+This does not make `instances.*.model` or `*_cmd` live or editable by agents.
+Their existing machine-local tier 3 confirmation and restart behavior remains.
+The plural `ahub models` still manages the existing local model service; it is
+separate from the singular per-peer `ahub model` command. `model_change` records
+ids and the next-turn boundary, never prompts or credentials.
+
+Model display is bounded to 512 local identities. If legacy sessions exceed the
+view budget, list refuses explicitly and status/dashboard mark model data
+unavailable; they never call a truncated list complete. Close unused native
+sessions, clear obsolete overrides and follow the restart guidance. Single-peer
+set/clear remains usable and no process is restarted automatically.
+
 ## Settings from the dashboard and the terminal
 
 In `ahub console`, press `6` for Settings. Existing operational-tab arrow cycling
@@ -5748,7 +5805,7 @@ A headless Claude implementer (#525-4) is declared separately:
 "claude-impl": { "kind": "claude", "roles": ["implementer"], "start_mode": "headless", "worktree": ".worktrees/claude-impl", "permission_mode": "ask" }
 ```
 
-A headless Claude implementer may name its model (#844): `"model": "claude-sonnet-5-5"` on its declaration passes `--model <value>` on every native turn, resumed ones included. It is one bounded word (letters, digits and `._:/@+-`, up to 128 bytes, no spaces and no leading dash) and is accepted only on a headless implementer, only from the untracked `config.local.json`. A tracked-file declaration is ignored with a reason, and the key is tier 3: the dashboard and a settings session cannot read or change it, only the console or your editor. Unset, the argv is unchanged and Claude uses its own default. `ahub status` shows the model on the instance row as `model source`. Declarations are captured once when the hub daemon starts, so a changed or newly added `model` takes effect after a hub daemon restart (`ahub restart`); restarting only the instance keeps the old model.
+A headless Claude implementer may name its model (#844): `"model": "claude-sonnet-5-5"` on its declaration passes `--model <value>` on every native turn, resumed ones included. It is one bounded word (letters, digits and `._:/@+-`, up to 128 bytes, no spaces and no leading dash) and is accepted only on a headless implementer, only from the untracked `config.local.json`. A tracked-file declaration is ignored with a reason, and the key is tier 3: the dashboard and a settings session cannot read or change it, only the console or your editor. Unset, the argv is unchanged and Claude uses its own default. `ahub status` shows the model on the instance row as `model source`. Declarations are captured once when the hub daemon starts, so a changed or newly added `model` takes effect after a hub daemon restart (`ahub restart`); restarting only the instance keeps the old model. For a person-owned next-turn override without changing that configuration path, use [live peer model overrides](#live-peer-model-overrides-1317).
 
 Create and register the attached-branch worktree first; the hub never creates it implicitly. `ahub claude --as claude-impl` asks the hub to start the instance and returns. Idle holds no native child. Task deliveries use a persisted UUID per task: first `--session-id`, later `--resume`. Unscoped chat reuses a session only when exactly one task is in progress for the instance; otherwise it is ephemeral. Positive missing-transcript evidence starts fresh with a notice; unknown read evidence retains the id. Reset includes the per-peer session map. A child inbox read refuses a queued batch attributed to another task and leaves it queued for that task's own session.
 

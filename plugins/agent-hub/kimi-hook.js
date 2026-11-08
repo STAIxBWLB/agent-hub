@@ -1274,6 +1274,15 @@ var init_review_brief = __esm(() => {
   LOCKFILES = new Set(["bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock", "go.sum", "composer.lock", "Gemfile.lock"]);
 });
 
+// src/adapters/model-token.ts
+function isNativeModelToken(value) {
+  return typeof value === "string" && NATIVE_WORD.test(value);
+}
+var NATIVE_WORD;
+var init_model_token = __esm(() => {
+  NATIVE_WORD = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
+});
+
 // src/adapters/claude-print-child.ts
 import { spawn as spawn2 } from "child_process";
 
@@ -1572,6 +1581,7 @@ var ReviewerUnavailableError, ReviewerAdmissionError, ReviewerInputAdmissionErro
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 }, ReviewerPrintPeer;
 var init_reviewer_print = __esm(() => {
+  init_model_token();
   init_claude_print_child();
   init_envelope();
   ReviewerUnavailableError = class ReviewerUnavailableError extends Error {
@@ -1880,7 +1890,7 @@ var init_reviewer_print = __esm(() => {
       }
       return reoffered;
     }
-    prepare(sessionId, input, task, mcpConfig) {
+    prepare(sessionId, input, task, mcpConfig, modelOverride) {
       const abort = new AbortController;
       const done = (async () => {
         if (this.opts.backend.taskMcp && !this.opts.taskMcp)
@@ -1895,7 +1905,8 @@ var init_reviewer_print = __esm(() => {
           command: this.opts.command,
           signal: abort.signal,
           ...input === undefined ? {} : { input },
-          ...task === undefined ? {} : { task }
+          ...task === undefined ? {} : { task },
+          ...modelOverride === undefined ? {} : { modelOverride }
         });
         if ("unavailable" in launch)
           throw new ReviewerUnavailableError(launch.unavailable, launch.causeClass ?? "unknown", launch.detail);
@@ -1925,6 +1936,9 @@ var init_reviewer_print = __esm(() => {
       const revision = Number(env.refs?.reviewRevision);
       const binding = Object.freeze({ head: env.refs?.commit, flowRevision: Number.isSafeInteger(revision) && revision > 0 ? revision : undefined });
       this.assertAdmission(env, task, binding);
+      const selection = this.opts.getModelOverride?.();
+      if (selection?.model !== undefined && !isNativeModelToken(selection.model))
+        throw new ReviewerAdmissionError("policy_changed");
       let facts;
       try {
         facts = this.opts.facts?.(env);
@@ -1977,7 +1991,7 @@ ${facts}` : ""}`;
       let policyOwner;
       const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
       try {
-        launch = await this.prepare(sessionId, input, task, mcp?.config);
+        launch = await this.prepare(sessionId, input, task, mcp?.config, selection?.model);
         if (generation !== this.generation)
           throw new ReviewerAdmissionError("stale_binding");
         this.assertAdmission(env, task, binding);
@@ -2004,6 +2018,9 @@ ${facts}` : ""}`;
               this.child = undefined;
           },
           onSpawn: () => {
+            try {
+              selection?.applied();
+            } catch {}
             this.runningBinding = { task, binding };
             this.reviewing = task;
             this.reviewSeq++;
@@ -2405,6 +2422,8 @@ async function prepare(ctx) {
   let root;
   let leg = "binary", timedOut = false;
   try {
+    if (ctx.modelOverride !== undefined && !isNativeModelToken(ctx.modelOverride))
+      throw new Error("invalid runtime model token");
     const cwd = realPath(ctx.cwd), env = peerChildEnv(ctx.peer), bound = resolveCommand(ctx, cwd);
     const initialBinaryMetadata = bound.files.map(metadata).join(";");
     const binaryHash = digest(bound.files.map((file) => digest(readFileSync3(file))).join(";"));
@@ -2578,7 +2597,7 @@ AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync3(writeFile))
     const launchProfile = digest(toml({ profile, servers, policy }));
     return {
       command: bound.command,
-      args: ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json", "--color", "never", "-C", cwd, ...policy, ...permissions, ...mcp, "-c", `developer_instructions=${toml(ctx.systemPrompt)}`, "-"],
+      args: ["exec", ...ctx.modelOverride === undefined ? [] : ["-m", ctx.modelOverride], "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json", "--color", "never", "-C", cwd, ...policy, ...permissions, ...mcp, "-c", `developer_instructions=${toml(ctx.systemPrompt)}`, "-"],
       env,
       current: () => {
         try {
@@ -2623,6 +2642,7 @@ var TOOLS, VersionRefusal, CAP, MAX_SERVERS = 64, digest = (value) => createHash
   return value;
 }, HOST_CREDENTIAL_PATHS, HOST_CREDENTIAL_ENV, CredentialRootError, codexReviewerBackend;
 var init_codex_review_isolation = __esm(() => {
+  init_model_token();
   init_platform();
   init_compat();
   init_child_process();
@@ -4366,6 +4386,7 @@ var UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified nat
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }, TRACKED, CodexPeer;
 var init_codex_appserver = __esm(() => {
+  init_model_token();
   init_envelope();
   init_context_window();
   init_child_process();
@@ -4382,6 +4403,8 @@ var init_codex_appserver = __esm(() => {
     }
     nativeApprovalPolicies = new Map;
     overriddenApprovals = new Set;
+    nativeModels = new Map;
+    modelStartSequence = 0;
     restoringApprovals = new Map;
     proc;
     server;
@@ -4451,6 +4474,8 @@ var init_codex_appserver = __esm(() => {
       return this.threadId && link && link === this.claimedTui && link.launchId === launchId && link.tui.readyState === WebSocket.OPEN && link.up.readyState === WebSocket.OPEN ? { generation: String(this.sessionGeneration) } : undefined;
     }
     async start() {
+      this.nativeModels.clear();
+      this.modelStartSequence = 0;
       const upstream = this.opts.upstreamUrl ?? await this.spawnAppServer();
       try {
         this.server = Bun.serve({
@@ -4526,6 +4551,19 @@ var init_codex_appserver = __esm(() => {
       const id = this.nextId--, epoch = this.deliveryEpoch, session = this.contextEpoch;
       this.setState("busy");
       return new Promise((resolve, reject) => {
+        let selection;
+        try {
+          selection = this.opts.getModelOverride?.();
+          if (selection?.model !== undefined && !isNativeModelToken(selection.model))
+            throw new Error("runtime model must be one bounded native token");
+        } catch (error) {
+          this.setState("idle");
+          if (deliveryId)
+            this.delivery({ id: deliveryId, state: "failed_safe", reason: "runtime model selection unavailable" });
+          reject(error);
+          return;
+        }
+        const modelStart = { thread: this.threadId, sequence: ++this.modelStartSequence, changing: selection?.model !== undefined };
         let invalidated = false;
         const retiredAtCancel = new Set;
         const invalidate = (reason, failureCause) => {
@@ -4543,6 +4581,7 @@ var init_codex_appserver = __esm(() => {
         this.pending.set(id, {
           deliveryId,
           kind: "deliver",
+          modelStart,
           invalidate,
           resolve: (result) => {
             const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
@@ -4552,6 +4591,11 @@ var init_codex_appserver = __esm(() => {
                 this.retireTurn(nativeTurn);
               return;
             }
+            const acceptedModel = this.acceptModelStart(modelStart, selection?.model, true);
+            if (acceptedModel)
+              try {
+                selection?.applied(acceptedModel.model);
+              } catch {}
             this.primed = true;
             this.injected = replyParent(envs);
             this.answering = [...envs];
@@ -4589,7 +4633,7 @@ var init_codex_appserver = __esm(() => {
           pending?.reject(new Error(`${this.id} is not injectable`));
           return;
         }
-        link.up.send(JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }] }, id) }));
+        link.up.send(JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }], ...selection?.model === undefined ? {} : { model: selection.model } }, id) }));
       });
     }
     render(envs) {
@@ -4783,7 +4827,7 @@ ${renderDigest(envs, false)}`;
     }
     attach(tui, upstream) {
       const up = new WebSocket(upstream);
-      const link = { tui, up, backlog: [], tracked: new Map, approvalIds: new Set, ...tui.data.launchId ? { launchId: tui.data.launchId } : {} };
+      const link = { tui, up, backlog: [], tracked: new Map, modelStarts: new Map, approvalIds: new Set, ...tui.data.launchId ? { launchId: tui.data.launchId } : {} };
       this.claimedTui = link;
       tui.data = link;
       up.onopen = () => {
@@ -4794,6 +4838,7 @@ ${renderDigest(envs, false)}`;
       up.onclose = () => tui.close();
     }
     detach(link) {
+      link.rejectedModelSelection = undefined;
       this.abortActionWaits(link);
       link.up.close();
       if (this.claimedTui === link)
@@ -4885,6 +4930,38 @@ ${renderDigest(envs, false)}`;
       if (thread !== undefined && !failed && this.permissionMode === "ask")
         this.overriddenApprovals.delete(thread);
     }
+    nativeModelHint(thread) {
+      const known = this.nativeModels.get(thread);
+      if (!known?.model || (this.link?.modelUnknownAfter ?? 0) >= known.sequence)
+        return;
+      const unsettled = [...this.pending.values()].flatMap((value) => value.modelStart ? [value.modelStart] : []);
+      for (const value of this.link?.modelStarts.values() ?? [])
+        if (value)
+          unsettled.push(value);
+      if (unsettled.some((value) => value.thread === thread && value.changing && value.sequence > known.sequence))
+        return;
+      return known.model;
+    }
+    acceptModelStart(start, model, inherit) {
+      if (this.link)
+        this.link.rejectedModelSelection = undefined;
+      if ((this.nativeModels.get(start.thread)?.sequence ?? 0) >= start.sequence)
+        return;
+      const actual = model ?? (inherit ? this.nativeModelHint(start.thread) : undefined);
+      this.nativeModels.set(start.thread, { sequence: start.sequence, ...actual === undefined ? {} : { model: actual } });
+      if (this.nativeModels.size > 128)
+        this.nativeModels.delete(this.nativeModels.keys().next().value);
+      return actual === undefined ? {} : { model: actual };
+    }
+    retireRejectedModelSelection(link) {
+      const candidate = link.rejectedModelSelection;
+      if (!candidate || link !== this.link || candidate.epoch !== this.contextEpoch || candidate.thread !== this.threadId || link.modelStarts.size || [...this.pending.values()].some((value) => value.modelStart))
+        return;
+      link.rejectedModelSelection = undefined;
+      try {
+        candidate.selection.rejected?.();
+      } catch {}
+    }
     fromTui(link, raw) {
       const msg = parse(raw);
       if (msg?.id !== undefined && !msg.method && link.approvalIds.has(msg.id))
@@ -4897,6 +4974,40 @@ ${renderDigest(envs, false)}`;
         this.abortActionWaits(link, typeof msg.params?.turnId === "string" ? msg.params.turnId : undefined);
       if (msg?.method === "turn/start" && msg.params && link === this.link) {
         const thread = typeof msg.params.threadId === "string" ? msg.params.threadId : this.threadId;
+        let selection;
+        const explicit = msg.params.model !== undefined;
+        if (!explicit) {
+          try {
+            selection = this.opts.getModelOverride?.();
+            if (selection?.model !== undefined && !isNativeModelToken(selection.model))
+              throw new Error("invalid model");
+          } catch {
+            if (msg.id !== undefined)
+              link.tui.send(JSON.stringify({ id: msg.id, error: { code: -32000, message: "runtime model selection unavailable; check the peer model setting and retry" } }));
+            return;
+          }
+          if (selection?.model !== undefined) {
+            msg.params = { ...msg.params, model: selection.model };
+            raw = JSON.stringify(msg);
+          }
+        }
+        const modelStart = { thread, sequence: ++this.modelStartSequence, changing: explicit || selection?.model !== undefined };
+        if (typeof msg.id === "string" || typeof msg.id === "number") {
+          if (link.modelStarts.has(msg.id)) {
+            link.modelStarts.set(msg.id, null);
+            link.modelUnknownAfter = modelStart.sequence;
+          } else if (link.modelStarts.size < 64)
+            link.modelStarts.set(msg.id, {
+              ...modelStart,
+              epoch: this.contextEpoch,
+              clientModel: explicit,
+              ...selection ? { selection } : {},
+              ...explicit && isNativeModelToken(msg.params.model) ? { explicit: msg.params.model } : {}
+            });
+          else
+            link.modelUnknownAfter = modelStart.sequence;
+        } else
+          link.modelUnknownAfter = modelStart.sequence;
         const restoring = this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread);
         if (msg.params.approvalPolicy != null && !restoring)
           this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
@@ -4939,7 +5050,31 @@ ${renderDigest(envs, false)}`;
           p?.reject(new Error(msg.error.message ?? "app-server rejected the request"));
         else
           p?.resolve(msg.result);
+        if (msg.error)
+          this.retireRejectedModelSelection(link);
         return;
+      }
+      if (msg.id !== undefined && !msg.method && link.modelStarts.has(msg.id)) {
+        const selected = link.modelStarts.get(msg.id);
+        if (selected !== null)
+          link.modelStarts.delete(msg.id);
+        if (selected && link === this.link && selected.epoch === this.contextEpoch && selected.thread === this.threadId) {
+          if (msg.error) {
+            if (selected.selection && !selected.nativeStarted && (this.nativeModels.get(selected.thread)?.sequence ?? 0) < selected.sequence)
+              link.rejectedModelSelection = { selection: selected.selection, epoch: selected.epoch, thread: selected.thread };
+          } else {
+            const acceptedModel = this.acceptModelStart(selected, selected.explicit ?? selected.selection?.model, !selected.clientModel);
+            if (acceptedModel)
+              try {
+                if (selected.explicit !== undefined)
+                  this.opts.onNativeModelApplied?.(selected.explicit);
+                else
+                  selected.selection?.applied(acceptedModel.model);
+              } catch {}
+          }
+        }
+        if (msg.error)
+          this.retireRejectedModelSelection(link);
       }
       if (typeof msg.result?.userAgent === "string")
         this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
@@ -5088,6 +5223,7 @@ ${renderDigest(envs, false)}`;
       this.tokenTotal = undefined;
       this.tokenKinds = undefined;
       this.freshThread = fresh;
+      link.rejectedModelSelection = undefined;
       this.link = link;
       this.threadId = threadId;
       this.onDoing?.("reset");
@@ -5195,6 +5331,10 @@ ${renderDigest(envs, false)}`;
         return;
       }
       if (method === "turn/started") {
+        link.rejectedModelSelection = undefined;
+        for (const start of link.modelStarts.values())
+          if (start && start.thread === this.threadId)
+            start.nativeStarted = true;
         const nativeTurn = params.turn?.id ?? `unknown:${Date.now()}`;
         this.unboundAccepted = false;
         this.activeTurns.add(nativeTurn);
@@ -7719,6 +7859,7 @@ function ownerStillAlive(pid, signature) {
 }
 var PiToolSettlementFailure, PiPromptNotStarted, PiPromptUncertain, PiVersionRefusal, TERMINAL_OWNER_MAX_AGE_MS = 1000, PiPeer;
 var init_pi = __esm(() => {
+  init_model_token();
   init_launch();
   init_envelope();
   init_child_process();
@@ -7883,6 +8024,8 @@ var init_pi = __esm(() => {
     owner = randomUUID5();
     _tuiLaunch;
     requestedModel = "";
+    baselineRequestedModel = "";
+    runtimeModelSelected = false;
     starting;
     ownerClaimed = false;
     ownerToken = "";
@@ -7912,6 +8055,7 @@ var init_pi = __esm(() => {
       super(id, opts.watchdogMs);
       this.opts = opts;
       this.preflight = preflight;
+      this.baselineRequestedModel = opts.model ?? "";
     }
     get tuiLaunch() {
       return this._tuiLaunch;
@@ -8585,11 +8729,22 @@ var init_pi = __esm(() => {
       let attempted = false;
       let promptId;
       try {
-        const requested = await this.opts.selectModel?.(envs);
+        const selection = this.opts.getModelOverride?.();
+        if (selection?.model !== undefined && !isNativeModelToken(selection.model))
+          throw new Error("runtime model must be one bounded native token");
+        const baseline = await this.opts.selectModel?.(envs);
+        const requested = selection?.model ?? baseline ?? (this.baselineRequestedModel || undefined);
+        if (selection && selection.model === undefined && this.runtimeModelSelected && !requested)
+          throw new Error(`baseline model unavailable; restore the peer model configuration and run ahub restart ${this.id} before retrying`);
         if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
           throw new Error("Pi is off roster or stopped");
-        if (requested)
-          await this.setRequestedModel(requested);
+        if (requested) {
+          if (selection?.model !== undefined)
+            await this.applyRequestedModel(requested);
+          else
+            await this.setRequestedModel(requested);
+          this.runtimeModelSelected = selection?.model !== undefined;
+        }
         if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
           throw new Error("Pi is off roster or stopped");
         this.noteActivity();
@@ -8612,6 +8767,11 @@ var init_pi = __esm(() => {
           this.setState("offline");
           return;
         }
+        if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
+          throw new Error("Pi is off roster or stopped");
+        try {
+          selection?.applied();
+        } catch {}
         if (deliveryId && this.activeDeliveryIds.has(deliveryId))
           this.delivery({ id: deliveryId, state: "accepted" });
       } catch (error) {
@@ -8692,7 +8852,14 @@ var init_pi = __esm(() => {
     getRequestedModel() {
       return this.requestedModel;
     }
+    getBaselineRequestedModel() {
+      return this.baselineRequestedModel;
+    }
     async setRequestedModel(model) {
+      await this.applyRequestedModel(model);
+      this.baselineRequestedModel = model;
+    }
+    async applyRequestedModel(model) {
       if (!this.acceptingTools)
         throw new Error("Pi is off roster or stopped");
       const slash = model.indexOf("/");
@@ -14495,6 +14662,7 @@ var HISTORY_CHARS = 1e5, TURN_CHARS = 120000, SIDE_EFFECTS2, ExecutionBudgetStop
 ].filter(Boolean).join(`
 `), LocalPeer;
 var init_local_worker = __esm(() => {
+  init_model_token();
   init_memory_policy();
   init_runtime();
   init_envelope();
@@ -14635,6 +14803,24 @@ var init_local_worker = __esm(() => {
       this.activeDeliveryId = deliveryId;
       this.abort = new AbortController;
       this.setState("busy");
+      let selected, modelFailure;
+      try {
+        selected = this.opts.getModelOverride?.();
+        if (selected?.model !== undefined && !isNativeModelToken(selected.model))
+          throw new Error("invalid model");
+      } catch {
+        modelFailure = new Error("runtime model selection unavailable; check the peer model setting and retry");
+      }
+      let modelApplied = false;
+      const captured = selected;
+      const selection = captured && { model: captured.model, applied: () => {
+        if (modelApplied || turn !== this.turn)
+          return;
+        modelApplied = true;
+        try {
+          captured.applied();
+        } catch {}
+      } };
       if (deliveryId)
         this.delivery({ id: deliveryId, state: "accepted" });
       const msgs = [{ role: "user", content: [envs.some((env) => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join(`
@@ -14648,7 +14834,7 @@ var init_local_worker = __esm(() => {
       const labelTurn = this.beginRouteTurn(turn, !!policy?.pii || envs.some((env) => env.private), policy?.task);
       let completed = false;
       const reply = { inReplyTo: replyParent(envs), to: replyAudience(envs), ...policy?.pii ? { to: [USER], private: true, priority: "important", ...policy.task ? { refs: { task: policy.task } } : {} } : {} };
-      this.run(envs, turn, msgs, progress, policy, reply, reviewScope).then((answer) => {
+      this.run(envs, turn, msgs, progress, policy, reply, reviewScope, selection, modelFailure).then((answer) => {
         if (turn !== this.turn)
           return;
         if (preserveHistory && !reviewScope.excluded)
@@ -14717,7 +14903,9 @@ var init_local_worker = __esm(() => {
       this.abort?.abort();
       super.onWatchdog();
     }
-    async run(envs, turn, msgs, progress, policy, reply, reviewScope) {
+    async run(envs, turn, msgs, progress, policy, reply, reviewScope, selection, modelFailure) {
+      if (modelFailure)
+        throw modelFailure;
       const { maxSteps = 30 } = this.opts;
       const turnSignal = this.abort.signal;
       const remoteTurn = envs.some(remoteEnvelope);
@@ -14732,14 +14920,14 @@ var init_local_worker = __esm(() => {
       let captureInvocation = 0;
       for (let step = 0;step < maxSteps; step++) {
         this.elide(msgs);
-        const res = await this.call(msgs, policy, envs);
+        const res = await this.call(msgs, policy, envs, selection);
         if (turn !== this.turn)
           return "";
         this.touch();
         msgs.push(res.message);
         progress.last = res.message.content?.trim() || progress.last;
         if (!res.message.tool_calls?.length) {
-          const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal, res.routeDecision);
+          const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal, res.routeDecision, selection);
           if (turn !== this.turn)
             return "";
           if (concluded === undefined)
@@ -14908,24 +15096,27 @@ var init_local_worker = __esm(() => {
       for (const tool_call_id of missing)
         msgs.push({ role: "tool", tool_call_id, content: result });
     }
-    async call(turnMsgs, policy, envs) {
+    async call(turnMsgs, policy, envs, selection) {
       const { omni } = this.opts;
-      const route = effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel);
+      const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined;
       if (route && !route.startsWith("hub/") && !this.warnedLegacyRoutes.has(route)) {
         this.warnedLegacyRoutes.add(route);
         this.opts.log?.(`legacy route ${route} is deprecated and ignored; using fixed model`);
       }
-      const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
+      const fixedModel = selection?.model ?? policy?.fixedModel ?? this.opts.fixedModel;
       const task = policy?.task === undefined ? undefined : Number(policy.task);
       const tools = [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : []];
       const signal = this.abort.signal;
       const messages = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
       const routed = await this.hubCall(route, messages, policy, signal);
-      if (routed)
+      if (routed) {
+        selection?.applied();
         return routed;
+      }
       await this.requireBudget(envs, "model_calls");
       this.releaseObserverInput(this.currentObserverInputContext, envs);
       const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...policy?.pii ? { onCampusOnly: true } : {} });
+      selection?.applied();
       this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
       this.recordUsage(res, fixedModel, task);
       return res;
@@ -14980,8 +15171,8 @@ var init_local_worker = __esm(() => {
         return;
       }
     }
-    async conclude(msgs, policy, turn, step, maxSteps, answer, signal, decisionId) {
-      const route = effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel), config = this.hubConfig(route);
+    async conclude(msgs, policy, turn, step, maxSteps, answer, signal, decisionId, selection) {
+      const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined, config = this.hubConfig(route);
       if (!route || !config)
         return answer;
       const messages = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...msgs];
@@ -15323,6 +15514,7 @@ async function proveClaudeImplementer(peer, command) {
 }
 var provenVersions, ClaudeImplementerPeer;
 var init_claude_implementer = __esm(() => {
+  init_model_token();
   init_envelope();
   init_project();
   init_hub_tools();
@@ -15481,19 +15673,31 @@ var init_claude_implementer = __esm(() => {
       this.inputReleased = false;
       this.abort = new AbortController;
       this.setState("busy");
+      let selection, modelFailure;
+      try {
+        selection = this.options.getModelOverride?.();
+        if (selection?.model !== undefined && !isNativeModelToken(selection.model))
+          throw new Error("invalid model");
+      } catch {
+        modelFailure = new Error("runtime model selection unavailable; check the peer model setting and retry");
+      }
       if (deliveryId)
         this.delivery({ id: deliveryId, state: "accepted" });
-      const running = Promise.resolve().then(() => this.run(groups, generation, running));
+      const running = Promise.resolve().then(() => this.run(groups, generation, running, selection, modelFailure));
       this.running = running;
       running.finally(() => {
         if (this.running === running)
           this.running = undefined;
       }).catch(() => {});
     }
-    async run(groups, generation, running) {
+    async run(groups, generation, running, selection, modelFailure) {
       const current = () => generation === this.generation && !this.abort?.signal.aborted;
       let failureReason;
       try {
+        if (modelFailure)
+          throw modelFailure;
+        const model = selection?.model ?? this.options.model;
+        let modelApplied = false;
         for (let group of groups) {
           failureReason = undefined;
           if (!current() || !this.binding?.())
@@ -15536,7 +15740,7 @@ var init_claude_implementer = __esm(() => {
           const child = new OwnedPrintChild({
             peer: this.id,
             command: this.command,
-            args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt, this.options.model),
+            args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt, model),
             cwd: this.options.cwd,
             input: group.envs.map(frame).join(`
 
@@ -15551,6 +15755,12 @@ var init_claude_implementer = __esm(() => {
               } catch {
                 this.cancel("Claude implementer admission changed before child start", "idle").catch(() => {});
                 return;
+              }
+              if (!modelApplied) {
+                modelApplied = true;
+                try {
+                  selection?.applied();
+                } catch {}
               }
               this.childAbort = new AbortController;
               const launch = Object.freeze({ permissionHook: true, launchId, generation: `${generation}:${launchId}`, sessionId: turn.sessionId, signal: this.childAbort.signal, ...group.task !== undefined ? { task: group.task } : {} });
@@ -15830,7 +16040,7 @@ var init_reviewer_variants = __esm(() => {
   init_native_factories();
   init_native_display();
   codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codexReviewerBackend, defaultPool: true, declaration: "explicit", scope: "code" }, CODEX_DISPLAY);
-  CODEX_REVIEWER_VARIANT = { ...codexVariant, start: { ...codexVariant.start, create: createCodexReviewer } };
+  CODEX_REVIEWER_VARIANT = { ...codexVariant, modelOverride: { boundary: "turn" }, start: { ...codexVariant.start, create: createCodexReviewer } };
   KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { backend: kimiReviewerBackend, defaultPool: true, declaration: "explicit", scope: "code" }, KIMI_DISPLAY);
   AGY_REVIEWER_VARIANT = {
     ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
@@ -17874,6 +18084,7 @@ var init_builtin_metadata = __esm(() => {
     displayName: "Claude Code implementer",
     family: "claude",
     transport: "hub-native",
+    modelOverride: { boundary: "turn" },
     roles: Object.freeze(["implementer"]),
     defaultOnRoster: true,
     trust: { onPrem: false, hubSandboxed: false },
@@ -17939,6 +18150,7 @@ var init_builtin_metadata = __esm(() => {
       displayName: "Codex",
       family: "codex",
       transport: "codex-appserver",
+      modelOverride: { boundary: "turn" },
       roles: Object.freeze(["implementer"]),
       defaultOnRoster: true,
       trust: { onPrem: false, hubSandboxed: false },
@@ -18014,6 +18226,7 @@ var init_builtin_metadata = __esm(() => {
       displayName: "Pi",
       family: "pi",
       transport: "hub-native",
+      modelOverride: { boundary: "turn" },
       roles: implementerRoles,
       defaultOnRoster: false,
       trust: { onPrem: false, hubSandboxed: true },
@@ -18040,6 +18253,7 @@ var init_builtin_metadata = __esm(() => {
       displayName: "Local worker",
       family: "local",
       transport: "hub-native",
+      modelOverride: { boundary: "turn" },
       roles: implementerRoles,
       defaultOnRoster: true,
       trust: { onPrem: true, hubSandboxed: true },

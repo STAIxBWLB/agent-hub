@@ -1,3 +1,5 @@
+import type { ModelOverrideSelection } from "./registry-types.ts";
+import { isNativeModelToken } from "./model-token.ts";
 import { buildPiLaunch } from "../pi/launch.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
@@ -41,6 +43,8 @@ export interface PiOptions {
   hubStateDir?: string;
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
   model?: string;
+  /** Host-only choice sampled once at the next turn/review boundary. */
+  getModelOverride?: () => ModelOverrideSelection;
   relay: PiRelay; executeTool: (name: string, args: unknown, toolCallId: string, sessionId?: string, signal?: AbortSignal, context?: PiToolContext) => Promise<string | PiToolResult>; tools: PiToolSchema[];
   preamble?: string;
   /** Host-owned conditional instruction, sampled once per delivered turn. */
@@ -205,6 +209,8 @@ export class PiPeer extends BasePeer {
   private owner = randomUUID();
   private _tuiLaunch?: PiTuiLaunch;
   private requestedModel = "";
+  private baselineRequestedModel = "";
+  private runtimeModelSelected = false;
   private starting?: Promise<void>;
   private ownerClaimed = false;
   private ownerToken = "";
@@ -233,7 +239,7 @@ export class PiPeer extends BasePeer {
   private tuiWaiters: Array<{ resolve: (command: Record<string, unknown> | undefined) => void; timer: ReturnType<typeof setTimeout> }> = [];
 
   /** The fixed production factory supplies preflight separately, preserving transport option identity. */
-  constructor(id: PeerId, private readonly opts: PiOptions, private readonly preflight?: () => Promise<void>) { super(id, opts.watchdogMs); }
+  constructor(id: PeerId, private readonly opts: PiOptions, private readonly preflight?: () => Promise<void>) { super(id, opts.watchdogMs); this.baselineRequestedModel = opts.model ?? ""; }
   get tuiLaunch(): PiTuiLaunch | undefined { return this._tuiLaunch; }
   get pendingResume(): { sessionId?: string; sessionFile?: string } {
     if (this.canReuseVerifiedEmptyResume()) return { sessionId: this.verifiedEmptyResume!.sessionId };
@@ -754,9 +760,17 @@ export class PiPeer extends BasePeer {
     let attempted = false;
     let promptId: string | undefined;
     try {
-      const requested = await this.opts.selectModel?.(envs);
+      const selection = this.opts.getModelOverride?.();
+      if (selection?.model !== undefined && !isNativeModelToken(selection.model)) throw new Error("runtime model must be one bounded native token");
+      const baseline = await this.opts.selectModel?.(envs);
+      const requested = selection?.model ?? baseline ?? (this.baselineRequestedModel || undefined);
+      if (selection && selection.model === undefined && this.runtimeModelSelected && !requested) throw new Error(`baseline model unavailable; restore the peer model configuration and run ahub restart ${this.id} before retrying`);
       if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
-      if (requested) await this.setRequestedModel(requested);
+      if (requested) {
+        if (selection?.model !== undefined) await this.applyRequestedModel(requested);
+        else await this.setRequestedModel(requested);
+        this.runtimeModelSelected = selection?.model !== undefined;
+      }
       if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
       this.noteActivity();
       attempted = true;
@@ -770,6 +784,8 @@ export class PiPeer extends BasePeer {
         this.setState("offline");
         return;
       }
+      if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
+      try { selection?.applied(); } catch { /* Only prompt acceptance proves this turn used the selected model or unchanged native default. */ }
       if (deliveryId && this.activeDeliveryIds.has(deliveryId)) this.delivery({ id: deliveryId, state: "accepted" });
     } catch (error) {
       if (promptId !== undefined && promptId !== this.pendingPromptId) return;
@@ -831,7 +847,12 @@ export class PiPeer extends BasePeer {
   }
 
   getRequestedModel(): string { return this.requestedModel; }
+  getBaselineRequestedModel(): string { return this.baselineRequestedModel; }
   async setRequestedModel(model: string): Promise<void> {
+    await this.applyRequestedModel(model);
+    this.baselineRequestedModel = model;
+  }
+  private async applyRequestedModel(model: string): Promise<void> {
     if (!this.acceptingTools) throw new Error("Pi is off roster or stopped");
     const slash = model.indexOf("/");
     const provider = "agent-hub-local";

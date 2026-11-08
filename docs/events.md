@@ -12,6 +12,7 @@ marked `private: true`, and PII tasks `pii: true`.
 
 | type | fields |
 |---|---|
+| `model_change` | `peer`, `previousModel` and `model` (previous/new desired override ids, null for inherited selection), `by: person`, `source` (`cli` or `dashboard`), `appliesFrom: next_turn`, optional `afterTurn` (an already existing hub turn id). The event records a person's desired-state change, not native model acceptance or provider availability; no future turn id, prompt or credentials. |
 | `envelope` | `id`, `from`, `to` (absent for broadcast), `priority`, `hop`, `kind`, `task` (task id from refs), `bytes` (UTF-8 size of the body; absent on a private envelope, whose size would say something about the PII text), `private`, `dropped` (`hop` or `fyi` when not delivered) |
 | `overflow`, `undeliverable` | `id`, `from`, `peer` |
 | `stale` | `id`, `from`, `peer`, `task`: a notice about the recipient's open task, dropped unsent because, right before it would have been handed over, that task was closed, had another owner or was gone (issue #106) |

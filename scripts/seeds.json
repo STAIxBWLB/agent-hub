@@ -4472,6 +4472,22 @@
       "replacement": "...(researchRunners.count || config.research.runners !== undefined ? { researchRunners } : {})",
       "testFile": "test/research-runner-recovery.test.ts",
       "testName": "a two-daemon recovery releases a legacy runner-free integrity snapshot despite a raw runner key"
+    },
+    {
+      "id": "model-person-control-fence",
+      "file": "src/hub/daemon.ts",
+      "search": "        if (c.role !== \"console\") return void reply(modelFailure(\"model overrides are person-only; run ahub model in a person's terminal\"));\n        return void reply(modelCommandSafe(msg, { source: \"cli\", scope: c, current: () => c.authed === true && !c.closed && c.role === \"console\" && sock.readyState === WebSocket.OPEN }));",
+      "replacement": "        if (false) return void reply(modelFailure(\"model overrides are person-only; run ahub model in a person's terminal\"));\n        return void reply(modelCommandSafe(msg, { source: \"cli\", scope: c, current: () => c.authed === true && !c.closed && sock.readyState === WebSocket.OPEN }));",
+      "testFile": "test/daemon-model-overrides.test.ts",
+      "testName": "tools cannot list or mutate override state and no hub tool gains a model mutation"
+    },
+    {
+      "id": "model-ack-order-fence",
+      "file": "src/adapters/codex-appserver.ts",
+      "search": "    if ((this.nativeModels.get(start.thread)?.sequence ?? 0) >= start.sequence) return undefined;",
+      "replacement": "    if (false) return undefined;",
+      "testFile": "test/codex.test.ts",
+      "testName": "an older forwarded model ACK cannot replace a newer accepted hub model or its sticky clear hint"
     }
   ]
 }

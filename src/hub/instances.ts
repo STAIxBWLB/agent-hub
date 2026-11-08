@@ -5,6 +5,7 @@ import { canonicalPath, realPath } from "./project.ts";
 import { defaultPeerRoles, definitionOf, type AdapterDefinition, type StartForm, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { isPermissionMode, type PermissionMode } from "./permission-mode.ts";
 import { isReviewScope } from "./review-scope.ts";
+import { isNativeModelToken } from "../adapters/model-token.ts";
 
 export interface InstanceConfig {
   kind: string;
@@ -26,7 +27,7 @@ const JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile"] as 
 /** At most this many extra Jcode instances per project (#685). */
 export const MAX_JCODE_INSTANCES = 8;
 /** A flag value jcode takes as one argv word: bounded, printable, no spaces. */
-const NATIVE_WORD = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
+export { isNativeModelToken } from "../adapters/model-token.ts";
 export type InstancesConfig = Readonly<Record<string, InstanceConfig>>;
 export interface InstanceCatalogEntry { id: string; kind: string; definition: AdapterDefinition; config?: InstanceConfig }
 const MAX_INSTANCES = 64;
@@ -66,7 +67,7 @@ function jcodeInstanceFields(entry: Record<string, PropertyDescriptor>, path: st
     const present = entry[key];
     if (!present) continue;
     const word: unknown = present.value;
-    if (typeof word !== "string" || !NATIVE_WORD.test(word)) return fail(`${path}.${key}`, "must be one bounded printable word without spaces");
+    if (!isNativeModelToken(word)) return fail(`${path}.${key}`, "must be one bounded printable word without spaces");
     out[key] = word;
   }
   if (entry.start_mode && entry.start_mode.value !== "headless") return fail(`${path}.start_mode`, "a Jcode instance starts headless");
@@ -215,7 +216,7 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
     if (entry.model && modelSelect) {
       if (!headlessWriter) return fail(`${path}.model`, "only a headless implementer takes a model");
       const word: unknown = entry.model.value;
-      if (typeof word !== "string" || !NATIVE_WORD.test(word)) return fail(`${path}.model`, "must be one bounded printable word without spaces");
+      if (!isNativeModelToken(word)) return fail(`${path}.model`, "must be one bounded printable word without spaces");
       value.model = word;
     }
     if (entry.review_scope) {

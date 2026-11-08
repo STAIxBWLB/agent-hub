@@ -46,6 +46,7 @@ export interface RestartSnapshot {
     manualPaused: PeerId[];
     boardDigest: string;
     budgetDigest: string;
+    modelOverrides?: { count: number; digest: string };
     /** Whole captured binding set; portable identities are covered alongside queue/board integrity. */
     externalBindingsDigest?: string;
     /** Research state remains part of controlled-recovery integrity when present. */
@@ -108,6 +109,11 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   if (s.peers.some(peer => Object.hasOwn(peer, "controlProtocol") && (typeof peer.controlProtocol !== "number" || !Number.isSafeInteger(peer.controlProtocol) || peer.controlProtocol < 1))) return undefined;
   if (s.integrity !== undefined && (!s.integrity || typeof s.integrity !== "object" || typeof s.integrity.boardDigest !== "string" || typeof s.integrity.budgetDigest !== "string" || !Array.isArray(s.integrity.manualPaused) || !s.integrity.manualPaused.every((id) => typeof id === "string") || !s.integrity.queues || typeof s.integrity.queues !== "object" || !Object.values(s.integrity.queues).every((ids) => Array.isArray(ids) && ids.every((id) => typeof id === "string")))) return undefined;
   if (s.integrity && Object.hasOwn(s.integrity, "externalBindingsDigest") && (typeof s.integrity.externalBindingsDigest !== "string" || !/^[a-f0-9]{64}$/.test(s.integrity.externalBindingsDigest))) return undefined;
+  if (s.integrity && Object.hasOwn(s.integrity, "modelOverrides")) {
+    const value = s.integrity.modelOverrides;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "count,digest"
+      || !Number.isSafeInteger(value.count) || value.count < 0 || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
   if (s.integrity && Object.hasOwn(s.integrity, "research")) {
     const research = s.integrity.research;
     if (!research || typeof research !== "object" || Array.isArray(research)
