@@ -36,3 +36,20 @@ when their results are available; no test pass is claimed yet.
 
 Focused fakes, canonical DGX and exact-head hosted CI remain unverified until
 recorded. No native/provider/model-backed run is claimed by those checks.
+
+
+## Initial committed checks
+
+- `c0640100a3ff4bf2ab583351ba6a2f26eb2290e0`: frozen DGX install then TSC
+  stopped at one possibly undefined model-boundary access. Inventory and tests
+  did not run. The guard now requires existence before comparing the owner.
+- `7ae86fcc726a70505107b11e445e8373321b8001`: the separate DGX inventory check
+  identified seven new keys. This is a failed inventory run, not a green gate.
+  No key was added to the baseline.
+
+The new thread-model cache cap, stored override count, pending preview count and
+confirmation TTL are operational limits on the hub's own retained state. Pending
+native RPC records, CLI response rows and incoming confirmation-token length
+are safety floors at input/proof-reader boundaries. The existing #844 token
+representation is reused unchanged in a pure leaf module; native adapters do
+not import the registry through instances, avoiding an initialization cycle.

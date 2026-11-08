@@ -63,4 +63,4 @@ test("actual CLI defaults to sentences/table, JSON is explicit, mutations retain
     expect(requests.filter(request => request.t === "model")).toHaveLength(3);
     expect(requests.slice(before).some(request => request.t === "model")).toBe(false);
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
-}, 30_000);
+}, 20_000);
