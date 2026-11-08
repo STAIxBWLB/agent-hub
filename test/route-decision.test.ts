@@ -113,7 +113,8 @@ test("off-campus private or PII requests never build evidence; on-campus sensiti
   h.runtime.beginTurn({ turn: "campus-sensitive", pii: true });
   await h.runtime.call("hub/test", s.config, [{ role: "user", content: "PRIVATE_SENTINEL" }], "scope", true, signal());
   expect(s.requests[0].constraints).toMatchObject({ pii: true, private: true, contextTokens: 0 });
-  expect(JSON.stringify(s.requests)).not.toContain("PRIVATE_SENTINEL"); expect(screens).toBe(0);
+  expect(JSON.stringify(s.requests)).not.toContain("PRIVATE_SENTINEL");
+  expect(screens).toBe(1); // only the bounded public decider metadata is screened; private fragments were never inspected
 });
 
 test("observer exclusion and missing turn identity skip adec, and host faults cannot change shadow routing", async () => {

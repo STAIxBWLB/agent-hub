@@ -93,7 +93,7 @@ test("a real daemon wires current public-view policy into decision evidence and 
     const body: any = await req.json(); requests.push(body);
     return Response.json({ id: "0123456789abcdef0123456789abcdef", policyId: "ahub.local", alias: "coding", effort: "high", margin: 0.8, abstain: false, reason: "ok", fallbackApplied: false, pinned: false, rules: [], decider: null });
   } }); clean.push(() => service.stop(true));
-  const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace('route = "hub/stage"', 'route = "hub/decision"');
+  const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"').replace('route = "hub/stage"', 'route = "hub/decision"');
   writeFileSync(join(cwd, ".agenthub/routing.toml"), routing + `
 [hub_routes."hub/decision"]
 type = "decision"

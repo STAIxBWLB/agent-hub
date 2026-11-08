@@ -1,4 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { isAdecRouteEndpoint, requestAdecRoute, type AdecDecision, type AdecPair, type AdecRouteRequest } from "../src/models/route/adec.ts";
@@ -125,13 +128,22 @@ test("parent abort closes an in-flight body and pre-aborted signals make no requ
 test("ambient proxy variables do not redirect the explicit numeric connection", async () => {
   const proxy = await fake((_req, res) => json(res, { error: "proxy must not be contacted" }));
   const target = await fake((_req, res) => json(res, answer()));
-  const names = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
-  const before = names.map(name => process.env[name]);
+  // Bun may retain a proxy environment observation in its transport. Keep those observations
+  // in an owned child so this negative control cannot redirect later gateway fixtures.
+  const code = `import { requestAdecRoute } from ${JSON.stringify(join(import.meta.dir, "../src/models/route/adec.ts"))};
+    const result = await requestAdecRoute(${JSON.stringify(target.endpoint)}, ${JSON.stringify(input())}, ${JSON.stringify(pairs)}, new AbortController().signal, 1000);
+    process.stdout.write(JSON.stringify(result)); process.exitCode = result.ok ? 0 : 1;`;
+  const home = mkdtempSync(join(tmpdir(), "ahub-adec-proxy-")); cleanup.push(async () => rmSync(home, { recursive: true, force: true }));
+  const env: Record<string, string> = { HOME: home, TMPDIR: home, AGENTHUB_HOME: home, PATH: "/usr/bin:/bin", LANG: "C", TZ: "UTC" };
+  for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]) env[name] = proxy.endpoint;
+  const child = Bun.spawn([process.execPath, "-e", code], { env, stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
   try {
-    for (const name of names) process.env[name] = proxy.endpoint;
-    expect((await call(target.endpoint)).ok).toBe(true); expect(proxy.calls()).toBe(0); expect(target.calls()).toBe(1);
-  } finally { names.forEach((name, index) => { const old = before[index]; if (old === undefined) delete process.env[name]; else process.env[name] = old; }); }
-});
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit).toBe(0); expect(stderr).toBe(""); expect(JSON.parse(stdout).ok).toBe(true);
+    expect(proxy.calls()).toBe(0); expect(target.calls()).toBe(1);
+  } finally { clearTimeout(timer); if (child.exitCode === null) { child.kill("SIGKILL"); await child.exited; } }
+}, 20_000);
 
 test("caller mutation while the reply is pending cannot widen the captured request or configured pairs", async () => {
   let received!: (res: ServerResponse) => void;
