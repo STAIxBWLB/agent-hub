@@ -13381,7 +13381,7 @@ class DecisionRouteController {
     return state;
   }
   confirm(selection) {
-    selection.handoff?.();
+    selection.check?.();
     return selection;
   }
   privacy(pii) {
@@ -13426,7 +13426,7 @@ class DecisionRouteController {
     const result = attempt.result;
     if (!result.ok)
       return { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: result.reason, decisionLatencyMs: Math.max(0, performance.now() - began) } };
-    const d = result.decision, apply = config.decision_mode === "enforce" && d.alias !== null && d.effort !== null ? { alias: d.alias, effort: d.effort } : undefined;
+    const d = result.decision;
     let decider;
     if (d.decider === null)
       decider = null;
@@ -13434,12 +13434,7 @@ class DecisionRouteController {
       decider = { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs };
     this.fence(context, attempt.privacy);
     return {
-      ...apply ? { apply } : {},
-      handoff: () => this.fence(context, attempt.privacy),
-      applied: () => {
-        if (context.current())
-          state.currentPair = apply ? { turn: turn.context.turn, pair: apply } : undefined;
-      },
+      check: () => this.fence(context, attempt.privacy),
       trace: {
         decisionMode: config.decision_mode ?? "off",
         chosenAlias: d.alias,
@@ -13471,12 +13466,7 @@ class DecisionRouteController {
       policyId: config.policy_id ?? "",
       turnId: `ahub:${key}`,
       evidence,
-      constraints: {
-        contextTokens: sensitive ? 0 : estimateInputTokens(context.messages),
-        pii: privacy.pii,
-        private: privacy.private,
-        ...state.currentPair?.turn === context.turn?.context.turn ? { current: state.currentPair.pair } : {}
-      },
+      constraints: { contextTokens: sensitive ? 0 : estimateInputTokens(context.messages), pii: privacy.pii, private: privacy.private },
       candidates: [...new Set(pairs.map((pair) => pair.alias))]
     }, pairs, context.signal, config.decision_timeout_ms ?? this.timeoutMs);
     this.fence(context, privacy);
@@ -14670,11 +14660,9 @@ class HubRouteRuntime {
       current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn
     }) : {};
     const picked = this.decisions.confirm(proposed);
-    model = picked.apply?.alias ?? model;
     source = picked.trace ? "decision" : source;
     let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
-    const result = picked?.apply ? await this.host.execute(model, sent, false, signal, undefined, picked.apply.effort, picked.handoff) : await this.host.execute(model, sent, false, signal);
-    picked.applied?.();
+    const result = await this.host.execute(model, sent, false, signal);
     if (config.type !== "escalation" || state.escalation.snapshot().latched)
       return this.withDecision(result, decisionId);
     const request = buildEscalationJudgeRequest(normalizeConversation([...messages, result.message]), signals.assistantTurnCount + 1);
@@ -15227,19 +15215,18 @@ var init_local_worker = __esm(() => {
       super(id, opts.watchdogMs);
       this.opts = opts;
       this.routes = new HubRouteRuntime({
-        execute: async (model, messages, judge, signal, maxTokens, reasoningEffort, beforeRequest) => {
+        execute: async (model, messages, judge, signal, maxTokens) => {
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
           const envs = this.routeEnvs, pii = this.routePii, generation = this.turn, task = this.routeTask;
           await this.requireBudget(envs, "model_calls");
           if (generation !== this.turn)
             throw new Error("route belongs to an ended turn");
-          beforeRequest?.();
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
           const tools = judge ? undefined : [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : []];
           this.releaseObserverInput(this.currentObserverInputContext, envs);
-          const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {}, ...reasoningEffort ? { reasoning_effort: reasoningEffort } : {} }, { signal, ...pii ? { onCampusOnly: true } : {}, ...beforeRequest ? { beforeRequest } : {} });
+          const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {} }, { signal, ...pii ? { onCampusOnly: true } : {} });
           this.recordUsage(result, model, task);
           if (generation !== this.turn)
             throw new Error("route belongs to an ended turn");
