@@ -11061,7 +11061,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.22.1"
+      "@staix/agent-mem": "0.23.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -12157,6 +12157,19 @@ var init_mcp_memory = __esm(() => {
   init_work_lists();
 });
 
+// node_modules/@staix/agent-mem/src/hook-record.ts
+var RECORD_INSTRUCTION, RECORD_INPUT_BYTES;
+var init_hook_record = __esm(() => {
+  init_private_spans();
+  RECORD_INSTRUCTION = [
+    "Only when a turn settles a decision, fix, fail or contract, end the final answer with at most 2 records; otherwise none:",
+    "amem: <decision|fix|fail|contract|finding> | <repo/path[#symbol],... or - for decision/contract> | <text, max 300 characters>",
+    "For fix/fail use symptom/cause -> fix/retry-when. No fences, quotes, secrets or PII."
+  ].join(`
+`);
+  RECORD_INPUT_BYTES = 256 * 1024;
+});
+
 // node_modules/@staix/agent-mem/src/hook-resources.ts
 var init_hook_resources = () => {};
 
@@ -12176,6 +12189,7 @@ var init_hook_contract = __esm(() => {
 var RECORD_BYTES, MAX_BYTES5, HOOK_REPLAY_MAX_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
 var init_hook_spool = __esm(() => {
   init_formats();
+  init_hook_record();
   init_capture_input();
   init_platform();
   init_policy();
@@ -12237,6 +12251,7 @@ var init_hook_jcode = __esm(() => {
 // node_modules/@staix/agent-mem/src/hooks.ts
 var hookStartedAt;
 var init_hooks = __esm(() => {
+  init_hook_record();
   init_hook_project();
   init_hook_native();
   init_aliases();
@@ -12273,6 +12288,7 @@ var init_ingest = __esm(() => {
 
 // node_modules/@staix/agent-mem/src/session-brief.ts
 var init_session_brief = __esm(() => {
+  init_hook_record();
   init_generation();
   init_home();
   init_platform();
@@ -12895,6 +12911,18 @@ var init_setup = __esm(() => {
   PACKAGE_JSON_MAX = 64 * 1024;
 });
 
+// node_modules/@staix/agent-mem/src/sync-placement-writer-context.ts
+var init_sync_placement_writer_context = __esm(() => {
+  init_platform();
+  init_generation();
+  init_setup();
+  init_sync_placement_writers();
+  init_sync_placement_effective_writers();
+  init_sync_placement_prerequisites();
+  init_formats();
+  init_sync_placement_writer_revision_format();
+});
+
 // node_modules/@staix/agent-mem/src/index.ts
 var init_src = __esm(() => {
   init_search_fts();
@@ -12906,6 +12934,8 @@ var init_src = __esm(() => {
   init_sync_placement_writer_roots();
   init_sync_placement_effective_writers();
   init_setup();
+  init_hook_record();
+  init_sync_placement_writer_context();
   init_store();
   init_capture();
   init_shard();
