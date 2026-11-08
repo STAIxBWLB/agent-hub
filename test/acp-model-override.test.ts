@@ -69,8 +69,10 @@ else if(m.id!==undefined)answer({});});`);
     waitPrompts: (count: number) => observed(root, () => rows().filter(row => row.method === "session/prompt").length === count) };
 }
 
-test("ACP policy admission lists stay empty; foreign definitions cannot claim the capability", () => {
-  expect(ADAPTERS.filter(definition => definition.modelOverride?.acp)).toEqual([]);
+test("only receipted exact Kimi headless policy is admitted; foreign definitions cannot claim the capability", () => {
+  expect(ADAPTERS.filter(definition => definition.modelOverride?.acp).map(definition => ({ kind: definition.kind, policy: definition.modelOverride!.acp }))).toEqual([
+    { kind: "kimi", policy: { admission: { nativeIdentity: true }, agentName: "Kimi Code CLI", version: "2.5.2", setter: "set_config_option", modelUpdate: "config_option_update", receipt: "docs/verification/2026-11-08-kimi-252-model-setter-1317.md" } },
+  ]);
   const source = createProjectAdapterCatalog({ foreign: { transport: "acp", command: "not-executed", args: [], displayName: "Foreign", roles: ["implementer"] } }).definitionOf("foreign")!;
   expect(() => assertNativeCapabilityScope({ ...source, modelOverride: { boundary: "turn", acp: POLICY } })).toThrow("modelOverride");
 });

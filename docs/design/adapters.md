@@ -162,12 +162,34 @@ observer and generation guards. Pi reuses its model-selection path at the next
 turn and retains a separate baseline so clear can restore normal selection.
 Existing no-override behavior and native permission/isolation proofs stay intact.
 
-T1 does not invent ACP model setters or change a person's native TUI setting.
-Unsupported surfaces refuse a live set with a cause and `ahub restart <peer>` as
-the next step, without storing a newly refused override or restarting anything.
-Future ACP support requires a model-free receipt for the binary's setter before
-its capability is admitted. Registry capability metadata does not grant an
-external adapter an unimplemented setter.
+Live ACP selection requires two independent facts: the existing native admission
+and an exact-version model-free setter receipt. Qwen and Jcode compatibility
+admission includes the person's existing exact-version trust; Kimi headless uses
+its existing native-identity admission, independently of Kimi reviewer isolation
+compatibility. Only Kimi Code CLI 2.5.2 headless is currently enabled, through
+`session/set_config_option` with `configId: model` and the
+[model-free setter receipt](../verification/2026-11-08-kimi-252-model-setter-1317.md).
+Qwen and Jcode setters remain unavailable until their own adapter-level receipts
+are admitted. A native TUI or external adapter cannot acquire a setter from an
+advertisement or a registry label.
+
+The host captures one selection before awaiting a setter, validates bounded
+current-session model choices and owned process identity, then sends the prompt.
+Setter acknowledgement and model/config notifications are not prompt admission:
+only current prompt activity or successful completion acknowledges application.
+An unanswered setter leaves native selection unknown and takes the peer offline
+through its owned stop path. Trust revocation is rechecked before the prompt.
+Clear restores the validated pre-override session baseline, with instance and
+launch precedence retained; status does not expose a pending setter target as
+that baseline. Unsupported no-override delivery retains its ordinary behavior;
+a retained override instead refuses before a prompt until the person clears it
+or starts a supported owner.
+
+Fresh reviewer variants explicitly strip inherited model capability. Only an
+explicit per-spawn capability, such as codex-review, receives a model getter;
+a long-lived ACP policy never enables the reviewer print path. Unsupported
+surfaces refuse a live set with a cause and `ahub restart <peer>` as the next
+step, without storing a newly refused override or restarting anything.
 
 Overrides survive daemon restart and are cleared by runtime reset. Retained
 state must remain protected by recovery feature/integrity admission. Model ids

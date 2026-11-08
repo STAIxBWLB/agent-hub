@@ -107,6 +107,8 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     reviewerVariant: KIMI_REVIEWER_VARIANT,
     projection: { roleRank: 2, startRank: 2, helpRank: 2, plannerEligible: true },
     api: 1, kind: "kimi", questionWaitMs: 45000, displayName: "Kimi Code", family: "kimi", transport: "acp",
+    modelOverride: { boundary: "turn", acp: { admission: { nativeIdentity: true }, agentName: "Kimi Code CLI", version: "2.5.2",
+      setter: "set_config_option", modelUpdate: "config_option_update", receipt: "docs/verification/2026-11-08-kimi-252-model-setter-1317.md" } },
     roles: implementerRoles, defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
     start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => "ahub kimi", daemonPort: "acp", forms: dualForms, defaultForm: "tui", conductorStartable: true, upStart: { allowed: true }, hubSwitches: [], ownedFlags: [] },
     // ACP sessions carry headless identity; the existing CLI alone owns the TUI's project MCP entry.

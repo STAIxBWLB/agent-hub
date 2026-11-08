@@ -8165,7 +8165,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const reviewPolicies = new Map<string, string>();
       startCurrent?.();
       const reviewer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["reviewer-print"]({
-        ...(isFixedBuiltinDefinition(adapter) && adapter.modelOverride ? { getModelOverride: () => modelSelection(peer) } : {}),
+        ...(isFixedBuiltinDefinition(adapter) && adapter.modelOverride && !adapter.modelOverride.acp ? { getModelOverride: () => modelSelection(peer) } : {}),
         backend, cwd: executionCwd,
         mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", SERVER_JS], env: toolEnv(peer, true) } } }),
         systemPrompt: sessionRoleContract(peer),

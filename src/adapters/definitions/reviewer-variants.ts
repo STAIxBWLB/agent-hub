@@ -16,6 +16,8 @@ function reviewerVariant(kind: string, displayName: string, reviewer: NonNullabl
     permission: { unmanaged: "fresh read-only reviewer; an isolation receipt is required before startup" },
     session: { idField: "sessionId", currentId: () => undefined, freshOnRestore: true, launchKind: "reviewer-print", crashPlan: () => ({ resume: {}, how: "starts a fresh isolated review session" }) },
     turnEnd: "adapter", budget: { account: kind }, routing: { reviewOnly: true },
+    // A fresh reviewer never inherits a long-lived ACP setter through a base/variant merge.
+    modelOverride: undefined,
     reviewer, cli: { command: kind, startWords: () => [] }, display,
   };
 }
