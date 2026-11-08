@@ -26,6 +26,6 @@ These are one local run's raw values, not a production latency or percentage cla
 - [x] AC4: a new agent created between slices is discovered and counted by the next fresh validation pass.
 - [x] AC5: protocol, privacy, rotation, hard-link, shrunk-file, malformed-row and partial-line tests pass; earlier successful rows survive a later failure exactly once.
 - [x] AC6: concurrent cues remain serialized at one pending drain, and stop/session replacement cannot rebind the old session.
-- [ ] AC7: final-head `scripts/check.sh --changed` is pending.
+- [x] AC7: `scripts/check.sh --changed` passed at `a9b777a947ab2636f36da704b71cae8dc157fb6e`, with 12698 pass, 102 skip and 0 fail, ending `check: OK`.
 
 Focused result: 43 tests across the benchmark, delayed-usage, daemon and wire suites passed, plus typecheck. Baseline/sliced receipt generation and the benchmark test also passed independently.
