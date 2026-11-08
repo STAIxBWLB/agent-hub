@@ -6606,6 +6606,10 @@ a folder the person adds and removes, and what removal does to a shown copy is f
 terminal focus is unbuilt until a Herdr terminal can be mapped to an ahub console. The three baseline journeys are
 procedure counts that have not been run in a native window.
 
+### Who owns a pull-only peer (#1310)
+
+`ahub status` (and `--json`) names the current owner of an attached channel peer, beside its standby rows: `<peer> owner: pid <n>; attached <age>; native session <id>`. The pid is what the owner's plugin reported at hello (`pid unknown` when it reported none or an unusable one). `attached` is when the attach finished, not when the hello arrived. The native session reads `unverified` until the hub has verified one through the native-facts path (today agy), and an id that is not a short plain token is never shown. The owner line is absent while a newer session is still arriving, while the peer is offline, and after a detach, so a claimant is never shown as attached, and a takeover replaces the whole line at once. Use it to see who holds a queued peer before running `ahub peer takeover`. It is display only: it never decides delivery, takeover or permission, and `status.json` on disk does not carry it.
+
 ### Herdr project and machine entry (#1199 H1)
 
 [`integrations/herdr/`](../integrations/herdr/README.md) is an optional mod: three files the person copies to
