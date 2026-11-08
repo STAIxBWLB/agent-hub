@@ -18,7 +18,7 @@ export interface DecisionTrace {
   decisionMode: "off" | "shadow";
   chosenAlias: string | null; chosenEffort: string | null; margin?: number; decisionLatencyMs?: number;
   decisionReason?: string; fallbackApplied?: boolean;
-  decider?: { provider: string; model: string; latencyMs: number } | null;
+  decider?: { provider: string; model: string; version?: string; latencyMs: number } | null;
 }
 interface Context {
   route: string; scope: string; turn: ReturnType<RouteLabelTracker["captureTurn"]>;
@@ -96,7 +96,7 @@ export class DecisionRouteController {
     const d = result.decision;
     let decider: DecisionTrace["decider"];
     if (d.decider === null) decider = null;
-    else if (this.host.publicDecisionText?.(JSON.stringify(d.decider)) === true) decider = { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs };
+    else if (this.host.publicDecisionText?.(JSON.stringify(d.decider)) === true) decider = { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs, ...(d.decider.version === undefined ? {} : { version: d.decider.version }) };
     this.fence(context, attempt.privacy);
     return { check: () => this.fence(context, attempt.privacy),
       trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: d.alias, chosenEffort: d.effort, margin: d.margin,

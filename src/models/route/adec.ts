@@ -25,7 +25,7 @@ export interface AdecDecision {
   id: string; policyId: string; alias: string | null; effort: string | null; margin: number; abstain: boolean;
   reason: AdecReason; fallbackApplied: boolean; pinned: boolean; rules: AdecRule[];
   estimatedCost?: number;
-  decider: null | { provider: string; kind?: "systemone" | "logits"; model: string; latencyMs: number };
+  decider: null | { provider: string; kind?: "systemone" | "logits"; model: string; version?: string; latencyMs: number };
 }
 export type AdecFailure = "caller_error" | "timeout" | "http" | "malformed" | "outside_options" | "aborted";
 export type AdecResult = { ok: true; decision: AdecDecision } | { ok: false; reason: AdecFailure };
@@ -123,11 +123,12 @@ function decision(value: unknown, request: AdecRouteRequest, pairs: readonly Ade
   }
   let decider: AdecDecision["decider"] = null;
   if (d.decider !== null) {
-    const model = record(d.decider, ["provider", "kind", "model", "latencyMs"]);
+    const model = record(d.decider, ["provider", "kind", "model", "version", "latencyMs"]);
     if (!model || !token(model.provider, PROVIDER) || !token(model.model, MODEL) || !finite(model.latencyMs)
-      || model.kind !== undefined && model.kind !== "systemone" && model.kind !== "logits") return failure("malformed");
+      || model.kind !== undefined && model.kind !== "systemone" && model.kind !== "logits"
+      || model.version !== undefined && (!token(model.version, MODEL) || /(^|-)latest$/i.test(model.version))) return failure("malformed");
     decider = { provider: model.provider, model: model.model, latencyMs: model.latencyMs,
-      ...(model.kind === undefined ? {} : { kind: model.kind }) };
+      ...(model.kind === undefined ? {} : { kind: model.kind }), ...(model.version === undefined ? {} : { version: model.version }) };
   }
   // Project only closed data. In particular the upstream optional error string never escapes this client.
   return { ok: true, decision: { id: d.id, policyId: request.policyId, alias: selected?.alias ?? null, effort: selected?.effort ?? null,

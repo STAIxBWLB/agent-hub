@@ -172,3 +172,16 @@ test("merged adec policy terminal rule markers are accepted as closed metadata",
     expect(await call(f.endpoint, request)).toEqual({ ok: true, decision: expected });
   }
 });
+
+
+test("optional pinned decider version is preserved only when present", async () => {
+  for (const version of [undefined, "v1.2.3"] as const) {
+    const expected = { ...answer(), decider: { ...answer().decider!, ...(version === undefined ? {} : { version }) } };
+    const f = await fake((_req, res) => json(res, expected));
+    expect(await call(f.endpoint)).toEqual({ ok: true, decision: expected });
+  }
+  for (const version of ["", "latest", "provider-latest", "LATEST", "not pinned", "x".repeat(129)]) {
+    const f = await fake((_req, res) => json(res, { ...answer(), decider: { ...answer().decider!, version } }));
+    expect(await call(f.endpoint)).toEqual({ ok: false, reason: "malformed" });
+  }
+});

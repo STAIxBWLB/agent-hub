@@ -239,3 +239,14 @@ test("a negative campus reply cannot bypass a privacy-change refusal", async () 
   expect(s.requests).toHaveLength(0); expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
   expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy");
 });
+
+
+test("shadow route records optional pinned decider version without inventing one", async () => {
+  for (const version of [undefined, "v1.2.3"] as const) {
+    const s = service(() => ({ id: "0123456789abcdef0123456789abcdef", policyId: "ahub.test", alias: "coding", effort: "high", margin: 0.4, abstain: false, reason: "ok", fallbackApplied: false, pinned: false, rules: [], decider: { provider: "local", model: "fixed-decider", latencyMs: 12, ...(version === undefined ? {} : { version }) } }));
+    const h = host(); h.runtime.beginTurn({ turn: "version", pii: false });
+    await h.runtime.call("hub/test", s.config, messages, "scope", false, signal());
+    expect(h.calls[0]?.model).toBe("fast"); expect(h.events[0]?.decider?.version).toBe(version);
+    expect(Object.hasOwn(h.events[0]!.decider!, "version")).toBe(version !== undefined);
+  }
+});

@@ -4642,8 +4642,9 @@ The hub does not send a proposal as `current`: no pair is applied in shadow,
 and the native/default effort is unknown. Explicit model selections bypass the
 service.
 Changing a service, provider, model, version or policy threshold requires a new
-shadow period. The hub does not recalibrate a remote policy. The current adec
-wire reports a model id but no separate model version, which stays unknown.
+shadow period. The hub does not recalibrate a remote policy. The optional decider `version` is recorded when configured on the service;
+otherwise it stays unknown and is not inferred from the model id. Moving
+`latest` version aliases are refused.
 
 Evidence is a bounded data projection, never the forwarded conversation: a
 capped latest-user task fragment, the last assistant/tool tails, screened tool
