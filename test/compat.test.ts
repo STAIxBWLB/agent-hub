@@ -375,8 +375,8 @@ test("Qwen ACP 0.26.4 is exact-receipt verified; intermediate and nearby version
 
 
 test("Qwen ACP 0.26.5 is exact-receipt verified next to 0.26.4; 0.26.6 stays refused (#888)", () => {
-  expect(COMPAT.qwen.verified).toEqual(["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8"]);
-  expect(COMPAT.qwen.receipt).toBe("docs/verification/2026-11-06-qwen-0268-acp.md");
+  expect(COMPAT.qwen.verified).toEqual(["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8", "0.26.9"]);
+  expect(COMPAT.qwen.receipt).toBe("docs/verification/2026-11-08-qwen-0269-acp.md");
   for (const version of ["0.26.4", "0.26.5"]) expect(assessVersion("qwen", version, []), version).toEqual({ ok: true, state: "verified", version });
   for (const near of ["0.26.6", "0.26.5-rc.1", "qwen 0.26.5"]) expect(assessVersion("qwen", near, []).ok, near).toBe(false);
   const acp = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-03-qwen-0265-acp.md"), "utf8");
@@ -406,7 +406,7 @@ test("the Pi 1.5.0 receipt names the exact package, isolation and every repeated
 
 test("Qwen ACP 0.26.8 is exact-receipt verified while the Q2-unqualified dual entry stays refused (#888)", () => {
   expect(assessVersion("qwen", "0.26.8", [])).toEqual({ ok: true, state: "verified", version: "0.26.8" });
-  for (const near of ["0.26.6", "0.26.7", "0.26.9", "0.26.8-rc.1", "qwen 0.26.8"]) expect(assessVersion("qwen", near, []).ok, near).toBe(false);
+  for (const near of ["0.26.6", "0.26.7", "0.26.10", "0.26.8-rc.1", "qwen 0.26.8"]) expect(assessVersion("qwen", near, []).ok, near).toBe(false);
   expect(assessVersion("qwen-dual", "0.26.8", [])).toMatchObject({ ok: false, state: "refused", version: "0.26.8" });
   expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
   const acp = readFileSync(join(import.meta.dir, "../docs/verification/2026-11-06-qwen-0268-acp.md"), "utf8");
