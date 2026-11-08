@@ -313,8 +313,11 @@ test("hub_remember carries peer, kind and task; with the worker down the board w
   await tasks.propose("claude", { title: "t", class: "implement" });
   expect(await tasks.remember("codex", { text: "use bun:sqlite, not a server", kind: "decision", task: 1 })).toBe("saved to shared memory; the other agents get it with their next message");
   expect(saves().at(-1)).toMatchObject({ text: "use bun:sqlite, not a server", project: "agent-hub", metadata: { peer: "codex", kind: "decision", task: 1 } });
+  expect(await tasks.rememberOutcome("codex", { text: "again", task: 1 })).toEqual({ message: "saved to shared memory; the other agents get it with their next message", outcome: "saved" });
   mem.stop();
   expect(await tasks.remember("codex", { text: "x" })).toBe("memory store unavailable; nothing saved");
+  // #802: the outcome is structured, so a caller never reads the wording to know whether a note was stored.
+  expect(await tasks.rememberOutcome("codex", { text: "x" })).toEqual({ message: "memory store unavailable; nothing saved", outcome: "not_saved" });
   tasks.accept("local", 1);
   expect((await tasks.done("local", 1, "done")).state).toBe("in_review");
 });

@@ -290,6 +290,14 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   let settling = false;
   const peerDetails = Object.entries(data.peers).map(([id, p]) => {
     const out: Span[][] = [];
+    // #1310: the current owner, when the hub reported one. Shown before the standby rows so the owner is never inferred from them. Every value is re-checked here: a pid is a positive integer, a time is
+    // finite, and a native session id is shown only when it is a short plain token; anything else is left out rather than cleaned up.
+    const owner = p.ownerAttachment;
+    if (owner && typeof owner === "object" && Number.isFinite(owner.attachedAt)) {
+      const pid = Number.isSafeInteger(owner.ownerPid) && owner.ownerPid > 0 ? `pid ${owner.ownerPid}` : "pid unknown";
+      const native = typeof owner.nativeSessionId === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(owner.nativeSessionId) ? `native session ${owner.nativeSessionId}` : "native session unverified";
+      out.push(...detail(`${id} owner`, `${pid}; attached ${relative(owner.attachedAt, now)}; ${native}`, columns, "muted"));
+    }
     for (const session of Array.isArray(p.standbySessions) ? p.standbySessions : []) {
       if (!session || typeof session.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(session.id)) continue;
       const pid = Number.isSafeInteger(session.pid) && session.pid > 0 ? String(session.pid) : "unknown";
