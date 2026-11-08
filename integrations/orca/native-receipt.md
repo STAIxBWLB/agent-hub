@@ -30,6 +30,9 @@ contents, one-time links or task text in this file: ids and counts only.
 | 6 | Click **Open console** | actions counted after selection, including selecting the new terminal tab: ___; the existing console is visible (yes / no) |
 | 7 | Click **Open family console** | actions counted: ___; visible (yes / no) |
 | 8 | Select a workspace, then in Orca rename or remove it (or re-point its folder) and click an entry | refused with a visible sentence (yes / no); nothing ran (yes / no) |
+| 8a | Click **Show status** for the selected workspace (hub running) | the panel shows the version, task counts and peer states for the same project you selected (yes / no); no title, path or task text appears (yes / no) |
+| 8b | Stop the hub yourself (`ahub down` or equivalent) and click **Show status** again | the panel says offline and names `ahub up` (yes / no); nothing was started (yes / no) |
+| 8c | Leave a reading on screen for over a minute without clicking | it is labelled stale and nothing re-read it (yes / no) |
 | 9 | Before disabling: note running agents, worktrees and open terminals (counts only) | agents ___; worktrees ___; terminals ___ |
 | 10 | `orca plugin disable local.agent-hub-companion` | disabled (yes / no) |
 | 11 | After disabling: same counts as step 9 | agents ___; worktrees ___; terminals ___; unchanged (yes / no) |
