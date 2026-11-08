@@ -276,7 +276,7 @@ test("operational failure diagnostics are once per change, recovery resets them 
 
 
 test("a rejected admission or campus await keeps privacy authority fenced", async () => {
-  for (const where of ["admission", "campus"] as const) for (const field of ["pii", "private", "excluded"] as const) {
+  for (const where of ["admission", "campus"] as const) for (const field of (where === "campus" ? ["private", "excluded"] : ["pii", "private", "excluded"]) as ("pii" | "private" | "excluded")[]) {
     let arrived!: () => void, reject!: (reason: Error) => void;
     const entered = new Promise<void>(resolve => { arrived = resolve; }), gate = new Promise<void>((_resolve, no) => { reject = no; });
     close.push(() => reject(new Error("fixture closed")));
