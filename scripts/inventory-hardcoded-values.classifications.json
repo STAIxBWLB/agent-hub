@@ -2464,6 +2464,7 @@
   "src/ui/index.html:drawOffice:inline:points.length < 2=2#0": "contract",
   "src/ui/index.html:dur:inline:ms < 120000=120000#0": "contract",
   "src/ui/index.html:duration:inline:Math.min=1000#0": "operational",
+  "src/ui/index.html:errorText:inline:value.length <= 2048=2048#0": "safety floor",
   "src/ui/index.html:hops:inline:hops=1#0": "operational",
   "src/ui/index.html:max:inline:Math.max=1#0": "contract",
   "src/ui/index.html:max:inline:max=1#0": "contract",

@@ -107,3 +107,19 @@ test("runtime reset clears retained override rows", () => {
   resetRuntime(f.root, { id: "model-reset", root: f.root, stateDir: f.root, basePort: 0, pid: null, instanceId: null });
   const reopened = new ModelOverrides(f.file); stores.add(reopened); expect(reopened.list()).toEqual([]);
 });
+
+test("clear before the first ACK stays pending while the captured override remains in the current turn", () => {
+  // Pure latch state only; this does not qualify native owner identity or transport acknowledgement.
+  const { store } = fixture(), latches = new ModelOverrideLatches(store), owner = {};
+  const ordinary = latches.capture("codex", owner, {}, () => true);
+  expect(ordinary.model).toBeUndefined(); expect(latches.status("codex", owner, fallback).pendingNextTurn).toBe(false);
+  store.set("codex", "captured-x", 1); const running = latches.capture("codex", owner, {}, () => true);
+  store.clear("codex");
+  expect(running.model).toBe("captured-x");
+  expect(latches.status("codex", owner, fallback)).toMatchObject({ desiredModel: null, pendingNextTurn: true });
+  running.applied();
+  expect(latches.status("codex", owner, fallback)).toMatchObject({ effectiveModel: "captured-x", desiredModel: null, pendingNextTurn: true });
+  latches.end("codex"); const next = latches.capture("codex", owner, {}, () => true);
+  expect(next.model).toBeUndefined(); next.applied();
+  expect(latches.status("codex", owner, fallback)).toMatchObject({ effectiveModel: "instance-model", source: "instance", desiredModel: null, pendingNextTurn: false });
+});

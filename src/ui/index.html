@@ -1862,29 +1862,49 @@ function modelControls(model, sessionUntil, unavailable = false) {
   if (managerMode || !(sessionUntil > Date.now())) { box.append(el('p', 'To change the next-turn model, open ahub ui --settings.', 'meta')); return box; }
   const input = el('input'); input.type = 'text'; input.maxLength = 128; input.autocomplete = 'off'; input.spellcheck = false; input.setAttribute('aria-label', 'Next-turn model for ' + model.peer);
   const out = el('p', '', 'meta'); out.setAttribute('role', 'status');
-  let busy = false;
+  let busy = false, draftGeneration = 0;
+  const previews = [];
   const captured = context(), current = () => !stopped && canMutate() && !managerMode && sessionUntil > Date.now() && captured.generation === viewGeneration && captured.projectId === selectedProjectId && captured.instanceId === selectedInstanceId && box.isConnected;
+  const modelToken = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/.test(value);
+  const errorText = (value, fallback) => typeof value === 'string' && value.length <= 2048 && value.trim() && !/[\p{Cc}\p{Cf}]/u.test(value) ? value : fallback;
+  input.addEventListener('input', () => {
+    if (!current()) return;
+    draftGeneration++; busy = false; for (const preview of previews) preview.disabled = false;
+    out.textContent = 'Draft changed; preview again before confirming.';
+  });
   for (const operation of ['set', 'clear']) {
-    const control = el('button', operation === 'set' ? 'Preview model' : 'Preview clear'); control.type = 'button';
+    const control = el('button', operation === 'set' ? 'Preview model' : 'Preview clear'); control.type = 'button'; previews.push(control);
     control.addEventListener('click', async () => {
       if (busy || !current()) return;
-      if (operation === 'set' && !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/.test(input.value)) { out.textContent = 'Use a model token of 1 to 128 letters, digits or ._:/@+-; no spaces or leading dash.'; return; }
-      busy = true; control.disabled = true;
+      const generation = ++draftGeneration, draft = input.value, requestedModel = operation === 'set' ? draft : null;
+      const currentDraft = () => current() && generation === draftGeneration && input.value === draft;
+      out.textContent = '';
+      if (operation === 'set' && !modelToken(draft)) { out.textContent = 'Use a model token of 1 to 128 letters, digits or ._:/@+-; no spaces or leading dash.'; return; }
+      busy = true; for (const preview of previews) preview.disabled = true;
       try {
-        const result = await post('/action', {action:'model_preview', modelAction:operation, peer:model.peer, ...(operation === 'set' ? {model:input.value} : {})});
-        if (!current()) return;
+        const result = await post('/action', {action:'model_preview', modelAction:operation, peer:model.peer, ...(operation === 'set' ? {model:draft} : {})});
+        if (!currentDraft()) return;
+        if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Model preview unavailable; reopen ahub ui --settings and retry.');
+        if (result?.ok === false) throw new Error(errorText(result.error, 'Model preview unavailable; reopen ahub ui --settings and retry.'));
         const candidate = result.confirmation;
-        if (!candidate || typeof candidate.token !== 'string' || candidate.token.length > 256 || !candidate.token || candidate.peer !== model.peer || candidate.action !== operation || candidate.appliesFrom !== 'next_turn' || !(candidate.expiresAt > Date.now())) throw new Error('Model preview unavailable; reopen ahub ui --settings and retry.');
+        if (result.ok !== true || result.unconfirmed === true || !candidate || typeof candidate !== 'object' || Array.isArray(candidate) || typeof candidate.token !== 'string' || candidate.token.length > 256 || !candidate.token || candidate.peer !== model.peer || candidate.action !== operation || candidate.appliesFrom !== 'next_turn' || !Number.isFinite(candidate.expiresAt) || !(candidate.expiresAt > Date.now()) || !(candidate.previousModel === null || modelToken(candidate.previousModel)) || !(candidate.nextModel === null || modelToken(candidate.nextModel)) || candidate.nextModel !== requestedModel) throw new Error('Model preview unavailable; reopen ahub ui --settings and retry.');
         out.textContent = 'Next turn: ' + (candidate.previousModel || 'native default') + ' -> ' + (candidate.nextModel || 'native default') + '. The active turn is unchanged.';
         const confirm = el('button', 'Confirm next-turn model'); confirm.type = 'button'; out.append(confirm);
+        let confirming = false;
         confirm.addEventListener('click', async () => {
-          if (!current() || !(candidate.expiresAt > Date.now())) return;
-          confirm.disabled = true;
-          try { const applied = await post('/action', {action:'model_confirm', token:candidate.token}); if (applied.ok !== true || applied.appliesFrom !== 'next_turn' || applied.unconfirmed === true) throw new Error('Model change is unconfirmed; inspect ahub model list before retrying.'); if (current()) out.textContent = 'Selection saved for the next turn; the active turn is unchanged.'; }
-          catch (error) { if (current()) out.textContent = error.message; }
+          if (confirming || !currentDraft() || !(candidate.expiresAt > Date.now())) return;
+          confirming = true; confirm.disabled = true;
+          try {
+            const applied = await post('/action', {action:'model_confirm', token:candidate.token});
+            if (!currentDraft()) return;
+            if (!applied || typeof applied !== 'object' || Array.isArray(applied)) throw new Error('Model change is unconfirmed; inspect ahub model list before retrying.');
+            if (applied?.ok === false) throw new Error(errorText(applied.error, 'Model change is unconfirmed; inspect ahub model list before retrying.'));
+            if (applied.ok !== true || applied.appliesFrom !== 'next_turn' || applied.unconfirmed === true) throw new Error('Model change is unconfirmed; inspect ahub model list before retrying.');
+            out.textContent = 'Selection saved for the next turn; the active turn is unchanged.';
+          } catch (error) { if (currentDraft()) out.textContent = 'Error: ' + errorText(error?.message, 'Model change is unconfirmed; inspect ahub model list before retrying.'); }
         }, {once:true});
-      } catch (error) { if (current()) out.textContent = error.message; }
-      finally { busy = false; if (current()) control.disabled = false; }
+      } catch (error) { if (currentDraft()) out.textContent = 'Error: ' + errorText(error?.message, 'Model preview unavailable; reopen ahub ui --settings and retry.'); }
+      finally { if (currentDraft()) { busy = false; for (const preview of previews) preview.disabled = false; } }
     }); box.append(control);
   }
   box.append(input, out); return box;

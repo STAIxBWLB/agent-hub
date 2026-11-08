@@ -2472,7 +2472,7 @@ ahub model list
 ahub model list --json
 ```
 
-These are model-id examples, not an availability or pricing recommendation.
+Use a model id available through the peer's existing provider.
 Model ids are one bounded token: letters, digits and `._:/@+-`, at most 128 bytes,
 no spaces and no leading dash. Agent shells and every hub-tool caller are
 refused, including list; a conductor role does not grant person authority.

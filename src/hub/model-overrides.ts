@@ -89,11 +89,12 @@ export class ModelOverrideLatches {
     return capture.selection;
   }
   status(peer: string, owner: object | undefined, fallback: { model?: string; source: Exclude<ModelSource, "override"> }, unsupported?: RuntimeModelStatus["unsupported"]): RuntimeModelStatus {
-    const desired = this.store.get(peer), applied = this.acknowledged.get(peer);
+    const desired = this.store.get(peer), applied = this.acknowledged.get(peer), captured = this.captured.get(peer), revision = this.store.revision(peer);
     const active = !unsupported && applied?.owner === owner ? applied : undefined;
     const effective = active?.model;
     return { peer, effectiveModel: effective ?? fallback.model ?? null, source: effective === undefined ? fallback.source : active!.source, desiredModel: desired?.model ?? null,
-      pendingNextTurn: !unsupported && (desired !== undefined || active !== undefined) && active?.revision !== this.store.revision(peer),
+      pendingNextTurn: !unsupported && ((desired !== undefined || active !== undefined) && active?.revision !== revision
+        || !!captured && captured.owner === owner && captured.revision !== revision),
       ...(unsupported ? { unsupported } : {}) };
   }
   forget(peer: string): void { this.captured.delete(peer); this.acknowledged.delete(peer); }

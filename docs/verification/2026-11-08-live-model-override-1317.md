@@ -113,3 +113,19 @@ completion until its native-id/model assertions finish, replacing a 100 ms
 completion race without changing any product timeout or shared fake behavior.
 Final unavailable banners describe bounded-read failure generically, because
 store-read failure and catalog overflow must not be confused.
+
+
+At `ded9db733f0a0b7b8fea70934d41d051afd1da94`, DGX typecheck, inventory
+and all 559 anchors passed; all 122 selected Codex/Pi/controller/CLI/UI tests
+passed (1,475 assertions, five files; exit 0 in 53 s). This includes the prior
+ACK-order red test and the invalidated Pi ACK red test. Other adapter, tier 3,
+reset and HTTP-auth tests passed in the earlier wider run; no earlier failed
+whole run is relabelled as green.
+
+Final state/UI edges add a captured-revision check for clear before its first
+ACK, and per-component draft/request generations for model confirmation. Editing
+the draft or beginning a new preview invalidates old tokens and all late success,
+error and finally effects. Preview metadata must match the exact set value or
+null clear. Server refusals retain bounded plain error/repair text through the
+existing text-only surface; unsafe or malformed replies use fixed fallbacks.
+The UI error-text ceiling is a safety floor, not a new authority or model bound.
