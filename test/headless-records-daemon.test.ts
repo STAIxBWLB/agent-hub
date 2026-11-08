@@ -278,3 +278,17 @@ test("snapshot current guard rechecks execution-repository deny policy and captu
   capture.finish(record); expect(existsSync(join(capture.memoryDir, "projects"))).toBe(false);
   expect(capture.logs.join("\n")).not.toContain("synthetic failure");
 });
+
+
+test("fresh policy guards cover legacy-only private text even while all returned Record rows remain public", () => {
+  const f = fixture(); expect(f.owner.recordInstruction?.()).toBe(RECORD_INSTRUCTION); f.finish(record);
+  const snapshot = f.ports.read({ owner: "codex", title: "Synthetic task", refs: { paths: ["src/main.ts"] } });
+  const legacy = "LEGACY_ONLY_CANARY", original = `# [amem] recent curated context\n\n### Curated short-term notes\nmem:${"e".repeat(32)} decision: ${legacy}`;
+  const projected = f.ports.project("codex", original, 10_000);
+  expect(snapshot?.current?.()).toBe(true); expect(snapshot?.current?.(legacy)).toBe(true); expect(projected?.current?.()).toBe(true);
+  const logs = [...f.logs];
+  writeFileSync(join(f.memoryDir, "amem.config.json"), JSON.stringify({ piiPatterns: [legacy] }));
+  expect(snapshot?.current?.()).toBe(true); // Record row text did not change and remains public.
+  expect(snapshot?.current?.(legacy)).toBe(false); expect(projected?.current?.()).toBe(false);
+  expect(f.logs).toEqual(logs); expect(f.logs.join("\n")).not.toContain(legacy);
+});

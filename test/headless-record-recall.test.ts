@@ -356,3 +356,26 @@ test("host Record count metadata labels mixed recall without claiming capture Re
   const noCount = await recallFor("codex", client, ["fixture"], 1000, { ...source, project: before => ({ before, after }) });
   expect(noCount).toStartWith("Shared project memory (amem): curated recent notes by the agents in this project.");
 });
+
+
+test("final block screening includes unrelated legacy text after a held Record read and does not consume dedupe", async () => {
+  const release = gate(), entered = gate();
+  let legacyNowPrivate = false, reads = 0, observations = 0;
+  const forwarded: string[] = [];
+  const legacy: NativeItem = { ...unrelated, line: "legacy unrelated POLICY_CANARY remains independently relevant" };
+  const source = port(async () => {
+    if (++reads === 1) { entered.resolve(); await release.promise; }
+    return { ...snapshot(), replaceable: [], current: (text?: string) => {
+      if (text !== undefined) forwarded.push(text);
+      return !legacyNowPrivate || text === undefined || !text.includes("POLICY_CANARY");
+    } };
+  }, { observe: () => { observations++; } });
+  const instance = briefs([legacy], source);
+  const pending = instance.forTask("codex", task);
+  await entered.promise; legacyNowPrivate = true; release.resolve();
+  expect(await pending).toBeUndefined(); expect(observations).toBe(0);
+  expect(forwarded.some(text => text.includes(legacy.line) && text.includes(record().excerpt))).toBe(true);
+  legacyNowPrivate = false;
+  const fresh = await instance.forTask("codex", task);
+  expect(fresh).toContain(legacy.line); expect(fresh).toContain(record().excerpt); expect(observations).toBe(1);
+});

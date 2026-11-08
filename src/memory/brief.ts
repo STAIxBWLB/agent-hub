@@ -55,8 +55,8 @@ export interface RecordBriefSnapshot {
   /** Only known generated done/review notes. Anchors are explicit raw Record anchors, never inferred prose. */
   replaceable: readonly { id: string; anchors: readonly string[] }[];
   partial: boolean;
-  /** Re-screen the same complete rows against current host policy; false/throw revokes this snapshot. */
-  current?(): boolean;
+  /** Re-screen complete rows and any supplied final context against current host policy; false/throw revokes the snapshot. */
+  current?(text?: string): boolean;
 }
 export interface RecordBriefPort {
   allowed(task: BriefTask): boolean;
@@ -182,10 +182,10 @@ export class Briefs {
         return items;
       } catch { return current() ? [] : undefined; }
     };
-    const recordItems = async (items: readonly NativeItem[], lineBudget: number): Promise<{ items: NativeItem[]; replacedNotes: number; records: number; invalidated?: true; current?: () => boolean }> => {
+    const recordItems = async (items: readonly NativeItem[], lineBudget: number): Promise<{ items: NativeItem[]; replacedNotes: number; records: number; invalidated?: true; current?: (text?: string) => boolean }> => {
       let version: string | undefined, snapshot: RecordBriefSnapshot | undefined;
-      const recordCurrent = () => {
-        try { return current() && this.records!.allowed(task) && this.records!.policyVersion(task) === version && (snapshot?.current === undefined || snapshot.current() === true); } catch { return false; }
+      const recordCurrent = (text?: string) => {
+        try { return current() && this.records!.allowed(task) && this.records!.policyVersion(task) === version && (snapshot?.current === undefined || snapshot.current(text) === true); } catch { return false; }
       };
       const fallback = () => ({ items: [...items], replacedNotes: 0, records: 0, ...(version === undefined ? {} : { current: recordCurrent }) });
       if (!this.records || !current()) return fallback();
@@ -249,7 +249,7 @@ export class Briefs {
           selected.splice(0, selected.length, ...preferred.items);
           if (!selected.length) return undefined;
           const text = [header, ...selected.map(item => item.line)].join("\n");
-          if (preferred.current?.() === false || !current()) return undefined;
+          if (preferred.current?.(text) === false || !current()) return undefined;
           const claimSeen = () => {
             this.seen.set(peer, seen);
             for (const item of selected) seen.add(item.id);
@@ -258,9 +258,9 @@ export class Briefs {
           if (!this.records) claimSeen();
           if (!current()) return undefined;
           if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: selected.filter(item => item.kind !== "note").length, fails: selected.filter(item => item.kind === "fail").length, claudeMem: 0 }); } catch { /* telemetry never fails a brief */ }
-          if (preferred.current?.() === false) return undefined;
+          if (preferred.current?.(text) === false) return undefined;
           observeRecords(before, text, preferred);
-          if (preferred.current?.() === false) return undefined;
+          if (preferred.current?.(text) === false) return undefined;
           if (this.records) claimSeen();
           return text;
         } catch { return undefined; }
@@ -346,10 +346,13 @@ export class Briefs {
       return [header, ...(notice ? [notice] : []), ...(this.displayNative?.(native) ?? native.map(item => item.line)), ...items.map(item => `${item.id.toString().startsWith("mem:") ? item.id : `#${item.id}`} ${item.time} ${item.type} ${item.title}`), ...notes.map(item => item.line)].join("\n");
     };
     const text = render(own);
-    if (preferred.current?.() === false || !current()) return undefined;
-    if (this.records) observeRecords(render(beforeOwn), text, { ...preferredOwn,
-      records: own.filter(item => item.id.startsWith("capture:Record:")).length });
-    if (preferred.current?.() === false || !current()) return undefined;
+    if (preferred.current?.(text) === false || !current()) return undefined;
+    if (this.records) {
+      const before = render(beforeOwn);
+      if (preferred.current?.(text) === false || !current()) return undefined;
+      observeRecords(before, text, { ...preferredOwn, records: own.filter(item => item.id.startsWith("capture:Record:")).length });
+    }
+    if (preferred.current?.(text) === false || !current()) return undefined;
     if (this.records) claimSeen();
     return text;
   }

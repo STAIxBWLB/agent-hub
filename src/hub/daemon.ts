@@ -3395,13 +3395,13 @@ export async function startDaemon(opts: DaemonOptions) {
         && sanitize(row.excerpt) === row.excerpt && row.paths.every(anchor => typeof anchor === "string" && !recordPathDenied(anchor.split("#")[0]!, cwd));
       const rows = snapshot.rows.filter(row => publicRow(row, policy)
         && (!paths || row.paths.length === 0 || row.paths.some(anchor => paths.some(path => anchor === path || anchor.split("#")[0] === path))));
-      const current = () => {
+      const current = (text?: string) => {
         try {
           if (selectedPeer && (bus.peers.get(selectedPeer) !== owner || reviewOnlyPeer(selectedPeer) || contextPii(selectedPeer) || reviewObserverInput(selectedPeer))) return false;
           if (captureBinding !== binding || recordReadCwd(context) !== cwd || !recordReadAllowed(task, cwd) || recordReadVersion(context) !== version) return false;
           binding.assertCurrent(); if (memoryProjectFor(opts.cwd) !== memoryProject) return false;
           const fresh = configuredPolicy(binding.home, cwd);
-          return rows.every(row => publicRow(row, fresh));
+          return rows.every(row => publicRow(row, fresh)) && (text === undefined || typeof text === "string" && fresh.screenStandalone(text) && recordPublic(text));
         } catch { return false; }
       };
       if (!current()) return;
@@ -3427,7 +3427,8 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!generatedRecordNotes.get(id)) protectedIds.add(id);
     }
     const snapshot = readRecordSnapshot(undefined, peer);
-    const projectionCurrent = () => current() && (snapshot?.current === undefined || snapshot.current() === true);
+    let projectedText = original;
+    const projectionCurrent = () => current() && (snapshot?.current === undefined || snapshot.current(original) === true && snapshot.current(projectedText) === true);
     if (!snapshot || !projectionCurrent()) return;
     const staticBytes = Buffer.byteLength(original) - Buffer.byteLength(items.map(item => item.line).join("\n"));
     const preferred = preferRecordItems(items, snapshot, 32, protectedIds, Math.max(0, tokens * 3 - staticBytes));
@@ -3445,7 +3446,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
     }
     while (index < preferred.items.length) { const item = preferred.items[index++]!; if (ids.has(item.id)) return; output.push(item.line); }
-    const after = header + output.join("\n");
+    const after = header + output.join("\n"); projectedText = after;
     if (!projectionCurrent() || Buffer.byteLength(after) > Math.max(Buffer.byteLength(original), tokens * 3)) return;
     return { before: original, after, records: preferred.records, current: projectionCurrent };
   }
