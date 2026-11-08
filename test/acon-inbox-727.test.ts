@@ -1,4 +1,4 @@
-import { afterEach, expect, setSystemTime, test } from "bun:test";
+import { afterEach, expect, jest, setSystemTime, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -132,11 +132,16 @@ test("a stale reply is served at once while ONE refresh runs in the background, 
 });
 
 test("nothing runs in the background while nobody polls", async () => {
-  const age = clock();
-  const f = fleet([{ id: "a" }], { inboxFreshMs: 20, inboxStaleMs: 40 });
-  await f.inbox(); age.advance(400);
-  await new Promise(resolve => setImmediate(resolve));
-  expect(f.total()).toBe(1);
+  const ioTurn = setImmediate;
+  jest.useFakeTimers({ now: Date.now() });
+  try {
+    const f = fleet([{ id: "a" }], { inboxFreshMs: 20, inboxStaleMs: 40 });
+    await f.inbox();
+    jest.advanceTimersByTime(400);
+    await new Promise(resolve => ioTurn(resolve));
+    expect(f.total()).toBe(1);
+    expect(f.listing.asked).toBe(1);                               // catches background work before a second WS question arrives
+  } finally { jest.useRealTimers(); }
 });
 
 test("an action drops the cache: the approval just given is gone from the very next poll, and a poll started before it does not put the old answer back", async () => {
