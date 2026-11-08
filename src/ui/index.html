@@ -1848,7 +1848,7 @@ function appendRoleDetails(target, peer) {
   if (Array.isArray(peer.capableRoles)) target.append(el('p', 'Capable roles: ' + (peer.capableRoles.join(', ') || 'none'), 'meta'));
   if (typeof peer.ownerIsolation === 'boolean') target.append(el('p', 'Owner isolation: ' + (peer.ownerIsolation ? 'isolated' : 'not isolated: ' + (peer.ownerIsolationNote || 'execution root not verified')), 'meta'));
 }
-function modelUnavailableText() { return 'Runtime models unavailable: peer catalog exceeds the bounded display limit; use ahub model set <peer> <model> or ahub model clear <peer> for a known peer, then reduce the retained peer catalog before listing again.'; }
+function modelUnavailableText() { return 'Runtime models unavailable: could not read a bounded model catalog; run ahub model list for the cause. For a known peer, use ahub model set <peer> <model> or ahub model clear <peer>; repair storage or reduce the retained peer catalog as indicated before listing again.'; }
 function renderModelAvailability(snapshot) {
   const unavailable = snapshot.runtimeModelsUnavailable === true || snapshot.status?.runtimeModelsUnavailable === true;
   const notice = $('runtime-models-notice'); notice.hidden = !unavailable; notice.textContent = unavailable ? modelUnavailableText() : '';

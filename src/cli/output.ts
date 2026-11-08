@@ -230,7 +230,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.roleInfo) data = { ...data, peers: Object.fromEntries(Object.entries(data.peers).map(([peer, value]) => [peer, { ...value, ...data.roleInfo?.[peer] }])) };
   const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
   if (data.cwd) out.push(...lines(data.cwd, columns));
-  if (data.runtimeModelsUnavailable === true) out.push(...lines("Runtime models unavailable: peer catalog exceeds the bounded display limit; use ahub model set <peer> <model> or ahub model clear <peer> for a known peer, then reduce the retained peer catalog before listing again.", columns, "attention"));
+  if (data.runtimeModelsUnavailable === true) out.push(...lines("Runtime models unavailable: could not read a bounded model catalog; run ahub model list for the cause. For a known peer, use ahub model set <peer> <model> or ahub model clear <peer>; repair storage or reduce the retained peer catalog as indicated before listing again.", columns, "attention"));
   else if (Array.isArray(data.runtimeModels)) out.push(...renderRuntimeModels(data.runtimeModels.map(projectModelStatus).filter((row): row is RuntimeModelStatus => row !== null), columns));
   const timing = data.controlWriteTiming;
   if (full && timing && Object.values(timing).every(value => Number.isSafeInteger(value) && value >= 0)) {

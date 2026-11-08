@@ -41,7 +41,8 @@ test("model display distinguishes effective from next turn, keeps closed sources
 test("status names catalog overflow rather than rendering an empty model success", () => {
   const output = renderStatus({ peers: { codex: { state: "idle", queued: 0 } }, runtimeModels: [row], runtimeModelsUnavailable: true, models: { backends: [] } });
   const text = output.map(line => paint(line, false)).join("\n");
-  expect(text).toContain("Runtime models unavailable: peer catalog exceeds the bounded display limit");
+  expect(text).toContain("Runtime models unavailable: could not read a bounded model catalog");
+  expect(text).toContain("run ahub model list for the cause");
   expect(text).toContain("ahub model set <peer> <model>"); expect(text).toContain("ahub model clear <peer>");
   expect(text).not.toContain("EFFECTIVE MODEL"); expect(text).toContain("codex"); expect(text).toContain("idle");
   expect(output.flat().some(cell => cell.tone === "attention" && cell.text.includes("Runtime models unavailable"))).toBe(true);

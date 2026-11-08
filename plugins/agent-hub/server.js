@@ -8681,12 +8681,14 @@ var init_pi = __esm(() => {
           else
             await this.setRequestedModel(requested);
           this.runtimeModelSelected = selection?.model !== undefined;
+        }
+        if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
+          throw new Error("Pi is off roster or stopped");
+        if (requested) {
           try {
             selection?.applied();
           } catch {}
         }
-        if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
-          throw new Error("Pi is off roster or stopped");
         this.noteActivity();
         attempted = true;
         if (deliveryId)

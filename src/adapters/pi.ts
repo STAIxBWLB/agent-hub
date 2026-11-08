@@ -770,9 +770,9 @@ export class PiPeer extends BasePeer {
         if (selection?.model !== undefined) await this.applyRequestedModel(requested);
         else await this.setRequestedModel(requested);
         this.runtimeModelSelected = selection?.model !== undefined;
-        try { selection?.applied(); } catch { /* Native model acknowledgement remains authoritative. */ }
       }
       if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
+      if (requested) { try { selection?.applied(); } catch { /* Native model acknowledgement remains authoritative. */ } }
       this.noteActivity();
       attempted = true;
       if (deliveryId) this.activeDeliveryIds.add(deliveryId);

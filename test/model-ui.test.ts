@@ -60,7 +60,8 @@ test("stale confirmation and unconfirmed replies never claim an applied model", 
 test("model catalog overflow shows a fixed banner and no model controls even in a settings session", () => {
   for (const options of [{ unavailable: true }, { statusUnavailable: true }]) {
     const f = page(options);
-    expect(f.banner.hidden).toBe(false); expect(f.banner.text()).toContain("peer catalog exceeds the bounded display limit");
+    expect(f.banner.hidden).toBe(false); expect(f.banner.text()).toContain("could not read a bounded model catalog");
+    expect(f.banner.text()).toContain("run ahub model list for the cause");
     expect(f.banner.text()).toContain("ahub model set <peer> <model>"); expect(f.banner.text()).toContain("ahub model clear <peer>");
     expect(f.box.text()).toContain("Runtime models unavailable"); expect(f.box.all().some(node => node.tag === "button" || node.tag === "input")).toBe(false);
     expect(f.requests).toHaveLength(0);

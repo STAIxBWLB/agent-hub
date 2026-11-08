@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.t
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { ModelOverrides, ModelOverrideLatches } from "../src/hub/model-overrides.ts";
 import { runInNewContext } from "node:vm";
+import { isNativeModelToken } from "../src/adapters/model-token.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 const cleanup: (() => unknown)[] = [];
@@ -185,7 +186,9 @@ test("configured peers and valid local bus IDs are listed as unsupported without
   for (const id of ["fixture", "legacy-extra", "kimi@remote", "codex~session"]) {
     const owner = new ExternalAttachment(id); f.daemon.bus.add(owner); await owner.start();
   }
+  hookReads = 0; // Setup and unrelated legacy status readers are outside this feature's list boundary.
   const listed = await f.request({ op: "list" }); expect(listed.ok).toBe(true);
+  expect(hookReads).toBe(0);
   const rows = listed.models as { peer: string; effectiveModel: string | null; unsupported?: { reasonCode: string } }[];
   for (const id of ["fixture", "legacy-extra"]) expect(rows.find(row => row.peer === id)).toMatchObject({ effectiveModel: null, unsupported: { reasonCode: "unverified_setter" } });
   expect(rows.some(row => row.peer === "kimi@remote" || row.peer === "codex~session")).toBe(false);
@@ -193,7 +196,6 @@ test("configured peers and valid local bus IDs are listed as unsupported without
   expect(refused.ok).toBe(false); expect(refused.error).toContain("unsupported live: fixture"); expect(refused.error).toContain("ahub restart fixture");
   expect(f.store.hasRecords()).toBe(false); expect(f.daemon.bus.peers.get("fixture")?.state).toBe("idle");
   await f.console_.request({ t: "status" }); await f.console_.request({ t: "ui_snapshot" });
-  expect(hookReads).toBe(0);
 });
 
 test("model display overflow is explicit while status and single-peer writes remain usable", async () => {
@@ -213,4 +215,24 @@ test("model display overflow is explicit while status and single-peer writes rem
     const set = await f.request({ op: "set", peer: "codex", model: "single-peer-still-works" }); expect(set.ok).toBe(true); expect(f.store.get("codex")?.model).toBe("single-peer-still-works");
     expect((await f.request({ op: "clear", peer: "codex" })).ok).toBe(true); expect(f.store.hasRecords()).toBe(false);
   } finally { for (const id of added) f.daemon.bus.peers.delete(id); }
+});
+
+test("actual model fallback repeatedly reads cached scalar metadata and never invokes a recovery hook", () => {
+  const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const start = source.indexOf("  const modelFallback ="), end = source.indexOf("  const registerModelOwner =", start);
+  expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  let reads = 0;
+  const owner = { recoveryMetadata() { reads++; throw Error("model fallback invoked a recovery hook"); } }, external = { recoveryMetadata() { reads++; throw Error("external recovery hook invoked"); } };
+  const cache = new WeakMap<object, string>([[owner, "launch-model"]]);
+  const context = { declarations: { declared: { model: "instance-model" } }, isNativeModelToken,
+    bus: { peers: new Map([["codex", owner], ["external", external], ["declared", owner]]) }, modelLaunchModels: cache,
+    fallback: undefined as unknown as (peer: string) => { model?: string; source: string } };
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.fallback = modelFallback;");
+  runInNewContext(script, context);
+  for (let index = 0; index < 3; index++) {
+    expect(context.fallback("codex")).toEqual({ model: "launch-model", source: "launch" });
+    expect(context.fallback("external")).toEqual({ source: "native default" });
+    expect(context.fallback("declared")).toEqual({ model: "instance-model", source: "instance" });
+  }
+  expect(reads).toBe(0);
 });

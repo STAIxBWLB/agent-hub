@@ -88,3 +88,28 @@ native choice. The named assertion failed normally (one case, seven assertions,
 4 s), without setup/compiler/timeout failure. This red checkpoint intentionally
 contained the new test and unchanged Codex source; other pending refinements were
 not claimed tested. Its eventual fix and green evidence are recorded separately.
+
+
+At `4e10add8e7f6ad446aaf42278ea46ceb86fc77df`, typecheck, inventory and
+all 559 anchors passed. The Codex ACK-order regression was green (139 ms),
+including unknown-default cases, with its original failing assertion preserved.
+The selected seven files had 125 pass and one new fixture failure (1,700
+assertions; 61 s): a counter included legacy status recovery-hook calls rather
+than isolating the new model view. The correction checks the model-list path
+immediately and executes the actual cached fallback projection separately.
+The legacy status behavior is not rewritten or counted as a model regression.
+
+A second named red test at `d92ea42aa1d0de528dba014b771895b672e2ad44`
+used the real authenticated fake Pi bridge and an owned process signature. It
+held the public setter return after a successful native ACK, withdrew roster
+ownership, then observed an incorrect `applied` callback before the existing
+epoch guard (expected zero, observed one; five assertions, 4 s). The source moves
+that callback after the existing post-ACK guard. Cancellation/shutdown precede
+the fixture's delivery join; the owned process is confirmed exited. This is
+synthetic host/protocol evidence, not a native account or model qualification.
+
+The new Codex steer test also uses the fake's existing file gate to hold turn
+completion until its native-id/model assertions finish, replacing a 100 ms
+completion race without changing any product timeout or shared fake behavior.
+Final unavailable banners describe bounded-read failure generically, because
+store-read failure and catalog overflow must not be confused.

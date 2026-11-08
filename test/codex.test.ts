@@ -991,24 +991,34 @@ test("an admitted Codex proxy socket rechecks live roster before forwarding each
 test("hub turns carry one captured model override and steer never changes the running model", async () => {
   let desired: string | undefined = "runtime-a", gets = 0;
   const applied: (string | undefined)[] = [];
-  const r = await setup(100, undefined, { getModelOverride: () => { gets++; const model = desired; return { model, applied: () => { applied.push(model); } }; } });
+  const dir = mkdtempSync(join(tmpdir(), "codex-model-gate-")), gate = join(dir, "release"), target = join(dir, "fixture.txt");
+  writeFileSync(target, "fixture\n"); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const r = await setup(0, undefined, { getModelOverride: () => { gets++; const model = desired; return { model, applied: () => { applied.push(model); } }; } });
   r.tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => r.peer.state === "idle");
-  await r.peer.deliver([newEnvelope("user", "first model turn")]);
-  expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-a");
-  // RPC acceptance can precede turn/started; only the observed native turn id authorizes steering.
-  await until(() => r.seen.some(row => row.method === "turn/started" && row.params?.threadId === "th1"));
-  const started = r.seen.find(row => row.method === "turn/started" && row.params?.threadId === "th1");
-  desired = "runtime-b";
-  await r.peer.steer([newEnvelope("user", "steer same model")]);
-  expect(r.fake.requests.filter(row => row.method === "turn/steer").at(-1).params.model).toBeUndefined();
-  expect(r.fake.requests.filter(row => row.method === "turn/steer").at(-1).params.expectedTurnId).toBe(started.params.turn.id);
-  expect(gets).toBe(1); await until(() => r.peer.state === "idle");
-  await r.peer.deliver([newEnvelope("user", "next model turn")]); await until(() => r.peer.state === "idle");
-  expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-b");
-  desired = undefined;
-  await r.peer.deliver([newEnvelope("user", "native model turn")]); await until(() => r.peer.state === "idle");
-  expect(Object.hasOwn(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params, "model")).toBe(false);
-  expect(applied).toEqual(["runtime-a", "runtime-b", undefined]);
+  try {
+    await r.peer.deliver([newEnvelope("user", `first model turn EDIT:${target} GATE:${gate}`)]);
+    expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-a");
+    // RPC acceptance can precede turn/started; only the observed native turn id authorizes steering.
+    await until(() => r.seen.some(row => row.method === "turn/started" && row.params?.threadId === "th1"));
+    const started = r.seen.find(row => row.method === "turn/started" && row.params?.threadId === "th1");
+    desired = "runtime-b";
+    await r.peer.steer([newEnvelope("user", "steer same model")]);
+    expect(r.fake.requests.filter(row => row.method === "turn/steer").at(-1).params.model).toBeUndefined();
+    expect(r.fake.requests.filter(row => row.method === "turn/steer").at(-1).params.expectedTurnId).toBe(started.params.turn.id);
+    expect(gets).toBe(1);
+    // The existing fake file gate withholds completion until the steer ownership assertions finish.
+    writeFileSync(gate, "release");
+    await until(() => r.peer.state === "idle");
+    await r.peer.deliver([newEnvelope("user", "next model turn")]); await until(() => r.peer.state === "idle");
+    expect(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params.model).toBe("runtime-b");
+    desired = undefined;
+    await r.peer.deliver([newEnvelope("user", "native model turn")]); await until(() => r.peer.state === "idle");
+    expect(Object.hasOwn(r.fake.requests.filter(row => row.method === "turn/start").at(-1).params, "model")).toBe(false);
+    expect(applied).toEqual(["runtime-a", "runtime-b", undefined]);
+  } finally {
+    writeFileSync(gate, "release");
+    await until(() => r.seen.some(row => row.method === "turn/completed" && row.params?.turn?.id === "turn1"));
+  }
 });
 
 test("forwarded turn/start honors an explicit client model and reports sticky clear without overwriting native choice", async () => {
