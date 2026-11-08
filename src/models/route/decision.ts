@@ -47,11 +47,17 @@ export class DecisionRouteController {
   async pick(config: HubRoute, context: Context): Promise<Selection> {
     if (config.type !== "decision" || (config.decision_mode ?? "off") === "off") { this.issues.delete(context.route); return {}; }
     if (context.signal.aborted || context.turn?.closed) throw ended();
-    try { return await this.select(config, context); }
+    const privacy = this.privacy(context.pii);
+    const checked = (selection: Selection): Selection => {
+      this.fence(context, privacy);
+      return { ...selection, check: () => { this.fence(context, privacy); selection.check?.(); } };
+    };
+    try { return checked(await this.select(config, context)); }
     catch (error) {
       if (context.signal.aborted || context.turn?.closed) throw ended();
+      this.fence(context, privacy); // a rejected await is still an authority boundary
       if (error instanceof DecisionPolicyChangedError || error && typeof error === "object" && "budgetStop" in error) throw error;
-      return this.skip(config, "unavailable");
+      return checked(this.skip(config, "unavailable"));
     }
   }
   private issue(config: HubRoute, context: Context, reason: AdecFailure | AdecReason | null): void {

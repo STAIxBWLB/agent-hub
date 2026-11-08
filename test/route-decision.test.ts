@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import { DecisionRouteController } from "../src/models/route/decision.ts";
+import { RouteLabelTracker } from "../src/models/route/labels.ts";
 import { HubRouteRuntime, type RouteEvent, type RouteHost } from "../src/models/route/runtime.ts";
 import { parseHubRoutes, type HubRoute } from "../src/models/route/config.ts";
 import type { ChatMessage } from "../src/omniroute/client.ts";
@@ -270,4 +272,32 @@ test("operational failure diagnostics are once per change, recovery resets them 
   await throwing.runtime.call("hub/test", config, messages, "scope", false, signal());
   expect(throwing.calls[0]?.model).toBe("fast"); expect(throwing.events[0]?.decisionReason).toBe("caller_error");
   expect(JSON.stringify([...h.events, ...throwing.events])).not.toContain("SECRET");
+});
+
+
+test("a rejected admission or campus await keeps privacy authority fenced", async () => {
+  for (const where of ["admission", "campus"] as const) for (const field of ["pii", "private", "excluded"] as const) {
+    let arrived!: () => void, reject!: (reason: Error) => void;
+    const entered = new Promise<void>(resolve => { arrived = resolve; }), gate = new Promise<void>((_resolve, no) => { reject = no; });
+    close.push(() => reject(new Error("fixture closed")));
+    const facts = { pii: false, private: false, excluded: false }, s = service();
+    const wait = async () => { arrived(); await gate; };
+    const sensitive = where === "campus";
+    const h = host({ decisionContext: () => ({ ...facts }), ...(sensitive ? { onCampus: async () => { await wait(); return true; } } : { admitDecision: wait }) });
+    h.runtime.beginTurn({ turn: "rejected-authority", pii: sensitive });
+    const settled = h.runtime.call("hub/test", s.config, messages, "scope", sensitive, signal()).then(() => undefined, error => error);
+    await entered; facts[field] = true; reject(new Error("REJECTED_AWAIT_SECRET")); const error = await settled;
+    expect(s.requests).toHaveLength(0); expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy"); expect(error.message).not.toContain("SECRET");
+  }
+});
+
+test("unchanged rejected authority yields a fenced fallback that confirmation can revoke", async () => {
+  const facts = { private: false, excluded: false }, s = service(), labels = new RouteLabelTracker();
+  labels.beginTurn({ turn: "fallback-confirmation", pii: false }); const turn = labels.captureTurn();
+  const controller = new DecisionRouteController({ onCampus: async () => true, decisionContext: () => ({ ...facts }), admitDecision: async () => { throw new Error("AWAIT_SECRET"); } }, 1000);
+  const selection = await controller.pick(s.config, { route: "hub/test", scope: "scope", turn, current: () => labels.captureTurn() === turn, messages, dimensions: { severity: 0, spinning: 0, exploring: 0, productionIntensity: 0 }, pii: false, signal: signal() });
+  expect(selection.trace?.decisionReason).toBe("unavailable"); expect(s.requests).toHaveLength(0);
+  facts.excluded = true;
+  expect(() => controller.confirm(selection)).toThrow("privacy or observer policy");
 });
