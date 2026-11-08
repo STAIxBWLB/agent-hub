@@ -38,10 +38,14 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
   // Authority precedes even a source-health or root read: absent and denied are indistinguishable.
   if (!source.authorized) return { state: "unavailable" };
   if (source.health !== "ready") return unavailable(source.health);
+  let root: ExecutionReferenceV1, nodeLimit: number, edgeLimit: number, byteLimit: number;
   try {
-    const root = parseExecutionReference(query.root), rootKey = executionReferenceKey(root);
-    const nodeLimit = limit(query.nodes, LINEAGE_LIMITS.nodes), edgeLimit = limit(query.edges, LINEAGE_LIMITS.edges);
-    const byteLimit = limit(query.bytes, LINEAGE_LIMITS.bytes, LINEAGE_LIMITS.minimumBytes);
+    root = parseExecutionReference(query.root);
+    nodeLimit = limit(query.nodes, LINEAGE_LIMITS.nodes); edgeLimit = limit(query.edges, LINEAGE_LIMITS.edges);
+    byteLimit = limit(query.bytes, LINEAGE_LIMITS.bytes, LINEAGE_LIMITS.minimumBytes);
+  } catch { return unavailable("invalid"); }
+  try {
+    const rootKey = executionReferenceKey(root);
     if (![source.id, source.revision, source.scope].every(value => executionText(value, LINEAGE_LIMITS.token)) ||
         !executionText(source.cursorKey, LINEAGE_LIMITS.token) || Buffer.byteLength(source.cursorKey) < 32 ||
         !executionText(source.projectKey, EXECUTION_REFERENCE_LIMITS.projectKey) || root.projectKey !== source.projectKey) return unavailable("invalid");
@@ -84,7 +88,9 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
     let n = 0, e = 0;
     if (query.cursor !== undefined) {
       if (typeof query.cursor !== "string" || query.cursor.length > LINEAGE_LIMITS.cursor || !/^[A-Za-z0-9_-]+$/.test(query.cursor)) return unavailable("cursor_invalid");
-      const cursor: unknown = JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8"));
+      let cursor: unknown;
+      try { cursor = JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8")); }
+      catch { return unavailable("cursor_invalid"); }
       if (!Array.isArray(cursor) || cursor.length !== 4) return unavailable("cursor_invalid");
       const [cursorBinding, nextN, nextE, signature] = cursor;
       if (cursorBinding !== binding || !Number.isSafeInteger(nextN) || !Number.isSafeInteger(nextE) || nextN < 0 || nextE < 0 ||
@@ -110,5 +116,5 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
     }
     if (!pageNodes.length && !pageEdges.length && (n < visibleNodes.length || e < visibleEdges.length)) return unavailable("unsupported");
     return page(n, e);
-  } catch { return unavailable(query.cursor === undefined ? "corrupt" : "cursor_invalid"); }
+  } catch { return unavailable("corrupt"); }
 }

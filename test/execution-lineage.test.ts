@@ -47,6 +47,18 @@ test("authorized diagnostics are closed causes, never source prose", () => {
     expect(readExecutionLineage({ ...fixture(), health }, { root: ref("task") })).toEqual({ state: "unavailable" });
   }
 });
+test("caller root and limit errors are invalid, while privacy still hides diagnostic reasons", () => {
+  const queries = [
+    { root: { ...ref("task"), v: 2 } as unknown as ExecutionReferenceV1 },
+    { root: ref("task"), nodes: 0 }, { root: ref("task"), edges: LINEAGE_LIMITS.edges + 1 },
+    { root: ref("task"), bytes: LINEAGE_LIMITS.minimumBytes - 1 },
+  ];
+  for (const query of queries) {
+    expect(readExecutionLineage({ ...fixture(), diagnostics: true }, query)).toEqual({ state: "unavailable", reason: "invalid" });
+    expect(readExecutionLineage(fixture(), query)).toEqual({ state: "unavailable" });
+    expect(readExecutionLineage({ ...fixture(), diagnostics: true }, { ...query, cursor: "bad" })).toEqual({ state: "unavailable", reason: "invalid" });
+  }
+});
 test("privacy precedes identifiers, edges, counts and pagination", () => {
   // Model the source-owner read boundary: its privacy index never hands hidden rows to the reader.
   const owner = (hiddenCount: number, root = "task"): ExecutionLineageSource => {
