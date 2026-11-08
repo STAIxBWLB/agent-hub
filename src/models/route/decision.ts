@@ -57,7 +57,7 @@ export class DecisionRouteController {
     const state: State = { fingerprint }; this.states.set(key, state); return state;
   }
   /** Recheck after the async pick resolves, before its fields reach execution or telemetry. */
-  confirm(config: HubRoute, selection: Selection): Selection {
+  confirm(selection: Selection): Selection {
     selection.handoff?.(); return selection;
   }
   private privacy(context: Context): Privacy {

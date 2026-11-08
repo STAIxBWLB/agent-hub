@@ -86,7 +86,7 @@ export class HubRouteRuntime {
     } else if (config.type === "escalation" && state.escalation.snapshot().latched) model = capable;
     const proposed: Awaited<ReturnType<DecisionRouteController["pick"]>> = config.type === "decision" ? await this.decisions.pick(config, { route, scope, turn: labelTurn, messages, dimensions, pii, signal,
       current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn }) : {};
-    const picked = this.decisions.confirm(config, proposed);
+    const picked = this.decisions.confirm(proposed);
     model = picked.apply?.alias ?? model;
     source = picked.trace ? "decision" : source;
     let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
