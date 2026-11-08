@@ -10,6 +10,7 @@ import * as core from "../integrations/herdr/mod/core.js";
 const DIR = join(import.meta.dir, "../integrations/herdr");
 const matrix = JSON.parse(readFileSync(join(DIR, "support-matrix.json"), "utf8"));
 const contract = JSON.parse(readFileSync(join(DIR, "host-contract-v1.json"), "utf8"));
+const REMOTE_ABSENT = join("/nonexistent-ahub-remote", crypto.randomUUID(), "it's an app");
 
 function setup(opts: { machine?: string | null; platform?: string } = {}) {
   const machine = opts.machine === undefined ? "vps" : opts.machine;
@@ -74,6 +75,8 @@ test("AC9: every receipt a combination names exists, is a NOT RUN template that 
 });
 
 test("AC9: the remote console workflow, against the fixture: read on the machine, prove there, open in that machine's space, nothing here", async () => {
+  const absentBefore = existsSync(REMOTE_ABSENT);
+  expect(absentBefore).toBe(false);
   const s = setup();
   expect(await s.entry.refresh()).toMatchObject({ status: "ready", machine: "vps", candidate: "single" });
   s.entry.select("p_r");
@@ -82,7 +85,7 @@ test("AC9: the remote console workflow, against the fixture: read on the machine
   expect(s.execs.every(e => e.on === "vps")).toBe(true);
   expect(s.runs).toEqual([{ name: "tab.new", args: { space: "s1", folder: "/home/dev/it's an app", argv: ["ahub", "--project", "p_r", "console"], name: "ahub: it's an app" } }]);
   expect(JSON.stringify(s.runs)).not.toMatch(/vps/);
-  expect(existsSync("/home/dev")).toBe(false);
+  expect(existsSync(REMOTE_ABSENT)).toBe(absentBefore);
   // the copyable command names the machine and is one quoted word
   expect(s.entry.copyCommand()).toEqual({ ok: true, command: "ahub --project '/home/dev/it'\\''s an app' console", machine: "vps", machineLabel: "vps" });
   // the status card reads on that machine, from that folder
