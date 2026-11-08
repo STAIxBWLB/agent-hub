@@ -14214,7 +14214,7 @@ var init_hub_tools = __esm(() => {
   toolWriteRequestId = { type: "string", minLength: 1, maxLength: 256, pattern: "^v1/[A-Za-z0-9._-]{1,128}/[1-9][0-9]{0,15}/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", description: "control-transport-only request_id returned by an outcome-unknown write; inspect first and retry with the same key and identical arguments only if absent. Direct in-process tool calls cannot use request_id" };
   visualSideSchema = { oneOf: [
     { type: "object", properties: { text: { type: "string", maxLength: 20 * 1024 } }, required: ["text"], additionalProperties: false },
-    { type: "object", properties: { path: { type: "string", minLength: 1, maxLength: 4096 }, alt: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["path", "alt"], additionalProperties: false }
+    { type: "object", properties: { path: { type: "string", minLength: 1, maxLength: 4096 }, alt: { type: "string", maxLength: 1000 } }, required: ["path", "alt"], additionalProperties: false }
   ] };
   visualTitle = { type: "string", maxLength: 300 };
   visualCaption = { type: "string", maxLength: 2000 };

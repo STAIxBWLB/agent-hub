@@ -78,6 +78,18 @@ test("published table column minimum accepts the runtime's empty table boundary"
   expect(accepted.columns.length).toBeGreaterThanOrEqual(columns.minItems ?? 0);
 });
 
+test("published image alt minimum accepts the runtime's empty alt while keeping alt required", () => {
+  const schema = TASK_TOOLS.find(tool => tool.name === "hub_visual")!.inputSchema.properties.payload as {
+    oneOf: { properties: { kind: { const: string }; before?: { oneOf: { properties: { path?: unknown; alt?: { minLength?: number } }; required: string[] }[] } } }[];
+  };
+  const image = schema.oneOf.find(shape => shape.properties.kind.const === "beforeAfter")!.properties.before!.oneOf.find(side => side.properties.path)!;
+  const accepted = validateVisualInput({ kind: "beforeAfter", before: { path: "image.png", alt: "" }, after: { text: "" } }, () => true);
+  if (accepted.kind !== "beforeAfter" || !("path" in accepted.before)) throw new Error("image validation returned another side");
+  expect(accepted.before.alt.length).toBeGreaterThanOrEqual(image.properties.alt!.minLength ?? 0);
+  expect(image.required).toContain("alt");
+  expect(() => validateVisualInput({ kind: "beforeAfter", before: { path: "image.png" }, after: { text: "" } }, () => true)).toThrow();
+});
+
 test("four payloads round-trip locally; ordinary snapshot and observer files contain metadata/stubs only", async () => {
   const r = await rig();
   const values = [payload, { kind: "comparison", options: [{ title: "A", pros: ["simple"] }, { title: "B", recommended: true }] },
