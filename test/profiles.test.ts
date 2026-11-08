@@ -34,6 +34,13 @@ async function rig(profile?: ProfileName, check?: { resolve: boolean }, profileD
     ...(check ? { check: (_base, task) => task?.profileClass === "fact_check" ? "citations" : undefined, runCheck: async () => ({ code: citationKeys("Claim [@source]", check.resolve ? "@article{source, title={Evidence}}" : "").missing.length ? 1 : 0, timedOut: false, tail: "citation check" }) } : {}) });
   return { tasks, board, bus, dir, notices, registerSource };
 }
+function expectCheckLifecycle(text: string) {
+  expect(text).toContain("Keep your turn open until every check you started for the task has exited");
+  expect(text).toContain("acted on its result (push and `hub_task_done`, or fix/report failure)");
+  expect(text).toContain("while your own pre-push checks are running");
+  expect(text).toContain("After pushing a PR, call `hub_task_done`");
+  expect(text).toContain("Do not wait for or poll CI");
+}
 test("profile init preserves dev bytes and surrounding instructions; explicit conflicts are pre-write (#259)", () => {
   const dir = root(); init(dir);
   expect(readFileSync(join(dir, ".agenthub/config.json"), "utf8")).toBe(readFileSync(join(import.meta.dir, "../templates/config.json"), "utf8"));
@@ -41,11 +48,13 @@ test("profile init preserves dev bytes and surrounding instructions; explicit co
   const hubBlock = upsertBlock("", readFileSync(join(import.meta.dir, "../templates/AGENTS.block.md"), "utf8"));
   expect(readFileSync(join(dir, "AGENTS.md"), "utf8")).toBe(specsBlock(hubBlock, true));
   expect(readFileSync(join(dir, "AGENTS.md"), "utf8")).toStartWith(hubBlock);
+  expectCheckLifecycle(readFileSync(join(dir, "AGENTS.md"), "utf8"));
   expect(planInit(dir, "dev")).toEqual([]);
   const before = readFileSync(join(dir, ".agenthub/config.json"), "utf8"); expect(() => init(dir, "research")).toThrow("differs"); expect(readFileSync(join(dir, ".agenthub/config.json"), "utf8")).toBe(before);
   for (const name of PROFILE_NAMES.filter(v => v !== "dev")) {
     const target = root(); writeFileSync(join(target, "AGENTS.md"), "Keep my instructions\n"); init(target, name);
     expect(loadConfig(target).profile).toBe(name); expect(readFileSync(join(target, "AGENTS.md"), "utf8")).toContain("Keep my instructions"); expect(readFileSync(join(target, "AGENTS.md"), "utf8")).toContain(`Project profile: ${name}`); expect(init(target)).toEqual([]);
+    expectCheckLifecycle(readFileSync(join(target, "AGENTS.md"), "utf8"));
   }
 });
 test("profile aliases route and budget on a persisted base while unknown/prototype classes refuse atomically (#259)", async () => {
