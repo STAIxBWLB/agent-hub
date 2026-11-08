@@ -45,10 +45,11 @@ test("#525 headless writer capabilities cannot be claimed by external or configu
   expect(() => assertNativeCapabilityScope(variant)).not.toThrow();
   const foreign = { ...base, headlessVariant: variant } as AdapterDefinition;
   expect(() => assertNativeCapabilityScope(foreign)).toThrow("restricted to fixed builtin");
-  // The variant's `settle` (#1054) is a builtin-only capability that is refused first; drop it so each restriction below is asserted on its own.
-  const { settle: _settle, ...variantWithoutSettle } = variant;
-  const foreignPort = { ...variantWithoutSettle, kind: "fixture" } as AdapterDefinition;
+  // Isolate each builtin-only capability so an earlier refusal cannot hide the next assertion.
+  const { settle: _settle, modelOverride: _modelOverride, ...ordinaryVariant } = variant;
+  const foreignPort = { ...ordinaryVariant, kind: "fixture" } as AdapterDefinition;
   expect(() => assertNativeCapabilityScope({ ...foreignPort, settle: variant.settle } as AdapterDefinition)).toThrow("settle is restricted to fixed builtin");
+  expect(() => assertNativeCapabilityScope({ ...foreignPort, modelOverride: variant.modelOverride } as AdapterDefinition)).toThrow("modelOverride is restricted to fixed builtin");
   expect(() => assertNativeCapabilityScope(foreignPort)).toThrow("identity.currentChild");
   // Isolate the port restriction from the independently refused current-child capability.
   const { currentChild: _currentChild, ...ordinaryIdentity } = foreignPort.identity;
