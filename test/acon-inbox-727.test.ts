@@ -10,10 +10,11 @@ import { PROTOCOL } from "../src/hub/control-client.ts";
 // daemon's did (0.12 to 0.34 s each on the owner's Mac, 2.5 s in all because the projects were asked one after another).
 const dirs: string[] = [];
 const servers: { stop(force?: boolean): void }[] = [];
-const gates: ReturnType<typeof answerGate>[] = [];
+interface AnswerGate { entered: Promise<void>; readonly released: boolean; wait(): Promise<void>; release(): void }
+const gates: AnswerGate[] = [];
 afterEach(() => { for (const gate of gates.splice(0)) gate.release(); setSystemTime(); for (const s of servers.splice(0)) s.stop(true); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
-function answerGate() {
+function answerGate(): AnswerGate {
   let arrived!: () => void, release!: () => void, released = false;
   const entered = new Promise<void>(resolve => { arrived = resolve; });
   const pending = new Promise<void>(resolve => { release = resolve; });
@@ -40,7 +41,7 @@ function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: n
   const asked: Record<string, number> = {};
   const open: Record<string, number> = {}, peak: Record<string, number> = {};   // #730: snapshots a project is answering at once, and the most it ever had
   const listing = { delayMs: 0, asked: 0 };                                    // #730: the project listing (inspectProject) of the lifecycle
-  const live: Record<string, { delayMs: number; permissions: number; reviews: number; hang: boolean; gate?: ReturnType<typeof answerGate> }> = {};
+  const live: Record<string, { delayMs: number; permissions: number; reviews: number; hang: boolean; gate?: AnswerGate }> = {};
   const projects: ProjectRecord[] = [];
   for (const spec of specs) {
     live[spec.id] = { delayMs: spec.delayMs ?? 0, permissions: spec.permissions ?? 1, reviews: spec.reviews ?? 0, hang: spec.hang ?? false };
@@ -262,7 +263,7 @@ test("a slow computation from before an action does not overwrite the newer fall
   f.live.a!.permissions = 1; delete f.live.a!.gate;
   expect((await f.inbox()).items).toHaveLength(1);                // the newer generation stores one row
   answer.release(); await early;                                  // the older one ends last
-  // a short-budget provider cannot be swapped in, so read the fallback through a poll whose project hangs, bounded by our own timer
+  // A hung project reaches the existing project budget; await that fallback directly.
   f.live.a!.hang = true;
   const outcome = await f.inbox();
   expect(outcome?.items).toHaveLength(1);                         // one row from the newer entry, never the older two
@@ -314,5 +315,5 @@ test("a slow project's pending snapshot is not joined across an action: the answ
   expect((await f.inbox()).items).toEqual([]);
   expect(answer.released).toBe(false);
   expect(f.asked.a).toBe(asked + 1);
-  answer.release();                              // a new generation asks again
+  answer.release();
 });
