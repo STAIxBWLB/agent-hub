@@ -85,14 +85,16 @@ function drawStatus() {
 }
 async function readStatus() {
   if (!selected) { say("Select a workspace first.", true); return; }
-  setActions(false); say("Reading status...");
+  const snapshot = Object.freeze({ ...selected }), requestGeneration = ++generation;
+  dropLink(); setActions(false); say("Reading status...");
   try {
-    const result = await ask("status.read", { snapshot: selected });
+    const result = await ask("status.read", { snapshot });
+    if (requestGeneration !== generation) return;
     if (!result.ok) { dropStatus(); say(result.guidance, true); return; }
     reading = result; drawStatus();
     say(result.state === "offline" ? WORDS.offline : "Status read.");
-  } catch { dropStatus(); say("The companion did not answer. Nothing was changed.", true); }
-  finally { if (selected) setActions(true); }
+  } catch { if (requestGeneration === generation) { dropStatus(); say("The companion did not answer. Nothing was changed.", true); } }
+  finally { if (requestGeneration === generation && selected) setActions(true); }
 }
 
 function renderRows(list) {
@@ -132,7 +134,7 @@ function renderRows(list) {
 
 async function refresh() {
   const requestGeneration = ++generation;
-  selected = null; setActions(false); dropLink();
+  selected = null; setActions(false); dropLink(); dropStatus();
   say("Reading Orca's workspaces...");
   try {
     const result = await ask("workspaces.list", undefined);
