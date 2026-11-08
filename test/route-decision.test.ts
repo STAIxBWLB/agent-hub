@@ -141,7 +141,8 @@ test("a closed turn or cancellation during a held decision cannot execute or emi
   const s = service(), h = host(), controller = new AbortController();
   h.runtime.beginTurn({ turn: "cancelled", pii: false });
   const pending = h.runtime.call("hub/test", { ...s.config, adec_endpoint: `http://127.0.0.1:${server.port}/v1/route` }, messages, "scope", false, controller.signal);
-  const rejected = expect(pending).rejects.toThrow("turn ended");
-  await entered; controller.abort(); h.runtime.endTurn("cancelled", "failed"); release(); await rejected;
+  const settled = pending.then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+  await entered; controller.abort(); h.runtime.endTurn("cancelled", "failed"); release();
+  const outcome = await settled; expect(outcome.error).toBeInstanceOf(Error); expect(outcome.error.message).toContain("turn ended");
   expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
 });

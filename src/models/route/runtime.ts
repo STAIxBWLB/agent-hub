@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
-import { requestAdecRoute, type AdecPair, type AdecResult } from "./adec.ts";
-import { buildDecisionEvidence } from "./decision-evidence.ts";
+import { DecisionRouteController, type DecisionHost, type DecisionTrace } from "./decision.ts";
 import type { ChatMessage, ChatResult } from "../../omniroute/client.ts";
 import { AdvisorGate, buildAdvisorJudgeRequest, redoFeedback } from "./advisor.ts";
 import type { HubRoute } from "./config.ts";
@@ -13,22 +11,14 @@ import { EscalationState, SessionState } from "./state.ts";
 import { parseAdvisorVerdict } from "./text.ts";
 import { planExecutePhase, type PlanExecuteState } from "./plan-execute.ts";
 
-export interface RouteEvent extends Partial<SwitchTrace> {
+export interface RouteEvent extends Partial<SwitchTrace>, Partial<DecisionTrace> {
   route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default" | "decision"; score: number; ms: number;
-  decisionMode?: "off" | "shadow" | "enforce";
-  chosenAlias?: string | null; chosenEffort?: string | null; margin?: number; decisionLatencyMs?: number;
-  decisionReason?: string; fallbackApplied?: boolean; decider?: { provider: string; model: string; latencyMs: number } | null;
   decision?: string; turn?: string; task?: number; pii?: boolean; severity?: number; spinning?: number; exploring?: number; production?: number;
 }
 export interface AdvisorEvent { route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
-interface RouteState { fingerprint: string; stage: StageState; pin?: Tier; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate; decisionFailure?: { turn: string; result: AdecResult }; currentPair?: { turn: string; pair: AdecPair } }
-export interface RouteHost {
+interface RouteState { fingerprint: string; stage: StageState; pin?: Tier; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate }
+export interface RouteHost extends DecisionHost {
   execute: (model: string, messages: ChatMessage[], judge: boolean, signal: AbortSignal, maxTokens?: number, reasoningEffort?: string) => Promise<ChatResult>;
-  onCampus: () => Promise<boolean>;
-  /** Current host privacy/observer facts, never inferred from model text. */
-  decisionContext?: () => { private: boolean; excluded: boolean };
-  publicDecisionText?: (text: string) => boolean;
-  admitDecision?: () => Promise<void>;
   /** Read on every stage call (#197); absent is the shadow default. */
   staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
@@ -40,8 +30,10 @@ export interface RouteHost {
 export class HubRouteRuntime {
   private readonly states = new SessionState<RouteState>();
   private readonly labels: RouteLabelTracker;
+  private readonly decisions: DecisionRouteController;
   private judgeOffUntil = 0;
   constructor(private readonly host: RouteHost, private readonly judgeTimeoutMs = 8000) {
+    this.decisions = new DecisionRouteController(host, judgeTimeoutMs);
     this.labels = new RouteLabelTracker(event => this.host.onRouteOutcome?.(event));
   }
 
@@ -92,22 +84,15 @@ export class HubRouteRuntime {
       state.plan = decision.state;
       if (decision.planningPrompt) sent = [{ role: "system", content: decision.planningPrompt }, ...messages];
     } else if (config.type === "escalation" && state.escalation.snapshot().latched) model = capable;
-    let picked: Awaited<ReturnType<HubRouteRuntime["decisionPick"]>> | undefined;
-    if (config.type === "decision") {
-      try { picked = await this.decisionPick(route, config, state, scope, labelTurn, messages, dimensions, pii, signal); }
-      catch (error) {
-        if (signal.aborted || (error && typeof error === "object" && "budgetStop" in error)) throw error;
-        picked = { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: "unavailable" } };
-      }
-    }
-    if (picked?.apply) model = picked.apply.alias;
-    if (picked?.trace) source = "decision";
-    if (config.type === "decision" && (signal.aborted || labelTurn?.closed)) throw new Error("model route turn ended before execution; retry in the current turn");
+    const picked = await this.decisions.pick(config, { route, scope, turn: labelTurn, messages, dimensions, pii, signal,
+      current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn });
+    model = picked.apply?.alias ?? model;
+    source = picked.trace ? "decision" : source;
     let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
     const result = picked?.apply
       ? await this.host.execute(model, sent, false, signal, undefined, picked.apply.effort)
       : await this.host.execute(model, sent, false, signal);
-    if (config.type === "decision") state.currentPair = picked?.apply && labelTurn ? { turn: labelTurn.context.turn, pair: picked.apply } : undefined;
+    picked.applied?.();
     if (config.type !== "escalation" || state.escalation.snapshot().latched) return this.withDecision(result, decisionId);
     const request = buildEscalationJudgeRequest(normalizeConversation([...messages, result.message]), signals.assistantTurnCount + 1);
     const answer = await this.judge(config.judge ?? capable, [{ role: "system", content: request.systemPrompt }, ...request.messages], pii, signal, request.maxOutputTokens);
@@ -119,48 +104,6 @@ export class HubRouteRuntime {
     // The discarded efficient response is not inserted into history or executed as a tool batch.
     decisionId = this.emitRoute({ route, tier: capable, source: "classifier", score: 0, ms: performance.now() - started }, labelTurn, dimensions, pii, messages);
     return this.withDecision(await this.host.execute(capable, messages, false, signal), decisionId);
-  }
-
-  private async decisionPick(route: string, config: HubRoute, state: RouteState, scope: string,
-    turn: ReturnType<RouteLabelTracker["captureTurn"]>, messages: ChatMessage[],
-    dimensions: ReturnType<typeof dimensionsFromSignal>, pii: boolean, signal: AbortSignal,
-  ): Promise<{ apply?: AdecPair; trace?: Partial<RouteEvent> }> {
-    const mode = config.decision_mode ?? "off";
-    if (mode === "off") return {};
-    const skip = (reason: string) => ({ trace: { decisionMode: mode, chosenAlias: null, chosenEffort: null, decisionReason: reason } });
-    if (!turn || turn.closed) return skip("turn_unavailable");
-    const context = this.host.decisionContext?.() ?? { private: pii, excluded: false };
-    if (context.excluded) return skip("observer_excluded");
-    const current = () => !signal.aborted && !turn.closed && this.labels.captureTurn() === turn;
-    if (!current()) return skip("turn_ended");
-    if ((pii || context.private) && !(await this.host.onCampus())) return skip("off_campus");
-    if (!current()) return skip("turn_ended");
-    const key = createHash("sha256").update(JSON.stringify([route, scope, turn.context.turn])).digest("hex");
-    const began = performance.now();
-    let result = state.decisionFailure?.turn === key ? state.decisionFailure.result : undefined;
-    if (!result) {
-      await this.host.admitDecision?.();
-      if (!current()) return skip("turn_ended");
-      const evidence = buildDecisionEvidence(pii || context.private ? [] : messages, dimensions, text => this.host.publicDecisionText?.(text) === true);
-      const pairs = config.candidates?.flatMap(candidate => candidate.efforts.map(effort => ({ alias: candidate.alias, effort }))) ?? [];
-      result = await requestAdecRoute(config.adec_endpoint ?? "http://127.0.0.1:8740/v1/route", {
-        policyId: config.policy_id ?? "", turnId: `ahub:${key}`, evidence,
-        constraints: { contextTokens: pii || context.private ? 0 : estimateInputTokens(messages), pii, private: context.private,
-          ...(state.currentPair?.turn === turn.context.turn ? { current: state.currentPair.pair } : {}) },
-        candidates: [...new Set(pairs.map(pair => pair.alias))],
-      }, pairs, signal, config.decision_timeout_ms ?? this.judgeTimeoutMs);
-      // Valid pins and hard-rule rechecks belong to adec. Only transport failures are held locally,
-      // so a dead service cannot delay every tool round of the same user turn.
-      if (!result.ok) state.decisionFailure = { turn: key, result };
-    }
-    if (!current()) return skip("turn_ended");
-    if (!result.ok) return { trace: { ...skip(result.reason).trace, decisionLatencyMs: Math.max(0, performance.now() - began) } };
-    const decision = result.decision;
-    const apply = mode === "enforce" && decision.alias !== null && decision.effort !== null
-      ? { alias: decision.alias, effort: decision.effort } : undefined;
-    return { ...(apply ? { apply } : {}), trace: { decisionMode: mode, chosenAlias: decision.alias, chosenEffort: decision.effort,
-      margin: decision.margin, decisionLatencyMs: Math.max(0, performance.now() - began), decisionReason: decision.reason,
-      fallbackApplied: decision.fallbackApplied, decider: decision.decider ? { provider: decision.decider.provider, model: decision.decider.model, latencyMs: decision.decider.latencyMs } : null } };
   }
 
   /** Reviews held no-tool responses. A redo is fed into the same local turn and bounded by its normal step cap. */

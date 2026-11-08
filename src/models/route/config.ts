@@ -44,27 +44,31 @@ export function parseHubRoutes(input: unknown): Record<string, HubRoute> {
     if (r.trigger === "pattern" && !r.pattern) throw new Error(`routing.toml: ${id} requires pattern`);
     if (typeof r.pattern === "string") new RegExp(r.pattern, "u");
     if (r.type === "decision") {
-      const problem = (field: string, step: string): never => { throw new Error(`routing.toml: invalid ${id}.${field}; ${step}`); };
-      if (r.decision_backend !== "adec") problem("decision_backend", 'set decision_backend = "adec" for a loopback policy service');
-      if (r.decision_mode !== undefined && !["off", "shadow", "enforce"].includes(String(r.decision_mode))) problem("decision_mode", 'use "off", "shadow" or "enforce", starting with shadow');
-      if (typeof r.policy_id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,49}$/.test(r.policy_id)) problem("policy_id", "name a configured adec policy with 1 to 50 lowercase identifier characters");
-      const endpoint = r.adec_endpoint ?? "http://127.0.0.1:8740/v1/route";
-      if (!isAdecRouteEndpoint(endpoint)) problem("adec_endpoint", "use an HTTP numeric loopback /v1/route URL without credentials, query or fragment");
-      if (r.decision_timeout_ms !== undefined && (!Number.isSafeInteger(r.decision_timeout_ms) || Number(r.decision_timeout_ms) < 1 || Number(r.decision_timeout_ms) > 30_000)) problem("decision_timeout_ms", "use 1 to 30000 milliseconds");
-      if (!Array.isArray(r.candidates) || !r.candidates.length || r.candidates.length > 26) problem("candidates", "list 1 to 26 policy alias/effort pairs");
-      const candidates: { alias: string; efforts: string[] }[] = [], seen = new Set<string>();
-      let pairCount = 0;
-      for (const candidate of r.candidates as unknown[]) {
-        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) problem("candidates", "use tables with an alias and an efforts list");
-        const pair = candidate as Record<string, unknown>;
-        if (Object.keys(pair).some(key => key !== "alias" && key !== "efforts") || typeof pair.alias !== "string" || !/^[a-z0-9][a-z0-9._/:-]{0,63}$/.test(pair.alias) || !Array.isArray(pair.efforts) || !pair.efforts.length || pair.efforts.some(effort => typeof effort !== "string" || !/^[a-z0-9][a-z0-9_-]{0,15}$/.test(effort))) problem("candidates", "use a bounded policy alias and a non-empty efforts list");
-        const alias = pair.alias as string, efforts = pair.efforts as string[];
-        pairCount += efforts.length;
-        if (seen.has(alias) || new Set(efforts).size !== efforts.length || pairCount > 26) problem("candidates", "remove duplicate aliases/efforts and keep at most 26 pairs");
-        seen.add(alias); candidates.push({ alias, efforts: [...efforts] });
-      }
-      out[id] = { ...r, decision_backend: "adec", decision_mode: r.decision_mode ?? "off", adec_endpoint: endpoint, candidates } as unknown as HubRoute;
+      out[id] = parseDecisionConfig(id, r);
     } else out[id] = r as unknown as HubRoute;
   }
   return out;
+}
+
+function parseDecisionConfig(id: string, r: Record<string, unknown>): HubRoute {
+  const problem = (field: string, step: string): never => { throw new Error(`routing.toml: invalid ${id}.${field}; ${step}`); };
+  if (r.decision_backend !== "adec") problem("decision_backend", 'set decision_backend = "adec" for a loopback policy service');
+  if (r.decision_mode !== undefined && !["off", "shadow", "enforce"].includes(String(r.decision_mode))) problem("decision_mode", 'use "off", "shadow" or "enforce", starting with shadow');
+  if (typeof r.policy_id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,49}$/.test(r.policy_id)) problem("policy_id", "name a configured adec policy with 1 to 50 lowercase identifier characters");
+  const endpoint = r.adec_endpoint ?? "http://127.0.0.1:8740/v1/route";
+  if (!isAdecRouteEndpoint(endpoint)) problem("adec_endpoint", "use an HTTP numeric loopback /v1/route URL without credentials, query or fragment");
+  if (r.decision_timeout_ms !== undefined && (!Number.isSafeInteger(r.decision_timeout_ms) || Number(r.decision_timeout_ms) < 1 || Number(r.decision_timeout_ms) > 30_000)) problem("decision_timeout_ms", "use 1 to 30000 milliseconds");
+  if (!Array.isArray(r.candidates) || !r.candidates.length || r.candidates.length > 26) problem("candidates", "list 1 to 26 policy alias/effort pairs");
+  const candidates: { alias: string; efforts: string[] }[] = [], seen = new Set<string>();
+  let pairCount = 0;
+  for (const candidate of r.candidates as unknown[]) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) problem("candidates", "use tables with an alias and an efforts list");
+    const pair = candidate as Record<string, unknown>;
+    if (Object.keys(pair).some(key => key !== "alias" && key !== "efforts") || typeof pair.alias !== "string" || !/^[a-z0-9][a-z0-9._/:-]{0,63}$/.test(pair.alias) || !Array.isArray(pair.efforts) || !pair.efforts.length || pair.efforts.some(effort => typeof effort !== "string" || !/^[a-z0-9][a-z0-9_-]{0,15}$/.test(effort))) problem("candidates", "use a bounded policy alias and a non-empty efforts list");
+    const alias = pair.alias as string, efforts = pair.efforts as string[];
+    pairCount += efforts.length;
+    if (seen.has(alias) || new Set(efforts).size !== efforts.length || pairCount > 26) problem("candidates", "remove duplicate aliases/efforts and keep at most 26 pairs");
+    seen.add(alias); candidates.push({ alias, efforts: [...efforts] });
+  }
+  return { ...r, decision_backend: "adec", decision_mode: r.decision_mode ?? "off", adec_endpoint: endpoint, candidates } as unknown as HubRoute;
 }

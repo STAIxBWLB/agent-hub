@@ -23,15 +23,15 @@ async function fixture(mode: "off" | "shadow" | "enforce", extra: Partial<LocalO
     return Response.json({ id: "0123456789abcdef0123456789abcdef", policyId: "ahub.local", alias: "coding", effort: "high", margin: 0.8, abstain: false, reason: pinned ? "pinned" : "ok", fallbackApplied: false, pinned, rules: [], decider: null });
   } }); clean.push(() => server.stop(true));
   const config: HubRoute = { type: "decision", decision_backend: "adec", decision_mode: mode, policy_id: "ahub.local", adec_endpoint: `http://127.0.0.1:${server.port}/v1/route`, candidates: [{ alias: "coding", efforts: ["high"] }] };
-  const answers: string[] = [], units: string[] = [];
+  const answers: string[] = [], units: string[] = [], diagnostics: string[] = [];
   const peer = new LocalPeer("local", { cwd, omni, fixedModel: "fixed", route: "hub/test", hubRoutes: () => ({ "hub/test": config }), routeEvidencePublic: () => true,
-    tools: { deny: [], permit: async () => true }, admitBudget: async (_envs, unit) => { units.push(unit); return []; }, ...extra });
+    tools: { deny: [], permit: async () => true }, log: line => diagnostics.push(line), admitBudget: async (_envs, unit) => { units.push(unit); return []; }, ...extra });
   clean.push(() => peer.stop()); peer.onMessage = text => { answers.push(text); }; await peer.start();
   const run = async (envs: Envelope[] = [newEnvelope("user", "SOURCE_CANARY complete this task")]) => {
     let done!: () => void; const idle = new Promise<void>(resolve => { done = resolve; });
     peer.onState = state => { if (state === "idle") done(); };
     await peer.deliver(envs); await idle;
-    expect(peer.state).toBe("idle");
+    expect(peer.state).toBe("idle"); expect(diagnostics).toEqual([]);
   };
   return { peer, run, model, requests, answers, units };
 }
