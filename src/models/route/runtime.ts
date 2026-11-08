@@ -18,7 +18,7 @@ export interface RouteEvent extends Partial<SwitchTrace>, Partial<DecisionTrace>
 export interface AdvisorEvent { route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
 interface RouteState { fingerprint: string; stage: StageState; pin?: Tier; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate }
 export interface RouteHost extends DecisionHost {
-  execute: (model: string, messages: ChatMessage[], judge: boolean, signal: AbortSignal, maxTokens?: number, reasoningEffort?: string, beforeRequest?: () => void) => Promise<ChatResult>;
+  execute: (model: string, messages: ChatMessage[], judge: boolean, signal: AbortSignal, maxTokens?: number) => Promise<ChatResult>;
   /** Read on every stage call (#197); absent is the shadow default. */
   staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
@@ -88,13 +88,9 @@ export class HubRouteRuntime {
     const proposed: Awaited<ReturnType<DecisionRouteController["pick"]>> = config.type === "decision" ? await this.decisions.pick(config, { route, scope, turn: labelTurn, messages, dimensions, pii, signal,
       current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn }) : {};
     const picked = this.decisions.confirm(proposed);
-    model = picked.apply?.alias ?? model;
     source = picked.trace ? "decision" : source;
     let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
-    const result = picked?.apply
-      ? await this.host.execute(model, sent, false, signal, undefined, picked.apply.effort, picked.handoff)
-      : await this.host.execute(model, sent, false, signal);
-    picked.applied?.();
+    const result = await this.host.execute(model, sent, false, signal);
     if (config.type !== "escalation" || state.escalation.snapshot().latched) return this.withDecision(result, decisionId);
     const request = buildEscalationJudgeRequest(normalizeConversation([...messages, result.message]), signals.assistantTurnCount + 1);
     const answer = await this.judge(config.judge ?? capable, [{ role: "system", content: request.systemPrompt }, ...request.messages], pii, signal, request.maxOutputTokens);

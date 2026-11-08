@@ -14,7 +14,7 @@ import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 const clean: (() => unknown)[] = [];
 const originalKey = process.env.OMNIROUTE_API_KEY;
 afterEach(async () => { for (const close of clean.splice(0).reverse()) await close(); if (originalKey === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = originalKey; });
-async function fixture(mode: "off" | "shadow" | "enforce", extra: Partial<LocalOptions> = {}) {
+async function fixture(mode: "off" | "shadow", extra: Partial<LocalOptions> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-adec-local-")); clean.push(() => rmSync(cwd, { recursive: true, force: true }));
   writeFileSync(join(cwd, "a.txt"), "ordinary fixture output");
   const model = startFakeModelServer({ key: "fake-adec-gateway-key", script: body => body.messages.some(message => message.role === "tool") ? { content: "done" } : { tool_calls: [toolCall("read", { path: "a.txt" })] } });
@@ -36,14 +36,14 @@ async function fixture(mode: "off" | "shadow" | "enforce", extra: Partial<LocalO
     await peer.deliver(envs); await idle;
     expect(peer.state).toBe("idle"); expect(diagnostics).toEqual([]);
   };
-  return { peer, run, model, requests, answers, units, omni, diagnostics };
+  return { peer, run, model, requests, answers, units };
 }
 
-test("local off/shadow preserve normal wire, enforce forwards effort, and the service sees one stable user-turn identity", async () => {
-  for (const mode of ["off", "shadow", "enforce"] as const) {
+test("local off/shadow preserve normal model and effort while the service sees one stable user-turn identity", async () => {
+  for (const mode of ["off", "shadow"] as const) {
     const f = await fixture(mode); await f.run(); expect(f.answers).toEqual(["done"]);
-    expect(f.model.requests.map(row => row.body.model)).toEqual(mode === "enforce" ? ["coding", "coding"] : ["fast", "fast"]);
-    for (const row of f.model.requests) expect(row.body.reasoning_effort).toBe(mode === "enforce" ? "high" : undefined);
+    expect(f.model.requests.map(row => row.body.model)).toEqual(["fast", "fast"]);
+    for (const row of f.model.requests) expect(row.body.reasoning_effort).toBe(undefined);
     expect(f.requests).toHaveLength(mode === "off" ? 0 : 2);
     if (mode !== "off") {
       expect(f.requests[0].turnId).toBe(f.requests[1].turnId);
@@ -55,7 +55,7 @@ test("local off/shadow preserve normal wire, enforce forwards effort, and the se
 
 test("a person model override bypasses the decision service and does not inherit its effort", async () => {
   let applied = 0;
-  const f = await fixture("enforce", { getModelOverride: () => ({ model: "fixed", applied: () => { applied++; } }) });
+  const f = await fixture("shadow", { getModelOverride: () => ({ model: "fixed", applied: () => { applied++; } }) });
   await f.run(); expect(f.requests).toHaveLength(0); expect(applied).toBe(1);
   expect(f.model.requests.map(row => row.body.model)).toEqual(["fixed", "fixed"]);
   for (const row of f.model.requests) expect(row.body.reasoning_effort).toBeUndefined();
@@ -127,21 +127,3 @@ candidates = [{alias="coding", efforts=["high"]}]
   expect(JSON.stringify(routeEvents)).not.toContain("DECISION_PATH_CANARY");
   expect(model.requests[0]!.body.model).toBe("fast"); expect(model.requests[0]!.body.reasoning_effort).toBeUndefined();
 }, 20_000);
-
-
-test("an enforce handoff rechecks current privacy after gateway discovery and sends no model request", async () => {
-  const facts = { pii: false, private: false, excluded: false };
-  const f = await fixture("enforce", { routeDecisionContext: () => ({ ...facts }) });
-  let arrived!: () => void, release!: () => void, idle!: () => void, failures = 0;
-  const entered = new Promise<void>(resolve => { arrived = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
-  clean.push(release);
-  const base = f.omni.base.bind(f.omni);
-  f.omni.base = async () => { const url = await base(); arrived(); await gate; return url; };
-  const finished = new Promise<void>(resolve => { idle = resolve; });
-  f.peer.onState = state => { if (state === "idle") idle(); }; f.peer.onFailed = () => { failures++; };
-  await f.peer.deliver([newEnvelope("user", "GATEWAY_HANDOFF_SOURCE_CANARY")]);
-  await entered; facts.pii = true; release(); await finished;
-  expect(f.requests).toHaveLength(1); // the earlier decision was public when released
-  expect(f.model.requests).toHaveLength(0); expect(f.answers).toEqual([]); expect(failures).toBe(1);
-  expect(f.diagnostics.some(line => line.includes("policy changed or is unavailable"))).toBe(true);
-});

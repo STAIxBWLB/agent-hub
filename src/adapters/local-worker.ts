@@ -147,16 +147,15 @@ export class LocalPeer extends BasePeer {
   ) {
     super(id, opts.watchdogMs);
     this.routes = new HubRouteRuntime({
-      execute: async (model, messages, judge, signal, maxTokens, reasoningEffort, beforeRequest) => {
+      execute: async (model, messages, judge, signal, maxTokens) => {
         if (signal.aborted) throw new Error("turn cancelled before model request");
         const envs = this.routeEnvs, pii = this.routePii, generation = this.turn, task = this.routeTask;
         await this.requireBudget(envs, "model_calls");
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
-        beforeRequest?.();
         if (signal.aborted) throw new Error("turn cancelled before model request");
         const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : [])];
         this.releaseObserverInput(this.currentObserverInputContext, envs);
-        const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}), ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}), ...(beforeRequest ? { beforeRequest } : {}) });
+        const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         this.lastServedBy = `hub ${model} (provider ${result.provider ?? "?"})`;

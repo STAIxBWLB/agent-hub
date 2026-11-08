@@ -4,7 +4,7 @@ import { isAdecRouteEndpoint } from "./adec.ts";
 export interface HubRoute {
   type: "stage" | "plan_execute" | "advisor" | "escalation" | "decision";
   decision_backend?: "adec";
-  decision_mode?: "off" | "shadow" | "enforce";
+  decision_mode?: "off" | "shadow";
   adec_endpoint?: string;
   policy_id?: string;
   candidates?: { alias: string; efforts: string[] }[];
@@ -53,7 +53,8 @@ export function parseHubRoutes(input: unknown): Record<string, HubRoute> {
 function parseDecisionConfig(id: string, r: Record<string, unknown>): HubRoute {
   const problem = (field: string, step: string): never => { throw new Error(`routing.toml: invalid ${id}.${field}; ${step}`); };
   if (r.decision_backend !== "adec") problem("decision_backend", 'set decision_backend = "adec" for a loopback policy service');
-  if (r.decision_mode !== undefined && !["off", "shadow", "enforce"].includes(String(r.decision_mode))) problem("decision_mode", 'use "off", "shadow" or "enforce", starting with shadow');
+  if (r.decision_mode === "enforce") throw new Error("decision_mode enforce is not available yet; use shadow; tracked in #554");
+  if (r.decision_mode !== undefined && !["off", "shadow"].includes(String(r.decision_mode))) problem("decision_mode", 'use "off" or "shadow"');
   if (typeof r.policy_id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,49}$/.test(r.policy_id)) problem("policy_id", "name a configured adec policy with 1 to 50 lowercase identifier characters");
   const endpoint = r.adec_endpoint ?? "http://127.0.0.1:8740/v1/route";
   if (!isAdecRouteEndpoint(endpoint)) problem("adec_endpoint", "use an HTTP numeric loopback /v1/route URL without credentials, query or fragment");

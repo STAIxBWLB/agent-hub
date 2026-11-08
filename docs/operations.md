@@ -4612,12 +4612,12 @@ class `fixed_model` selections and a person's explicit model override retain
 their existing behavior; an explicit model bypasses this route.
 
 Omitting `decision_mode` means `off`: no decision request or evidence is built.
-Start with `shadow`. It records the proposed alias/effort, margin, latency and
-decider while keeping the exact existing stage heuristic model, effort and
-conversation. `enforce` is a person's later configuration choice after reviewing
-shadow evidence. It applies a validated alias and effort to the next gateway
-call through `reasoning_effort`; it does not edit a native peer or provider.
-No route is enabled by default or deployed by this feature.
+This delivery supports `shadow` only. It records the proposed alias/effort,
+margin, latency and decider while keeping the exact existing stage heuristic
+model, effort and conversation. `enforce` is explicitly refused at config load:
+`decision_mode enforce is not available yet; use shadow; tracked in #554`.
+There is no dormant application path or gateway effort plumbing. No route is
+enabled by default or deployed by this feature.
 
 The configured alias/effort list has at most 26 pairs. Aliases narrow the adec
 policy; efforts are an additional hub-side response allowlist and are not sent
@@ -4625,8 +4625,9 @@ as a policy override. Align the lists with the service policy: an unconfigured
 effort is refused as `outside_options`, keeping the heuristic. The request
 cannot add a policy candidate. The service assembles its question and
 owns its hard rules, margin threshold, in-memory pins and fallback. A valid
-`fallbackApplied` pair is its policy fallback even when `abstain` is true.
-`no_candidate` keeps the hub heuristic. An HTTP 400 is a caller/configuration
+`fallbackApplied` pair is recorded as the service's proposed fallback even when
+`abstain` is true. Every proposal, failure and `no_candidate` keeps the hub
+heuristic unchanged. An HTTP 400 is a caller/configuration
 error; inspect the policy id and allowed pairs. Transport errors, timeout,
 malformed responses and an out-of-list pair also keep the hub heuristic, with a
 closed reason in the route event. A failed service is not asked again in the
@@ -4637,8 +4638,9 @@ HTTP numeric loopback with `/v1/route`, without userinfo, query or fragment.
 
 Each eligible tool round carries the same opaque, route/session/user-turn-bound
 `turnId`. adec therefore reuses its pin while rechecking current hard rules.
-The hub sends `current` only for a known applied alias/effort in that same turn;
-it does not invent an effort for a native/default or intervening override.
+The hub does not send a proposal as `current`: no pair is applied in shadow,
+and the native/default effort is unknown. Explicit model selections bypass the
+service.
 Changing a service, provider, model, version or policy threshold requires a new
 shadow period. The hub does not recalibrate a remote policy. The current adec
 wire reports a model id but no separate model version, which stays unknown.
@@ -4658,15 +4660,13 @@ can enforce on-prem candidates/decider rules. The ordinary gateway campus and
 execution-budget checks still apply. Current board/turn privacy and observer
 facts are checked again across admission, campus and service awaits. A changed
 or unavailable authority refuses the stale turn instead of turning into a
-service-error fallback; inspect current task policy and retry. Accepted advice
-is checked again before telemetry and, for enforcement, after model admission
-and gateway discovery immediately before HTTP release. The host-only gateway
-refusal callback is never serialized. Source text, tool arguments, credentials
+service-error fallback; inspect current task policy and retry. A returned proposal is checked again before telemetry. The original gateway
+execution path and its privacy/budget checks are unchanged. Source text, tool arguments, credentials
 and server error prose never enter route events.
 
 This delivery is the adec consumer slice of #554. The direct System One backend,
-optional stage classifier and manual offline triage evaluation remain separate
-unimplemented legs. Offline fake-service tests establish protocol and shadow
+enforcement application, optional stage classifier and manual offline triage
+evaluation remain separate unimplemented legs. Offline fake-service tests establish protocol and shadow
 behavior; no routing gain, native service/model run or production rollout is
 claimed.
 

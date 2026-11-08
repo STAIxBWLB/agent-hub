@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { requestAdecRoute, type AdecPair, type AdecResult } from "./adec.ts";
+import { requestAdecRoute, type AdecResult } from "./adec.ts";
 import { buildDecisionEvidence } from "./decision-evidence.ts";
 import type { HubRoute } from "./config.ts";
 import type { ChatMessage } from "../../omniroute/client.ts";
@@ -15,7 +15,7 @@ export interface DecisionHost {
   admitDecision?: () => Promise<void>;
 }
 export interface DecisionTrace {
-  decisionMode: "off" | "shadow" | "enforce";
+  decisionMode: "off" | "shadow";
   chosenAlias: string | null; chosenEffort: string | null; margin?: number; decisionLatencyMs?: number;
   decisionReason?: string; fallbackApplied?: boolean;
   decider?: { provider: string; model: string; latencyMs: number } | null;
@@ -25,12 +25,12 @@ interface Context {
   current(): boolean; messages: ChatMessage[]; dimensions: CodingAgentDimensions; pii: boolean; signal: AbortSignal;
 }
 interface Privacy { pii: boolean; private: boolean; excluded: boolean }
-interface Selection { apply?: AdecPair; trace?: DecisionTrace; applied?(): void; handoff?(): void }
+interface Selection { trace?: DecisionTrace; check?(): void }
 type Attempt = { result: AdecResult; privacy: Privacy } | { skipped: string };
 export class DecisionPolicyChangedError extends Error {
   constructor() { super("decision routing privacy or observer policy changed or is unavailable during preparation; run ahub status, inspect current task policy and retry"); }
 }
-interface State { fingerprint: string; failure?: { turn: string; result: AdecResult }; currentPair?: { turn: string; pair: AdecPair } }
+interface State { fingerprint: string; failure?: { turn: string; result: AdecResult } }
 const ended = () => new Error("model route turn ended before execution; retry in the current turn");
 
 /** Optional decision work never changes the baseline on failure; valid pins/rules remain owned by adec. */
@@ -63,7 +63,7 @@ export class DecisionRouteController {
   }
   /** Recheck after the async pick resolves, before its fields reach execution or telemetry. */
   confirm(selection: Selection): Selection {
-    selection.handoff?.(); return selection;
+    selection.check?.(); return selection;
   }
   private privacy(pii: boolean): Privacy {
     try {
@@ -93,13 +93,12 @@ export class DecisionRouteController {
     this.fence(context, attempt.privacy);
     const result = attempt.result;
     if (!result.ok) return { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: result.reason, decisionLatencyMs: Math.max(0, performance.now() - began) } };
-    const d = result.decision, apply = config.decision_mode === "enforce" && d.alias !== null && d.effort !== null ? { alias: d.alias, effort: d.effort } : undefined;
+    const d = result.decision;
     let decider: DecisionTrace["decider"];
     if (d.decider === null) decider = null;
     else if (this.host.publicDecisionText?.(JSON.stringify(d.decider)) === true) decider = { provider: d.decider.provider, model: d.decider.model, latencyMs: d.decider.latencyMs };
     this.fence(context, attempt.privacy);
-    return { ...(apply ? { apply } : {}), handoff: () => this.fence(context, attempt.privacy),
-      applied: () => { if (context.current()) state.currentPair = apply ? { turn: turn.context.turn, pair: apply } : undefined; },
+    return { check: () => this.fence(context, attempt.privacy),
       trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: d.alias, chosenEffort: d.effort, margin: d.margin,
         decisionLatencyMs: Math.max(0, performance.now() - began), decisionReason: d.reason, fallbackApplied: d.fallbackApplied,
         ...(decider === undefined ? {} : { decider }) } };
@@ -118,8 +117,7 @@ export class DecisionRouteController {
     this.fence(context, privacy);
     const result = await requestAdecRoute(config.adec_endpoint ?? "http://127.0.0.1:8740/v1/route", {
       policyId: config.policy_id ?? "", turnId: `ahub:${key}`, evidence,
-      constraints: { contextTokens: sensitive ? 0 : estimateInputTokens(context.messages), pii: privacy.pii, private: privacy.private,
-        ...(state.currentPair?.turn === context.turn?.context.turn ? { current: state.currentPair!.pair } : {}) },
+      constraints: { contextTokens: sensitive ? 0 : estimateInputTokens(context.messages), pii: privacy.pii, private: privacy.private },
       candidates: [...new Set(pairs.map(pair => pair.alias))],
     }, pairs, context.signal, config.decision_timeout_ms ?? this.timeoutMs);
     this.fence(context, privacy);

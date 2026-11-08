@@ -21,7 +21,7 @@ function service(answer?: (body: any) => unknown) {
 function host(extra: Partial<RouteHost> = {}) {
   const calls: { model: string; messages: ChatMessage[]; effort?: string }[] = [], events: RouteEvent[] = [];
   const runtime = new HubRouteRuntime({ onCampus: async () => true, publicDecisionText: () => true,
-    execute: async (model, sent, _judge, _signal, _max, effort) => { calls.push({ model, messages: sent, ...(effort ? { effort } : {}) }); return { message: { role: "assistant", content: "fixed answer" } }; },
+    execute: async (model, sent) => { calls.push({ model, messages: sent }); return { message: { role: "assistant", content: "fixed answer" } }; },
     onRoute: event => events.push(event), ...extra });
   return { runtime, calls, events };
 }
@@ -31,6 +31,7 @@ test("decision configuration defaults off and refuses unsafe or incomplete servi
   const s = service();
   const parse = (patch: Record<string, unknown>) => parseHubRoutes({ "hub/decision": { ...s.config, decision_mode: undefined, ...patch } });
   expect(parse({})["hub/decision"]?.decision_mode).toBe("off");
+  expect(() => parse({ decision_mode: "enforce" })).toThrow("decision_mode enforce is not available yet; use shadow; tracked in #554");
   for (const patch of [
     { decision_backend: "systemone" }, { decision_mode: "yes" }, { policy_id: "../private" },
     { adec_endpoint: "https://example.com/v1/route" }, { adec_endpoint: "http://user:secret@127.0.0.1:8740/v1/route" },
@@ -70,32 +71,35 @@ test("shadow preserves the recorded stage model, effort and whole conversation t
   }
 });
 
-test("enforce applies only validated picks, passes effort, and lets adec own turn pins and hard-rule rechecks", async () => {
+test("shadow lets adec own turn pins and hard-rule rechecks without applying the proposed pairs", async () => {
   const pins = new Map<string, string>();
   const s = service(body => {
     const pinned = pins.has(body.turnId), alias = pins.get(body.turnId) ?? (pins.size ? "fast" : "coding");
     pins.set(body.turnId, alias);
     return { id: "0123456789abcdef0123456789abcdef", policyId: "ahub.test", alias, effort: alias === "coding" ? "high" : "low", margin: 0.6, abstain: false, reason: pinned ? "pinned" : "ok", fallbackApplied: false, pinned, rules: [], decider: null };
   });
-  const h = host(), config = { ...s.config, decision_mode: "enforce" as const };
+  const h = host(), config = s.config;
   h.runtime.beginTurn({ turn: "first", pii: false });
   await h.runtime.call("hub/test", config, messages, "scope", false, signal());
   await h.runtime.call("hub/test", config, [...messages, { role: "tool", content: "fresh tool evidence" }], "scope", false, signal());
   h.runtime.endTurn("first", "completed"); h.runtime.beginTurn({ turn: "second", pii: false });
   await h.runtime.call("hub/test", config, messages, "scope", false, signal());
-  expect(h.calls.map(call => [call.model, call.effort])).toEqual([["coding", "high"], ["coding", "high"], ["fast", "low"]]);
+  expect(h.calls.map(call => [call.model, call.effort])).toEqual([["fast", undefined], ["fast", undefined], ["fast", undefined]]);
+  expect(h.events.map(event => [event.chosenAlias, event.chosenEffort])).toEqual([["coding", "high"], ["coding", "high"], ["fast", "low"]]);
   expect(s.requests[0].turnId).toBe(s.requests[1].turnId); expect(s.requests[2].turnId).not.toBe(s.requests[0].turnId);
-  expect(s.requests[1].constraints.current).toEqual({ alias: "coding", effort: "high" });
+  expect(s.requests[1].constraints.current).toBeUndefined(); // a shadow proposal is not the applied model/effort
   expect(s.requests[1].evidence).toContain("fresh tool evidence"); // server rechecks get current bounded state, not a cached decision
 });
 
-test("adec fallback is authoritative, while no_candidate keeps the hub heuristic", async () => {
+test("policy fallback and no_candidate are recorded without changing the hub heuristic", async () => {
   for (const noCandidate of [false, true]) {
     const s = service(() => ({ id: "0123456789abcdef0123456789abcdef", policyId: "ahub.test", alias: noCandidate ? null : "coding", effort: noCandidate ? null : "high", margin: 0, abstain: true, reason: noCandidate ? "no_candidate" : "low_margin", fallbackApplied: !noCandidate, pinned: false, rules: [], decider: null }));
     const h = host(); h.runtime.beginTurn({ turn: "fallback", pii: false });
-    await h.runtime.call("hub/test", { ...s.config, decision_mode: "enforce" }, messages, "scope", false, signal());
-    expect(h.calls[0]?.model).toBe(noCandidate ? "fast" : "coding");
-    expect(h.calls[0]?.effort).toBe(noCandidate ? undefined : "high");
+    await h.runtime.call("hub/test", s.config, messages, "scope", false, signal());
+    expect(h.calls[0]?.model).toBe("fast");
+    expect(h.calls[0]?.effort).toBeUndefined();
+    expect(h.events[0]?.chosenAlias).toBe(noCandidate ? null : "coding");
+    expect(h.events[0]?.chosenEffort).toBe(noCandidate ? null : "high");
     expect(h.events[0]?.decisionReason).toBe(noCandidate ? "no_candidate" : "low_margin");
   }
 });
@@ -172,7 +176,7 @@ test("privacy and observer upgrades during held admission release no decision ev
     const facts = { pii: false, private: false, excluded: false }, s = service();
     const h = host({ decisionContext: () => ({ ...facts }), publicDecisionText: () => { screens++; return true; }, admitDecision: async () => { arrived(); await gate; } });
     h.runtime.beginTurn({ turn: "admission-upgrade", pii: false });
-    const pending = h.runtime.call("hub/test", { ...s.config, decision_mode: "enforce" }, [{ role: "user", content: "ADMISSION_SOURCE_CANARY" }], "scope", false, signal());
+    const pending = h.runtime.call("hub/test", s.config, [{ role: "user", content: "ADMISSION_SOURCE_CANARY" }], "scope", false, signal());
     const settled = pending.then(() => undefined, error => error);
     await entered; facts[field] = true; release(); const error = await settled;
     expect(s.requests).toHaveLength(0); expect(screens).toBe(0);
@@ -204,7 +208,7 @@ test("changed current board facts suppress a held service pick and its decider m
     } }); close.push(() => { release(); held.stop(true); });
     const facts = { pii: false, private: false, excluded: false }, s = service(), h = host({ decisionContext: () => ({ ...facts }) });
     h.runtime.beginTurn({ turn: "service-upgrade", pii: false });
-    const pending = h.runtime.call("hub/test", { ...s.config, decision_mode: "enforce", adec_endpoint: `http://127.0.0.1:${held.port}/v1/route` }, messages, "scope", false, signal());
+    const pending = h.runtime.call("hub/test", { ...s.config, adec_endpoint: `http://127.0.0.1:${held.port}/v1/route` }, messages, "scope", false, signal());
     const settled = pending.then(() => undefined, error => error);
     await entered; facts[field] = true; release(); const error = await settled;
     expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);

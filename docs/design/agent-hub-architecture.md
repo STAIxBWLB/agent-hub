@@ -149,8 +149,9 @@ Long-term hub writes and core promotion callbacks use the configured standalone 
 The adec backend (#554) is default-off and shadow-first. A shadow pick changes
 neither the heuristic model/effort nor the forwarded conversation. The service
 owns question assembly, hard rules, thresholds, pins and policy fallback; the hub
-owns allowed-pair validation, its off/shadow/enforce switch, current turn and
-budget/campus admission, and actual gateway execution. The bounded evidence
+owns allowed-pair validation, its default-off shadow switch, current turn and
+budget/campus admission, and original gateway execution. `enforce` is refused at configuration load and
+no pick is applied in this delivery. The bounded evidence
 builder runs only after admission and uses the host public-view screen; it never
 sends tool arguments, system instructions or full history. Sensitive turns are
 campus-gated before evidence and carry dimensions only plus privacy flags.
