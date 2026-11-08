@@ -238,7 +238,11 @@ for (const kind of ["role", "membership", "recovery", "storage"] as const) test(
   const r = await rig(undefined, undefined, kind === "membership" ? { shared: {}, local: {} } : undefined, kind === "role" ? { capabilities: { ...DEFAULT_CONFIG.capabilities, codex: [] } } : {});
   // Connect first, then withdraw the actual roster membership. An initially off-roster peer cannot complete hello.
   if (kind === "membership") {
-    expect(await r.console_.request({ t: "settings_set", key: "roster.codex", value: false, confirm: "codex" })).toMatchObject({ ok: true });
+    // The passive fake has no native stop evidence. The saved membership is authoritative; stop remains unqualified.
+    expect(await r.console_.request({ t: "settings_set", key: "roster.codex", value: false, confirm: "codex" })).toMatchObject({
+      ok: false, saved: true,
+      error: "roster saved; codex stop is unconfirmed; permission reset and task handoff were not attempted; inspect ahub status and reapply roster.codex false to retry",
+    });
     expect((await r.console_.request({ t: "status" })).status.peers.codex.rostered).toBe(false);
   }
   if (kind === "recovery") r.daemon.bus.setRecoveryHold(true);
