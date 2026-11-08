@@ -6739,7 +6739,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
         turns.set(e.peer, { id, capture, start: startedAt, tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         const modelBoundary = modelBoundaries.get(e.peer);
-        if (modelBoundary?.owner === bus.peers.get(e.peer)) modelBoundary.turn = turns.get(e.peer);
+        if (modelBoundary && modelBoundary.owner === bus.peers.get(e.peer)) modelBoundary.turn = turns.get(e.peer);
         const supervised = supervisionTurns.get(e.peer);
         if (supervised?.id.startsWith("supervision-")) supervised.nativeTurn = id;
         const pendingReviewInput = pendingReviewObserverInputs.get(e.peer);
