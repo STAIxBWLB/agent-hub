@@ -58,6 +58,7 @@ export class HubRouteRuntime {
   /** Executor failures retry the fixed model only in the caller; no tool has run yet. */
   async call(route: string, config: HubRoute, messages: ChatMessage[], scope: string, pii: boolean, signal: AbortSignal): Promise<ChatResult> {
     const labelTurn = this.labels.captureTurn();
+    this.decisions.checkEntry(config, pii);
     const started = performance.now(), state = this.state(route, config, scope);
     const conversation = normalizeConversation(messages), signals = extractToolSignals(conversation);
     const dimensions = dimensionsFromSignal(signals);

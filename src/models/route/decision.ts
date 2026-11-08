@@ -37,6 +37,11 @@ const ended = () => new Error("model route turn ended before execution; retry in
 export class DecisionRouteController {
   private readonly states = new SessionState<State>();
   constructor(private readonly host: DecisionHost, private readonly timeoutMs: number) {}
+  checkEntry(config: HubRoute, pii: boolean): void {
+    if (config.type !== "decision" || (config.decision_mode ?? "off") === "off") return;
+    const current = this.privacy(pii);
+    if ((current.pii || current.private) && !pii) throw new DecisionPolicyChangedError();
+  }
   async pick(config: HubRoute, context: Context): Promise<Selection> {
     if (config.type !== "decision" || (config.decision_mode ?? "off") === "off") return {};
     if (context.signal.aborted || context.turn?.closed) throw ended();
@@ -60,24 +65,26 @@ export class DecisionRouteController {
   confirm(selection: Selection): Selection {
     selection.handoff?.(); return selection;
   }
-  private privacy(context: Context): Privacy {
-    const current = this.host.decisionContext?.() ?? { private: context.pii, excluded: false };
-    if (typeof current.private !== "boolean" || typeof current.excluded !== "boolean" || current.pii !== undefined && typeof current.pii !== "boolean") throw new DecisionPolicyChangedError();
-    return { pii: context.pii || current.pii === true, private: current.private, excluded: current.excluded };
+  private privacy(pii: boolean): Privacy {
+    try {
+      const current = this.host.decisionContext?.() ?? { private: pii, excluded: false };
+      if (typeof current.private !== "boolean" || typeof current.excluded !== "boolean" || current.pii !== undefined && typeof current.pii !== "boolean") throw new DecisionPolicyChangedError();
+      return { pii: pii || current.pii === true, private: current.private, excluded: current.excluded };
+    } catch { throw new DecisionPolicyChangedError(); }
   }
   private same(a: Privacy, b: Privacy): boolean { return a.pii === b.pii && a.private === b.private && a.excluded === b.excluded; }
   private fence(context: Context, privacy: Privacy): void {
     if (!context.current()) throw ended();
-    try { if (this.same(privacy, this.privacy(context))) return; } catch { /* unavailable current facts refuse the handoff */ }
+    try { if (this.same(privacy, this.privacy(context.pii))) return; } catch { /* unavailable current facts refuse the handoff */ }
     throw new DecisionPolicyChangedError();
   }
   private async select(config: HubRoute, context: Context): Promise<Selection> {
     const { turn } = context;
     if (!turn) return this.skip(config, "turn_unavailable");
-    const privacy = this.privacy(context);
+    const privacy = this.privacy(context.pii);
     if (privacy.excluded) return this.skip(config, "observer_excluded");
     // A newly private board context is not permission to reuse a public delivery's text.
-    if (privacy.pii && !context.pii) return this.skip(config, "privacy_changed");
+    if ((privacy.pii || privacy.private) && !context.pii) throw new DecisionPolicyChangedError();
     const state = this.state(config, context), key = createHash("sha256").update(JSON.stringify([context.route, context.scope, turn.context.turn])).digest("hex");
     const began = performance.now();
     const attempt: Attempt = state.failure?.turn === key ? { result: state.failure.result, privacy } : await this.request(config, context, privacy, state, key);
@@ -100,7 +107,7 @@ export class DecisionRouteController {
   private async request(config: HubRoute, context: Context, initial: Privacy, state: State, key: string): Promise<Attempt> {
     await this.host.admitDecision?.();
     if (!context.current()) throw ended();
-    const privacy = this.privacy(context);
+    const privacy = this.privacy(context.pii);
     if (!this.same(initial, privacy)) throw new DecisionPolicyChangedError();
     if ((privacy.pii || privacy.private) && !(await this.host.onCampus())) return { skipped: "off_campus" };
     this.fence(context, privacy);

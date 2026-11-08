@@ -120,8 +120,8 @@ test("off-campus private or PII requests never build evidence; on-campus sensiti
   for (const privateTurn of [false, true]) {
     const s = service(); let screens = 0;
     const h = host({ onCampus: async () => false, decisionContext: () => ({ private: privateTurn, excluded: false }), publicDecisionText: () => { screens++; return true; } });
-    h.runtime.beginTurn({ turn: "sensitive", pii: !privateTurn });
-    await h.runtime.call("hub/test", s.config, [{ role: "user", content: "PRIVATE_SENTINEL" }], "scope", !privateTurn, signal());
+    h.runtime.beginTurn({ turn: "sensitive", pii: true });
+    await h.runtime.call("hub/test", s.config, [{ role: "user", content: "PRIVATE_SENTINEL" }], "scope", true, signal());
     expect(s.requests).toHaveLength(0); expect(screens).toBe(0); expect(h.events[0]?.decisionReason).toBe("off_campus");
   }
   const s = service(); let screens = 0;
@@ -210,5 +210,16 @@ test("changed current board facts suppress a held service pick and its decider m
     expect(h.calls).toHaveLength(0); expect(h.events).toHaveLength(0);
     expect(error).toBeInstanceOf(Error); expect(error.message).toContain("privacy or observer policy");
     expect(JSON.stringify(h.events)).not.toContain("DISCARDED_DECIDER_LABEL");
+  }
+});
+
+
+test("inconsistent or unavailable current privacy refuses before signal/evidence derivation", async () => {
+  for (const decisionContext of [() => ({ pii: true, private: false, excluded: false }), () => { throw new Error("PRIVATE_AUTHORITY_DIAGNOSTIC"); }]) {
+    const s = service(), h = host({ decisionContext }); h.runtime.beginTurn({ turn: "invalid-entry", pii: false });
+    const content = Object.defineProperty({ role: "user" }, "content", { get() { throw new Error("must not derive stale source"); } }) as ChatMessage;
+    const error = await h.runtime.call("hub/test", s.config, [content], "scope", false, signal()).then(() => undefined, error => error);
+    expect(error).toBeInstanceOf(Error); expect(error.message).toContain("decision routing privacy or observer policy");
+    expect(error.message).not.toContain("PRIVATE_AUTHORITY_DIAGNOSTIC"); expect(h.events).toHaveLength(0); expect(h.calls).toHaveLength(0); expect(s.requests).toHaveLength(0);
   }
 });
