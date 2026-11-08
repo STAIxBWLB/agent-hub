@@ -88,6 +88,8 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
     writeFileSync(transcript, JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "complete" }) + "\n");
     expect((await facts("Stop", { fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
     await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    const ordinaryEvents = readEvents(join(stateDir, "events.jsonl"));
+    expect(ordinaryEvents.filter((ev: any) => ev.type === "turn_end").length).toBe(ordinaryEvents.filter((ev: any) => ev.type === "turn_start").length);
     // #1280: terminal non-normal Stop reasons (USER_CANCELED, ERROR, MAX_INVOCATIONS) with fullyIdle=true return agy to idle without a new completion row.
     for (const reason of ["USER_CANCELED", "ERROR", "MAX_INVOCATIONS"] as const) {
       expect((await facts("PreInvocation", { invocationNum: 0 })).ok).toBe(true);

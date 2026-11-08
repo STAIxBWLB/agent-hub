@@ -20,6 +20,13 @@ test("a run settles only when the adapter signalled and nothing else is pending"
   for (const key of ["queuedContinuations", "ownedChildren", "runningChecks", "heldDeliveries"] as const) expect(settleVerdict({ ...quiet, [key]: 1 }), key).toBe("working");
 });
 
+test("native background work and an unknown native inventory keep a signalled run working", () => {
+  expect(settleVerdict({ ...quiet, nativeBackground: 0 })).toBe("settled");
+  expect(settleVerdict({ ...quiet, nativeBackground: 1 })).toBe("working");
+  expect(settleVerdict({ ...quiet, nativeBackground: null })).toBe("working");
+  expect(settleVerdict({ ...quiet, nativeBackground: null, openQuestions: 1 })).toBe("needs-input");
+});
+
 test("an open permission or question is needs-input and wins over every other fact", () => {
   expect(settleVerdict({ ...quiet, openPermissions: 1 })).toBe("needs-input");
   expect(settleVerdict({ ...quiet, openQuestions: 2 })).toBe("needs-input");

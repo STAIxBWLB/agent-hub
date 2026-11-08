@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, setSystemTime, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +10,30 @@ import { PROTOCOL } from "../src/hub/control-client.ts";
 // daemon's did (0.12 to 0.34 s each on the owner's Mac, 2.5 s in all because the projects were asked one after another).
 const dirs: string[] = [];
 const servers: { stop(force?: boolean): void }[] = [];
-afterEach(() => { for (const s of servers.splice(0)) s.stop(true); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+interface AnswerGate { entered: Promise<void>; readonly released: boolean; wait(): Promise<void>; release(): void }
+const gates: AnswerGate[] = [];
+afterEach(() => { for (const gate of gates.splice(0)) gate.release(); jest.useRealTimers(); setSystemTime(); for (const s of servers.splice(0)) s.stop(true); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+
+function answerGate(): AnswerGate {
+  let arrived!: () => void, release!: () => void, released = false;
+  const entered = new Promise<void>(resolve => { arrived = resolve; });
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const gate = { entered, get released() { return released; }, wait: () => { arrived(); return pending; }, release: () => { released = true; release(); } };
+  gates.push(gate);
+  return gate;
+}
+function clock() {
+  setSystemTime(Date.now());
+  return { advance: (ms: number) => setSystemTime(Date.now() + ms) };
+}
+// A deadline guards a hung fixture; observations, never elapsed sleeps, establish ordering.
+async function until(check: () => boolean | Promise<boolean>) {
+  const deadline = performance.now() + 5_000;
+  while (!await check()) {
+    if (performance.now() >= deadline) throw new Error("scripted inbox observation missing; inspect the held answer and refresh assertions");
+    await Bun.sleep(1);
+  }
+}
 
 interface Spec { id: string; delayMs?: number; permissions?: number; reviews?: number; hang?: boolean; decisionsAt?: number }
 function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: number; inboxProjectBudgetMs?: number } = {}) {
@@ -18,7 +41,7 @@ function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: n
   const asked: Record<string, number> = {};
   const open: Record<string, number> = {}, peak: Record<string, number> = {};   // #730: snapshots a project is answering at once, and the most it ever had
   const listing = { delayMs: 0, asked: 0 };                                    // #730: the project listing (inspectProject) of the lifecycle
-  const live: Record<string, { delayMs: number; permissions: number; reviews: number; hang: boolean }> = {};
+  const live: Record<string, { delayMs: number; permissions: number; reviews: number; hang: boolean; gate?: AnswerGate }> = {};
   const projects: ProjectRecord[] = [];
   for (const spec of specs) {
     live[spec.id] = { delayMs: spec.delayMs ?? 0, permissions: spec.permissions ?? 1, reviews: spec.reviews ?? 0, hang: spec.hang ?? false };
@@ -34,6 +57,8 @@ function fleet(specs: Spec[], options: { inboxFreshMs?: number; inboxStaleMs?: n
           if (state.hang) return;
           open[spec.id] = (open[spec.id] ?? 0) + 1; peak[spec.id] = Math.max(peak[spec.id] ?? 0, open[spec.id]!);
           const { permissions: permissionCount, reviews: reviewCount } = state;   // what the hub knows when the question ARRIVES: an answer delayed past a later change still describes the earlier state
+          const gate = state.gate;
+          if (gate) await gate.wait();
           if (state.delayMs) await Bun.sleep(state.delayMs);
           open[spec.id]!--;
           const permissions = Array.from({ length: permissionCount }, (_, n) => ({ t: "permission", id: `perm-${n}`, peer: "kimi", title: `run ${n}`, createdAt: (spec.decisionsAt ?? 1_790_000_000_000) + n,
@@ -77,32 +102,46 @@ test("concurrent inbox snapshots share one computation: twenty callers, one ques
 });
 
 test("a reply younger than inboxFreshMs is served from the cache with no hub call; an older one is recomputed", async () => {
-  const f = fleet([{ id: "a", delayMs: 20 }], { inboxFreshMs: 150, inboxStaleMs: 150 });
+  const age = clock();
+  const f = fleet([{ id: "a" }], { inboxFreshMs: 150, inboxStaleMs: 150 });
   await f.inbox(); expect(f.total()).toBe(1);
   await f.inbox(); await f.inbox(); expect(f.total()).toBe(1);   // fresh
-  await Bun.sleep(200);
+  age.advance(200);
   await f.inbox(); expect(f.total()).toBe(2);                    // expired: waits for a fresh computation
 });
 
 test("a stale reply is served at once while ONE refresh runs in the background, and the next poll sees the refreshed rows", async () => {
-  const f = fleet([{ id: "a", delayMs: 300, permissions: 1 }], { inboxFreshMs: 50, inboxStaleMs: 5_000 });
-  await f.inbox();                                                // warm: 300 ms
+  const age = clock();
+  const f = fleet([{ id: "a", permissions: 1 }], { inboxFreshMs: 50, inboxStaleMs: 5_000 });
+  await f.inbox();
   f.live.a!.permissions = 2;
-  await Bun.sleep(80);                                            // now stale, not expired
-  const [stale, ms] = await time(f.inbox);
-  expect(ms).toBeLessThan(100);                                   // answered from the cache, not after the 300 ms question
+  const refresh = answerGate(); f.live.a!.gate = refresh;
+  age.advance(80);                                               // stale by the controlled clock, not scheduler timing
+  const stale = await f.inbox();
+  await refresh.entered;
+  expect(refresh.released).toBe(false);                           // stale returned while the native answer is still held
   expect(stale.items).toHaveLength(1);
-  await Promise.all([f.inbox(), f.inbox(), f.inbox()]);           // three more polls while the refresh is in flight: they join it, none starts another
-  await Bun.sleep(400);                                           // the refresh has landed
-  expect(f.asked.a).toBe(2);                                      // the warm-up and ONE refresh, however many polls came in between
-  const [fresh] = await time(f.inbox);
-  expect(fresh.items).toHaveLength(2);
+  const polls = await Promise.all([f.inbox(), f.inbox(), f.inbox()]);
+  expect(refresh.released).toBe(false);
+  for (const reply of polls) expect(reply.items).toBe(stale.items);
+  expect(f.asked.a).toBe(2);                                      // warm-up plus exactly ONE refresh while held
+  refresh.release();
+  await until(async () => (await f.inbox()).items.length === 2);  // observe the consumed response and cache publication
+  expect(f.asked.a).toBe(2);
+  expect((await f.inbox()).items).toHaveLength(2);
 });
 
 test("nothing runs in the background while nobody polls", async () => {
-  const f = fleet([{ id: "a" }], { inboxFreshMs: 20, inboxStaleMs: 40 });
-  await f.inbox(); await Bun.sleep(400);
-  expect(f.total()).toBe(1);
+  const ioTurn = setImmediate;
+  jest.useFakeTimers({ now: Date.now() });
+  try {
+    const f = fleet([{ id: "a" }], { inboxFreshMs: 20, inboxStaleMs: 40 });
+    await f.inbox();
+    jest.advanceTimersByTime(400);
+    await new Promise(resolve => ioTurn(resolve));
+    expect(f.total()).toBe(1);
+    expect(f.listing.asked).toBe(1);                               // catches background work before a second WS question arrives
+  } finally { jest.useRealTimers(); }
 });
 
 test("an action drops the cache: the approval just given is gone from the very next poll, and a poll started before it does not put the old answer back", async () => {
@@ -119,12 +158,14 @@ test("an action drops the cache: the approval just given is gone from the very n
 });
 
 test("a computation that started before an action never becomes the cache: the next poll recomputes", async () => {
-  const f = fleet([{ id: "a", delayMs: 300, permissions: 1 }], { inboxFreshMs: 60_000, inboxStaleMs: 60_000 });
-  const early = f.inbox();                                        // starts a computation that will read permissions = 1
-  await Bun.sleep(50);
+  jest.useFakeTimers({ now: Date.now() });
+  const f = fleet([{ id: "a", permissions: 1 }], { inboxFreshMs: 60_000, inboxStaleMs: 60_000 });
+  const answer = answerGate(); f.live.a!.gate = answer;
+  const early = f.inbox();                                        // captures permissions = 1 before the action
+  await answer.entered;
   f.live.a!.permissions = 0;
   await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);   // any action drops the cache
-  await early;
+  answer.release(); expect((await early).items).toHaveLength(1);
   expect((await f.inbox()).items).toEqual([]);                    // had the early result been cached, this would still show the approval
 });
 
@@ -145,10 +186,11 @@ test("the reply holds at most 50 items, the most urgent first (decisions, then r
 });
 
 test("an item cut by the cap keeps its `at` when it comes back below it (the bound is applied after the `seen` bookkeeping)", async () => {
+  const age = clock();
   const f = fleet([{ id: "a", permissions: 0, reviews: 60 }], { inboxFreshMs: 0, inboxStaleMs: 0 });
   const first = await f.inbox();
   expect(first.more).toBe(10);
-  await Bun.sleep(30);
+  age.advance(30);
   const second = await f.inbox();
   const at = new Map(first.items.map((i) => [i.id, i.at]));
   for (const item of second.items) if (at.has(item.id)) expect(item.at).toBe(at.get(item.id)!);
@@ -206,31 +248,37 @@ test("a settled approval does not come back from the per-project fallback when t
 });
 
 test("a computation that started before an action cannot repopulate the per-project fallback after it", async () => {
-  // the project answers in ~120 ms, inside its 200 ms budget, so the early computation really completes and would store its row
-  const f = fleet([{ id: "a", delayMs: 120, permissions: 1 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 200 });
+  jest.useFakeTimers({ now: Date.now() });
+  const f = fleet([{ id: "a", permissions: 1 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 200 });
+  const answer = answerGate(); f.live.a!.gate = answer;
   const early = f.inbox();                                        // asked while the approval exists
-  await Bun.sleep(30);
+  await answer.entered;
   await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);   // an action lands while it is in flight
-  f.live.a!.permissions = 0; f.live.a!.hang = true;               // the approval is settled and the project is now slow
-  await early;                                                    // finishes in an older generation: it must not write the fallback
-  expect((await f.inbox()).items).toEqual([]);                    // the slow project is left out; had the early run stored its row it would come back here
+  f.live.a!.permissions = 0;
+  const lateAnswer = answerGate(); f.live.a!.gate = lateAnswer;
+  answer.release(); expect((await early).items).toHaveLength(1);   // proves the old answer completed, rather than timing out
+  const late = f.inbox(); await lateAnswer.entered;
+  jest.advanceTimersByTime(200);                                 // the project's own deadline, while its new answer is held
+  expect((await late).items).toEqual([]);                         // the old generation must not repopulate the fallback
 });
 
 test("a slow computation from before an action does not overwrite the newer fallback when it finally finishes", async () => {
-  // The early computation reads TWO approvals on arrival and answers after 400 ms. An action lands, the hub settles one approval, and a newer computation stores ONE row.
+  jest.useFakeTimers({ now: Date.now() });
+  // The early computation reads TWO approvals on arrival and waits behind a gate. An action lands, the hub settles one approval, and a newer computation stores ONE row.
   // When the early one finishes last it must not replace that entry with its two older rows: the next slow poll must fall back to the newer single row.
-  const f = fleet([{ id: "a", delayMs: 400, permissions: 2 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 5_000 });
+  const f = fleet([{ id: "a", permissions: 2 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 5_000 });
+  const answer = answerGate(); f.live.a!.gate = answer;
   const early = f.inbox();
-  await Bun.sleep(40);
+  await answer.entered;
   await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);
-  f.live.a!.permissions = 1; f.live.a!.delayMs = 0;
+  f.live.a!.permissions = 1; delete f.live.a!.gate;
   expect((await f.inbox()).items).toHaveLength(1);                // the newer generation stores one row
-  await early;                                                    // the older one ends last
-  // a short-budget provider cannot be swapped in, so read the fallback through a poll whose project hangs, bounded by our own timer
-  f.live.a!.hang = true;
-  const poll = f.inbox();
-  const outcome = await Promise.race([poll, Bun.sleep(5_500).then(() => null)]);
-  expect(outcome?.items).toHaveLength(1);                         // one row from the newer entry, never the older two
+  answer.release(); expect((await early).items).toHaveLength(2);   // the older answer really completes last
+  const lateAnswer = answerGate(); f.live.a!.gate = lateAnswer;
+  const poll = f.inbox(); await lateAnswer.entered;
+  jest.advanceTimersByTime(5_000);                               // drive the existing project deadline without sleeping
+  const outcome = await poll;
+  expect(outcome.items).toHaveLength(1);                         // one row from the newer entry, never the older two
 }, 15_000);
 
 // #730 r1200-m1: the project listing is bounded like space()'s, and a slow one falls back to the last listing.
@@ -252,28 +300,32 @@ test("a slow project is asked once while its snapshot is pending, across several
   const warm = await f.inbox();
   expect(warm.items).toHaveLength(2);
   const before = f.asked.slow!;
-  f.live.slow!.delayMs = 700;
+  const answer = answerGate(); f.live.slow!.gate = answer;
   for (let poll = 0; poll < 4; poll++) {
     const reply = await f.inbox();
     expect(reply.items.map((i) => i.project).sort()).toEqual(["a-project", "slow-project"]);   // late rows come from the last answer
-    await Bun.sleep(50);
   }
   expect(f.asked.slow).toBe(before + 1);                          // four polls, one question
   expect(f.peak.slow).toBe(1);                                    // never two at once
   expect(f.asked.a).toBe(before + 4);                             // a prompt project is still asked on every poll
-  await Bun.sleep(700);                                           // the pending one finishes
-  f.live.slow!.delayMs = 0;
-  await f.inbox();                                                // the next poll asks afresh
+  delete f.live.slow!.gate;
+  // Join the pending answer through the real Agents snapshot path before asking afresh.
+  const joined = f.inbox();
+  answer.release(); await joined;
+  if (f.asked.slow === before + 1) await f.inbox();
   expect(f.asked.slow).toBe(before + 2);
 });
 
 test("a slow project's pending snapshot is not joined across an action: the answer that began before it is never served after it", async () => {
-  const f = fleet([{ id: "a", delayMs: 600, permissions: 1 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 100 });
-  void f.inbox();                                                 // starts the slow snapshot in generation 0
-  await Bun.sleep(150);
+  const f = fleet([{ id: "a", permissions: 1 }], { inboxFreshMs: 0, inboxStaleMs: 0, inboxProjectBudgetMs: 100 });
+  const answer = answerGate(); f.live.a!.gate = answer;
+  const early = f.inbox();
+  await answer.entered; await early;                              // generation 0 times out while the answer remains held
   await f.provider.action({ action: "pause", peer: "kimi", projectId: "a", instanceId: "i-a" } as never);
   const asked = f.asked.a!;
-  f.live.a!.permissions = 0;
-  await f.inbox();
-  expect(f.asked.a).toBe(asked + 1);                              // a new generation asks again
+  f.live.a!.permissions = 0; delete f.live.a!.gate;
+  expect((await f.inbox()).items).toEqual([]);
+  expect(answer.released).toBe(false);
+  expect(f.asked.a).toBe(asked + 1);
+  answer.release();
 });

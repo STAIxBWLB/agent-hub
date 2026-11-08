@@ -26,6 +26,8 @@ export interface SettleFacts {
   runningChecks: number;
   /** Rows held or in `needs_review`: uncertain, so never settled. */
   heldDeliveries: number;
+  /** Native background work when the adapter exposes an inventory; null means the inventory exists but is unreadable or incomplete. */
+  nativeBackground?: number | null;
 }
 
 export type RunState = "working" | "needs-input" | "settled";
@@ -33,7 +35,7 @@ export type RunState = "working" | "needs-input" | "settled";
 /** The one rule. A permission or question wins over everything else: the person has to act, so the run is needs-input and never "done". */
 export function settleVerdict(facts: SettleFacts): RunState {
   if (facts.openPermissions > 0 || facts.openQuestions > 0) return "needs-input";
-  if (!facts.signal || facts.queuedContinuations > 0 || facts.ownedChildren > 0 || facts.runningChecks > 0 || facts.heldDeliveries > 0) return "working";
+  if (!facts.signal || facts.queuedContinuations > 0 || facts.ownedChildren > 0 || facts.runningChecks > 0 || facts.heldDeliveries > 0 || facts.nativeBackground === null || (facts.nativeBackground ?? 0) > 0) return "working";
   return "settled";
 }
 

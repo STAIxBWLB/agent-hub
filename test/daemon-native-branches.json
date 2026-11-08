@@ -66,6 +66,12 @@
     "reason": "Intentional terminal Claude owner proof rechecks its exact socket generation and managed launch record before granting a worktree."
   },
   {
+    "predicate": "isWsPeer",
+    "function": "src/hub/daemon.ts:startDaemon.completeNativeTurn",
+    "count": 1,
+    "reason": "Native final-turn completion settles only through the authenticated launcher-bound WsPeer at the same session generation; transcript evidence never authorizes another adapter or socket."
+  },
+  {
     "predicate": "isLocalPeer",
     "function": "src/hub/daemon.ts:startDaemon.holdPeer",
     "count": 1,

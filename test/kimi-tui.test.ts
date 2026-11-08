@@ -159,7 +159,7 @@ test("the person's Kimi TUI launcher writes MCP then runs the configured fake wi
   // value has nothing to retain, so the test no longer depends on whether the child's request lands before or after the reload.
   const hub = await rig(undefined, cwd => [join(cwd, "fake-kimi"), "acp"]);
   const fake = join(hub.cwd, "fake-kimi");
-  writeFileSync(fake, `#!${process.execPath}\nimport {readFileSync} from 'node:fs'; console.log(JSON.stringify({peer:process.env.AGENTHUB_PEER_ID,mode:process.env.AGENTHUB_MODE??null,channel:process.env.AGENTHUB_CHANNEL??null,recovery:process.env.AGENTHUB_RECOVERY_OPERATION??null,args:process.argv.slice(2),mcp:JSON.parse(readFileSync('.kimi-code/mcp.json','utf8'))}));\n`); chmodSync(fake, 0o700);
+  writeFileSync(fake, `#!${process.execPath}\nimport {readFileSync} from 'node:fs'; if (process.argv.includes('--version')) console.log('2.5.2'); else console.log(JSON.stringify({peer:process.env.AGENTHUB_PEER_ID,mode:process.env.AGENTHUB_MODE??null,channel:process.env.AGENTHUB_CHANNEL??null,recovery:process.env.AGENTHUB_RECOVERY_OPERATION??null,args:process.argv.slice(2),mcp:JSON.parse(readFileSync('.kimi-code/mcp.json','utf8'))}));\n`); chmodSync(fake, 0o700);
   expect(hubGitSync(["init", "-q"], { cwd: hub.cwd, encoding: "utf8" }).status).toBe(0);
   writeFileSync(join(hub.cwd, ".agenthub/config.local.json"), JSON.stringify({ kimi_cmd: [fake, "acp"] }));
   expect(loadConfig(hub.cwd).kimi_cmd).toEqual([fake, "acp"]); // proves the child is a fixture before anything can launch
@@ -167,7 +167,7 @@ test("the person's Kimi TUI launcher writes MCP then runs the configured fake wi
   for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_RECOVERY_OPERATION", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"]) delete env[key];
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "kimi", "--mode", "tui", "--model", "fixture-model"], { cwd: hub.cwd, env, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  expect(err).toBe(""); expect(code).toBe(0);
+  expect(err).toContain("Kimi TUI completion facts: installing a launch-scoped native plugin"); expect(code).toBe(0);
   const native = JSON.parse(out);
   expect(native).toMatchObject({ peer: "kimi", mode: null, channel: null, recovery: null, args: ["--model", "fixture-model"] });
   expect(native.mcp.mcpServers["agent-hub"]).toMatchObject({ command: "bun", env: { AGENTHUB_PEER_ID: "kimi", AGENTHUB_STATE_DIR: hub.stateDir, AGENTHUB_PROJECT_DIR: hub.cwd } });
