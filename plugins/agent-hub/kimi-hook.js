@@ -394,13 +394,13 @@ var init_compat = __esm(() => {
     },
     agy: {
       label: "agy",
-      verified: ["1.4.2", "1.4.7", "1.4.12"],
+      verified: ["1.4.2", "1.4.7", "1.4.12", "1.5.3"],
       line: { min: "1.4.0", below: "1.5.0" },
       gate: "contract",
       probe: ["agy", "--version"],
       parse: (out) => plain(out.trim()),
-      trustNote: "Only 1.4.2, 1.4.7 and 1.4.12 are T0-verified; the plugin MCP and hook contract of another version is unverified.",
-      receipt: "docs/verification/2026-11-03-agy-1.4.12-launcher-nonce.md"
+      trustNote: "Exact 1.5.3 repeats the account-free CLI/plugin MCP, hooks, normal close and actual-launcher nonce legs; existing 1.4.x verified receipts remain unchanged. Other 1.5.x versions, real model/account behavior, headless ACP and native permission mappings remain unverified.",
+      receipt: "docs/verification/2026-11-08-agy-1.5.3.md"
     },
     qwen: {
       label: "Qwen Code",
