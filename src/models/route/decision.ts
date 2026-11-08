@@ -28,7 +28,7 @@ interface Privacy { pii: boolean; private: boolean; excluded: boolean }
 interface Selection { apply?: AdecPair; trace?: DecisionTrace; applied?(): void; handoff?(): void }
 type Attempt = { result: AdecResult; privacy: Privacy } | { skipped: string };
 export class DecisionPolicyChangedError extends Error {
-  constructor() { super("decision routing privacy or observer policy changed or is unavailable during preparation; inspect current task policy and retry"); }
+  constructor() { super("decision routing privacy or observer policy changed or is unavailable during preparation; run ahub status, inspect current task policy and retry"); }
 }
 interface State { fingerprint: string; failure?: { turn: string; result: AdecResult }; currentPair?: { turn: string; pair: AdecPair } }
 const ended = () => new Error("model route turn ended before execution; retry in the current turn");
