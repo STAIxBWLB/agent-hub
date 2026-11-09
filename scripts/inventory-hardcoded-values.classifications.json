@@ -1458,6 +1458,7 @@
   "src/hub/execution-lineage-owner.ts:events:inline:ports.events=0#0": "contract",
   "src/hub/execution-lineage-owner.ts:events:inline:ports.events=50#0": "operational",
   "src/hub/execution-lineage-owner.ts:parseOwnerLineageQuery:inline:integer=1#0": "contract",
+  "src/hub/execution-lineage-owner.ts:row:inline:ports.events=1#0": "operational",
   "src/hub/execution-lineage.ts:bytes:inline:bytes=256 * 1024#0": "contract",
   "src/hub/execution-lineage.ts:cursor:inline:cursor=512#0": "safety floor",
   "src/hub/execution-lineage.ts:edges:inline:edges=200#0": "contract",
