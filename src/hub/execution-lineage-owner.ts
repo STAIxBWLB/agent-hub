@@ -71,6 +71,7 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
       } else if (root.kind === "attempt") attemptRoot = root.id;
       else if (!input.task) return fail("unsupported");
     }
+    if (attemptRoot !== undefined && !/^ra-[a-f0-9]{12}$/.test(attemptRoot)) return fail("unsupported");
     const firstAttempt = attemptRoot ? ports.attempt(attemptRoot) : undefined;
     if (attemptRoot && (!firstAttempt || firstAttempt.project !== ports.project)) return fail("missing");
     if (firstAttempt) {
@@ -168,7 +169,7 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
         if (delivery.originals.some(env => env.private || remoteEnvelope(env) || isReviewObserverExcluded(env))) { withheld(ref); return false; }
         return add(ref, delivery.state, "host-observed") && (edge(taskRef, ref, "dispatched", "host-observed"), true);
       }
-      if (ref.kind !== "attempt" || ref.revision !== undefined || ref.sha256 !== undefined) return false;
+      if (ref.kind !== "attempt" || !/^ra-[a-f0-9]{12}$/.test(ref.id) || ref.revision !== undefined || ref.sha256 !== undefined) return false;
       const attempt = ports.attempt(ref.id);
       if (!attempt || attempt.project !== ports.project || attempt.attempt.taskId !== task.id) return false;
       if (attempt.private) {

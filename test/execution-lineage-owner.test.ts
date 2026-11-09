@@ -180,3 +180,18 @@ test("task visibility is checked before inspecting a requested private dispatch 
   }
   expect(reads).toBe(0);
 });
+
+
+test("owner-unrecognized explicit attempt ids never invoke a source lookup or classify healthy storage as corrupt", () => {
+  const f = fixture(); let lookups = 0;
+  const ports = { ...f.ports, attempt: () => { lookups++; throw new Error("invalid caller id must not reach Board.experimentAttempt"); } };
+  const root = ref("attempt", "not-an-attempt");
+  expect(readOwnerExecutionLineage(ports, { root })).toEqual({ state: "unavailable", reason: "unsupported" });
+  expect(readOwnerExecutionLineage({ ...ports, diagnostics: false }, { root })).toEqual({ state: "unavailable" });
+  f.links.push({ id: "malformed-attempt-target", projectKey, taskId: 7, taskCreated: 10, from: f.taskRef, reference: root, strength: "declared", recordedBy: "codex", recordedAt: 10 });
+  const page = readOwnerExecutionLineage(ports, { taskId: 7 });
+  expect(page.state).toBe("available");
+  if (page.state !== "available") throw new Error("fixture unavailable");
+  expect(page.nodes.map(node => node.ref)).toEqual([f.taskRef]);
+  expect(lookups).toBe(0);
+});
