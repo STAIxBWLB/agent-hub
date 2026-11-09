@@ -4,10 +4,47 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
+
+for (const coordination of ["advisory", "turn-free"] as const) test(`#1350 ordinary startup releases persisted hub notices before Tasks exists (${coordination})`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-deferred-startup-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const stateDir = join(dir, "state");
+  const notices = [
+    newEnvelope("hub", "retained planner task notice", { to: ["claude"], kind: "task", priority: "status" }),
+    newEnvelope("hub", "retained private review notice", { to: ["claude"], kind: "review", priority: "important", private: true }),
+  ];
+  const journal = new DeliveryJournal({ file: join(stateDir, "hub.db"), projectRoot: dir, projectId: "p-startup", instanceId: "prior-startup" });
+  try {
+    // Retain the offline planner's queue key so the bus includes it in the startup publication audience.
+    journal.persistBus({ schemaVersion: 1, queues: { claude: [] }, prefaces: {}, seen: [], attempts: {}, withdrawn: [], deferredHub: notices }, []);
+  } finally { journal.close(); }
+
+  // No restart snapshot or recovery operation: use the normal startup release, not the restored-target path.
+  const daemon = await startDaemon({ cwd: dir, stateDir, projectId: "p-startup", instanceId: "normal-startup", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, coordination, roster: { claude: true }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+  cleanup.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
+  expect((await client.request({ t: "status" })).status.instanceId).toBe("normal-startup");
+  expect(daemon.bus.isRecoveryHeld).toBe(false);
+  expect(daemon.bus.snapshot(false).deferredHub).toBeUndefined();
+  expect(daemon.bus.pendingEnvelopes("claude")).toEqual(notices);
+  // Releasing again must not duplicate either original.
+  daemon.bus.setRecoveryHold(false);
+  expect(daemon.bus.queueIds("claude")).toEqual(notices.map(notice => notice.id));
+  await daemon.stop();
+  const reopened = new DeliveryJournal({ file: join(stateDir, "hub.db"), projectRoot: dir, projectId: "p-startup", instanceId: "after-startup" });
+  try {
+    const bus = reopened.snapshot().bus as { deferredHub?: unknown[]; queues: Record<string, unknown[]> };
+    expect(bus.deferredHub).toBeUndefined();
+    expect(bus.queues.claude).toEqual(notices);
+  } finally { reopened.close(); }
+});
+
 async function restoredFixture(features: readonly string[] = DAEMON_FEATURES, backlog = false) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-held-target-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));

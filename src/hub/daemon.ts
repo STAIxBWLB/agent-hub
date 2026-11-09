@@ -1488,7 +1488,8 @@ export async function startDaemon(opts: DaemonOptions) {
    */
   const silence = (env: Envelope, to: PeerId): string | undefined => {
     if (reviewOnlyPeer(to) && env.to?.includes(to) && !reviewOnlyItem(to, env)) return `${to} is a review-only instance: it receives review requests only (send a review through the task board)`;
-    if (!turnFree() || env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi" || env.kind !== "chat" || to === USER) return undefined;
+    // Startup releases deferred hub notices before Tasks exists; exemptions must not consult turnFree().
+    if (env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi" || env.kind !== "chat" || to === USER || !turnFree()) return undefined;
     const cohort = tasks.silenced(env.from, to);
     if (!cohort) return undefined;
     const ids = [...cohort.members.keys()].sort((a, b) => a - b).map((id) => `#${id}`).join(", ");
