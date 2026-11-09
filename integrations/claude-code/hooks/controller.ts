@@ -21,6 +21,8 @@ export class CompanionController {
   private lastStart = -Infinity;
   constructor(private readonly ports: Ports) {}
   disable(): void { this.enabled = false; this.generation++; this.pending = false; this.binding = undefined; }
+  /** Retire the old conversation without forgetting its established project owner or reviving an exit. */
+  clearSession(): void { this.generation++; this.pending = false; this.lastStart = -Infinity; }
   /** Host selection change invalidates success, failure and cleanup from an older read. */
   reset(): void { this.generation++; this.pending = false; this.binding = undefined; this.lastStart = -Infinity; }
   async command(argument: string, origin: string, root: string): Promise<string> {

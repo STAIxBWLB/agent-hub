@@ -68,7 +68,11 @@ export const register: Register = on => {
     }
     return result;
   });
-  on("session.end", ($, e, next) => { controller?.disable(); return next(e); });
+  on("session.end", ($, e, next) => {
+    if (e.reason === "clear") controller?.clearSession();
+    else controller?.disable();
+    return next(e);
+  });
   on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e);
     const { value } = await $.state.get(READING);

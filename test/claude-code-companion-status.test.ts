@@ -217,3 +217,82 @@ test("declared registration on a fake host: pane, pass-through events, no hidden
   await freshHooks.get("session.start")!(host, start, async event => event);
   expect(reading).toEqual({ state: "missing_cli" });
 });
+
+async function lifecycleHost() {
+  const moduleFile = new URL("../integrations/claude-code/hooks/register.tsx", import.meta.url).href;
+  const { register } = await import(moduleFile);
+  type Handler = (host: unknown, event: any, next: (event: any) => Promise<any>) => Promise<any>;
+  const hooks = new Map<string, Handler>();
+  register((name: string, matcher: unknown, handler?: Handler) => { hooks.set(name, (handler ?? matcher) as Handler); }, {});
+  const calls: string[][] = [], readings: Reading[] = [];
+  let currentRoot = root, rows = registration, effects = 0;
+  let held: { enter(): void; wait: Promise<void>; failure: boolean } | undefined;
+  const forbidden = () => { throw new Error("forbidden persistence or timer"); };
+  const host = {
+    session: { root: async () => { effects++; return currentRoot; } },
+    fs: { stat: async () => { effects++; return { kind: "dir", realPath: currentRoot }; } },
+    process: { run: async (argv: string[]) => {
+      effects++; calls.push([...argv]);
+      const gate = held; held = undefined;
+      if (gate) { gate.enter(); await gate.wait; if (gate.failure) throw new Error("PRIVATE"); }
+      const value = argv[3] === "projects" ? rows : argv[3] === "status" ? status : board;
+      return { stdout: JSON.stringify(value), stderr: "", exitCode: 0, isStdoutTruncated: false, isStderrTruncated: false };
+    } },
+    command: { register: async () => { effects++; } },
+    state: { set: async (_ref: unknown, value: Reading) => { effects++; readings.push(value); } },
+    ui: { panes: async () => { effects++; return []; }, open: async () => { effects++; }, close: async () => { effects++; }, log: forbidden },
+    store: new Proxy({}, { get: forbidden }), settings: new Proxy({}, { get: forbidden }), clock: new Proxy({}, { get: forbidden }),
+  };
+  const invoke = (name: string, event: any) => hooks.get(name)!(host, event, async passed => { expect(passed).toBe(event); return passed; });
+  return { calls, readings, invoke, effects: () => effects,
+    root: (value: string) => { currentRoot = value; }, rows: (value: typeof registration) => { rows = value; },
+    hold: (failure: boolean) => {
+      let enter!: () => void, release!: () => void;
+      const entered = new Promise<void>(resolve => { enter = resolve; });
+      const wait = new Promise<void>(resolve => { release = resolve; });
+      held = { enter, wait, failure }; return { entered, release };
+    },
+    refresh: (mode: string) => mode === "composer" ? invoke("command.run", { args: "refresh", origin: { kind: "composer" } })
+      : mode === "turn" ? invoke("turn.complete", { reason: "answer", agentId: undefined, text: "unchanged" })
+      : invoke("tool.call", { tool: "mcp__plugin_agent-hub_agent-hub__hub_status", agentId: undefined }),
+  };
+}
+
+test("clear resumes composer and event refresh without another session start, while real exit stays disabled", async () => {
+  for (const mode of ["composer", "turn", "hub"]) {
+    const h = await lifecycleHost(); await h.invoke("session.start", {});
+    const before = h.effects(); await h.invoke("session.end", { reason: "clear" });
+    expect(h.effects()).toBe(before); // Clear itself starts no read or UI/state effect.
+    const calls = h.calls.length;
+    await h.invoke("command.run", { args: "refresh", origin: { kind: "plugin" } }); expect(h.effects()).toBe(before);
+    await h.refresh(mode); expect(h.calls.length - calls).toBe(5); expect(h.readings.at(-1)?.state).toBe("partial");
+    await h.invoke("session.end", { reason: "prompt_input_exit" }); const stopped = h.effects();
+    await h.invoke("command.run", { args: "", origin: { kind: "composer" } });
+    await h.invoke("session.end", { reason: "clear" }); await h.refresh(mode);
+    expect(h.effects()).toBe(stopped); // Clear cannot revive a real exit.
+  }
+});
+
+test("clear retires held success and error before a subsequent conversation refresh", async () => {
+  for (const failure of [false, true]) {
+    const h = await lifecycleHost(); await h.invoke("session.start", {});
+    await h.invoke("session.end", { reason: "clear" });
+    const gate = h.hold(failure), oldRead = h.refresh("composer"); await gate.entered;
+    await h.invoke("session.end", { reason: "clear" });
+    const before = h.effects(); await h.invoke("command.run", { args: "refresh", origin: { kind: "sdk" } }); expect(h.effects()).toBe(before);
+    const nextRead = h.refresh("turn"); gate.release(); await Promise.all([oldRead, nextRead]);
+    expect(h.readings).toHaveLength(2); expect(h.readings.every(reading => reading.state === "partial")).toBe(true);
+    expect(JSON.stringify(h.readings)).not.toContain("PRIVATE");
+  }
+});
+
+test("clear preserves the established root and registration id rather than rebinding foreign data", async () => {
+  for (const drift of ["root", "registration"]) {
+    const h = await lifecycleHost(); await h.invoke("session.start", {});
+    await h.invoke("session.end", { reason: "clear" });
+    if (drift === "root") h.root("/foreign"); else h.rows([{ root, id: "p_foreign" }]);
+    const before = h.calls.length; await h.refresh("composer");
+    expect(h.readings.at(-1)).toEqual({ state: "binding" });
+    expect(h.calls.length - before).toBe(drift === "root" ? 0 : 1);
+  }
+});
