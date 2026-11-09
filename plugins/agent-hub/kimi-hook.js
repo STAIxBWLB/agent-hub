@@ -13079,7 +13079,7 @@ var init_research_campaign = __esm(() => {
 });
 
 // src/hub/board.ts
-var HOST_MERGE_ADOPTION, EXECUTION_REFERENCE_SELECT, CLASSES2, SPEC_ACCEPTANCE_FIELD_BYTES, SPEC_ACCEPTANCE_TOTAL_BYTES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
+var HOST_MERGE_ADOPTION, HOST_SPEC_ACCEPTANCE_CARRY, EXECUTION_REFERENCE_SELECT, CLASSES2, SPEC_ACCEPTANCE_FIELD_BYTES, SPEC_ACCEPTANCE_TOTAL_BYTES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
   init_execution_links();
   init_execution_reference();
@@ -13098,6 +13098,7 @@ var init_board = __esm(() => {
   init_deliverables();
   init_research_campaign();
   HOST_MERGE_ADOPTION = Symbol("host merge adoption");
+  HOST_SPEC_ACCEPTANCE_CARRY = Symbol("host spec acceptance carry");
   EXECUTION_REFERENCE_SELECT = `SELECT
   CASE WHEN length(CAST(id AS BLOB))=64 THEN id END AS id,
   CASE WHEN length(CAST(project_id AS BLOB)) BETWEEN 1 AND 256 THEN project_id END AS project_id,
