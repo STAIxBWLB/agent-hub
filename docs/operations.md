@@ -632,7 +632,7 @@ and so is every help entry the gate has no class for yet;
 | --- | --- | --- |
 | `ahub doctor [--json] [--full] [--color=...]` | Allowed | a read-only check of tools, daemon, plugin, gateway, models and memory; the `memory capture: codex` and `memory capture: kimi` rows come from agent-mem's setup state (`amem setup <tool> --json` on PATH, a preview that writes nothing), as set up, `amem setup <tool> --apply` needed, client missing, or unknown when `amem` is missing, refuses or prints no setup plan (#1008) |
 | `ahub doctor --stale-anchors [--json]` | Allowed | a bounded read-only report of memory symbol anchors at current HEAD |
-| `ahub queue list [--peer <id>] [--json] [--full] [--color=...]` | Allowed | public queue metadata only; held bodies and resolution remain conductor operations |
+| `ahub queue list [--peer <id>] [--json] [--full] [--color=...]` | Allowed | public queue metadata only; inspect your own public held bodies through `hub_inbox`; `ahub queue show` and operator resolution remain person/conductor operations |
 | `ahub roster [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |
 | `ahub settings [list] [--json]`, `ahub settings get <key> [--json]` | Allowed | public registry values; secret-locating values, paths, undo records and config-editor details are withheld |
 | `ahub sdlc status\|explain [<task>] [--json] [--color=...]` | Allowed | public lifecycle status; private tasks stay stubs, without private evidence or receipts |
@@ -1053,7 +1053,8 @@ ahub up
 ```
 
 `ahub init` writes the project configuration and managed instruction blocks.
-Run it after an upgrade when those blocks need refreshing.
+Run it after an upgrade when those blocks need refreshing. For a new repository
+using advise or enforce, follow the [SDLC quickstart sequence](quickstart.md#a-new-project-with-sdlc-advise-or-enforce).
 
 After a successful init, the short next-steps block says to review and commit
 `AGENTS.md`, `.agenthub/config.json` and the other shared init changes, keeping
@@ -1290,7 +1291,7 @@ duplicate a delivery that actually left.
 
 #### Accepted channel delivery settlement (#1172)
 
-`hub_inbox` can inspect the caller's own held message bodies (#1328 AC6). The result labels them as read-only inspection of an uncertain earlier attempt, separate from normal queued messages. Reading never confirms completion, retries, resolves, changes an attempt or records task-offer consumption. Check the earlier effects before acting on held text. A caller cannot select another peer; use authorized queue diagnostics for another recipient. The view includes `needs_review`, and `accepted` only for the current explicit-settlement channel, up to 32 rows and the host pull byte budget. Oversized or unavailable components say so while preserving normal queued results.
+`hub_inbox` can inspect the caller's own held message bodies (#1328 AC6). This is the read-only recovery view used by the [new-project guide](quickstart.md#a-new-project-with-sdlc-advise-or-enforce). The result labels them as read-only inspection of an uncertain earlier attempt, separate from normal queued messages. Reading never confirms completion, retries, resolves, changes an attempt or records task-offer consumption. Check the earlier effects before acting on held text. A caller cannot select another peer; use authorized queue diagnostics for another recipient. The view includes `needs_review`, and `accepted` only for the current explicit-settlement channel, up to 32 rows and the host pull byte budget. Oversized or unavailable components say so while preserving normal queued results.
 
 Held bodies use the current public queue projection. Private/missing tasks and private envelopes are stubbed, unsafe metadata is withheld, and bodies are sanitized. The owned implementer must still belong to the current task, execution root and generation. Unknown legacy provenance withholds bodies. Held review inspection stays excluded from capture/progress across restart without writing an ACK or input receipt; retained readable observer-excluded held inputs (trusted review packages and host-stamped peer chat/status responses) conservatively keep that exclusion until explicit disposition, even if they were never viewed. An overflowing or unreadable held row/byte window stays unknown and excluded because a previously viewed row can move outside it. This does not change normal queued review delivery.
 
@@ -1771,6 +1772,8 @@ unattributed, and records from before 0.12.18 as a separate bucket; neither is
 redistributed (rules: [events](events.md#per-task-usage-reports)).
 
 ## Research records
+
+The [new-project SDLC guide](quickstart.md#a-new-project-with-sdlc-advise-or-enforce) includes this init choice; the machine-default producer and compatibility caveat are defined here.
 
 `ahub init --research` or `--no-research` chooses research recording in the
 project's untracked `.agenthub/config.local.json`. A new project defaults to

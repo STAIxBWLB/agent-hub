@@ -52,7 +52,8 @@ become links. The scene carries labels and states only, never message bodies or 
 terminal, `ahub init` asks each main setting with its default before writing; flags
 such as `--agents`, `--sdlc` or `--no-specs` set them directly, and `--yes` takes the
 defaults. The
-[Quickstart](docs/quickstart.md) walks through a first session and a working day.
+[Quickstart](docs/quickstart.md) walks through a first session and a working day,
+including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-project-with-sdlc-advise-or-enforce).
 
 ## What you get
 
