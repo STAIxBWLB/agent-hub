@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runQwenDualBusQ2, type Q2NativePorts, type Q2Request } from "../scripts/compat-receipts/proofs/qwen-dual-bus-q2.ts";
 
 // These controls write synthetic event files. No Qwen executable, account, model, PTY or real HOME is used.
-function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user-count") {
+function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user-count" | "late-provider" | "late-user" | "late-orphan" | "late-partial" | "initial-provider-late-user") {
   const root = mkdtempSync(join(tmpdir(), "qwen-dual-q2-control-"));
   let input = "", output = "", offset = 0, released = false, closed = false;
   let watcher: FSWatcher | undefined, fault: unknown;
@@ -28,11 +28,12 @@ function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user
           requests.push({ marker: "first", responseFormat: "absent", schemaHasTitle: false, messageCount: 2, userMessages: 1,
             roles: { system: 1, developer: 0, user: 1, assistant: 0, tool: 0, other: 0 } });
           write(user(row.text), { type: "stream_event", event: { type: "content_block_delta", delta: { text: "Q2_FIRST_BEGIN" } } });
-          if (mode === "tool-stop") write({ type: "assistant", message: { stop_reason: "tool_use", content: [{ type: "tool_use", id: "fixture-tool", name: "fixture" }] } }, stop);
+          if (mode === "tool-stop") write({ type: "assistant", message: { stop_reason: "tool_use", content: [
+            { type: "text", text: "Q2_FIRST_DONE Q2_SECOND_DONE" }, { type: "tool_use", id: "fixture-tool", name: "fixture" }] } }, stop);
           held();
         } else if (offset === 1) {
           if (!released) throw Error("second input escaped while first was held");
-          requests.push({ marker: "second", responseFormat: "absent", schemaHasTitle: false, messageCount: 4, userMessages: mode === "same-provider-user-count" ? 1 : 2,
+          requests.push({ marker: "second", responseFormat: "absent", schemaHasTitle: false, messageCount: 4, userMessages: mode === "same-provider-user-count" || mode === "initial-provider-late-user" ? 1 : 2,
             roles: { system: 1, developer: 0, user: 2, assistant: 1, tool: 0, other: 0 } });
           write(user(row.text), assistant("Q2_SECOND_DONE"), stop);
         } else throw Error("too many synthetic submits");
@@ -56,7 +57,15 @@ function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user
       write(assistant(mode === "merged" ? "Q2_FIRST_DONE Q2_SECOND_DONE" : "Q2_FIRST_DONE"), stop);
     },
     requests: () => requests,
-    async stop() { closed = true; watcher?.close(); return { ownedStopConfirmed: true }; },
+    async stop() {
+      closed = true; watcher?.close();
+      if (mode === "late-provider") requests.push({ marker: "second", responseFormat: "absent", schemaHasTitle: false, messageCount: 6, userMessages: 3,
+        roles: { system: 1, developer: 0, user: 3, assistant: 2, tool: 0, other: 0 } });
+      if (mode === "late-user" || mode === "initial-provider-late-user") write(user("Q2_LATE"), assistant("late unrelated answer"), stop);
+      if (mode === "late-orphan") write(stop);
+      if (mode === "late-partial") appendFileSync(output, '{"type":"user","message":');
+      return { ownedStopConfirmed: true };
+    },
   };
   return { root, ports, submitsAtRelease, fault: () => fault, close: () => { closed = true; watcher?.close(); rmSync(root, { recursive: true, force: true }); } };
 }
@@ -78,6 +87,8 @@ for (const mode of ["ordinary", "tool-stop"] as const) test(`manual Q2 actual Bu
     expect(result.userCount).toBe(2); expect(result.firstStop).toBeLessThan(result.secondUser); expect(result.secondUser).toBeLessThan(result.secondStop);
     expect(result.providerRequests.map(row => row.marker)).toEqual(["first", "second"]);
     expect(result.evidenceKind).toBe("synthetic-control"); expect(result.autoAdmit).toBe(false); expect(result.ownedStopConfirmed).toBe(true);
+    expect(result.finalEvidenceObserved).toBe(true); expect(result.finalEvidencePassed).toBe(true); expect(result.finalStopCount).toBe(2);
+    expect(result.messageStopCount).toBe(mode === "tool-stop" ? 3 : 2);
   } finally { f.close(); }
 });
 
@@ -107,5 +118,58 @@ test("native Q2 refuses synthetic OS reader overrides before starting any port",
   try {
     await expect(runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
       bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [] } }, { ...f.ports, kind: "native-pty" })).rejects.toThrow("native-host-override");
+  } finally { f.close(); }
+});
+
+test("manual Q2 rejects a third provider POST arriving during owned stop", async () => {
+  const f = fixture("late-provider");
+  try {
+    const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+    expect(result.passed).toBe(false); expect(result.checkpoint).toBe("ordinary-provider-turns");
+    expect(result.providerRequests).toHaveLength(3); expect(result.finalProviderCount).toBe(3);
+    expect(result.finalEvidenceObserved).toBe(true); expect(result.finalEvidencePassed).toBe(false);
+    expect(result.userCount).toBe(2); expect(result.finalStopCount).toBe(2);
+  } finally { f.close(); }
+});
+
+test("manual Q2 freezes late USER and assistant/Stop evidence after stop", async () => {
+  const f = fixture("late-user");
+  try {
+    const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+    expect(result.passed).toBe(false); expect(result.checkpoint).toBe("turn-count");
+    expect(result.userCount).toBe(3); expect(result.finalStopCount).toBe(3); expect(result.messageStopCount).toBe(3);
+  } finally { f.close(); }
+});
+
+test("an orphan Stop is recorded but cannot reuse a prior assistant as another final", async () => {
+  const f = fixture("late-orphan");
+  try {
+    const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+    expect(result.passed).toBe(true); expect(result.userCount).toBe(2); expect(result.finalStopCount).toBe(2);
+    expect(result.messageStopCount).toBe(3); expect(result.orphanStopCount).toBe(1);
+  } finally { f.close(); }
+});
+
+test("final evidence retains an earlier failure checkpoint and updates actual late counts", async () => {
+  const f = fixture("initial-provider-late-user");
+  try {
+    const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+    expect(result.passed).toBe(false); expect(result.checkpoint).toBe("ordinary-provider-turns");
+    expect(result.finalCheckpoint).toBe("turn-count"); expect(result.userCount).toBe(3); expect(result.finalStopCount).toBe(3);
+  } finally { f.close(); }
+});
+
+test("a partial late USER record cannot disappear from closed evidence as an ignored suffix", async () => {
+  const f = fixture("late-partial");
+  try {
+    const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+    expect(result.passed).toBe(false); expect(result.checkpoint).toBe("final-record-incomplete"); expect(result.finalEvidenceObserved).toBe(false);
+    expect(result.finalProviderCount).toBe(2); expect(result.providerRequests).toHaveLength(2);
+    expect(result.finalProviderObserved).toBe(true); expect(result.finalInputObserved).toBe(true); expect(result.finalEventsObserved).toBe(false);
   } finally { f.close(); }
 });

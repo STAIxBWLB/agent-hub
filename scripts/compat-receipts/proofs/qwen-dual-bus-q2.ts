@@ -37,7 +37,7 @@ class Checkpoint extends Error { constructor(readonly checkpoint: string) { supe
 const FIRST = "Q2_FIRST", SECOND = "Q2_SECOND";
 const requireProof = (value: unknown, checkpoint: string): void => { if (!value) throw new Checkpoint(checkpoint); };
 
-function records(file: string, bounds: Q2Options["bounds"]): { rows: RecordValue[]; bytes: number } {
+function records(file: string, bounds: Q2Options["bounds"], closed = false): { rows: RecordValue[]; bytes: number } {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const info = fstatSync(fd);
@@ -50,6 +50,7 @@ function records(file: string, bounds: Q2Options["bounds"]): { rows: RecordValue
       got += next;
     }
     const complete = buffer.subarray(0, got).lastIndexOf(10) + 1;
+    if (closed) requireProof(complete === got && got === info.size, "final-record-incomplete");
     const lines = buffer.subarray(0, complete).toString("utf8").split("\n").filter(Boolean);
     requireProof(lines.length <= bounds.records, "record-count-bound");
     const rows = lines.map(line => { try { return JSON.parse(line); } catch { throw new Checkpoint("record-json"); } });
@@ -64,26 +65,53 @@ function text(event: RecordValue): string {
 }
 function chronology(rows: RecordValue[]) {
   const users: { index: number; text: string }[] = [];
-  const firstStops: number[] = [], secondStops: number[] = [];
+  const firstStops: number[] = [], secondStops: number[] = [], finalStops: number[] = [], orphanStops: number[] = [];
+  let messageStopCount = 0, merged = false;
   let assistant: { first: boolean; second: boolean; tool: boolean } | undefined;
   for (const [index, event] of rows.entries()) {
     if (event.type === "user") users.push({ index, text: text(event) });
     if (event.type === "assistant") {
       const body = text(event), first = body.includes(`${FIRST}_DONE`), second = body.includes(`${SECOND}_DONE`);
-      requireProof(!(first && second), "merged-final-assistant");
       assistant = { first, second, tool: event.message?.stop_reason === "tool_use"
         || Array.isArray(event.message?.content) && event.message.content.some((block: RecordValue) => block?.type === "tool_use") };
     }
     if (event.type === "stream_event" && event.event?.type === "message_stop") {
+      messageStopCount++;
+      if (!assistant) orphanStops.push(index);
       if (assistant && !assistant.tool) {
+        if (assistant.first && assistant.second) merged = true;
+        finalStops.push(index);
         if (assistant.first) firstStops.push(index);
         if (assistant.second) secondStops.push(index);
       }
       assistant = undefined;
     }
   }
-  return { users, firstStops, secondStops };
+  return { users, firstStops, secondStops, finalStops, orphanStops, messageStopCount, merged };
 }
+function verifyTurns(observed: ReturnType<typeof chronology>, input: RecordValue[]): void {
+  requireProof(!observed.merged, "merged-final-assistant");
+  requireProof(observed.users.length === 2 && observed.firstStops.length === 1 && observed.secondStops.length === 1
+    && observed.finalStops.length === 2, "turn-count");
+  requireProof(observed.users[0]!.text.includes(FIRST) && !observed.users[0]!.text.includes(SECOND)
+    && observed.users[1]!.text.includes(SECOND), "user-markers");
+  requireProof(observed.users[0]!.index < observed.firstStops[0]! && observed.firstStops[0]! < observed.users[1]!.index
+    && observed.users[1]!.index < observed.secondStops[0]!, "turn-order");
+  requireProof(input.filter(row => row.type === "submit").length === 2, "submit-count");
+}
+function verifyProvider(requests: readonly Q2Request[], maxRecords: number): void {
+  requireProof(requests.length <= maxRecords && requests.every(row => row.marker !== "unknown"), "provider-classification");
+  const ordinary = requests.filter(row => row.marker !== "background");
+  requireProof(ordinary.length === 2 && ordinary[0]?.marker === "first" && ordinary[1]?.marker === "second"
+    && ordinary[0]?.userMessages === 1 && ordinary[1]?.userMessages === 2
+    && ordinary.every(row => row.roles.user === row.userMessages && Object.values(row.roles).every(count => Number.isSafeInteger(count) && count >= 0)
+      && Object.values(row.roles).reduce((sum, count) => sum + count) === row.messageCount)
+    && ordinary.every(row => row.responseFormat === "absent" && !row.schemaHasTitle), "ordinary-provider-turns");
+}
+const projectRequest = (row: Q2Request): Q2Request => ({ marker: row.marker, responseFormat: row.responseFormat,
+  schemaHasTitle: row.schemaHasTitle, messageCount: row.messageCount, userMessages: row.userMessages,
+  roles: { system: row.roles.system, developer: row.roles.developer, user: row.roles.user,
+    assistant: row.roles.assistant, tool: row.roles.tool, other: row.roles.other } });
 
 /** Exercises the real Bus and driver. Caller-owned native ports supply isolation and physical artifact proof. */
 export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts) {
@@ -98,7 +126,14 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
   const barrierRecords: { barrier: string; elapsedMs: number }[] = [];
   const mark = (barrier: string) => { barriers.push(barrier); barrierRecords.push({ barrier, elapsedMs: performance.now() - monotonicStart }); };
   let heldSubmitCount = 0, heldQueued = false, secondBusDelivered = false, chronologyObserved = false;
-  let outcome = { userCount: 0, firstStop: -1, secondUser: -1, secondStop: -1 };
+  let outcome = { userCount: 0, firstStop: -1, secondUser: -1, secondStop: -1, finalStopCount: 0, messageStopCount: 0, orphanStopCount: 0 };
+  const captureChronology = (observed: ReturnType<typeof chronology>) => {
+    outcome = { userCount: observed.users.length, firstStop: observed.firstStops[0] ?? -1,
+      secondUser: observed.users[1]?.index ?? -1, secondStop: observed.secondStops[0] ?? -1,
+      finalStopCount: observed.finalStops.length, messageStopCount: observed.messageStopCount, orphanStopCount: observed.orphanStops.length };
+    chronologyObserved = true;
+  };
+  const cleanupFailures: string[] = [];
   const wake = () => { for (const waiter of [...waiters]) waiter(); };
   const peer = new QwenDualPeer("qwen", { cwd: options.cwd, stateDir: options.stateDir, cmd: options.command,
     mcpServers: [], ...options.host,
@@ -159,41 +194,50 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
     mark("first-provider-response-released");
     await observe(() => {
       const observed = chronology(records(events, options.bounds).rows);
+      requireProof(!observed.merged, "merged-final-assistant");
       return observed.firstStops.length > 0 && observed.secondStops.length > 0 && peer.state === "idle";
     }, "second-distinct-completion");
     const observed = chronology(records(events, options.bounds).rows);
-    outcome = { userCount: observed.users.length, firstStop: observed.firstStops[0] ?? -1,
-      secondUser: observed.users[1]?.index ?? -1, secondStop: observed.secondStops[0] ?? -1 };
-    chronologyObserved = true;
-    requireProof(observed.users.length === 2 && observed.firstStops.length === 1 && observed.secondStops.length === 1, "turn-count");
-    requireProof(observed.users[0]!.text.includes(FIRST) && !observed.users[0]!.text.includes(SECOND)
-      && observed.users[1]!.text.includes(SECOND), "user-markers");
-    requireProof(observed.users[0]!.index < observed.firstStops[0]! && observed.firstStops[0]! < observed.users[1]!.index
-      && observed.users[1]!.index < observed.secondStops[0]!, "turn-order");
-    requireProof(records(input, options.bounds).rows.filter(row => row.type === "submit").length === 2, "submit-count");
+    captureChronology(observed);
+    verifyTurns(observed, records(input, options.bounds).rows);
     secondBusDelivered = !bus.queueIds("qwen").includes(second.id) && bus.lastDeliveredTo("qwen").some(row => row.id === second.id);
     requireProof(secondBusDelivered, "second-envelope-not-delivered-by-bus");
     mark("distinct-native-turns-and-second-bus-delivery");
-    const requests = ports.requests();
-    requireProof(requests.length <= options.bounds.records && requests.every(row => row.marker !== "unknown"), "provider-classification");
-    const ordinary = requests.filter(row => row.marker !== "background");
-    requireProof(ordinary.length === 2 && ordinary[0]?.marker === "first" && ordinary[1]?.marker === "second"
-      && ordinary[0]?.userMessages === 1 && ordinary[1]?.userMessages === 2
-      && ordinary.every(row => row.roles.user === row.userMessages && Object.values(row.roles).every(count => Number.isSafeInteger(count) && count >= 0)
-        && Object.values(row.roles).reduce((sum, count) => sum + count) === row.messageCount)
-      && ordinary.every(row => row.responseFormat === "absent" && !row.schemaHasTitle), "ordinary-provider-turns");
+    verifyProvider(ports.requests(), options.bounds.records);
     checkpoint = "passed";
   } catch (error) { checkpoint = error instanceof Checkpoint ? error.checkpoint : "host-proof-error"; }
   finally {
     controller.abort(); waiters.clear(); untap(); for (const watcher of watchers) watcher.close();
     bus.closeJournal();
-    try { await peer.stop(); } catch { checkpoint = "adapter-stop"; }
-    try { ownedStopConfirmed = (await ports.stop()).ownedStopConfirmed; } catch { ownedStopConfirmed = false; }
+    try { await peer.stop(); } catch { cleanupFailures.push("adapter-stop"); if (checkpoint === "passed") checkpoint = "adapter-stop"; }
+    try { ownedStopConfirmed = (await ports.stop()).ownedStopConfirmed; } catch { cleanupFailures.push("native-stop"); ownedStopConfirmed = false; }
   }
+  let finalEvidenceObserved = false, finalEvidencePassed = false, finalCheckpoint = "not-observed", finalRequests: Q2Request[] = [], finalProviderCount = 0;
+  let finalEvents: ReturnType<typeof chronology> | undefined, finalInput: RecordValue[] | undefined, finalProviderObserved = false;
+  const finalObservationFailures: string[] = [];
+  const observationFailure = (error: unknown) => { finalObservationFailures.push(error instanceof Checkpoint ? error.checkpoint : "final-host-proof-error"); };
+  try {
+    const capturedRequests = ports.requests();
+    finalProviderCount = capturedRequests.length;
+    requireProof(capturedRequests.length <= options.bounds.records, "provider-classification");
+    finalRequests = capturedRequests.map(projectRequest); finalProviderObserved = true;
+  } catch (error) { observationFailure(error); }
+  try { finalInput = records(input, options.bounds, true).rows; } catch (error) { observationFailure(error); }
+  try { finalEvents = chronology(records(events, options.bounds, true).rows); captureChronology(finalEvents); } catch (error) { observationFailure(error); }
+  finalEvidenceObserved = finalProviderObserved && finalInput !== undefined && finalEvents !== undefined;
+  try {
+    if (!finalEvidenceObserved) throw new Checkpoint(finalObservationFailures[0] ?? "final-host-proof-error");
+    requireProof(finalEvents && finalInput, "final-host-proof-error");
+    verifyTurns(finalEvents!, finalInput!); verifyProvider(finalRequests, options.bounds.records);
+    requireProof(secondBusDelivered, "second-envelope-not-delivered-by-bus");
+    finalCheckpoint = "passed"; finalEvidencePassed = true;
+  } catch (error) { finalCheckpoint = error instanceof Checkpoint ? error.checkpoint : "final-host-proof-error"; }
+  if (checkpoint === "passed" && !finalEvidencePassed) checkpoint = finalCheckpoint;
+  if (checkpoint === "passed" && !ownedStopConfirmed) checkpoint = "owned-stop-unconfirmed";
   return { schemaVersion: 1, manualOnly: true, autoAdmit: false, evidenceKind: ports.kind,
-    passed: checkpoint === "passed" && ownedStopConfirmed, checkpoint, heldSubmitCount, heldQueued, secondBusDelivered, barriers, barrierRecords, chronologyObserved, ...outcome,
-    providerRequests: ports.requests().slice(0, options.bounds.records).map(row => ({ marker: row.marker,
-      responseFormat: row.responseFormat, schemaHasTitle: row.schemaHasTitle, messageCount: row.messageCount,
-      userMessages: row.userMessages, roles: { system: row.roles.system, developer: row.roles.developer, user: row.roles.user,
-        assistant: row.roles.assistant, tool: row.roles.tool, other: row.roles.other } })), ownedStopConfirmed };
+    passed: checkpoint === "passed" && ownedStopConfirmed && finalEvidencePassed && cleanupFailures.length === 0,
+    checkpoint, heldSubmitCount, heldQueued, secondBusDelivered, barriers, barrierRecords, chronologyObserved, ...outcome,
+    finalEvidenceObserved, finalEvidencePassed, finalEvidenceClosed: ownedStopConfirmed, finalCheckpoint, finalProviderCount,
+    finalProviderObserved, finalInputObserved: finalInput !== undefined, finalEventsObserved: finalEvents !== undefined, finalObservationFailures, cleanupFailures,
+    providerRequests: finalRequests, ownedStopConfirmed };
 }

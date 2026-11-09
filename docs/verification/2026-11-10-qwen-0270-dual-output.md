@@ -24,7 +24,10 @@ process/account/model: normal held queue, tool-use stop remaining busy, and the
 old merged-assistant false-positive shape, ordinary provider user-count mismatch,
 and native-reader override refusal. Causal barriers and the exact second Bus
 envelope id are checked. They do not certify native Q2.
-No automation manifest or autoAdmit eligibility is changed.
+Final input/events/provider evidence is frozen after owned stop and checked again;
+late POST and USER/final-stop controls preserve the first failure checkpoint.
+Tool-use and orphan Stops cannot be reused as new final assistants. No automation
+manifest or autoAdmit eligibility is changed.
 
 The [original 0.26.1 receipt](2026-10-25-qwen-dual-output-t0.md) used a real
 model/gateway and a changing global install. Its direct-busy-submit queued-turn
