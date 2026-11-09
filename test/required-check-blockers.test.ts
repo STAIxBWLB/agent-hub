@@ -28,3 +28,20 @@ test("complete cached and fresh CI evidence use identical named blockers (#1328)
   const fresh = await readReviewReadiness({ stage: "build", repo: "owner/repo", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(reply(nodes)) }), required);
   expect(cached).toEqual(fresh);
 });
+
+for (const sample of [
+  { label: "missing CheckRun status", node: { name: "gate", conclusion: "SUCCESS" }, problem: "unknown" },
+  { label: "malformed CheckRun status", node: { name: "gate", status: "NOT_A_STATUS", conclusion: "SUCCESS" }, problem: "unknown" },
+  { label: "WAITING is not a completed CheckRun", node: { name: "gate", status: "WAITING", conclusion: "SUCCESS" }, problem: "unknown" },
+  { label: "CheckRun state cannot replace missing conclusion", node: { name: "gate", status: "COMPLETED", state: "SUCCESS" }, problem: "unknown" },
+  { label: "StatusContext conclusion cannot replace failed state", node: { context: "gate", state: "FAILURE", conclusion: "SUCCESS" }, problem: "unknown" },
+  { label: "valid completed CheckRun", node: { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }, problem: undefined },
+  { label: "valid StatusContext SUCCESS", node: { context: "gate", state: "SUCCESS" }, problem: undefined },
+  { label: "pending CheckRun keeps its diagnostic", node: { name: "gate", status: "IN_PROGRESS", conclusion: null }, problem: "pending" },
+  { label: "failed CheckRun keeps its diagnostic", node: { name: "gate", status: "COMPLETED", conclusion: "FAILURE" }, problem: "failed" },
+  { label: "inconsistent nonpassed context stays blocked", node: { context: "gate", state: "SUCCESS", conclusion: "FAILURE" }, problem: "failed" },
+] as const) test(`fresh success proof: ${sample.label} (#1328)`, async () => {
+  const result = await readReviewReadiness({ stage: "build", repo: "owner/repo", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(reply([sample.node])) }), ["gate"]);
+  expect(result.ready).toBe(sample.problem === undefined);
+  if (sample.problem) expect(result.blockers).toContain(`exact-head full CI is not green: ${sample.problem} gate`);
+});

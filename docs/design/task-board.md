@@ -11,6 +11,7 @@ covers: [task-board]
 tags: [agent-hub, dogfood]
 paths:
   - src/hub/tasks.ts
+  - src/hub/build-entry.ts
   - src/hub/sdlc-metrics.ts
   - src/hub/board.ts
   - src/hub/routing.ts
@@ -236,3 +237,8 @@ original authority/snapshot. Workflow holds are not peer-ineligibility stalls.
 Private projections withhold issue-specific guidance. Fresh and complete cached
 CI diagnostics share named missing/pending/failed/duplicate/unknown check states,
 without relaxing required checks, inventory completeness or identical-tree reuse.
+
+Fresh GraphQL review reads retain the original success proof: a CheckRun must be
+COMPLETED with conclusion SUCCESS; a StatusContext must have state SUCCESS.
+Common normalization cannot turn malformed fresh proof into admission. The shared
+parser and cached evidence schema retain their existing contracts.
