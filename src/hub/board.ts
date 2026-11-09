@@ -154,6 +154,17 @@ export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
 export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number; pullOnly?: boolean }
 export interface TaskCancellation { reason: string; supersededBy?: string; flowRevision: number; withheld?: true }
+/** Metadata only: source task text, plans and growing histories never enter a carry lookup. */
+export interface SpecAcceptanceCandidate {
+  id: number; created: number; state: "cancelled"; refs: TaskRefs; signals: string[];
+  supersededBy: string; cancellationRevision: number; withheld: boolean;
+  repo: unknown; issue: unknown; acceptance: unknown;
+}
+// ponytail: one 32-source snapshot; larger sets need a bounded paginated lookup with a shared currentness proof.
+const SPEC_ACCEPTANCE_SOURCE_LIMIT = 32;
+const SPEC_ACCEPTANCE_FIELD_BYTES = 64 * 1024;
+const SPEC_ACCEPTANCE_TOTAL_BYTES = 256 * 1024;
+
 export const TASK_STALL_CODES = ["tests", "spec", "network", "worktree", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "no-writes", "queue-count", "queue-age", "queue-age-unknown"] as const;
 export type TaskStallCode = (typeof TASK_STALL_CODES)[number];
 export interface TaskStall { task: number; signature: string; replanRevision: number; cause: { kind: "reservation" | "no-eligible-peer" | "cancelled-dependency" | "no-writes"; peer?: string; dependency?: number; code: TaskStallCode; turns?: number; acceptance?: number; refusals?: { peer: string; code: TaskStallCode }[] }; at: number }
@@ -1820,6 +1831,57 @@ export class Board {
   list(state?: TaskState): Task[] {
     const rows = state ? this.db.query(`${TASK_SELECT} WHERE state = ? ORDER BY id`).all(state) : this.db.query(`${TASK_SELECT} ORDER BY id`).all();
     return (rows as Record<string, unknown>[]).map(parse);
+  }
+
+  /** A bounded, read-only source projection. Unknown/capped results never authorize carry. */
+  specAcceptanceCandidates(destination: number): { rows: SpecAcceptanceCandidate[]; complete: boolean } {
+    const unavailable = { rows: [], complete: false };
+    if (!Number.isSafeInteger(destination) || destination <= 0) return unavailable;
+    const object = (column: string) => `CASE WHEN length(CAST(${column} AS BLOB)) <= ${SPEC_ACCEPTANCE_FIELD_BYTES} THEN CASE WHEN json_valid(${column}) THEN json_type(${column})='object' ELSE 0 END ELSE 0 END`;
+    const cancel = object("cancelled"), receipt = object("sdlc");
+    try {
+      const found = this.db.query(`WITH candidates AS (
+        SELECT id,created,
+          CASE WHEN length(CAST(refs AS BLOB)) <= ${SPEC_ACCEPTANCE_FIELD_BYTES} THEN refs END AS refs,
+          CASE WHEN length(CAST(signals AS BLOB)) <= ${SPEC_ACCEPTANCE_FIELD_BYTES} THEN signals END AS signals,
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.supersededBy') END AS superseded_by,
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.flowRevision') END AS cancellation_revision,
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.withheld') END AS withheld,
+          CASE WHEN sdlc IS NULL THEN 1 WHEN ${receipt} THEN 1 ELSE 0 END AS receipt_valid,
+          CASE WHEN ${receipt} THEN json_extract(sdlc,'$.repo') END AS repo,
+          CASE WHEN ${receipt} THEN json_extract(sdlc,'$.issue') END AS issue,
+          CASE WHEN ${receipt} THEN CAST(json_extract(sdlc,'$.acceptance') AS TEXT) END AS acceptance
+        FROM tasks WHERE state='cancelled' AND id < ? AND
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.supersededBy') IN (?,?,?) ELSE 0 END
+        ORDER BY id DESC LIMIT ?
+      ), projections AS (
+        SELECT id,json_object('id',id,'created',created,'refs',refs,'signals',signals,'superseded_by',superseded_by,
+          'cancellation_revision',cancellation_revision,'withheld',withheld,'repo',repo,'issue',issue,'acceptance',acceptance) AS payload,
+          receipt_valid AND refs IS NOT NULL AND signals IS NOT NULL AS valid FROM candidates
+      ), budget AS (
+        SELECT COUNT(*) <= ${SPEC_ACCEPTANCE_SOURCE_LIMIT} AND MIN(valid)
+          AND SUM(length(CAST(payload AS BLOB))) <= ${SPEC_ACCEPTANCE_TOTAL_BYTES} AS complete FROM projections
+      ) SELECT budget.complete, CASE WHEN budget.complete THEN projections.payload END AS payload FROM projections,budget ORDER BY projections.id DESC`)
+        .all(destination, `task #${destination}`, `#${destination}`, String(destination), SPEC_ACCEPTANCE_SOURCE_LIMIT + 1) as { complete: number; payload: string | null }[];
+      if (found.some(row => row.complete !== 1 || row.payload === null)) return unavailable;
+      const rows: SpecAcceptanceCandidate[] = [];
+      for (const projected of found) {
+        const row = JSON.parse(projected.payload!) as Record<string, unknown>;
+        if (typeof row.refs !== "string" || typeof row.signals !== "string") return unavailable;
+        const refs = JSON.parse(row.refs), signals = JSON.parse(row.signals);
+        if (!refs || typeof refs !== "object" || Array.isArray(refs) || refs.repo !== undefined && typeof refs.repo !== "string"
+          || refs.paths !== undefined && (!Array.isArray(refs.paths) || refs.paths.some((value: unknown) => typeof value !== "string"))
+          || !Array.isArray(signals) || signals.some((value: unknown) => typeof value !== "string")
+          || !Number.isSafeInteger(row.id) || typeof row.created !== "number" || !Number.isFinite(row.created)
+          || typeof row.superseded_by !== "string" || !Number.isSafeInteger(row.cancellation_revision) || Number(row.cancellation_revision) <= 0
+          || ![null, 0, 1].includes(row.withheld as null | number)) return unavailable;
+        const acceptance = row.acceptance == null ? undefined : JSON.parse(String(row.acceptance));
+        rows.push({ id: row.id as number, created: row.created, state: "cancelled", refs, signals,
+          supersededBy: row.superseded_by, cancellationRevision: row.cancellation_revision as number, withheld: row.withheld === 1,
+          repo: row.repo, issue: row.issue, acceptance });
+      }
+      return { rows, complete: true };
+    } catch { return unavailable; }
   }
 
   /** Structural status facts only; avoid decoding text, plans and growing history on each status write. */
