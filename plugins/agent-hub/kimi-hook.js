@@ -404,13 +404,13 @@ var init_compat = __esm(() => {
     },
     qwen: {
       label: "Qwen Code",
-      verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8", "0.26.9"],
+      verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8", "0.26.9", "0.27.0"],
       gate: "contract",
       probe: ["qwen", "--version"],
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); exact 0.26.9 repeats those account-free probes on macOS arm64. Real model turns and Linux repetition of 0.26.9 remain unverified. Another version may change those contracts.",
-      receipt: "docs/verification/2026-11-08-qwen-0269-acp.md"
+      trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); exact 0.26.9 and 0.27.0 repeat those account-free probes on macOS arm64. Real model turns and Linux repetition of those versions remain unverified. The independent 0.27.0 live-setter clear failed and stays unavailable. Another version may change those contracts.",
+      receipt: "docs/verification/2026-11-09-qwen-0270-acp.md"
     },
     "qwen-dual": {
       label: "Qwen Code dual-output TUI",
