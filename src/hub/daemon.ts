@@ -11625,7 +11625,9 @@ export async function startDaemon(opts: DaemonOptions) {
             } : operationalCurrent(sock);
             actorCurrent = () => {
               sessionCurrent();
-              if (c.peer !== (asker === USER ? undefined : asker) || c.externalOwner !== externalOwner || externalOwner && !currentExternalTools(c, true)) throw new Error("actor session or execution root changed");
+              if (externalOwner && !currentExternalTools(c, true)) throw new Error("actor execution root changed");
+              sessionCurrent(); // A fresh execution-root probe can service callbacks before it returns.
+              if (c.peer !== (asker === USER ? undefined : asker) || c.externalOwner !== externalOwner) throw new Error("actor session changed");
             };
             actorCurrent();
           }
