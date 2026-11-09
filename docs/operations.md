@@ -1779,6 +1779,12 @@ reads this default, never writes it, and refreshing an existing project changes
 research only with an explicit flag. Missing, unreadable or untrusted machine
 defaults remain off. The guided prompt shows the same choice its plan will write.
 
+The file is shared by every hub and CLI on the machine, so upgrade them all to
+0.36 or later before saving this choice: a hub or CLI from before 0.36 refuses
+the unknown `research` key and treats the whole file as untrusted, so its machine
+autonomy preset falls back to off and its start-agent default to the shipped one
+until it upgrades.
+
 With `"research": { "enabled": true }` in project configuration, the hub keeps one record per
 task that reaches a terminal state (approved or cancelled) in `~/.agenthub/research/`, shared by every project that opts in:
 outcome, review rounds and findings, delivery and merge figures, rework, failed checks, tokens and time per peer and model,

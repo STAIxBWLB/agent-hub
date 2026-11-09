@@ -21,3 +21,9 @@ test("#1328 setup changes research only for an explicit choice, preserving an ex
   expect(() => setupResearchDefault(home, [], true)).toThrow("check its ownership, mode and schema");
   expect(readFileSync(file, "utf8")).toBe(unsafe);
 });
+test("#853 the saved choice says to upgrade every hub and CLI on this machine first", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-setup-research-")); roots.push(root);
+  const line = setupResearchDefault(join(root, "hub"), [], true);
+  expect(line).toContain("Research records for new projects: on");
+  expect(line).toContain("Upgrade every hub and CLI on this machine to 0.36 or later first: a version from before 0.36 treats the whole file as untrusted, so its machine autonomy preset falls back to off and its start-agent default to the shipped one.");
+});
