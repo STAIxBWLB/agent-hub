@@ -551,6 +551,17 @@ export function requiredCheckNames(repository: string | undefined, required: rea
   return required.length ? [...new Set(required)] : repository?.toLowerCase() === "staixbwlb/agent-hub" ? ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"] : [];
 }
 
+/** Names each non-green required check. Incomplete inventories cannot prove either presence or success. */
+export function requiredCiBlocker(required: readonly string[], checks: PrEvidence["checks"], complete = true): string | undefined {
+  const problems = required.flatMap(name => {
+    const matches = checks.filter(check => check.name === name);
+    const state = !complete ? "unknown" : !matches.length ? "missing" : matches.some(check => check.state === "failed") ? "failed"
+      : matches.some(check => check.state === "pending") ? "pending" : matches.length !== 1 ? "duplicate" : matches[0]!.state !== "passed" ? "unknown" : undefined;
+    return state ? [`${state} ${name}`] : [];
+  });
+  return problems.length ? `exact-head full CI is not green: ${problems.join("; ")}` : undefined;
+}
+
 /** A complete resolved-thread snapshot already proves there is no pending unanswered bot thread. */
 export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, expected: string | undefined, required: readonly string[], repository?: string): ReviewReadiness | undefined {
   if (!evidence || evidence.unresolved !== 0) return undefined;
@@ -561,7 +572,8 @@ export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, ex
   if (!expected || !sha(expected)) blockers.push("review head missing");
   else if (evidence.head !== expected) blockers.push("review head changed");
   if (evidence.state !== "OPEN") blockers.push("review PR is not open");
-  if (!checks.every(name => { const matched = evidence.checks.filter(check => check.name === name); return matched.length === 1 && matched[0]?.state === "passed"; })) blockers.push("exact-head full CI is not green");
+  const ciBlocker = requiredCiBlocker(checks, evidence.checks);
+  if (ciBlocker) blockers.push(ciBlocker);
   return { head: evidence.head, ready: blockers.length === 0, blockers, checks };
 }
 
@@ -594,12 +606,20 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
     const contexts = commit?.statusCheckRollup?.contexts;
     const nodes: unknown[] | undefined = contexts?.nodes;
     let reusedRun: number | undefined;
-    if (contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(nodes) || nodes.length > 100
-      || !full.every(name => {
-        const matches = (nodes as { name?: string; context?: string; status?: string; conclusion?: string; state?: string }[]).filter(node => (node?.name ?? node?.context) === name);
-        return matches.length === 1 && (matches[0]?.name ? matches[0].status === "COMPLETED" && matches[0].conclusion === "SUCCESS" : matches[0]?.state === "SUCCESS");
-      })) blockers.push("exact-head full CI is not green");
-    if (blockers.includes("exact-head full CI is not green") && contexts?.pageInfo?.hasNextPage === false && Array.isArray(nodes)
+    const completeChecks = !(contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(nodes) || nodes.length > 100);
+    const requiredNodes = completeChecks ? nodes!.filter(node => {
+      const raw = node as { name?: unknown; context?: unknown } | null | undefined;
+      return full.some(name => (raw?.name ?? raw?.context) === name);
+    }) : [];
+    const checkEvidence = completeChecks ? parsePrEvidence({ headRefOid: pr.headRefOid, state: pr.state, files: [], statusCheckRollup: requiredNodes }).checks.map((check, index) => {
+      const raw = requiredNodes[index] as { name?: unknown; status?: unknown; conclusion?: unknown; state?: unknown } | undefined;
+      // Fresh GraphQL admission keeps its original success proof, even when common normalization accepts a legacy shape.
+      const success = raw?.name ? raw.status === "COMPLETED" && raw.conclusion === "SUCCESS" : raw?.state === "SUCCESS";
+      return check.state === "passed" && !success ? { ...check, state: "unknown" as const } : check;
+    }) : [];
+    const ciBlocker = requiredCiBlocker(full, checkEvidence, completeChecks);
+    if (ciBlocker) blockers.push(ciBlocker);
+    if (ciBlocker && contexts?.pageInfo?.hasNextPage === false && Array.isArray(nodes)
       && full.every(name => { const matches = (nodes as { name?: string; conclusion?: string }[]).filter(node => node?.name === name); return matches.length === 1 && matches[0]?.conclusion === "SKIPPED"; }) && sha(commit?.tree?.oid)) {
       reusedRun = await identicalTreeGate(receipt.repo, commit.tree.oid, bounded, full);
       if (reusedRun !== undefined) {
@@ -607,7 +627,7 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
         const after = await bounded(args, 10_000, undefined, 512 * 1024);
         try { if (after.code !== 0 || JSON.stringify(JSON.parse(after.stdout)?.data?.repository?.pullRequest) !== JSON.stringify(pr)) reusedRun = undefined; }
         catch { reusedRun = undefined; }
-        if (reusedRun !== undefined) blockers.splice(blockers.indexOf("exact-head full CI is not green"), 1);
+        if (reusedRun !== undefined) blockers.splice(blockers.indexOf(ciBlocker!), 1);
       }
     }
     const threads = pr.reviewThreads;

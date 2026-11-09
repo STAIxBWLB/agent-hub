@@ -544,7 +544,8 @@ test("a queue origin hands off to a plan gate after one GitHub read despite unre
     for (const id of ids) f.bus.withdraw(id);
     await settled(f.tasks);
     expect(reads).toBe(1); expect(f.board.get(row.id)?.owner).toBeNull();
-    expect(f.board.stalls().find(stall => stall.task === row.id)?.cause.code).toBe("policy");
+    expect(f.board.stalls().find(stall => stall.task === row.id)).toBeUndefined();
+    expect(f.board.get(row.id)?.history.at(-1)?.event).toBe("ready held");
     expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).not.toContain(row.id);
     const notices = f.notices.length;
     for (let n = 0; n < 5; n++) {
@@ -644,12 +645,14 @@ test("a plan policy refusal still replaces a queue origin when its peer goes off
     try { await bounded(entered.promise); await f.peers.codex!.stop(); } finally { release.resolve(); }
     await settled(f.tasks);
     expect(reads).toBe(1); expect(f.board.get(row.id)?.owner).toBeNull();
-    expect(f.board.stall(row.id)?.cause.code).toBe("policy");
+    expect(f.board.stall(row.id)).toBeUndefined();
+    expect(f.board.get(row.id)?.history.at(-1)?.event).toBe("ready held");
     expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).not.toContain(row.id);
     await f.peers.codex!.start(); f.tasks.scheduleQueuePressureRecheck();
     for (let n = 0; n < 3; n++) {
       const unrelated = f.enqueue("kimi", 1)[0]!; f.bus.withdraw(unrelated); await settled(f.tasks);
     }
-    expect(reads).toBe(1); expect(f.board.stall(row.id)?.cause.code).toBe("policy");
+    expect(reads).toBe(1); expect(f.board.stall(row.id)).toBeUndefined();
+    expect(f.board.get(row.id)?.history.at(-1)?.event).toBe("ready held");
   }
 });

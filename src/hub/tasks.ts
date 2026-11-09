@@ -1,3 +1,4 @@
+import { buildEntryDiagnostic } from "./build-entry.ts";
 import { taskShowAllowed } from "./conductor.ts";
 import { executionOwnerSnapshot, parseOwnerLineageQuery, type ExecutionLineageOwnerPorts } from "./execution-lineage-owner.ts";
 import { readExecutionLineage, type LineageResult } from "./execution-lineage.ts";
@@ -1740,9 +1741,10 @@ export class Tasks {
 
   private weights(cls: TaskClass, task?: Task, projectedHealth?: ReturnType<Tasks["health"]>) {
     const now = Date.now();
+    const entryDiagnostic = task ? this.entryDiagnostic(task) : undefined;
     const quota = this.d.quota?.();
     const health = projectedHealth ?? this.health(), clock = health.now ?? now;
-    return { ...health, ...(task && this.hasPersonReservation(task) && task.reserved ? { queueReservedHold: task.reserved } : {}), planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task), ...(task.planner ? { keptPlanner: task.planner } : {}) } : {}), now: clock, demoted: this.demoted(cls, clock), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
+    return { ...health, ...(entryDiagnostic ? { entryDiagnostic } : {}), ...(task && this.hasPersonReservation(task) && task.reserved ? { queueReservedHold: task.reserved } : {}), planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task), ...(task.planner ? { keptPlanner: task.planner } : {}) } : {}), now: clock, demoted: this.demoted(cls, clock), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
   }
 
   /**
@@ -4336,13 +4338,14 @@ export class Tasks {
       task = current; // Reviewer-only and quiet bookkeeping updates do not supersede ownership authority.
       if (gap) {
         this.requestIndependentPlanReview(current);
-        this.releaseNotice(`task ${this.publicTitle(current)}: ${gap}; planner: call hub_planner_groom then hub_plan_review`);
+        const entry = mode === "enforce" ? this.entryDiagnostic(current, gap) ?? `${gap}; planner: hub_plan_review` : `${gap}; planner: call hub_planner_groom then hub_plan_review`;
+        this.releaseNotice(`task ${this.publicTitle(current)}: ${entry}`);
         if (mode === "enforce") {
           if (opts.claim && opts.namedOwner === by) stagedClaimGap = gap;
           else {
-            if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${gap}; planner: call hub_planner_groom then hub_plan_review`); // #601, before the stall write
-            this.reportStall(current, { kind: "no-eligible-peer", code: "policy" });
-            return current;
+            if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${entry}`); // #601, before hold bookkeeping
+            this.holdReady(current, "build entry", entry);
+            return this.d.board.get(current.id) ?? current;
           }
         }
       }
@@ -4848,10 +4851,19 @@ export class Tasks {
     } catch { return undefined; }
   }
 
-  /** Why a proposal's named owner (a self-claim included) did not get it, from the stall its proposal recorded (#601); undefined when it did. */
+  /** Guidance is separate from candidate choice: offers retain their existing plan-only gate. */
+  private entryDiagnostic(task: Task, planGap?: string): string | undefined {
+    if (this.d.sdlc?.config().mode !== "enforce" || !this.isBuildTask(task) || this.isPii(task)) return undefined;
+    return buildEntryDiagnostic(task, planGap);
+  }
+
+  /** Proposal entry guidance first; otherwise explain an unassigned named owner from its recorded peer stall (#601). */
   namedOwnerNote(task: Task, named: PeerId | undefined, by: PeerId): string | undefined {
     requireLocalTaskPeer(by);
-    if (!named || task.owner || task.state !== "proposed") return undefined;
+    if (task.state !== "proposed") return undefined;
+    const entry = this.entryDiagnostic(task);
+    if (entry) return `task #${task.id}: SDLC build entry blocked: ${entry}`;
+    if (!named || task.owner) return undefined;
     const stall = this.d.board.stalls().find(row => row.task === task.id);
     if (!stall) return undefined;
     const code = stall.cause.refusals?.find(row => row.peer === named)?.code ?? (stall.cause.peer === named ? stall.cause.code : undefined);
@@ -6248,7 +6260,8 @@ export class Tasks {
   }
   private specText(task: Task, state: Exclude<SpecState, "current">, verb: "blocked" | "advice"): string {
     const issue = task.sdlc?.issue;
-    const why = issue ? SPEC_STATE_TEXT[state].replace("<task>", String(task.id)).replace("<n>", String(issue)) : "spec issue unknown: record repo and issue with hub_sdlc_record, then the person accepts it with ahub sdlc accept";
+    const diagnostic = verb === "blocked" && !this.isPii(task) && state === "missing" ? buildEntryDiagnostic(task) : undefined;
+    const why = diagnostic ?? (issue ? SPEC_STATE_TEXT[state].replace("<task>", String(task.id)).replace("<n>", String(issue)) : "spec issue unknown: record repo and issue with hub_sdlc_record, then the person accepts it with ahub sdlc accept");
     return `task #${task.id}: SDLC build entry ${verb}: ${why}`;
   }
 
@@ -6421,7 +6434,7 @@ export class Tasks {
     const current = this.need(task.id, false, true);
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during plan readback");
-    if (gap && mode === "enforce") throw new PreEffectToolRefusal(gap);
+    if (gap && mode === "enforce") throw new PreEffectToolRefusal(this.entryDiagnostic(current, gap) ?? gap);
     if (gap) this.releaseNotice(`task ${this.publicTitle(current)}: ${gap}`);
   }
 

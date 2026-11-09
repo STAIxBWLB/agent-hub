@@ -348,3 +348,34 @@ test("#844 without a declared model the native argv and the status row carry non
     expect((await f.console_.request({ t: "status" })).status.peers[f.peer].modelSource).toBeUndefined();
   } finally { await f.close(); }
 }, 20_000);
+
+test("owned held inbox remains bound to the current task and rejects authority drift after storage read (#1328)", async () => {
+  const f = await fixture(true);
+  try {
+    const journal = (f.daemon.bus as unknown as { journal: import("../src/hub/delivery-journal.ts").DeliveryJournal }).journal;
+    const env = newEnvelope("user", "OWNED_HELD_BODY_CANARY", { to: [f.peer], refs: { task: String(f.taskId) } });
+    journal.createDelivery({ id: "owned-held", peer: f.peer, state: "needs_review", createdAt: env.ts, originals: [env], out: [env] });
+    const before = journal.snapshot();
+    const own = await f.tools.request({ t: "inbox" });
+    expect(own.heldRead.rows[0].messages[0].body).toBe(env.body);
+    expect(journal.snapshot()).toEqual(before);
+    journal.createDelivery({ id: "old-task-held", peer: f.peer, state: "needs_review", createdAt: env.ts, originals: [{ ...env, id: "old-task-env", body: "OLD_TASK_BODY_CANARY", refs: { task: String(f.taskId! + 1) } }], out: [env] });
+    const foreign = await f.tools.request({ t: "inbox" });
+    expect(foreign.heldRead.unavailable).toBe(true);
+    expect(JSON.stringify(foreign)).not.toContain("OLD_TASK_BODY_CANARY");
+    journal.transition("old-task-held", "discarded", "fixture cleanup");
+    const original = f.daemon.bus.heldInbox.bind(f.daemon.bus);
+    f.daemon.bus.heldInbox = peer => {
+      const result = original(peer);
+      // Withdraw the current owned-launch proof during the host read.
+      const owner = f.daemon.bus.peers.get(peer)!;
+      const ownedTools = owner.ownedTools?.bind(owner);
+      owner.ownedTools = () => undefined;
+      expect(ownedTools).toBeDefined();
+      return result;
+    };
+    const stale = await f.tools.request({ t: "inbox" });
+    expect(stale.ok).toBe(false); // The existing response authority fence may refuse the whole reply.
+    expect(JSON.stringify(stale)).not.toContain(env.body);
+  } finally { await f.close(); }
+});

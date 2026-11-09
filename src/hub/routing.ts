@@ -426,6 +426,8 @@ export function assign(
   states: Record<PeerId, PeerState>,
   routing: Routing,
   opts: InstanceRoutingOptions & {
+    /** Precomputed snapshot guidance only; it never changes peer eligibility or performs a read. */
+    entryDiagnostic?: string;
     capabilities?: Record<PeerId, PeerCapabilities>;
     repository?: string;
     exclude?: PeerId[];
@@ -469,6 +471,7 @@ export function assign(
   const instanceMode = hasInstances(opts);
   const policy = routing.classes[task.class];
   const trace: string[] = [`class ${task.class}${policy ? "" : " (no [classes] entry: only an explicit owner can take it)"}`, `signals: ${task.signals.join(", ") || "none"}`];
+  if (opts.entryDiagnostic) trace.push(`build entry: ${opts.entryDiagnostic}`);
   // Which file each of this class's values comes from (#269), only when the machine-local overlay sets one.
   const local = Object.keys(routing.sources ?? {}).filter((key) => key.startsWith(`classes.${task.class}.`)).map((key) => key.slice(`classes.${task.class}.`.length));
   if (local.length) trace.push(`policy source: ${local.join(", ")} from ${OVERLAY_FILE}; the rest from routing.toml`);

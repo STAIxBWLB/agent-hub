@@ -1,0 +1,7 @@
+{
+  "name": "agent-hub-companion",
+  "version": "0.1.0",
+  "description": "Optional read-only hub pane; fixture_only, native terminal receipt NOT RUN.",
+  "types": "./types/index.d.ts",
+  "license": "MIT"
+}

@@ -133,7 +133,7 @@ test("a none-scope handoff still counts an observed review and its elapsed time 
 import { readReviewReadiness } from "../src/hub/sdlc.ts";
 const readinessReply = (state = "SUCCESS", answered = true) => ({ data: { repository: { pullRequest: {
   headRefOid: head, state: "OPEN", commits: { nodes: [{ commit: { oid: head, tree: { oid: "b".repeat(40) },
-    statusCheckRollup: { contexts: { nodes: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, status: "COMPLETED", conclusion: state })), pageInfo: { hasNextPage: false } } },
+    statusCheckRollup: { contexts: { nodes: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, status: ["PENDING", "IN_PROGRESS"].includes(state) ? "IN_PROGRESS" : "COMPLETED", conclusion: state })), pageInfo: { hasNextPage: false } } },
   } }] },
   reviewThreads: { nodes: [{ isResolved: false, comments: { nodes: [
     { author: { __typename: "Bot" }, createdAt: "2026-10-18T01:00:00Z" },
@@ -146,7 +146,7 @@ test("review admission is head-bound, checks full CI and bot replies without fet
     calls.push(args); return { code: 0, stdout: JSON.stringify(reply) };
   });
   expect(await read(readinessReply())).toMatchObject({ head, ready: true, blockers: [] });
-  expect((await read(readinessReply("IN_PROGRESS"))).blockers).toContain("exact-head full CI is not green");
+  expect((await read(readinessReply("IN_PROGRESS"))).blockers).toContain("exact-head full CI is not green: pending check (ubuntu-latest); pending check (macos-latest); pending seeded guards");
   expect((await read(readinessReply("SUCCESS", false))).blockers).toContain("bot review threads unanswered");
   const moved = readinessReply(); moved.data.repository.pullRequest.headRefOid = "c".repeat(40);
   expect((await read(moved)).blockers).toContain("review head changed");

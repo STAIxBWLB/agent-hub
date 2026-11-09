@@ -7,7 +7,8 @@ import { openHubDatabase } from "./db-schema.ts";
 import type { BusSnapshot } from "./bus.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
 import { HUB, KINDS, USER, isInvocationKind, type Envelope, type Kind } from "./envelope.ts";
-import { heldDeliveryHints } from "./delivery-hints.ts";
+import { HELD_DELIVERY_PAGE, heldDeliveryHints } from "./delivery-hints.ts";
+import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { parseRemotePeerId } from "../rooms/application.ts";
 import { validateDeferredHub } from "./deferred-hub.ts";
@@ -1505,6 +1506,29 @@ export class DeliveryJournal {
           AND json_type(e.value,'$.refs.reviewPackage')='text' AND (?3 IS NULL OR json_extract(e.value,'$.refs.task')=?3)
       LIMIT 1`).get(this.projectId, peer, taskId);
   }
+  /** Observer-only bridge for read-only held inspection; no refresh or delivery receipt. */
+  hasHeldReviewScope(peer: string, includeAccepted: boolean, byteBudget: number): boolean {
+    this.ensureOpen();
+    const states = includeAccepted ? "('needs_review','accepted')" : "('needs_review')";
+    const revision = this.revision();
+    const window = this.db.query(`SELECT length(CAST(originals AS BLOB)) AS bytes FROM deliveries WHERE project_id=? AND peer=? AND state IN ${states} ORDER BY created_at,id LIMIT ?`).all(this.projectId, peer, HELD_DELIVERY_PAGE + 1) as { bytes: number }[];
+    // No durable view receipt exists. A bounded-away row may have been read before
+    // the window shifted, so overflow is unknown/excluded, never proof of absence.
+    let remaining = byteBudget;
+    if (window.length > HELD_DELIVERY_PAGE || window.some(row => { if (row.bytes > remaining) return true; remaining -= row.bytes; return false; })) return true;
+    const metadata = this.db.query(`WITH candidates AS MATERIALIZED (SELECT originals FROM deliveries WHERE project_id=? AND peer=? AND state IN ${states} ORDER BY created_at,id LIMIT ?) SELECT CASE WHEN json_type(d.originals)='array' AND length(CAST(d.originals AS BLOB)) <= ? THEN 1 ELSE 0 END AS readable,e.key AS envelope_key,json_extract(e.value,'$.from') AS sender,json_extract(e.value,'$.kind') AS kind,json_extract(e.value,'$.refs.reviewPackage') AS review_package,json_extract(e.value,'$.refs.reviewResponse') AS review_response FROM candidates d LEFT JOIN json_each(CASE WHEN json_type(d.originals)='array' AND length(CAST(d.originals AS BLOB)) <= ? THEN d.originals ELSE '[]' END) e`).all(this.projectId, peer, HELD_DELIVERY_PAGE, byteBudget, byteBudget) as { readable: number; envelope_key: unknown; sender: unknown; kind: unknown; review_package: unknown; review_response: unknown }[];
+    const excluded = metadata.some(row => {
+      if (row.readable !== 1) return true;
+      if (row.envelope_key === null) return false; // A readable empty original list carries no review input.
+      if (typeof row.sender !== "string" || !KINDS.includes(row.kind as Kind)) return true;
+      return isReviewObserverExcluded({ from: row.sender, kind: row.kind as Kind, refs: {
+        ...(typeof row.review_package === "string" ? { reviewPackage: row.review_package } : {}),
+        ...(typeof row.review_response === "string" ? { reviewResponse: row.review_response } : {}),
+      } });
+    });
+    return excluded || this.revision() !== revision;
+  }
+
   /** Hot roster reads never materialize completed envelope history. */
   pendingPeers(): string[] {
     this.ensureOpen();
@@ -1552,8 +1576,32 @@ export class DeliveryJournal {
     this.ensureOpen();
     const states = includeAccepted ? "('needs_review','accepted')" : "('needs_review')";
     const count = Number((this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ${states}`).get(this.projectId, peer) as { n: number }).n);
-    const rows = this.db.query(`SELECT d.id, d.revision, d.created_at, d.state, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.from')) FROM json_each(d.originals) env) AS senders, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.kind')) FROM json_each(d.originals) env) AS kinds FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state IN ${states} ORDER BY d.created_at, d.id LIMIT 33`).all(this.projectId, peer) as { id: string; revision: number; created_at: number; state: "accepted" | "needs_review"; senders: string; kinds: string }[];
+    const rows = this.db.query(`SELECT d.id, d.revision, d.created_at, d.state, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.from')) FROM json_each(d.originals) env) AS senders, (SELECT json_group_array(DISTINCT json_extract(env.value, '$.kind')) FROM json_each(d.originals) env) AS kinds FROM deliveries d WHERE d.project_id = ? AND d.peer = ? AND d.state IN ${states} ORDER BY d.created_at, d.id LIMIT ?`).all(this.projectId, peer, HELD_DELIVERY_PAGE + 1) as { id: string; revision: number; created_at: number; state: "accepted" | "needs_review"; senders: string; kinds: string }[];
     return heldDeliveryHints(rows.map(row => ({ id: row.id, revision: row.revision, createdAt: row.created_at, ...(includeAccepted ? { state: row.state } : {}), senders: JSON.parse(row.senders) as string[], kinds: JSON.parse(row.kinds) as Kind[] })), count);
+  }
+
+  /** Read-only recipient view. Bound raw JSON bytes in SQL before hydrating originals. */
+  heldInbox(peer: string, includeAccepted: boolean, byteBudget: number) {
+    this.ensureOpen();
+    text(peer, "held inbox peer", 256); integer(byteBudget, "held inbox byte budget", 1);
+    const states = includeAccepted ? "('needs_review','accepted')" : "('needs_review')";
+    const count = Number((this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ${states}`).get(this.projectId, peer) as { n: number }).n);
+    const rows: Array<{ id: string; revision: number; state: "needs_review" | "accepted"; originals: Envelope[] }> = [];
+    if (count === 0) return { count, rows, truncated: false };
+    // This read deliberately does not refresh legacy coverage or persist an input receipt.
+    const provenance = this.readReviewInputProvenance();
+    if (!provenance.complete || !provenance.coverageComplete) return { count, rows, truncated: count > 0, unavailable: true };
+    const candidates = this.db.query(`SELECT id,revision,state,length(CAST(originals AS BLOB)) AS bytes FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ${states} ORDER BY created_at,id LIMIT ?`).all(this.projectId, peer, HELD_DELIVERY_PAGE + 1) as { id: string; revision: number; state: "needs_review" | "accepted"; bytes: number }[];
+    let remaining = byteBudget, unavailable = false;
+    for (const candidate of candidates.slice(0, HELD_DELIVERY_PAGE)) {
+      if (!Number.isSafeInteger(candidate.bytes) || candidate.bytes < 0 || candidate.bytes > remaining) { unavailable = true; break; }
+      const row = this.db.query(`SELECT originals FROM deliveries WHERE project_id = ? AND peer = ? AND id = ? AND revision = ? AND state IN ${states} AND length(CAST(originals AS BLOB)) <= ?`).get(this.projectId, peer, candidate.id, candidate.revision, remaining) as { originals: string } | null;
+      if (!row) { unavailable = true; break; }
+      const originals = list(JSON.parse(row.originals), "held inbox originals", 2048).map((env, i) => validateEnvelope(env, `held inbox original ${i}`));
+      rows.push({ id: candidate.id, revision: candidate.revision, state: candidate.state, originals });
+      remaining -= candidate.bytes;
+    }
+    return { count, rows, truncated: rows.length < count, ...(unavailable ? { unavailable: true } : {}) };
   }
 
   /** Bounded indexed scan; the caller performs a revision-fenced state transition. */

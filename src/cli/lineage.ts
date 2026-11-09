@@ -1,5 +1,6 @@
 import { executionReferenceKey, executionText, parseExecutionReference, type ExecutionReferenceV1 } from "../hub/execution-reference.ts";
 import { LINEAGE_LIMITS, type LineageResult } from "../hub/execution-lineage.ts";
+import { executionLineageLines } from "../ui/lineage-view.ts";
 import { terminalText } from "./console-state.ts";
 
 export const LINEAGE_USAGE = "usage: ahub lineage show (--task N | --attempt ra-id | --root JSON [--task-scope N --task-created MS]) [--cursor TOKEN] [--nodes N --edges N --bytes N] [--json] | link --task N --task-created MS --revision N --ref JSON [--from JSON] [--json]";
@@ -58,36 +59,8 @@ export function parseLineageCommand(args: readonly string[]): Show | Link {
   return result;
 }
 
-const strengths: readonly string[] = ["declared", "host-observed", "runner-attested", "unknown"];
-const relations: readonly string[] = ["dispatched", "attempted", "produced", "reviewed", "declared-external"];
-/** Refuse unsupported reply shapes instead of presenting an incomplete page as a successful graph. */
-export function validateLineageReply(value: unknown): LineageResult {
-  const bad = (): never => { throw new Error("lineage reply has an unsupported shape; upgrade and restart the hub, then retry ahub lineage show"); };
-  try {
-    if (!value || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, "state") || Buffer.byteLength(JSON.stringify(value)) > LINEAGE_LIMITS.bytes) return bad();
-    const row = value as Record<string, any>;
-    if (row.state === "unavailable") {
-      if (Object.keys(row).some(key => !["state", "reason"].includes(key)) || row.reason !== undefined && !["missing", "corrupt", "unsupported", "withheld", "cursor_invalid", "invalid"].includes(row.reason)) return bad();
-      return value as LineageResult;
-    }
-    if (row.state !== "available" || !["nodes", "edges", "truncated"].every(key => Object.hasOwn(row, key)) || Object.keys(row).some(key => !["state", "nodes", "edges", "truncated", "cursor"].includes(key)) ||
-        !Array.isArray(row.nodes) || row.nodes.length > LINEAGE_LIMITS.nodes || !Array.isArray(row.edges) || row.edges.length > LINEAGE_LIMITS.edges || typeof row.truncated !== "boolean" ||
-        row.cursor !== undefined && (typeof row.cursor !== "string" || row.cursor.length > LINEAGE_LIMITS.cursor || !/^[A-Za-z0-9_-]+$/.test(row.cursor)) || row.truncated && row.cursor === undefined || !row.truncated && Object.hasOwn(row, "cursor")) return bad();
-    for (const node of row.nodes) {
-      if (!node || typeof node !== "object" || Array.isArray(node) || !["ref", "state", "strength"].every(key => Object.hasOwn(node, key)) || Object.keys(node).some(key => !["ref", "state", "strength"].includes(key)) ||
-          typeof node.state !== "string" || node.state.length > LINEAGE_LIMITS.state || !/^[a-z][a-z0-9_-]*$/.test(node.state) || !strengths.includes(node.strength)) return bad();
-      parseExecutionReference(node.ref);
-      if (node.ref.tool !== "ahub" && node.strength !== "declared") return bad();
-    }
-    for (const edge of row.edges) {
-      if (!edge || typeof edge !== "object" || Array.isArray(edge) || !["from", "to", "relation", "strength"].every(key => Object.hasOwn(edge, key)) || Object.keys(edge).some(key => !["from", "to", "relation", "strength"].includes(key)) ||
-          !relations.includes(edge.relation) || !strengths.includes(edge.strength) || edge.relation === "declared-external" && edge.strength !== "declared") return bad();
-      parseExecutionReference(edge.from); parseExecutionReference(edge.to);
-      if (edge.from.tool !== "ahub" || edge.to.tool !== "ahub" && (edge.relation !== "declared-external" || edge.strength !== "declared")) return bad();
-    }
-    return value as LineageResult;
-  } catch { return bad(); }
-}
+/** The closed shape check lives in the hub module, beside the reader that produces it, so the console reads it identically (#1220 T3). */
+export { parseLineageResult as validateLineageReply } from "../hub/execution-lineage.ts";
 export interface LineageLinkReceipt { id: string; taskId: number; reference: ExecutionReferenceV1; strength: "declared"; already: boolean }
 export function validateLineageLink(value: unknown, command: { taskId: number; reference: ExecutionReferenceV1 }): LineageLinkReceipt {
   const bad = (): never => { throw new Error("lineage link reply is unconfirmed; inspect ahub lineage show before retrying the link"); };
@@ -100,21 +73,6 @@ export function validateLineageLink(value: unknown, command: { taskId: number; r
     return value as LineageLinkReceipt;
   } catch { return bad(); }
 }
-const address = (ref: ExecutionReferenceV1): string => terminalText(`${ref.tool}:${ref.kind} ${ref.id} (project ${ref.projectKey}${ref.revision === undefined ? "" : `, revision ${ref.revision}`}${ref.sha256 === undefined ? "" : `, sha256 ${ref.sha256}`})`).replace(/[\r\n]+/g, " ");
-export function renderExecutionLineage(result: LineageResult): string[] {
-  if (result.state === "unavailable") {
-    if (result.reason === undefined) return ["Lineage unavailable; check the root reference and your source-read access, then retry ahub lineage show."];
-    const repair = {
-      corrupt: "trusted source state could not be read; inspect ahub recovery status and the trusted source state before retrying ahub lineage show",
-      cursor_invalid: "the cursor is stale or does not match this source snapshot; refresh the same root and bounds without --cursor",
-      invalid: "the execution reference or page bounds are invalid; run ahub help lineage, correct the reference or bounds and retry",
-      withheld: "source metadata is withheld by policy; ask an authorized person to check the policy and select a public task scope before retrying ahub lineage show",
-      missing: "the root is not recorded in this admitted source; check the task or attempt identity and task scope, then retry ahub lineage show",
-      unsupported: "this source cannot project the requested root or scope within its supported bounds; select a supported root or smaller task scope, or upgrade the source before retrying ahub lineage show",
-    }[result.reason];
-    return [`Lineage unavailable (${result.reason}): ${repair}.`];
-  }
-  return ["Execution lineage (metadata only)", ...result.nodes.map(node => `${address(node.ref)}: ${node.state}, ${node.strength}`),
-    ...result.edges.map(edge => `${address(edge.from)} -> ${address(edge.to)}: ${edge.relation}, ${edge.strength}`),
-    ...(result.truncated ? [`Page truncated; retry the same root and bounds with --cursor ${result.cursor}.`] : ["Page complete."])];
-}
+/** The CLI is a terminal: the shared view crosses `terminalText` here, at this surface's own boundary. */
+export const renderExecutionLineage = (result: LineageResult): string[] =>
+  executionLineageLines(result).map(line => terminalText(line).replace(/[\r\n]+/g, " "));

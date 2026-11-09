@@ -1,3 +1,4 @@
+import { publicDeliveryBodies } from "./delivery-public.ts";
 import { GeneratedNoteRegistry, type GeneratedNoteProof } from "../memory/record-provenance.ts";
 import { RecordCapture, type RecordCapturePolicy } from "../memory/records.ts";
 import { VisualStore, validateVisualInput, validateVisualPayload, VISUAL_ID_PATTERN, type VisualRecord, type VisualSummary } from "./visual.ts";
@@ -1488,7 +1489,8 @@ export async function startDaemon(opts: DaemonOptions) {
    */
   const silence = (env: Envelope, to: PeerId): string | undefined => {
     if (reviewOnlyPeer(to) && env.to?.includes(to) && !reviewOnlyItem(to, env)) return `${to} is a review-only instance: it receives review requests only (send a review through the task board)`;
-    if (!turnFree() || env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi" || env.kind !== "chat" || to === USER) return undefined;
+    // Deferred hub notices are released before Tasks exists; keep Tasks-independent exclusions first.
+    if (env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi" || env.kind !== "chat" || to === USER || !turnFree()) return undefined;
     const cohort = tasks.silenced(env.from, to);
     if (!cohort) return undefined;
     const ids = [...cohort.members.keys()].sort((a, b) => a - b).map((id) => `#${id}`).join(", ");
@@ -2353,6 +2355,10 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   };
   const reviewObserverInput = (peer: PeerId): boolean => {
+    // ponytail: read-only held views mint no input receipt; conservatively exclude
+    // retained readable held review rows until explicit disposition, even if unread.
+    // Upgrade with host-verified read provenance, never a transport ACK.
+    if (bus.hasHeldReviewScope(peer)) return true;
     resetReviewObserverSessionIfChanged(peer);
     const pending = pendingReviewObserverInputs.get(peer);
     return (pending ? pending.held || pending.previous?.held === true : currentReviewObserverInputs.get(peer)?.held === true) || reviewObserverDurableHeld(peer);
@@ -8830,7 +8836,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function queueView(row: ReturnType<Bus["queueShow"]>, detail = false, publicOnly = false) {
     if (!row) return undefined;
     const originals = row.originals;
-    const privateDelivery = originals.some((env) => env.private || publicOnly && env.refs?.task && (()=>{const task=board.get(Number(env.refs!.task));return !task || tasks.isPii(task);})());
+
     return {
       id: row.id, peer: row.peer, state: row.state, revision: row.revision,
       ...(row.failureCause ? { failureCause: row.failureCause } : {}),
@@ -8840,10 +8846,38 @@ export async function startDaemon(opts: DaemonOptions) {
       createdAt: row.createdAt, updatedAt: row.updatedAt,
       envelopeIds: originals.map((env) => env.id),
       important: originals.some((env) => env.priority === "important"),
-      ...(detail ? { messages: originals.map((env) => ({ id: env.id, from: env.from, priority: env.priority, kind: env.kind,
-        body: privateDelivery ? "[private: inspect the associated task with ahub task show]" : publicOnly && !tasks.publicMetadataText(env.body) ? "[withheld]" : sanitize(env.body),
-      })) } : {}),
+      ...(detail ? { messages: publicDeliveryBodies(originals, { publicOnly, taskPrivate: id => { const task = board.get(Number(id)); return !task || tasks.isPii(task); }, publicMetadataText: text => tasks.publicMetadataText(text) }) } : {}),
     };
+  }
+
+  /** Separate from pull: failure here must never discard an already committed normal handout. */
+  function inboxHeldRead(c: Client, current: () => boolean) {
+    try {
+      const peer = c.peer;
+      if (!peer || !current() || contextPii(peer)) throw new Error("held inbox authority unavailable");
+      const policy = config, configVersion = configRevision, boardVersion = board.statusRevision();
+      const held = bus.heldInbox(peer);
+      const launch = c.toolsOwner ? currentImplementerTools(c) : undefined;
+      const rows = held.rows.map(row => {
+        if (!current() || reviewOnlyPeer(peer) && row.originals.some(env => !reviewOnlyItem(peer, env))) throw new Error("held inbox scope unavailable");
+        if (c.toolsOwner && (!launch || row.originals.some(env => (env.refs?.task === undefined ? implementerChatTask(peer) : Number(env.refs.task)) !== launch.task))) throw new Error("held inbox belongs to another task session");
+        return { id: row.id, revision: row.revision, state: row.state, messages: publicDeliveryBodies(row.originals, {
+          publicOnly: true, taskPrivate: id => { const task = board.get(Number(id)); return !task || tasks.isPii(task); },
+          publicMetadataText: text => tasks.publicMetadataText(text),
+        }) };
+      });
+      // Screening may consult host ports. Revalidate the exact caller and current privacy before exposure.
+      if (!current() || contextPii(peer) || config !== policy || configRevision !== configVersion || board.statusRevision() !== boardVersion) throw new Error("held inbox changed during projection");
+      for (const row of held.rows) {
+        if (reviewInputHeld(peer, row.originals)) {
+          const owner = bus.peers.get(peer), active = ownedObserverInputs.get(peer);
+          if (active && active.owner === owner) active.supersededByReviewInput = true;
+          noteSteeredReviewInput(peer, row.originals); // RAM observation only: no ACK or durable handoff.
+        }
+      }
+      if (!current() || contextPii(peer)) throw new Error("held inbox authority changed");
+      return { count: held.count, rows, truncated: held.truncated, ...(held.unavailable ? { unavailable: true } : {}) };
+    } catch { return { unavailable: true, next: "Held bodies were not read; inspect ahub queue list for this peer, then retry hub_inbox after authority or storage recovers." }; }
   }
 
   let operationalViewCache: { board: number; config: number; routing: ReturnType<typeof activeRouting>; privacy: string; view: ReturnType<typeof operationalView> } | undefined;
@@ -10979,19 +11013,21 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: true });
       }
       case "inbox": {
+        if (msg.peer !== undefined && msg.peer !== c.peer) return void reply({ ok: false, error: "hub_inbox reads only your authenticated peer; omit peer and ask the person to inspect another peer's queue" });
         if (stopping || recoveryActive()) return void reply({ ok: false, error: "the hub is not serving inbox reads now (recovery or shutdown); run ahub status, then call hub_inbox again after it recovers" });
         if (c.toolsOwner) {
           const peer = c.peer!, current = captureImplementerTools(c), launch = currentImplementerTools(c);
+          const heldRead = () => inboxHeldRead(c, current);
           try {
             // Inspect the still-pending batch before pull commits/removes it: private work never reaches this native child.
             const pending = bus.pendingEnvelopes(peer);
             if (!current() || pending.some(env => { const task = env.refs?.task === undefined ? undefined : board.get(Number(env.refs.task)); return env.private || contextPii(peer) || !!task && tasks.isPii(task); })) return void reply({ ok: false, error: "private inbox delivery refused" });
             if (!launch || pending.some(env => (env.refs?.task === undefined ? implementerChatTask(peer) : Number(env.refs.task)) !== launch.task)) return void reply({ ok: false, error: "inbox delivery belongs to another task session" });
             const envs = bus.pull(peer, { allowNeedsReviewHold: true });
-            if (!envs) return void reply({ ok: false, error: queueHold(peer) ?? "delivery held", held: inboxHeldMetadata(peer, true), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
-            return void reply({ ok: true, envs, held: inboxHeldMetadata(peer, true), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
+            if (!envs) return void reply({ ok: false, error: queueHold(peer) ?? "delivery held", held: inboxHeldMetadata(peer, true), heldRead: heldRead(), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
+            return void reply({ ok: true, envs, held: inboxHeldMetadata(peer, true), heldRead: heldRead(), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
           } catch (error) {
-            if (error instanceof ReviewInputHandoffError) return void reply({ ok: false, error: error.message, held: inboxHeldMetadata(peer, true), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
+            if (error instanceof ReviewInputHandoffError) return void reply({ ok: false, error: error.message, held: inboxHeldMetadata(peer, true), heldRead: heldRead(), waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
             return void reply({ ok: false, error: "delivery journal unavailable" });
           }
         }
@@ -10999,6 +11035,8 @@ export async function startDaemon(opts: DaemonOptions) {
         // Pull and push share holds and journal settlement; work read here is completed, never pushed again.
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
         if (c.role !== "peer" || !isWsPeer(peer) || !peer.owns(sock)) return void reply({ ok: false, error: "not attached to the hub yet; retry hub_inbox in a moment" });
+        const current = () => sock.data === c && sock.readyState === WebSocket.OPEN && c.role === "peer" && c.peer === peer.id && membershipAllowed(peer.id) && bus.peers.get(peer.id) === peer && peer.owns(sock) && !stopping && !recoveryActive();
+        const heldRead = () => inboxHeldRead(c, current);
         try {
           const envs = bus.pull(peer.id, { allowNeedsReviewHold: true });
           if (!envs) {
@@ -11010,7 +11048,7 @@ export async function startDaemon(opts: DaemonOptions) {
               ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : undefined)
               ?? (bus.stateOf(peer.id) === "paused" ? pauseReason(peer.id) : undefined);
             const error = blockingCause ?? (accepted ? "an accepted delivery is awaiting your explicit confirmation" : "delivery held");
-            return void reply({ ok: false, error, held, waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id) });
+            return void reply({ ok: false, error, held, heldRead: heldRead(), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id) });
           }
           peer.lastInboxAt = Date.now();
           let polling: ReturnType<InboxPolling["read"]>;
@@ -11021,9 +11059,9 @@ export async function startDaemon(opts: DaemonOptions) {
           } catch { polling = undefined; } // The pull already completed: advice must never discard its envelopes.
           writeStatus();
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
-          return void reply({ ok: true, envs, held: inboxHeldMetadata(peer.id, true), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id), ...(polling ? { pollingAdvice: { count: polling.count, minutes: polling.minutes } } : {}) });
+          return void reply({ ok: true, envs, held: inboxHeldMetadata(peer.id, true), heldRead: heldRead(), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id), ...(polling ? { pollingAdvice: { count: polling.count, minutes: polling.minutes } } : {}) });
         } catch (error) {
-          if (error instanceof ReviewInputHandoffError) return void reply({ ok: false, error: error.message, held: inboxHeldMetadata(peer.id, true), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id) });
+          if (error instanceof ReviewInputHandoffError) return void reply({ ok: false, error: error.message, held: inboxHeldMetadata(peer.id, true), heldRead: heldRead(), waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id) });
           return void reply({ ok: false, error: "delivery journal unavailable" });
         }
       }

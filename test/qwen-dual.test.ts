@@ -90,6 +90,7 @@ test("the dual-output exact versions stay separate from the headless ACP contrac
   for (const version of ["0.25.0", "0.26.9", "0.27.1", "0.28.0"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(false);
   expect(assessVersion("qwen", "0.26.0", []).ok).toBe(true);
   expect(assessVersion("qwen", "0.26.9", []).ok).toBe(true);
+  expect(assessVersion("qwen", "0.27.0", []).ok).toBe(true);
 });
 
 test("start prepares private input and event files and the launch carries the dual-output flags", async () => {
