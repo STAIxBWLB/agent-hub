@@ -690,20 +690,28 @@ test("#733 AC2: a target whose control descriptor changed is caught up at once, 
 }, 60_000);
 
 test("#733 AC5: the catch-up covers every open row, beyond the 200 most recent, in chunks of 200", async () => {
-  const { a, b } = await pair({ a: { handoffCatchUpMs: 500 } });
+  // Deterministic, not a wall-clock margin: a pass parks at `hold` after it chose its targets and before it connects, and `parks` counts only the passes that began after `park` was set.
+  // The one-pass guard starts such a pass only after the previous one (which may have connected) finished, so `parks >= 1` is "every row is chosen, and no pass is connected".
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  let park = false, parks = 0;
+  const hold = async () => { if (!park) return; parks++; await gate; };
+  cleanup.push(() => release());
+  const { a, b } = await pair({ a: { handoffCatchUpMs: 500, handoffCatchUpHold: hold } });
   const planner = await a.connect({ role: "tools", peer: "claude" });
   const ids: number[] = [];
   for (let start = 0; start < 250; start += 25)
     await Promise.all(Array.from({ length: 25 }, async (_, n) => { ids.push(body(await task(planner, "hub_task_handoff", { project: b.id, title: `Chore ${start + n} for B` })).task); }));
   expect(ids).toHaveLength(250);
-  await Bun.sleep(1_200);                                                                  // A's catch-up passes (every 500 ms) are idle now: a pass that connected before the tokens are hidden would keep its connection and could learn a state change meanwhile
+  park = true;                                                                             // every pass from here on parks before it connects
+  await until(() => parks >= 1, "a catch-up pass chose every row and is parked before it connects", 30_000);
   const restore = hideBoth(a, b);                                                          // every state change below misses A
   for (let start = 0; start < 250; start += 25)
     await Promise.all(ids.slice(start, start + 25).map(async id => { expect((await task(b.person, "hub_task_cancel", { id, reason: "stale" })).ok).toBe(true); }));
-  await Bun.sleep(700);
+  await until(() => logOf(b).includes(`handoff follow-back to ${a.id}`), "B tried to follow back and could not reach A");
   const cancelled = () => { const handle = boardOf(a); try { return ((handle.board as any).db.query("SELECT COUNT(*) AS n FROM task_handoff_outbound WHERE last_state='cancelled'").get() as { n: number }).n; } finally { handle.close(); } };
   expect(cancelled()).toBe(0);                                                             // none learned while unreachable
   restore();
+  release();                                                                               // the parked pass reads the states, and the queued passes after it
   await until(() => cancelled() === 250, "all 250 rows, the oldest 50 included, were caught up", 30_000);
 }, 120_000);
 
