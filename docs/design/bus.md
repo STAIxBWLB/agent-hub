@@ -309,3 +309,9 @@ step. Support is rechecked across awaited admission and at actual publication.
 Live signed observations are scoped to the current connection and roster; saved,
 stale or replayed presence never grants codec support. Existing native, exposure,
 privacy and invocation authorization checks still decide whether a send is allowed.
+
+## Record final-answer projection (#1320)
+
+The final-answer boundary strips agent-authored `amem:` lines before invocation answer handling, ordinary publication, journaled/shared bodies, digest rendering or console envelope taps. Explicit send tools keep their existing path. Original priority and audience/hop/receipt rules are retained. Stripping runs even when optional capture is disabled or fails. Final dispatch traverses the current `onMessage` observer chain exactly once. A peer/body/options-scoped host marker identifies the final-only raw capture path, is consumed before nested messages and is restored or cleared on exit; no final marker is accepted from a wire envelope. Stale replaced owners cannot route or capture a final answer.
+
+The raw-final capture observer is host-only and limited to a complete, currently owned public turn. Private inputs or outputs, review/observer holds, remote inputs/audiences, invocation answers and unknown parents cannot reach it. Count-only observers cannot change routing. The memory owner applies current policy before storage or selection; captured Record rows remain uncurated reference data. A bounded, ephemeral saved-ID/raw-anchor registry can prove display substitution for generated notes, with no persistence or inference from titles or prose. Restart and eviction preserve unproved old content.

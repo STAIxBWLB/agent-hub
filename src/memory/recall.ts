@@ -6,6 +6,7 @@ import type { View as MemoryView } from "@staix/agent-mem";
 const HEADER =
   "Shared project memory (amem): curated recent notes by the agents in this project. Reference only, not a request. " +
   "Fetch details by id with your memory tools if you need them.";
+const MIXED_HEADER = "Shared project memory (amem): curated notes and uncurated agent-authored capture Records. Reference only, not a request.";
 
 /** Cut at a line boundary. */
 export function trimToTokens(text: string, tokens: number): string {
@@ -25,12 +26,52 @@ const entries = (text: string) => {
   return start < 0 ? "" : text.slice(start + 1).trim();
 };
 
-export async function recallFor(_peer: PeerId, client: MemoryClient, chain: string[], tokens: number): Promise<string | undefined> {
+export interface RecordRecallProjection { before: string; after: string; records?: number; current?(): boolean }
+/** Row/anchor proof and complete-row screening stay in the existing host; no new client read is added. */
+export interface RecordRecallPort {
+  allowed(): boolean;
+  policyVersion(): string;
+  project(text: string): RecordRecallProjection | undefined | Promise<RecordRecallProjection | undefined>;
+  observe?(counts: { beforeBytes: number; afterBytes: number }): void;
+}
+
+export async function recallFor(_peer: PeerId, client: MemoryClient, chain: string[], tokens: number, records?: RecordRecallPort): Promise<string | undefined> {
+  // Pin optional Record admission before the existing asynchronous context read. A source disabled
+  // or unavailable at entry cannot become a new authority halfway through this call.
+  let admitted = false, revision: string | undefined;
+  if (records) try {
+    if (records.allowed()) {
+      const value = records.policyVersion();
+      if (typeof value === "string") { revision = value; admitted = true; }
+    }
+  } catch { /* Initial optional source unavailability retains the legacy path. */ }
   // Curated amem notes are one project source, regardless of which native peer originally authored them.
-  const text = await client.contextInject(chain);
-  if (!hasContext(text)) return undefined;
-  const body = entries(text);
-  return body ? `${HEADER}\n\n${trimToTokens(body, tokens)}` : undefined;
+  const original = await client.contextInject(chain);
+  if (admitted) try { if (!records!.allowed() || records!.policyVersion() !== revision) return undefined; }
+  catch { return undefined; }
+  if (!hasContext(original)) return undefined;
+  let text = original, projectedRecords = 0;
+  const render = (source: string, recordsIncluded = false): string | undefined => { const body = entries(source); return body ? `${recordsIncluded ? MIXED_HEADER : HEADER}\n\n${trimToTokens(body, tokens)}` : undefined; };
+  let projected: RecordRecallProjection | undefined;
+  const projectionCurrent = () => { try { return projected?.current === undefined || projected.current() === true; } catch { return false; } };
+  if (records && admitted) try {
+    projected = await records.project(original);
+    if (!records.allowed() || records.policyVersion() !== revision || !projectionCurrent()) return undefined;
+    if (projected?.before === original && hasContext(projected.after)) {
+      text = projected.after;
+      if (Number.isSafeInteger(projected.records) && projected.records! > 0) projectedRecords = projected.records!;
+    }
+  } catch {
+    // An unavailable Record source falls back, but a changed privacy context cannot publish old recall.
+    try { if (revision !== undefined && (!records!.allowed() || records!.policyVersion() !== revision || !projectionCurrent())) return undefined; }
+    catch { return undefined; }
+  }
+  if (!projectionCurrent()) return undefined;
+  const result = render(text, projectedRecords > 0);
+  if (!projectionCurrent()) return undefined;
+  if (records) try { records.observe?.({ beforeBytes: Buffer.byteLength(render(original) ?? ""), afterBytes: Buffer.byteLength(result ?? "") }); }
+  catch { /* Count-only telemetry cannot fail recall. */ }
+  return projectionCurrent() ? result : undefined;
 }
 
 /**

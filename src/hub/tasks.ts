@@ -11,6 +11,7 @@ import { approvalBinding, approvalText } from "./task-approval.ts";
 import type { InvocationRow } from "./invocations.ts";
 import type { ContextAdmission } from "./context-window.ts";
 import { queueBackpressure, queueBackpressurePolicy, type QueueBackpressureCode, type QueueBackpressurePolicy, type QueueBackpressureStatus, type QueuePressure } from "./queue-backpressure.ts";
+import { generatedRecordAnchors, type GeneratedNoteProof } from "../memory/record-provenance.ts";
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { types } from "node:util";
@@ -207,7 +208,7 @@ export interface TasksDeps {
   /** Captured native profile fence at our memory operation boundaries; no board mutation. */
   memoryCheck?: () => void;
   /** #258: the hub's own store, the project name it files entries under (the git chain) and the repo `#N` issues belong to. */
-  store?: { store: MemoryStore; project: string; repo: string; deny?: string[]; onNote?: (id: string) => void };
+  store?: { store: MemoryStore; project: string; repo: string; deny?: string[]; onNote?: (id: string) => void; onGeneratedNote?: (entry: GeneratedNoteProof) => void };
   /** a line for the human: console tail and hub.log */
   notify: (line: string) => void;
   /** The completion check configured for a class, if any (local config only; issue #7). */
@@ -8106,7 +8107,7 @@ export class Tasks {
    * long, decisions, contracts and fails are long-term. Fail-open: a store that cannot be written costs one notice.
    * The caller has screened the text for PII; never a PII task's.
    */
-  private saveNative(by: PeerId, kind: Kind, text: string, title: string, task: Task | undefined, horizon?: Tier, scope: Scope = "project", symbols?: MemorySymbolNodes): { id: string; tier: Tier } | { refused: string } | undefined {
+  private saveNative(by: PeerId, kind: Kind, text: string, title: string, task: Task | undefined, horizon?: Tier, scope: Scope = "project", symbols?: MemorySymbolNodes): { id: string; tier: Tier; about: string[] } | { refused: string } | undefined {
     const st = this.d.store;
     if (!st || (task && this.isPii(task))) return undefined;
     let longTerm = horizon === "long" || (horizon !== "short" && !!task && task.state === "approved" && PROMOTED_KINDS.includes(kind));
@@ -8134,8 +8135,8 @@ export class Tasks {
       }
       if (task) this.markMemoryReference(task, by);
       const id = st.store.note(row, horizon === "short");
-      st.onNote?.(id);
-      return { id, tier };
+      try { st.onNote?.(id); } catch { /* The native note is committed; an observer cannot make it fail. */ }
+      return { id, tier, about: [...about] };
     } catch (e) {
       if (longTerm) return { refused: "machine privacy policy unavailable" };
       this.releaseNotice(`a ${kind} note was not saved to hub memory (${(e as Error).message})`);
@@ -8211,6 +8212,16 @@ export class Tasks {
     if (this.aboutPrivatePath(title, text, task)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it is about a private path)`);
     const native = this.saveNative(by, kind, text, title, task, undefined, "project", symbols);
     if (native && "refused" in native) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (${native.refused})`);
+    if (native && "id" in native && this.d.store?.onGeneratedNote) {
+      try {
+        // Existing repository metadata is warmed by normal task admission/completion, never a new provenance probe.
+        // At the extraction ceiling completeness is unknown. Keep the old bytes rather than a partial proof.
+        if (this.d.privateTurn?.(by) === false && this.memoryCodeEligible(task) && native.about.length < 64 && !symbols?.truncated && !symbols?.unknown) {
+          const anchors = generatedRecordAnchors(native.about);
+          if (anchors && anchors.every(anchor => this.nameable(anchor))) this.d.store.onGeneratedNote({ id: native.id, anchors });
+        }
+      } catch { /* Callback/privacy uncertainty cannot affect a saved note or the preceding board write. */ }
+    }
     if (!native && this.d.memory) {
       try { this.markMemoryReference(task, by); } catch { return this.releaseNotice(`task #${task.id}: memory reference could not be recorded; note was not saved`); }
       void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });

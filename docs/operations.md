@@ -6060,7 +6060,7 @@ Native launcher connections retry transport timeouts/unclean closes with bounded
 
 ## amem runtime (agent-mem#13 P4)
 
-The hub exact-pins @staix/agent-mem <!-- facts:agent-mem-pin -->0.23.0<!-- /facts:agent-mem-pin --> for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
+The hub exact-pins @staix/agent-mem <!-- facts:agent-mem-pin -->0.23.1<!-- /facts:agent-mem-pin --> for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
 
 ## Person-run backlog legs (#1176)
 
@@ -6940,3 +6940,11 @@ Task-bound visuals live with their task. Unbound records expire after 30 days;
 with the normal authority guard on raising retention. Expired/removed records
 are unavailable even before a maintenance prune runs. No documentation stamp or
 real-home policy change is performed by posting a visual.
+
+## Agent-authored records
+
+Headless Record handling follows amem's effective machine and repository policy. Set `records: false` in the amem configuration to disable instruction, capture and Record preference; repository policy can only narrow machine policy. There is no hub-only override. Private or unverified contexts fail closed for capture without preventing ordinary answer routing.
+
+Upgrade every amem consumer sharing a memory home together, including native CLI hooks and embedded hub/plugin copies. Version 0.22.1 cannot consume Record format-3 spool entries and refuses the `records` configuration key. The hub exact-pins 0.23.1 and uses its public `recordsEnabled` accessor for the active home and execution repository; it does not upgrade the other consumers automatically. No real home is migrated by the feature's fixtures.
+
+Count-only `records capture`, `records forwarded`, `records brief` and `records recall` diagnostics report accepted/dropped rows or before/after UTF-8 bytes. Record text, anchors, native session IDs and credentials are absent from these diagnostics. An absent registry proof or an unavailable Record source preserves old note content; a privacy or policy change during a read withholds the stale block.
