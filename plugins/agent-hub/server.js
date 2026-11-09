@@ -13048,7 +13048,7 @@ var init_research_campaign = __esm(() => {
 });
 
 // src/hub/board.ts
-var CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
+var HOST_MERGE_ADOPTION, CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
   init_research_runner();
   init_packs();
@@ -13064,6 +13064,7 @@ var init_board = __esm(() => {
   init_review_findings();
   init_deliverables();
   init_research_campaign();
+  HOST_MERGE_ADOPTION = Symbol("host merge adoption");
   CLASSES2 = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
   PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"];
   ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims", "proof", "risks"];
