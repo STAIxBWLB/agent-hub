@@ -3,7 +3,8 @@ import { isIP } from "node:net";
 import type { OmniRoute, ChatMessage } from "../omniroute/client.ts";
 import { ensureMlx, MlxBusyError, type MlxHandle, type MlxOptions, type MlxStatus } from "./mlx.ts";
 import { AutoRouteSelector, type AutoChoice, type RelayRouteEvent } from "./route/relay-selector.ts";
-import { estimateInputTokens, type StaySwitchPolicy } from "./route/stage.ts";
+import { estimateInputTokens, estimateStageInputTokens } from "./route/stage-input.ts";
+import type { StaySwitchPolicy } from "./route/stage-fallback.ts";
 
 export type ModelBackend = { kind: "mlx"; alias?: string } | { kind: "dgx"; alias: string };
 
@@ -649,7 +650,13 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       const own = backend;
       // A refused request still records the decision, unmoved; a dispatched one records it after the ordering step.
       const emitRoute = () => { if (auto) try { options.onRoute?.(auto.route); } catch { /* observation cannot fail routing */ } };
-      const inputTokens = estimateInputTokens(body.messages, body.tools);
+      const inputTokens = estimateStageInputTokens(body.messages, body.tools);
+      if (inputTokens === undefined) {
+        emitRoute();
+        record.cleanup();
+        activeRequests.delete(record);
+        return Response.json({ error: "model input size is unavailable; provide bounded JSON messages and tool schemas" }, { status: 400 });
+      }
       const inputBudget = own.kind === "mlx" ? (options.mlx?.maxInputTokens ?? (options.mlx?.provider === "ollama" ? 6000 : 16_000)) : dgxMaxInputTokens;
       const ollama = own.kind === "mlx" && options.mlx?.provider === "ollama";
       const contextWindow = ollama ? (options.mlx?.contextWindow ?? 8192) : undefined;

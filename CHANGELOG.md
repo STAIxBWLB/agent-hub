@@ -6,6 +6,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - The new-project SDLC guide connects init choices, shared-file commits, managed sessions, actor-owned lifecycle steps and recovery (#1328). Compatibility: repositories other than `STAIxBWLB/agent-hub` in `advise` or `enforce` with no configured required checks report `required checks unknown` for review readiness and CI watches instead of assuming the native `seeded guards` floor; configure that repository's own checks and restart after editing `sdlc.toml`.
 
+- Stage routing uses newly authored bounded numeric evidence, deterministic fallback and session switching (#1352 R1). Whole-wire input sizing rounds compact JSON UTF-8 bytes upward, intentionally increasing the Unicode estimate conservatively; unavailable or overflowing sizes refuse context admission. Optional adec routing remains off/shadow only, and generic decision evidence v1 is unchanged.
+
 - Bounded execution lineage reads and deduplicated declared external references are available through Tasks, CLI and MCP (#1220 T2). Admission rechecks current task role, revision, project and privacy; reads retain historical review bindings and explicit observation gaps without scanning the board or contacting producers.
 
 ## 0.35.0
