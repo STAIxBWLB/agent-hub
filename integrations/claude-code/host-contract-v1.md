@@ -1,6 +1,6 @@
 # Claude Code companion host contract v1
 
-C0 of [#1338](https://github.com/STAIxBWLB/agent-hub/issues/1338), task #830. Recorded 2026-11-09.
+C0 of [#1338](https://github.com/STAIxBWLB/agent-hub/issues/1338), task 830. Recorded 2026-11-09.
 This freezes a data and fixture baseline. No companion is installed, no channel plugin changes, no native UI support is claimed.
 The [JSON contract](host-contract-v1.json) is checked by `test/claude-code-companion-contract.test.ts`.
 
