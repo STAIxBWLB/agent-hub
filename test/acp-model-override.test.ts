@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpPeer, type AcpOptions } from "../src/adapters/acp.ts";
@@ -16,13 +16,6 @@ const POLICY: AcpModelPolicy = { admission: { compatId: "jcode" }, agentName: "f
 const models = { currentModelId: "baseline", availableModels: ["baseline", "A", "B"].map(modelId => ({ modelId, name: modelId })) };
 const configOptions = [{ id: "model", type: "select", currentValue: "baseline", options: ["baseline", "A", "B"].map(value => ({ value, name: value })) }];
 
-function observed(root: string, predicate: () => boolean): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { listener.close(); reject(new Error("synthetic ACP observation did not arrive")); }, 2000);
-    const check = () => { if (predicate()) { clearTimeout(timer); listener.close(); resolve(); } };
-    const listener = watch(root, check); check();
-  });
-}
 async function fixture(extra: Partial<AcpOptions> = {}, fault = "", identity = POLICY.version) {
   const root = mkdtempSync(join(tmpdir(), "ahub-acp-model-")); cleanup.push(() => rmSync(root, { force: true, recursive: true }));
   const trust = join(root, "agent-compat.json");
@@ -39,20 +32,25 @@ import {appendFileSync} from 'node:fs';
 const records=${JSON.stringify(records)},fault=${JSON.stringify(fault)};
 let model=${JSON.stringify(encode('baseline'))};let waiting;let setter;let released=false;
 const send=v=>process.stdout.write(JSON.stringify(v)+'\\n');
+let rowCount=0,promptCount=0,observers=[];
+const observe=m=>{const p=m.params,count=p.kind==='prompts'?promptCount:rowCount;if(count===p.count)send({jsonrpc:'2.0',id:m.id,result:{observed:p.kind,count}});else if(count>p.count)send({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'synthetic ACP observation exceeded its checkpoint'}});else observers.push(m)};
+const record=row=>{appendFileSync(records,JSON.stringify(row)+'\\n');rowCount++;if(row.method==='session/prompt')promptCount++;const pending=observers;observers=[];for(const m of pending)observe(m)};
 const update=u=>send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'session',update:u}});
 const modelNotice=()=>{send({jsonrpc:'2.0',method:'qwen/notify/session/model-update',params:{v:1,sessionId:'foreign',currentModelId:'not-advertised'}});send({jsonrpc:'2.0',method:'qwen/notify/session/model-update',params:{v:2,sessionId:'session',currentModelId:'not-advertised'}});send({jsonrpc:'2.0',method:'qwen/notify/session/model-update',params:{v:1,sessionId:'session',currentModelId:model}})};
 const finish=()=>{if(!released)return;if(setter){send({jsonrpc:'2.0',id:setter.id,result:{}});setter=undefined;}if(!waiting)return;const m=waiting;waiting=undefined;update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'done'}});send({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn'}})};
 createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line),p=m.params||{};
 const answer=result=>send({jsonrpc:'2.0',id:m.id,result});
-if(m.method==='fixture/release'){released=true;answer({released:true});finish();}
+if(m.method==='fixture/observe')observe(m);
+else if(m.method==='fixture/barrier')answer({ready:true});
+else if(m.method==='fixture/release'){released=true;answer({released:true});finish();}
 else if(m.method==='initialize')answer({protocolVersion:1,agentInfo:{name:'fixture ACP',version:${JSON.stringify(identity)}}});
 else if(m.method==='session/new')answer({sessionId:'session',models:${JSON.stringify(nativeModels)},configOptions:${JSON.stringify(nativeConfigOptions)}});
 else if(m.method==='session/set_model'||m.method==='session/set_config_option'){
-appendFileSync(records,JSON.stringify({method:m.method,model:p.modelId??p.value})+'\\n');
+record({method:m.method,model:p.modelId??p.value});
 if(fault==='hang')return;if(fault==='reject'){send({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'synthetic refusal'}});return;}
 model=p.modelId??p.value;update({sessionUpdate:'current_model_update',currentModelId:model});modelNotice();if(fault==='setter-held'&&!released){setter=m;return;}answer(m.method==='session/set_config_option'?{configOptions:[{id:'model',type:'select',currentValue:model,options:${JSON.stringify(wireIds)}.map(value=>({value,name:value}))}]}:{});}
 else if(m.method==='session/prompt'){
-appendFileSync(records,JSON.stringify({method:m.method,model})+'\\n');
+record({method:m.method,model});
 if(fault==='prompt-reject'){send({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'synthetic prompt refusal'}});return;}
 update({sessionUpdate:'current_model_update',currentModelId:model});modelNotice();
 send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'foreign',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'foreign'}}}});
@@ -66,11 +64,26 @@ else if(m.id!==undefined)answer({});});`);
   // A fake-only RPC shares the actual receive lane and runs after the held setter handler has returned.
   // Filesystem notifications are observation hints, not an acknowledgement/release protocol.
   const transport = peer as unknown as { request(method: string, params: unknown): Promise<unknown> };
+  const observed = async (kind: "rows" | "prompts", count: number) => {
+    expect(await transport.request("fixture/observe", { kind, count })).toEqual({ observed: kind, count });
+  };
   const rows = () => readFileSync(records, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method: string; model: string });
   const idle = () => peer.state === "idle" ? Promise.resolve() : new Promise<void>(resolve => { const old = peer.onState; peer.onState = state => { old?.(state); if (state === "idle") { peer.onState = old; resolve(); } }; });
   return { root, trust, peer, rows, applied, rejected, choose: (model: string | undefined) => { desired = model; }, release: async () => { expect(await transport.request("fixture/release", {})).toEqual({ released: true }); }, idle,
-    waitPrompts: (count: number) => observed(root, () => rows().filter(row => row.method === "session/prompt").length === count) };
+    waitPrompts: (count: number) => observed("prompts", count), waitRows: (count: number) => observed("rows", count),
+    barrier: async () => { expect(await transport.request("fixture/barrier", {})).toEqual({ ready: true }); } };
 }
+
+test("fake ACP checkpoints wait before a record and remain available after it without filesystem notifications", async () => {
+  const f = await fixture(); let arrived = false;
+  const early = f.waitPrompts(1).then(() => { arrived = true; }, (error: unknown) => error);
+  await f.barrier(); expect(arrived).toBe(false);
+  await f.peer.deliver([newEnvelope("user", "synthetic checkpoint")]);
+  expect(await early).toBeUndefined(); expect(arrived).toBe(true);
+  await f.waitPrompts(1); await f.waitRows(2);
+  expect(f.applied).toEqual([]);
+  const idle = f.idle(); await f.release(); await idle;
+});
 
 test("only receipted exact Kimi headless policy is admitted; foreign definitions cannot claim the capability", () => {
   expect(ADAPTERS.filter(definition => definition.modelOverride?.acp).map(definition => ({ kind: definition.kind, policy: definition.modelOverride!.acp }))).toEqual([
@@ -124,14 +137,14 @@ test("definitive setter rejection retires only the unadmitted selection; timeout
 test("selection is captured before an awaited setter; stop invalidates the held setter without sending a prompt", async () => {
   const f = await fixture({}, "setter-held");
   const delivery = f.peer.deliver([newEnvelope("user", "synthetic held setter")]);
-  await observed(f.root, () => f.rows().length === 1); f.choose("B");
+  await f.waitRows(1); f.choose("B");
   expect(f.rows()[0]?.model).toBe("A");
   await f.release(); await delivery; await f.idle(); expect(f.applied).toEqual(["A"]);
   await f.peer.deliver([newEnvelope("user", "synthetic next turn")]); await f.idle();
   expect(f.rows().filter(row => row.method === "session/prompt").map(row => row.model)).toEqual(["A", "B"]);
   const stopped = await fixture({}, "setter-held");
   const rejected = stopped.peer.deliver([newEnvelope("user", "synthetic stop")]).then(() => undefined, (error: unknown) => error);
-  await observed(stopped.root, () => stopped.rows().length === 1); await stopped.peer.stop();
+  await stopped.waitRows(1); await stopped.peer.stop();
   expect(await rejected).toBeInstanceOf(Error);
   expect(stopped.rows().some(row => row.method === "session/prompt")).toBe(false); expect(stopped.applied).toEqual([]);
 }, 20000);
@@ -162,7 +175,7 @@ test("person-trusted admission and the exact setter receipt are independent; rev
   const f = await fixture({ modelPolicy: policy }, "setter-held", version);
   expect(f.peer.modelOverrideState.available).toBe(true);
   const failed = f.peer.deliver([newEnvelope("user", "synthetic revoked trust")]).then(() => undefined, (error: unknown) => error);
-  await observed(f.root, () => f.rows().length === 1);
+  await f.waitRows(1);
   writeTrust("qwen", version, true, f.trust);
   expect(f.peer.modelOverrideState.available).toBe(false);
   await f.release(); const failure = await failed;
