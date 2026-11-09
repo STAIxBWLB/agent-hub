@@ -22,10 +22,11 @@ function rig(options: Options = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-spec-carry-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const host = { lastEditedAt: (options.edited === undefined ? EDITED : options.edited) as string | null | undefined, updatedAt: EDITED, number: undefined as number | undefined, failed: false, privateTurn: false, authority: true, pr: undefined as Record<string, unknown> | undefined };
   const calls: string[][] = [], notices: string[] = [];
-  let held: { entered: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> } | undefined;
+  let held: { target: number; entered: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> } | undefined;
   const gh: SdlcGh = async args => {
     calls.push([...args]);
-    const barrier = held; held = undefined;
+    const barrier = held?.target === calls.length ? held : undefined;
+    if (barrier) held = undefined;
     if (barrier) { barrier.entered.resolve(); await barrier.release.promise; }
     if (host.failed) return { code: 1, stdout: "" };
     if (host.pr && args[0] === "pr" && args[1] === "view") return { code: 0, stdout: JSON.stringify(host.pr) };
@@ -36,10 +37,11 @@ function rig(options: Options = {}) {
     const number = host.number ?? Number(args.find(arg => /^(number|issue)=/.test(arg))?.split("=")[1] ?? 7);
     return { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number, state: "OPEN", createdAt: CREATED, lastEditedAt: host.lastEditedAt, updatedAt: host.updatedAt } } } }) };
   };
+  const routing = structuredClone(loadRouting(cwd));
   const roles: Record<string, string[]> = { codex: ["implementer"], claude: ["planner"] }, deny: string[] = [], piiPaths: string[] = [];
   const tasks = new Tasks({ cwd, board, bus, project: "spec-carry", repository: "owner/repo", roles, deny, piiPaths,
     ...(options.cohort ? { turnFree: () => true, capable: () => true, idle: () => false, treeHash: () => "fixture-cohort-tree", integrationFacts: () => ({ id: "cohort-carry-facts", text: "fixture integration facts" }), factsCurrent: () => true } : {}),
-    routing: () => loadRouting(cwd), notify: text => notices.push(text), privateTurn: () => host.privateTurn,
+    routing: () => routing, notify: text => notices.push(text), privateTurn: () => host.privateTurn,
     requestAuthority: () => () => host.authority ? undefined : "fixture actor authority revoked",
     sdlc: { config: () => sdlcConfig({ mode: "enforce", required_checks: ["gate"] }), gh } });
   cleanup.push(() => { tasks.stopCiWatchers(); bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
@@ -75,7 +77,7 @@ function rig(options: Options = {}) {
     }
   };
   const patchSource = (patch: Partial<Task>) => board.update(source.id, USER, "fixture source changed", patch);
-  const hold = () => { const entered = deferred(), release = deferred(); held = { entered, release }; return { entered: entered.promise, release: release.resolve }; };
+  const hold = (readsFromNow = 1) => { const entered = deferred(), release = deferred(); held = { target: calls.length + readsFromNow, entered, release }; return { entered: entered.promise, release: release.resolve }; };
   const carryEvents = () => current().history.filter(entry => entry.event === "spec acceptance carried");
   const gate = () => tasks.recordSdlc("codex", destinationId, { stage: "build" });
   const rawState = (id: number, state: string) => {
@@ -83,7 +85,7 @@ function rig(options: Options = {}) {
     const database = (board as unknown as { db: { query(sql: string): { run(...args: (string | number)[]): unknown } } }).db;
     database.query("UPDATE tasks SET state=? WHERE id=?").run(state, id);
   };
-  return { cwd, board, bus, tasks, source, sources, destinationId, sourceRepo, destinationRepo, sourceIssue, destinationIssue, sourceAcceptance, sourceCancellationRevision: () => cancellationRevision, roles, deny, piiPaths, host, calls, notices, current, sourceNow, cancel, patchSource, hold, carryEvents, gate, rawState };
+  return { cwd, board, bus, tasks, source, sources, destinationId, sourceRepo, destinationRepo, sourceIssue, destinationIssue, sourceAcceptance, sourceCancellationRevision: () => cancellationRevision, roles, deny, piiPaths, routing, host, calls, notices, current, sourceNow, cancel, patchSource, hold, carryEvents, gate, rawState };
 }
 async function ready(options: Options = {}) { const r = rig(options); await r.cancel(); return r; }
 async function noCarry(r: ReturnType<typeof rig>, expectedReads: number) {
@@ -394,4 +396,32 @@ test("cohort integration intent keeps HUB attribution while carrying the origina
   expect(result.sdlc).toMatchObject({ pr: 9, head, reviewedHead: head, localHead: head, localResult: "passed" });
   expect(result.history.filter(entry => entry.event === "integration requested")).toHaveLength(1);
   expect(r.tasks.cohorts.of(r.destinationId)!.integration).toMatchObject({ task: r.destinationId, owner: "codex" });
+});
+
+test("donor-only privacy policy changes during plan readback cannot publish staged consent (#1328)", async () => {
+  const r = await ready(), branch = "donor-private-token";
+  r.patchSource({ refs: { branch } });
+  const scope = { review: { scope: "full" as const, reviewers: 1 }, ci: "full" as const };
+  r.board.update(r.destinationId, USER, "fixture independent destination plan review", { plan: scope, sdlc: { ...r.current().sdlc!,
+    planReview: { planner: "claude", planningRevision: 0, recordedAt: Date.now(), scope,
+      issue: { repo: r.destinationRepo, issue: r.destinationIssue, state: "OPEN", editedAt: EDITED, lastEditedAt: EDITED } } } });
+  const before = clone(r.current()), sourceBefore = clone(r.sourceNow()), revision = r.board.statusRevision(), changes: unknown[] = [];
+  expect(r.tasks.publicMetadataText(JSON.stringify(sourceBefore.refs))).toBe(true);
+  expect(before.refs).toEqual({});
+  r.board.onChange = (...args) => { changes.push(args); };
+  const hold = r.hold(2), outcome = r.tasks.acceptReviewed("codex", r.destinationId).then(() => undefined, (error: Error) => error);
+  await hold.entered;
+  let heldCallCount: number, heldQuery: string, donorPublic: boolean, destinationPublic: boolean;
+  try {
+    heldCallCount = r.calls.length; heldQuery = r.calls[1]!.join(" ");
+    r.routing.signals.pii_patterns.push(branch);
+    donorPublic = r.tasks.publicMetadataText(JSON.stringify(sourceBefore.refs));
+    destinationPublic = r.tasks.publicMetadataText(JSON.stringify(before.refs));
+  } finally { hold.release(); }
+  const error = await outcome;
+  expect(r.current()).toEqual(before); expect(r.sourceNow()).toEqual(sourceBefore);
+  expect(r.board.statusRevision()).toBe(revision); expect(changes).toEqual([]); expect(r.carryEvents()).toEqual([]);
+  expect(error).toBeInstanceOf(Error); expect(error!.message).not.toContain(branch);
+  expect(heldCallCount).toBe(2); expect(heldQuery).toContain("createdAt");
+  expect(donorPublic).toBe(false); expect(destinationPublic).toBe(true); expect(r.calls).toHaveLength(2);
 });

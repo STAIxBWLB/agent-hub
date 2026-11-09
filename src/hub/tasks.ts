@@ -6354,7 +6354,10 @@ export class Tasks {
     if (accepted) return { ...unchanged, edit: !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined };
     if (!allowCarry || !receipt?.repo || !receipt.issue || receipt.repo !== task.sdlc?.repo || receipt.issue !== task.sdlc?.issue) return unchanged;
     const check = this.requestCheck(by), scope = this.specAcceptanceScope(task.refs);
-    const policy = () => JSON.stringify([this.d.roles, this.d.deny, this.d.piiPaths, this.d.routing().constraints, this.d.sdlc?.config()]);
+    const policy = () => {
+      const routing = this.d.routing();
+      return JSON.stringify([this.d.roles, this.d.deny, this.d.piiPaths, routing.constraints, routing.signals.pii_patterns, this.d.sdlc?.config()]);
+    };
     const actorPublic = () => !this.d.privateTurn?.(by) && this.specAcceptanceActor(by, task, receipt, stageInput);
     if (!scope || isClosedTaskState(task.state) || !actorPublic() || !this.specAcceptancePublic(task)
       || this.publicMetadataText(receipt.repo) !== true) return unchanged;
@@ -6386,9 +6389,11 @@ export class Tasks {
       this.specCarries.set(token, { by, task: task.id, scope, commit: { source: source.id, cancellationRevision: source.cancellationRevision, acceptance }, current: () => {
         check();
         const now = this.need(task.id, false, true), latest = this.d.board.specAcceptanceCandidates(task.id);
+        const donor = latest.rows.find(row => row.id === source.id);
         return now.history.length === task.history.length && now.owner === task.owner && JSON.stringify(now.sdlc) === JSON.stringify(task.sdlc)
           && snapshot(now) === beforeTask && actorPublic() && policy() === beforePolicy
-          && JSON.stringify(this.taskPlanner(now)) === planners && latest.complete && JSON.stringify(latest.rows) === JSON.stringify(sources.rows);
+          && JSON.stringify(this.taskPlanner(now)) === planners && latest.complete && JSON.stringify(latest.rows) === JSON.stringify(sources.rows)
+          && !!donor && eligible(donor);
       } });
       return { task: { ...task, sdlc: { ...task.sdlc!, acceptance } }, edit, carry: token };
     }
