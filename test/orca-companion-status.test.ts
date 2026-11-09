@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,8 @@ import { FakeOrcaCompanionCli, type OrcaCompanionFixtureCliResponse } from "./fa
 // #1198 O2 over the O0 fixtures and the O1 worker: the read-only status projection, its distinct states, the private-output boundary and the stale-binding refusals. Terminal focus is NOT
 // tested because it is not built: O0 recorded terminalIdToCliHandle "unproven", and a test of an unproven mapping would only prove the mapping the test invented.
 const dirs: string[] = [];
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+// #1260: one test pins the clock, so every test in this file ends on the real one.
+afterEach(() => { setSystemTime(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const temp = (name: string) => { const dir = realpathSync(mkdtempSync(join(tmpdir(), `ahub-orca-${name}-`))); dirs.push(dir); return dir; };
 // @ts-ignore TS7016: untyped plain JavaScript by design
 const status: any = await import("../integrations/orca/src/status.mjs");
@@ -28,6 +29,12 @@ const REAL = () => JSON.stringify({
   personRun: [7], crash: [SECRET.note], mainCheckout: SECRET.title, agentDrift: [{ id: "codex", version: "9.9.9", state: "drift", receipt: "/Users/secret/receipt" }],
   schedules: [{ id: "nightly", class: "plan", queue: "q", next: 1, state: "ok", error: SECRET.note }], taskStalls: [{ task: 3, cause: { kind: "peer", peer: "codex", code: SECRET.ticket } }],
 });
+
+/**
+ * The clock the projection is judged on: the epoch #1358's CI read as a real `fetchedAt`, 1794246524650, whose digits contain the 4-digit port a bare canary used to assert
+ * absent. Pinned instead of read from the wall clock, so the proof that the canary no longer collides with a timestamp does not depend on the time of day.
+ */
+const FIXED_NOW = 1_794_246_524_650;
 
 class TestHost {
   readonly calls: string[] = [];
@@ -50,13 +57,21 @@ function setup(statusResponse: OrcaCompanionFixtureCliResponse, extra: Partial<{
 }
 
 test("AC4: a real-shaped status projects to ids, counts and closed states only; every free-text field is dropped", async () => {
+  setSystemTime(new Date(FIXED_NOW));
   const s = setup({ stdout: REAL(), exitCode: 0 });
   const r = await s.instance.status({ snapshot: s.snapshot });
   expect(r).toMatchObject({ ok: true, state: "running", version: "0.33.0", missing: [] });
   expect(r.tasks).toEqual({ approved: 40, cancelled: 3, in_progress: 1, in_review: 1, proposed: 2 });
   expect(r.peers).toEqual([{ id: "claude", state: "idle", queued: 0, attached: true }, { id: "codex", state: "busy", queued: 2, attached: true }, { id: "kimi", state: "offline", queued: 0, attached: false }]);
   const text = JSON.stringify(r) + s.logs.join("\n");
-  for (const planted of [...Object.values(SECRET), "/Users/secret", "4242", "4601", "4650", "9.9.9", "receipt", "nightly"]) expect(text, planted).not.toContain(planted);
+  // #1260: a millisecond epoch is 13 digits, so a bare 4-digit port can land inside `fetchedAt` by accident and did in #1358's CI. Each port is therefore checked where a copied field
+  // would carry it (its key, or host:port: forms no epoch can imitate), and as a number wherever it appears in the projection. The two lines before them are the removal proof: the
+  // pinned epoch is in the scanned text and holds the old bare canary "4650", so a bare canary would fail here on every run rather than once in a while.
+  expect(text).toContain(String(FIXED_NOW));
+  expect(String(FIXED_NOW)).toContain("4650");
+  for (const planted of [...Object.values(SECRET), "/Users/secret", '"pid":4242', '"controlPort":4601', "127.0.0.1:4650", "9.9.9", "receipt", "nightly"]) expect(text, planted).not.toContain(planted);
+  const numbers = (node: unknown): number[] => typeof node === "number" ? [node] : node && typeof node === "object" ? Object.values(node).flatMap(numbers) : [];
+  expect(numbers(r).filter(n => n === 4242 || n === 4601 || n === 4650)).toEqual([]);
   expect(Object.keys(r).sort()).toEqual(["ageMs", "fetchedAt", "missing", "ok", "peers", "state", "tasks", "version"]);
   expect(s.cli.calls).toHaveLength(1);
   expect(s.cli.calls[0]).toMatchObject({ executable: "ahub", argv: ["status", "--json"], cwd: s.root });
