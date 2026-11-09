@@ -7,6 +7,7 @@ import { QwenDualPeer, QWEN_STALLED_NOTE, isQwenTaskNotification, qwenDualNamesS
 import { COMPAT, assessVersion } from "../src/adapters/compat.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { Bus } from "../src/hub/bus.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
 import type { ProcRow } from "../src/hub/child-process.ts";
 import type { PermissionRequest } from "../src/adapters/acp.ts";
@@ -191,9 +192,10 @@ async function personalCompletion(r: Rig): Promise<void> {
   await until(() => JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending === undefined);
 }
 
-function observedBus(r: Rig): Bus {
+function observedBus(r: Rig): { bus: Bus; journal: DeliveryJournal } {
   const observeMessage = r.peer.onMessage, observeDelivery = r.peer.onDelivery;
-  const bus = new Bus({ batchMs: 0 });
+  const journal = new DeliveryJournal({ file: join(r.root, "hub.db"), projectRoot: r.root, projectId: "qwen-deny-fixture", instanceId: "fixture" });
+  const bus = new Bus({ batchMs: 0, journal });
   bus.add(r.peer);
   const busMessage = r.peer.onMessage, busDelivery = r.peer.onDelivery;
   r.peer.onMessage = (body, options) => {
@@ -203,12 +205,12 @@ function observedBus(r: Rig): Bus {
   };
   r.peer.onDelivery = receipt => { busDelivery?.(receipt); observeDelivery?.(receipt); };
   cleanups.push(() => bus.closeJournal());
-  return bus;
+  return { bus, journal };
 }
 
 test("a deny completes its known delivery but Bus keeps the second submit fenced until a new personal turn completes", async () => {
   const r = await attached();
-  const bus = observedBus(r);
+  const { bus, journal } = observedBus(r);
   bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
   await until(() => r.requests.length === 1);
   const states: string[] = [];
@@ -226,6 +228,7 @@ test("a deny completes its known delivery but Bus keeps the second submit fenced
   expect(r.receipts.filter(receipt => receipt.state === "accepted")).toHaveLength(1);
   expect(r.receipts.filter(receipt => receipt.state === "completed")).toHaveLength(1);
   expect(r.receipts.find(receipt => receipt.state === "completed")?.id).toBe(r.receipts.find(receipt => receipt.state === "accepted")?.id);
+  expect(journal.get(r.receipts.find(receipt => receipt.state === "completed")!.id)?.state).toBe("completed");
   expect(second).toBeDefined();
   expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
   await personalCompletion(r);
@@ -234,6 +237,7 @@ test("a deny completes its known delivery but Bus keeps the second submit fenced
   expect(r.answers[0]!.body).toContain("after the deny");
   expect(r.receipts.filter(receipt => receipt.state === "completed")).toHaveLength(2);
   expect(new Set(r.receipts.filter(receipt => receipt.state === "completed").map(receipt => receipt.id)).size).toBe(2);
+  for (const receipt of r.receipts.filter(receipt => receipt.state === "completed")) expect(journal.get(receipt.id)?.state).toBe("completed");
 });
 
 test("silent deny expires offline with known completed disposition, then a scoped personal completion can recover", async () => {
@@ -337,7 +341,7 @@ for (const loss of ["malformed", "shape", "oversized", "utf8"] as const) test(`a
 
 for (const split of ["without-newline", "partial-json"] as const) test(`a USER ${split} begun before deny cannot release Bus input after its trailing bytes arrive`, async () => {
   const r = await attached();
-  const bus = observedBus(r);
+  const { bus } = observedBus(r);
   bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
   await until(() => r.requests.length === 1);
   const line = JSON.stringify({ session_id: r.peer.sessionId, ...personalUser });
