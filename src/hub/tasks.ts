@@ -5804,7 +5804,7 @@ export class Tasks {
     const scope = this.repositories.scope(task.refs), repo = task.sdlc?.repo ?? (scope.key.startsWith("repo:") ? scope.key.slice("repo:".length) : undefined);
     if (!repo || this.repositories.scope({ repo }).key !== scope.key || task.sdlc?.pr !== undefined && task.sdlc.pr !== pr)
       throw new PreEffectToolRefusal("PR repository or number differs from the task's recorded artifact, or its repository is unknown; record its correct repository and PR before retrying ahub sdlc adopt-merge");
-    const receipt = { ...(task.sdlc ?? { stage: lifecycleStage(config, "merge") }), repo, pr: pr as number };
+    const receipt = { ...task.sdlc, stage: lifecycleStage(config, "merge"), repo, pr: pr as number };
     const important = () => findingTally(findingsForHead(this.reviewFindingSets(current()), head)).openImportant > 0;
     if (important()) throw new PreEffectToolRefusal("open Important finding blocks merge adoption; resolve the finding and record its disposition before retrying ahub sdlc adopt-merge");
     const deadline = performance.now() + 20_000;

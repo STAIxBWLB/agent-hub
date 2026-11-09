@@ -72,6 +72,7 @@ test("AC4: observed merge approves and releases dependents without a reviewer ve
   expect(actualTaskDates(now).doneAt).toBe(now.history.at(-1)!.at);
   expect(now.history.at(-1)).toMatchObject({ by: USER, event: "merged outside the hub", note: `PR #7 merged outside the hub at ${HEAD}` });
   expect(now.history.some(entry => entry.event === "approved")).toBe(false);
+  expect(now.sdlc?.stage).toBe("merge");
   expect(now.sdlc?.reviewedHead).toBeUndefined(); expect(now.sdlc?.merge).toBeUndefined();
   expect(f.board.get(child.id)!.history.some(entry => entry.event === "ready")).toBe(true);
   expect(f.calls).toHaveLength(1);
