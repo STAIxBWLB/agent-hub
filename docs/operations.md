@@ -4739,8 +4739,9 @@ execution path and its privacy/budget checks are unchanged. Source text, tool ar
 and server error prose never enter route events.
 
 This delivery is the adec consumer slice of #554. The direct System One backend,
-enforcement application, optional stage classifier and manual offline triage
-evaluation remain separate unimplemented legs. Offline fake-service tests establish protocol and shadow
+enforcement application and optional stage classifier remain separate
+unimplemented legs; the manual offline triage evaluation is the by-hand script
+below. Offline fake-service tests establish protocol and shadow
 behavior; no routing gain, native service/model run or production rollout is
 claimed.
 
@@ -4761,6 +4762,61 @@ each missing alias once or aggregate success when all are served. A
 row naming the file and the parse error, without the file's contents, and the
 alias check is skipped (#563). Hub summaries
 and triage use their fixed model directly.
+
+#### Offline triage evaluation (#554 AC5, by hand)
+
+`scripts/decision-eval.ts` replays the board's planner-classified, non-PII tasks
+against a decider and against the hub's current `Inference.triage`, then reports
+each column's accuracy against the class a planner named and its latency. It is
+a person-run leg: it never runs in CI and needs a running `adec serve`
+([route contract](https://github.com/STAIxBWLB/agent-decide/issues/4)), so
+neither column is exercised by the hermetic suite.
+
+```bash
+# adec early-decision route: the seven classes are the policy's candidate aliases
+bun scripts/decision-eval.ts --project . --decider route \
+  --adec http://127.0.0.1:8740 --policy-id ahub.triage --effort default --limit 50
+
+# adec System One endpoint: one choice question whose options are the classes
+bun scripts/decision-eval.ts --project . --decider systemone \
+  --adec http://127.0.0.1:8740 --model <model> --limit 50
+```
+
+`--project` names the hub project root and `--db` any `hub.db` copy; `--limit`
+bounds the sample (default 50, at most 500) and `--timeout` the per-call deadline
+(default 8000 ms). `--out <file>` also writes the Markdown report. The endpoint
+must be literal loopback (`127.0.0.1` or `[::1]`) with the `/v1/route` or
+`/v1/systemone` path; anything else is refused before a row is read. A
+`--policy-id` the service does not hold answers 404, which the client reports as
+the closed reason `http`, so every row is then a miss: check the service's
+policies and that `--effort` is one the policy allows before reading the table.
+
+The sample is the board's newest rows that a planner classified: a row whose
+class sits outside the closed class list, whose history carries a hub `triaged`
+or `class defaulted` event, or whose title is empty is excluded, and so is any
+row carrying a `pii` or `pii_path` signal, which is dropped before its text is
+read. Kept rows are read as a public view returns them, and each report lists the
+excluded counts and the sampled classes so the sample can be judged.
+
+The script takes one consistent snapshot of `hub.db` into a temporary directory
+and opens the copy, so a run never opens the live board for writing. The snapshot
+is SQLite's own serialization of a read-only connection, not a copy of the
+database file and its `-wal`/`-shm` sidecars: a live writer that checkpoints and
+then reuses the WAL would leave separately copied files disagreeing about which
+frames are committed. Accuracy counts only rows a column labelled, a miss lowers
+coverage rather than accuracy, and the report adds p50/p95/max latency, the two
+columns' confusion and misses, and how often they agreed where both labelled a
+row.
+
+Each run gets a fresh run id in its report and in every adec turn id, because
+adec keeps in-memory pins for the turn ids it has answered: without it, a second
+run over the same board, or over another project whose task ids overlap, can be
+answered from an earlier pin instead of a fresh classification, and both the
+accuracy and the latency would then describe that pin.
+
+A gain here is evidence for the decider question (D5) only: nothing in this
+script reaches `Tasks.triage`, `assign()` or the PII screen, and no board row,
+route or config is changed by a run.
 
 Route types: `stage` scores recent tools and holds capable recovery for two calls;
 `plan_execute` plans on capable until the first mutation and then stays efficient;
