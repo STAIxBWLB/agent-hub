@@ -34,3 +34,10 @@ test("Memory sync UI shows neutral next steps for an unconfigured remote and a s
   expect(render({ state: "not-configured" })).toContain("not-configured / next: configure a private sync remote");
   expect(render({ state: "stopped" })).toContain("stopped / next: retry after hub restart");
 });
+
+test("Memory sync UI names a refused writer attestation with closed words only", () => {
+  const text = render({ state: "failed", cause: "writer", writerCategory: "host package", writerCauseClass: "changed" });
+  expect(text).toContain("writer attestation refused: host package, changed");
+  expect(text).toContain("amem migrate --sync-placement --dry-run");
+  expect(render({ state: "failed", cause: "writer", writerCategory: "/Users/x/PRIVATE", writerCauseClass: "PRIVATE" })).not.toContain("PRIVATE");
+});
