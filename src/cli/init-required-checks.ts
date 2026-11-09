@@ -94,7 +94,8 @@ export async function discoverInitChecks(cwd: string, run: SdlcGh = sdlcGh): Pro
       return JSON.parse(reply.stdout);
     };
     const local = hubGitSync(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], { cwd, encoding: "utf8", timeout: DISCOVERY_READ_MS });
-    const target = local.status === 0 ? hubGitSync(["rev-parse", "--verify", "refs/remotes/origin/HEAD^{commit}"], { cwd, encoding: "utf8", timeout: Math.max(1, Math.min(DISCOVERY_READ_MS, deadline - performance.now())) }) : undefined;
+    const remaining = deadline - performance.now();
+    const target = local.status === 0 && remaining > 0 ? hubGitSync(["rev-parse", "--verify", "refs/remotes/origin/HEAD^{commit}"], { cwd, encoding: "utf8", timeout: Math.min(DISCOVERY_READ_MS, remaining) }) : undefined;
     let branch = local.status === 0 && target?.status === 0 ? local.stdout.trim().replace(/^refs\/remotes\/origin\//, "") : undefined;
     if (!branch) branch = (await read(["api", `repos/${repo}`])).default_branch;
     if (typeof branch !== "string" || !branch || /[\r\n]/.test(branch)) return workflowChecks(cwd);
