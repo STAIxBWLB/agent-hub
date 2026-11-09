@@ -81,7 +81,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type NoteInput, type Scope, type Tier } from "@staix/agent-mem";
-import { HOST_MERGE_ADOPTION, parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
+import { HOST_SPEC_ACCEPTANCE_CARRY, HOST_MERGE_ADOPTION, parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type SpecAcceptanceCandidate, type SpecAcceptanceCommit, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -100,7 +100,7 @@ import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, plannedStartPending, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
-import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
+import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSdlcPrHead, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState, localSupersedingTask, storedSpecAcceptance, carriedSpecAcceptance } from "./sdlc.ts";
 
 /** #1176: refusals for an agent that reaches a person-run card by a path other than the pull gate. */
 const PERSON_RUN_SPLIT = "a person-run card is the person's to split: its children would be unmarked cards an agent could take (the person's own split marks every child person-run)";
@@ -114,6 +114,9 @@ export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
 
 /** What `hub_remember` carries (#802: one shape for `remember` and `rememberOutcome`). */
 export interface RememberInput { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown; approach?: unknown; symptom?: unknown; cause?: unknown; evidence?: unknown; retry_when?: unknown }
+
+interface SpecGateRead { task: Task; edit?: SpecEdit; carry?: object; }
+interface SpecCarryProof { by: PeerId; task: number; scope: string; commit: SpecAcceptanceCommit; current: () => boolean; }
 
 interface PreparedSpecInspection {
   report?: SpecTaskReport;
@@ -5794,7 +5797,9 @@ export class Tasks {
    */
   async recordSdlc(by: PeerId, id: unknown, input: unknown): Promise<Task> {
     const requestCheck = this.requestCheck(by);
-    if (!input || typeof input !== "object" || Array.isArray(input) || !("deliverables" in input)) return this.recordLifecycle(by, id, input);
+    const spec = await this.specStageGate(by, id, input);
+    requestCheck();
+    if (!input || typeof input !== "object" || Array.isArray(input) || !("deliverables" in input)) return this.recordLifecycle(by, id, input, undefined, spec?.carry);
     const { deliverables, ...receipt } = input as Record<string, unknown>;
     const task = this.need(id, false, true);
     if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
@@ -5803,12 +5808,12 @@ export class Tasks {
     requestCheck();
     const current = this.need(id, false, true);
     if (current.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed while its deliverables were hashed; record them again");
-    return this.recordLifecycle(by, id, receipt, records);
+    return this.recordLifecycle(by, id, receipt, records, spec?.carry);
   }
 
-  recordLifecycle(by: PeerId, id: unknown, input: unknown, deliverables?: DeliverableRecord[]): Task {
+  recordLifecycle(by: PeerId, id: unknown, input: unknown, deliverables?: DeliverableRecord[], specCarry?: object): Task {
     requireLocalTaskPeer(by);
-    const task = this.need(id, false, true);
+    const task = this.stagedSpec(by, this.need(id, false, true), specCarry);
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const next = sdlcReceipt(input, task.sdlc, config, VERSION);
     const definition = stageDefinition(config, next.stage);
@@ -5840,7 +5845,7 @@ export class Tasks {
     if (next.reviewedHead !== undefined && (next.reviewedHead !== task.sdlc?.reviewedHead || (suppliedHead && artifactChanged))) this.mine(task, by, "reviewer", true);
     const departure = task.history.findLast(h => h.by === USER && h.planDeparture)?.planDeparture;
     const invalidatesDeparture = !!departure && (artifactChanged || next.localHead !== task.sdlc?.localHead && next.localHead !== undefined && next.localHead !== departure.head || next.reviewedHead !== task.sdlc?.reviewedHead && next.reviewedHead !== undefined && next.reviewedHead !== departure.head);
-    return this.d.board.update(task.id, by, "lifecycle", { sdlc: next }, undefined, { ...this.planObservation({ ...task, sdlc: next }), ...(invalidatesDeparture ? { planDepartureInvalidated: true } : {}), ...(deliverables ? { deliverables } : {}) });
+    return this.commitSpecCarry(by, specCarry, task.id, by, "lifecycle", { sdlc: next }, undefined, { ...this.planObservation({ ...task, sdlc: next }), ...(invalidatesDeparture ? { planDepartureInvalidated: true } : {}), ...(deliverables ? { deliverables } : {}) });
   }
 
   /** The board as the merge queue and the guarded merge read it (#786): ids, dependencies, privacy, receipts, findings and plans. */
@@ -6277,19 +6282,137 @@ export class Tasks {
     return this.d.board.update(task.id, USER, "spec accepted", { sdlc: next }, `issue #${next.issue}, body last edited ${spec.edit.lastEditedAt ?? "never"}`);
   }
 
+  private readonly specCarries = new WeakMap<object, SpecCarryProof>();
+  /** Opaque host proof only: a virtual receipt never changes the stored row or its flow. */
+  private stagedSpec(by: PeerId, task: Task, token?: object, preEffect = true): Task {
+    if (!token) return task;
+    try {
+      const proof = this.specCarries.get(token);
+      if (!proof || proof.by !== by || proof.task !== task.id) throw new Error("unknown or consumed host spec carry proof");
+      if (!proof.current() || task.sdlc?.repo !== proof.commit.acceptance.repo || task.sdlc.issue !== proof.commit.acceptance.issue
+        || this.specAcceptanceScope(task.refs) !== proof.scope || !this.specAcceptancePublic(task)) throw new Error("task or source changed during staged spec admission");
+      return { ...task, sdlc: { ...task.sdlc, acceptance: proof.commit.acceptance } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "staged spec admission changed";
+      throw new (preEffect ? PreEffectToolRefusal : Error)(`${message}; inspect the current task and held deliveries before repeating this action`);
+    }
+  }
+  /** Called only at an admitted outer write; later failures keep ordinary post-effect error semantics. */
+  private commitSpecCarry(caller: PeerId, token: object | undefined, ...args: Parameters<Board["update"]>): Task {
+    if (!token) return this.d.board.update(...args);
+    const [id, by, event, patch, note, extra, revision, codeSymbolsAuthority, adoptionAuthority] = args;
+    const stored = this.need(id, false, false);
+    if (by !== caller && !(by === HUB && ["integration requested", "integration unresolved", "integrated"].includes(event))) throw new Error("spec carry event actor differs from its admitted caller; inspect the current task and held deliveries before repeating this action");
+    this.stagedSpec(caller, { ...stored, ...patch, refs: { ...stored.refs, ...patch.refs } }, token, false);
+    const proof = this.specCarries.get(token)!;
+    const next = this.d.board.updateWithSpecAcceptance(proof.commit, HOST_SPEC_ACCEPTANCE_CARRY,
+      id, by, event, patch, note, extra, revision ?? stored.history.length, codeSymbolsAuthority, adoptionAuthority);
+    this.specCarries.delete(token);
+    return next;
+  }
+
+  /** No cold repository probes or source task hydration participate in consent authority. */
+  private specAcceptanceScope(refs: TaskRefs): string | undefined {
+    return this.repositories.cachedScope(refs)?.key
+      ?? (!refs.repo && !(refs.paths ?? []).some(isAbsolute) ? this.repositories.project.key : undefined);
+  }
+  private specAcceptancePublic(task: Pick<Task, "refs" | "signals">): boolean {
+    try {
+      const normalized = cleanRefs(task.refs);
+      if (["repo", "branch", "commit"].some(key => task.refs[key as keyof TaskRefs] !== normalized[key as keyof TaskRefs])
+        || JSON.stringify(task.refs.paths ?? []) !== JSON.stringify(normalized.paths ?? [])) return false;
+      return !task.signals.includes("pii") && !task.signals.includes("pii_path")
+        && this.publicMetadataText(JSON.stringify(task.refs)) === true
+        && !(task.refs.paths ?? []).some(path => this.reviewPathPrivate(path));
+    } catch { return false; }
+  }
+  /** Carry uses the existing owner/reviewer/stage-planner authority, without admitting a stage write. */
+  private specAcceptanceActor(by: PeerId, task: Task, receipt = task.sdlc, stageInput?: Record<string, unknown>): boolean {
+    if (by === USER) return true;
+    if (!this.d.bus.isRostered(by)) return false;
+    let role = by === task.owner ? ownerRoleOfClass(task.class) : undefined;
+    if (stageInput) {
+      const config = this.d.sdlc?.config() ?? sdlcConfig(undefined), definition = receipt && stageDefinition(config, receipt.stage);
+      const planners = this.taskPlanner(task), planner = planners.includes(by);
+      const plannerStage = Object.keys(stageInput).every(key => ["stage", "repo", "issue"].includes(key))
+        && (definition?.actor === "planner" || definition?.actor === "owner/planner") && planner;
+      if (by !== task.owner && by !== task.reviewer && !plannerStage) return false;
+      if (config.mode === "enforce" && config.definitions) {
+        const actor = definition?.actor;
+        const acts = actor === "owner" ? by === task.owner : actor === "reviewer" ? by === task.reviewer
+          : actor === "planner" ? planner : actor === "owner/planner" && (by === task.owner || planner);
+        if (!acts) return false;
+      }
+      role ??= by === task.reviewer ? "reviewer" : "planner";
+    }
+    return !!role && (!this.d.roles || this.d.roles[by]?.includes(role) === true);
+  }
+  /** One strict host observation serves both the carry decision and the ordinary spec verdict. */
+  private async readSpecAcceptance(by: PeerId, task: Task, receipt = task.sdlc, allowCarry = true, stageInput?: Record<string, unknown>): Promise<SpecGateRead> {
+    const unchanged: SpecGateRead = { task };
+    const accepted = receipt?.acceptance;
+    if (accepted) return { ...unchanged, edit: !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined };
+    if (!allowCarry || !receipt?.repo || !receipt.issue || receipt.repo !== task.sdlc?.repo || receipt.issue !== task.sdlc?.issue) return unchanged;
+    const check = this.requestCheck(by), scope = this.specAcceptanceScope(task.refs);
+    const policy = () => {
+      const routing = this.d.routing();
+      return JSON.stringify([this.d.roles, this.d.deny, this.d.piiPaths, routing.constraints, routing.signals.pii_patterns, this.d.sdlc?.config()]);
+    };
+    const actorPublic = () => !this.d.privateTurn?.(by) && this.specAcceptanceActor(by, task, receipt, stageInput);
+    if (!scope || isClosedTaskState(task.state) || !actorPublic() || !this.specAcceptancePublic(task)
+      || this.publicMetadataText(receipt.repo) !== true) return unchanged;
+    const eligible = (source: SpecAcceptanceCandidate) => {
+      const consent = storedSpecAcceptance(source.acceptance);
+      return !source.withheld && source.id < task.id && localSupersedingTask(source.supersededBy) === task.id
+        && this.specAcceptancePublic(source) && this.specAcceptanceScope(source.refs) === scope
+        && typeof source.repo === "string" && source.repo.toLowerCase() === receipt.repo!.toLowerCase() && source.issue === receipt.issue
+        && !!consent && consent.repo.toLowerCase() === receipt.repo!.toLowerCase() && consent.issue === receipt.issue;
+    };
+    const snapshot = (value: Task) => JSON.stringify([value.created, value.state, value.class, value.reviewer, value.planner, value.refs, value.signals]);
+    const beforeTask = snapshot(task), sources = this.d.board.specAcceptanceCandidates(task.id), beforePolicy = policy();
+    const planners = JSON.stringify(this.taskPlanner(task));
+    if (!sources.complete || !sources.rows.some(eligible)) return unchanged;
+    const edit = await readSpecEdit(receipt.repo, receipt.issue, this.d.sdlc?.gh);
+    check();
+    if (this.specMoved(task)) return unchanged;
+    const currentTask = this.need(task.id, false, true);
+    if (snapshot(currentTask) !== beforeTask || !actorPublic() || !this.specAcceptancePublic(currentTask) || policy() !== beforePolicy
+      || JSON.stringify(this.taskPlanner(task)) !== planners || this.specAcceptanceScope(task.refs) !== scope) return unchanged;
+    const current = this.d.board.specAcceptanceCandidates(task.id);
+    if (!current.complete || JSON.stringify(current.rows) !== JSON.stringify(sources.rows)) return unchanged;
+    for (const source of current.rows) {
+      if (!eligible(source)) continue;
+      const acceptance = carriedSpecAcceptance(storedSpecAcceptance(source.acceptance)!, { repo: receipt.repo, issue: receipt.issue }, edit);
+      if (!acceptance) continue;
+      Object.freeze(acceptance); // The virtual receipt must not expose mutable host-consent fields.
+      const token = Object.freeze({});
+      this.specCarries.set(token, { by, task: task.id, scope, commit: { source: source.id, cancellationRevision: source.cancellationRevision, acceptance }, current: () => {
+        check();
+        const now = this.need(task.id, false, true), latest = this.d.board.specAcceptanceCandidates(task.id);
+        const donor = latest.rows.find(row => row.id === source.id);
+        return now.history.length === task.history.length && now.owner === task.owner && JSON.stringify(now.sdlc) === JSON.stringify(task.sdlc)
+          && snapshot(now) === beforeTask && actorPublic() && policy() === beforePolicy
+          && JSON.stringify(this.taskPlanner(now)) === planners && latest.complete && JSON.stringify(latest.rows) === JSON.stringify(sources.rows)
+          && !!donor && eligible(donor);
+      } });
+      return { task: { ...task, sdlc: { ...task.sdlc!, acceptance } }, edit, carry: token };
+    }
+    return { ...unchanged, edit };
+  }
+
   /** Build entry with a live readback of the spec's body edit time (#481 S1): enforce refuses, advise notifies, off does nothing. */
-  async specGate(by: PeerId, id: unknown): Promise<void> {
+  async specGate(by: PeerId, id: unknown, prospectiveRefs?: TaskRefs): Promise<SpecGateRead | undefined> {
     requireLocalTaskPeer(by);
     const task = this.need(id, false, true);
     if (!this.specGated(task) || task.owner !== by && by !== USER) return; // accept reports its own refusals
-    const accepted = task.sdlc?.acceptance;
-    const edit = accepted && !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined;
+    const result = await this.readSpecAcceptance(by, task, task.sdlc, !prospectiveRefs || this.specAcceptanceScope(prospectiveRefs) === this.specAcceptanceScope(task.refs));
     if (this.specMoved(task)) return;
-    this.specVerdict(task, task.sdlc?.issue ? specState(task.sdlc, edit) : "missing");
+    this.specVerdict(result.task, result.task.sdlc?.issue ? specState(result.task.sdlc, result.edit) : "missing");
+    return result.carry ? result : undefined;
   }
 
   /** #481 S1: a build stage change by an agent re-reads the body edit time first, as accept does. */
-  async specStageGate(by: PeerId, id: unknown, input: unknown): Promise<void> {
+  async specStageGate(by: PeerId, id: unknown, input: unknown): Promise<SpecGateRead | undefined> {
     requireLocalTaskPeer(by);
     const task = this.need(id, false, true), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off" || by === USER || !input || typeof input !== "object" || !("stage" in input)) return;
@@ -6299,10 +6422,11 @@ export class Tasks {
     try { next = sdlcReceipt(lifecycleInput, task.sdlc, config, VERSION); } catch { return; } // recordLifecycle reports an invalid receipt
     const definition = stageDefinition(config, next.stage);
     if (next.stage === task.sdlc?.stage || !definition || canonicalStage(definition.base) !== "build") return;
-    const accepted = next.acceptance;
-    const edit = accepted && !this.isPii(task) ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined;
+    const result = await this.readSpecAcceptance(by, task, next, true, lifecycleInput);
     if (this.specMoved(task)) return;
-    this.specVerdict(task, next.issue ? specState(next, edit) : "missing");
+    if (result.carry) next.acceptance = result.task.sdlc!.acceptance;
+    this.specVerdict(result.task, next.issue ? specState(next, result.edit) : "missing");
+    return result.carry ? result : undefined;
   }
 
   /**
@@ -6411,27 +6535,28 @@ export class Tasks {
     this.validatePlanSources(proposedPlan && Object.keys(proposedPlan).length ? proposedPlan : task.plan);
     this.acceptanceCapacity(task, 0, "check"); // #1080: an urgent task may still take unaccepted offers; `accept` does that, after its gates
     if (metadata && !this.isPii(task) && (!this.nameable(metadata.repo!) || looksSecret(metadata.repo!) || this.aboutPrivatePath("", metadata.repo!, task))) throw new PreEffectToolRefusal("this repository metadata is private or sensitive and is not kept");
-    const draft = metadata ? { ...task, refs: { ...task.refs, ...metadata } } : task;
+    let draft = metadata ? { ...task, refs: { ...task.refs, ...metadata } } : task;
     this.warmRepository(draft);
     if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "off" || !this.isBuildTask(task)) return this.accept(by, id, plan, metadata);
-    await this.specGate(by, id);
-    await this.planEntryGate(by, draft);
+    const spec = await this.specGate(by, id, draft.refs);
+    if (spec?.carry) draft = metadata ? { ...spec.task, refs: { ...spec.task.refs, ...metadata } } : spec.task;
+    await this.planEntryGate(by, draft, spec?.carry);
     requestCheck();
     const current = this.need(id, false, true);
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during build admission");
     this.reviewedAdmissions.set(current.id, { flow: current.history.length, owner: current.owner });
-    try { return this.accept(by, id, plan, metadata); }
+    try { return this.accept(by, id, plan, metadata, spec?.carry); }
     finally { this.reviewedAdmissions.delete(current.id); }
   }
 
   /** Spec and plan readbacks share the caller's original task snapshot until the final acceptance write. */
-  private async planEntryGate(by: PeerId, task: Task): Promise<void> {
+  private async planEntryGate(by: PeerId, task: Task, specCarry?: object): Promise<void> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off" || !this.isBuildTask(task)) return;
     const gap = await this.planReviewGap(task);
     if (mode === "advise" && !task.sdlc?.planReview?.scope) this.releaseNotice(`task ${this.publicTitle(task)}: cost scope unspecified`);
-    const current = this.need(task.id, false, true);
+    const current = this.stagedSpec(by, this.need(task.id, false, true), specCarry);
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during plan readback");
     if (gap && mode === "enforce") throw new PreEffectToolRefusal(this.entryDiagnostic(current, gap) ?? gap);
@@ -6533,10 +6658,10 @@ export class Tasks {
    * With a plan, the owners of overlapping tasks get it as a ride-along line, and an overlap only the plan reveals is
    * announced like one found at assignment (issue #31).
    */
-  accept(by: PeerId, id: unknown, plan?: unknown, refs?: unknown): Task {
+  accept(by: PeerId, id: unknown, plan?: unknown, refs?: unknown, specCarry?: object): Task {
     requireLocalTaskPeer(by);
     const metadata = acceptRefs(refs);
-    const task = this.need(id, false, true);
+    const task = this.stagedSpec(by, this.need(id, false, true), specCarry);
     this.mine(task, by, "owner", true);
     this.ready(task, true);
     // #1176: a person-run leg is never an agent's to accept, whatever offer or owner it carries from before it was marked.
@@ -6578,7 +6703,7 @@ export class Tasks {
     let next: Task;
     try {
       this.acceptanceCapacity(task, 0, "displace"); // #1080: every gate has passed; synchronous from here to the accept write
-      next = this.linkOnWrite(this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) })); // #723: refs.repo may have just arrived
+      next = this.linkOnWrite(this.commitSpecCarry(by, specCarry, task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) })); // #723: refs.repo may have just arrived
     } catch (error) { undoWorktree?.(); throw error; }
     this.captureOwnerAcceptance(next);
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);
@@ -6903,7 +7028,9 @@ export class Tasks {
     const refileHead: RefileHeadGuard | undefined = !submittedCommit && initial.sdlc?.repo && initial.sdlc.pr && this.hasReviewHistory(initial) && !this.isPii(initial)
       ? { recorded: this.ownerReviewHead(initial) } : undefined;
     const draft = refresh ?? (submittedCommit && /^[a-f0-9]{40}$/.test(submittedCommit) ? { commit: submittedCommit } : undefined);
-    const valid = () => { requestCheck(); const current = this.completionDraft(this.completionCurrent(id, by, true, refresh), draft); if (resolvedReviewComments !== undefined) this.reviewCommentResolve(by, current, resolvedReviewComments); return current; };
+    let specCarry: object | undefined;
+    const write = (...args: Parameters<Board["update"]>) => { const result = this.commitSpecCarry(by, specCarry, ...args); specCarry = undefined; return result; };
+    const valid = () => { requestCheck(); const current = this.stagedSpec(by, this.completionDraft(this.completionCurrent(id, by, true, refresh), draft), specCarry); if (resolvedReviewComments !== undefined) this.reviewCommentResolve(by, current, resolvedReviewComments); return current; };
     if (initial.state === "approved") { await this.unmergedForReopen(initial, valid); valid(); }
     // #509a: a bad claim (a claimed hash, an outside or denied path, a missing file) is refused before any effect, with nothing recorded.
     const claims = deliverables === undefined ? undefined : this.deliverableClaims(deliverables, valid());
@@ -6915,18 +7042,18 @@ export class Tasks {
     task = valid();
     // #481 S1: done without a separate accept starts build work too: the same live spec check as accept, before any write.
     if (task.state === "proposed" || task.state === "changes_requested") {
-      const admission = task;
-      await this.specGate(by, task.id);
-      await this.planEntryGate(by, admission);
+      const admission = await this.specGate(by, task.id, { ...task.refs, ...cleanRefs(refs) });
+      specCarry = admission?.carry;
+      await this.planEntryGate(by, admission?.carry ? admission.task : task, specCarry);
       task = valid();
     }
     // #694: stage the identities the hub can verify; the gates read them, and only the admitted done persists them.
     const link = this.d.sdlc && this.d.sdlc.config().mode !== "off" ? await this.identityLink(task, refs) : undefined;
-    const current = () => this.withLink(valid(), link, refs);
+    const current = () => this.stagedSpec(by, this.withLink(valid(), link, refs), specCarry);
     task = current();
     let reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review", undefined, undefined, refileHead); task = current(); }
-    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(this.completionDraft(staged, draft), link, refs), !task.reviewer, refileHead) : undefined;
+    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.stagedSpec(by, this.withLink(this.completionDraft(staged, draft), link, refs), specCarry), !task.reviewer, refileHead) : undefined;
     task = current();
     if (refileHead && (this.d.sdlc?.config().mode ?? "off") === "off") {
       const currentHead = await this.currentPrHeadForReview(task, current);
@@ -6954,11 +7081,11 @@ export class Tasks {
       const ig = cohort!.integration;
       if (ig?.task === task.id && ig.offer) this.d.ackFacts?.(task.owner!, ig.offer); // this call is the proof the request arrived
       const r = this.cohorts.completion(cohort!, task, { gen, tree: this.tree(cohort!), factsCurrent: this.d.factsCurrent?.(task.owner!) ?? true, handed: handedAt(task) });
-      if (r.action === "request") return this.d.board.update(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
+      if (r.action === "request") return write(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
       if (r.action === "unresolved") {
         this.d.notify(`task ${this.publicTitle(task)}: turn-free integration unresolved after ${MAX_REQUESTS} requests (${r.why}); its done is recorded, check the overlapping work by hand`);
-        task = this.withLink(this.d.board.update(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
-      } else if (r.integrated) task = this.withLink(this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
+        task = this.withLink(write(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
+      } else if (r.integrated) task = this.withLink(write(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
     } else if (cohort?.held.size && !this.isPii(task)) {
       // No integration step for this member (silence lifted, a PII task open): the notices the silence held stand in
       // for it (issue #107, AC4).
@@ -6966,7 +7093,7 @@ export class Tasks {
       if (evidence && by === USER) this.d.notify(`task ${this.publicTitle(task)} done by the console; overlapping work finished meanwhile:\n${evidence}`);
       else if (evidence) this.doneNotes.set(task.id, `Overlapping work finished while you worked (no turn-free integration step ran):\n${evidence}`);
     }
-    if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
+    if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(write(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
     if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck, refresh, specInspection, false, resolvedReviewComments, reviewObserverTurn);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
@@ -6978,7 +7105,7 @@ export class Tasks {
     const storedRefs = { ...task.refs, ...checkedRefs };
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
     this.assertSpecInspection(specInspection, { ...task, refs: storedRefs }, by);
-    const pending = this.d.board.update(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}), ...(specInspection.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const pending = write(task.id, by, "done (checking)", { ...(refresh ? { state: "in_progress" as const } : {}), ...(refresh?.state === "approved" && !task.reviewer ? { reviewer: USER } : {}), codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}), ...(specInspection.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     if (refresh) { this.ciWatchers.cancel(pending.id); this.heldReviews.delete(pending.id); }
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };

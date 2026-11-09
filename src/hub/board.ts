@@ -19,7 +19,7 @@ import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
-import type { SdlcReceipt } from "./sdlc.ts";
+import type { SpecAcceptance, SdlcReceipt } from "./sdlc.ts";
 import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
 import { parseDeliverableRecords, type DeliverableRecord } from "./deliverables.ts";
 import type { CostPlan, ReviewCost } from "./cost-governance.ts";
@@ -29,6 +29,9 @@ import { campaignHash, parseResearchCampaign, parseResearchHandoff, type Researc
 
 /** Internal host capability; never accepted from a control or tool argument. */
 export const HOST_MERGE_ADOPTION = Symbol("host merge adoption");
+/** Internal publication capability, independent of the person-only acceptance API. */
+export const HOST_SPEC_ACCEPTANCE_CARRY = Symbol("host spec acceptance carry");
+export interface SpecAcceptanceCommit { source: number; cancellationRevision: number; acceptance: SpecAcceptance; }
 
 export interface ResearchCampaignRecord {
   id: string;
@@ -154,6 +157,17 @@ export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
 export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number; pullOnly?: boolean }
 export interface TaskCancellation { reason: string; supersededBy?: string; flowRevision: number; withheld?: true }
+/** Metadata only: source task text, plans and growing histories never enter a carry lookup. */
+export interface SpecAcceptanceCandidate {
+  id: number; created: number; state: "cancelled"; refs: TaskRefs; signals: string[];
+  supersededBy: string; cancellationRevision: number; withheld: boolean;
+  repo: unknown; issue: unknown; acceptance: unknown;
+}
+// ponytail: one 32-source snapshot; larger sets need a bounded paginated lookup with a shared currentness proof.
+const SPEC_ACCEPTANCE_SOURCE_LIMIT = 32;
+const SPEC_ACCEPTANCE_FIELD_BYTES = 64 * 1024;
+const SPEC_ACCEPTANCE_TOTAL_BYTES = 256 * 1024;
+
 export const TASK_STALL_CODES = ["tests", "spec", "network", "worktree", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "no-writes", "queue-count", "queue-age", "queue-age-unknown"] as const;
 export type TaskStallCode = (typeof TASK_STALL_CODES)[number];
 export interface TaskStall { task: number; signature: string; replanRevision: number; cause: { kind: "reservation" | "no-eligible-peer" | "cancelled-dependency" | "no-writes"; peer?: string; dependency?: number; code: TaskStallCode; turns?: number; acceptance?: number; refusals?: { peer: string; code: TaskStallCode }[] }; at: number }
@@ -1822,6 +1836,57 @@ export class Board {
     return (rows as Record<string, unknown>[]).map(parse);
   }
 
+  /** A bounded, read-only source projection. Unknown/capped results never authorize carry. */
+  specAcceptanceCandidates(destination: number): { rows: SpecAcceptanceCandidate[]; complete: boolean } {
+    const unavailable = { rows: [], complete: false };
+    if (!Number.isSafeInteger(destination) || destination <= 0) return unavailable;
+    const object = (column: string) => `CASE WHEN length(CAST(${column} AS BLOB)) <= ${SPEC_ACCEPTANCE_FIELD_BYTES} THEN CASE WHEN json_valid(${column}) THEN json_type(${column})='object' ELSE 0 END ELSE 0 END`;
+    const cancel = object("cancelled"), receipt = object("sdlc");
+    try {
+      const found = this.db.query(`WITH candidates AS (
+        SELECT id,created,
+          CASE WHEN length(CAST(refs AS BLOB)) <= ${SPEC_ACCEPTANCE_FIELD_BYTES} THEN refs END AS refs,
+          CASE WHEN length(CAST(signals AS BLOB)) <= ${SPEC_ACCEPTANCE_FIELD_BYTES} THEN signals END AS signals,
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.supersededBy') END AS superseded_by,
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.flowRevision') END AS cancellation_revision,
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.withheld') END AS withheld,
+          CASE WHEN sdlc IS NULL THEN 1 WHEN ${receipt} THEN 1 ELSE 0 END AS receipt_valid,
+          CASE WHEN ${receipt} THEN json_extract(sdlc,'$.repo') END AS repo,
+          CASE WHEN ${receipt} THEN json_extract(sdlc,'$.issue') END AS issue,
+          CASE WHEN ${receipt} THEN CAST(json_extract(sdlc,'$.acceptance') AS TEXT) END AS acceptance
+        FROM tasks WHERE state='cancelled' AND id < ? AND
+          CASE WHEN ${cancel} THEN json_extract(cancelled,'$.supersededBy') IN (?,?,?) ELSE 0 END
+        ORDER BY id DESC LIMIT ?
+      ), projections AS (
+        SELECT id,json_object('id',id,'created',created,'refs',refs,'signals',signals,'superseded_by',superseded_by,
+          'cancellation_revision',cancellation_revision,'withheld',withheld,'repo',repo,'issue',issue,'acceptance',acceptance) AS payload,
+          receipt_valid AND refs IS NOT NULL AND signals IS NOT NULL AS valid FROM candidates
+      ), budget AS (
+        SELECT COUNT(*) <= ${SPEC_ACCEPTANCE_SOURCE_LIMIT} AND MIN(valid)
+          AND SUM(length(CAST(payload AS BLOB))) <= ${SPEC_ACCEPTANCE_TOTAL_BYTES} AS complete FROM projections
+      ) SELECT budget.complete, CASE WHEN budget.complete THEN projections.payload END AS payload FROM projections,budget ORDER BY projections.id DESC`)
+        .all(destination, `task #${destination}`, `#${destination}`, String(destination), SPEC_ACCEPTANCE_SOURCE_LIMIT + 1) as { complete: number; payload: string | null }[];
+      if (found.some(row => row.complete !== 1 || row.payload === null)) return unavailable;
+      const rows: SpecAcceptanceCandidate[] = [];
+      for (const projected of found) {
+        const row = JSON.parse(projected.payload!) as Record<string, unknown>;
+        if (typeof row.refs !== "string" || typeof row.signals !== "string") return unavailable;
+        const refs = JSON.parse(row.refs), signals = JSON.parse(row.signals);
+        if (!refs || typeof refs !== "object" || Array.isArray(refs) || refs.repo !== undefined && typeof refs.repo !== "string"
+          || refs.paths !== undefined && (!Array.isArray(refs.paths) || refs.paths.some((value: unknown) => typeof value !== "string"))
+          || !Array.isArray(signals) || signals.some((value: unknown) => typeof value !== "string")
+          || !Number.isSafeInteger(row.id) || typeof row.created !== "number" || !Number.isFinite(row.created)
+          || typeof row.superseded_by !== "string" || !Number.isSafeInteger(row.cancellation_revision) || Number(row.cancellation_revision) <= 0
+          || ![null, 0, 1].includes(row.withheld as null | number)) return unavailable;
+        const acceptance = row.acceptance == null ? undefined : JSON.parse(String(row.acceptance));
+        rows.push({ id: row.id as number, created: row.created, state: "cancelled", refs, signals,
+          supersededBy: row.superseded_by, cancellationRevision: row.cancellation_revision as number, withheld: row.withheld === 1,
+          repo: row.repo, issue: row.issue, acceptance });
+      }
+      return { rows, complete: true };
+    } catch { return unavailable; }
+  }
+
   /** Structural status facts only; avoid decoding text, plans and growing history on each status write. */
   statusTasks(): Pick<Task, "id" | "state" | "owner" | "reviewer">[] {
     return this.db.query("SELECT id, state, owner, reviewer FROM tasks WHERE state NOT IN ('approved','cancelled') ORDER BY id").all() as Pick<Task, "id" | "state" | "owner" | "reviewer">[];
@@ -1967,6 +2032,23 @@ export class Board {
       throw new Error("merge adoption requires host authority and a current flow revision; retry through Tasks.adoptMerge");
     return this.update(id, by, "merged outside the hub", { state: "approved", rejections: 0, sdlc: receipt },
       `PR #${receipt.pr} merged outside the hub at ${head}`, undefined, expectedFlowRevision, undefined, authority);
+  }
+
+  /** Consent and the admitted outer event publish together, including observer/status-generation rollback. */
+  updateWithSpecAcceptance(carry: SpecAcceptanceCommit, authority: typeof HOST_SPEC_ACCEPTANCE_CARRY, ...args: Parameters<Board["update"]>): Task {
+    const [id, by, event, patch, note, extra, revision, codeSymbolsAuthority, adoptionAuthority] = args;
+    if (authority !== HOST_SPEC_ACCEPTANCE_CARRY || revision === undefined
+      || !["accepted", "lifecycle", "done", "done (checking)", "integration requested", "integration unresolved", "integrated"].includes(event)) throw new Error("spec carry requires host admission authority; inspect the current task and invoke the action through Tasks");
+    return this.atomic(() => {
+      const task = this.get(id), acceptance = carry.acceptance, receipt = patch.sdlc ?? task?.sdlc;
+      if (!task || task.sdlc?.acceptance || !Number.isSafeInteger(carry.source) || carry.source >= id || carry.source <= 0
+        || !Number.isSafeInteger(carry.cancellationRevision) || carry.cancellationRevision <= 0
+        || !receipt || receipt.repo !== acceptance.repo || receipt.issue !== acceptance.issue
+        || task.sdlc?.repo !== acceptance.repo || task.sdlc.issue !== acceptance.issue) throw new Error("spec carry identity changed before publication; inspect the current task and held deliveries before repeating this action");
+      const carried = this.update(id, HUB, "spec acceptance carried", { sdlc: { ...task.sdlc, acceptance } },
+        `from task #${carry.source}; original person acceptance at ${acceptance.acceptedAt}; cancellation revision ${carry.cancellationRevision}`, {}, revision);
+      return this.update(id, by, event, { ...patch, sdlc: { ...receipt, acceptance } }, note, extra, carried.history.length, codeSymbolsAuthority, adoptionAuthority);
+    });
   }
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
