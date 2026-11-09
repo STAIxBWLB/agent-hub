@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Board, type Task } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { HUB, USER } from "../src/hub/envelope.ts";
-import { Tasks } from "../src/hub/tasks.ts";
+import { OWNERSHIP_EVENTS, Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { localSupersedingTask, sdlcConfig, type SdlcGh, type SpecAcceptance } from "../src/hub/sdlc.ts";
 
@@ -17,10 +17,10 @@ afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 
-type Options = { edited?: string | null; sourceRepo?: string; destinationRepo?: string; sourceIssue?: number; destinationIssue?: number; sourceCount?: number; reverseIds?: boolean };
+type Options = { edited?: string | null; sourceRepo?: string; destinationRepo?: string; sourceIssue?: number; destinationIssue?: number; sourceCount?: number; reverseIds?: boolean; cohort?: boolean };
 function rig(options: Options = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-spec-carry-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
-  const host = { lastEditedAt: (options.edited === undefined ? EDITED : options.edited) as string | null | undefined, updatedAt: EDITED, number: undefined as number | undefined, failed: false, privateTurn: false, authority: true };
+  const host = { lastEditedAt: (options.edited === undefined ? EDITED : options.edited) as string | null | undefined, updatedAt: EDITED, number: undefined as number | undefined, failed: false, privateTurn: false, authority: true, pr: undefined as Record<string, unknown> | undefined };
   const calls: string[][] = [], notices: string[] = [];
   let held: { entered: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> } | undefined;
   const gh: SdlcGh = async args => {
@@ -28,11 +28,17 @@ function rig(options: Options = {}) {
     const barrier = held; held = undefined;
     if (barrier) { barrier.entered.resolve(); await barrier.release.promise; }
     if (host.failed) return { code: 1, stdout: "" };
+    if (host.pr && args[0] === "pr" && args[1] === "view") return { code: 0, stdout: JSON.stringify(host.pr) };
+    if (host.pr && args.some(arg => arg.includes("reviewThreads(first:"))) return { code: 0, stdout: JSON.stringify({ data: { repository: {
+      pullRequest: { headRefOid: host.pr.headRefOid, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } },
+      issue: { number: options.destinationIssue ?? 7, labels: { nodes: [], pageInfo: { hasNextPage: false } } },
+    } } }) };
     const number = host.number ?? Number(args.find(arg => /^(number|issue)=/.test(arg))?.split("=")[1] ?? 7);
     return { code: 0, stdout: JSON.stringify({ data: { repository: { issue: { number, state: "OPEN", createdAt: CREATED, lastEditedAt: host.lastEditedAt, updatedAt: host.updatedAt } } } }) };
   };
   const roles: Record<string, string[]> = { codex: ["implementer"], claude: ["planner"] }, deny: string[] = [], piiPaths: string[] = [];
   const tasks = new Tasks({ cwd, board, bus, project: "spec-carry", repository: "owner/repo", roles, deny, piiPaths,
+    ...(options.cohort ? { turnFree: () => true, capable: () => true, idle: () => false, treeHash: () => "fixture-cohort-tree", integrationFacts: () => ({ id: "cohort-carry-facts", text: "fixture integration facts" }), factsCurrent: () => true } : {}),
     routing: () => loadRouting(cwd), notify: text => notices.push(text), privateTurn: () => host.privateTurn,
     requestAuthority: () => () => host.authority ? undefined : "fixture actor authority revoked",
     sdlc: { config: () => sdlcConfig({ mode: "enforce", required_checks: ["gate"] }), gh } });
@@ -71,7 +77,7 @@ function rig(options: Options = {}) {
   const patchSource = (patch: Partial<Task>) => board.update(source.id, USER, "fixture source changed", patch);
   const hold = () => { const entered = deferred(), release = deferred(); held = { entered, release }; return { entered: entered.promise, release: release.resolve }; };
   const carryEvents = () => current().history.filter(entry => entry.event === "spec acceptance carried");
-  const gate = () => tasks.specGate("codex", destinationId);
+  const gate = () => tasks.recordSdlc("codex", destinationId, { stage: "build" });
   const rawState = (id: number, state: string) => {
     // Simulate independently replaced stored state without weakening Board's public closed-state transitions.
     const database = (board as unknown as { db: { query(sql: string): { run(...args: (string | number)[]): unknown } } }).db;
@@ -81,12 +87,14 @@ function rig(options: Options = {}) {
 }
 async function ready(options: Options = {}) { const r = rig(options); await r.cancel(); return r; }
 async function noCarry(r: ReturnType<typeof rig>, expectedReads: number) {
+  const before = clone(r.current()), revision = r.board.statusRevision();
   const error = await r.gate().then(() => undefined, (failure: Error) => failure);
   expect(error).toBeInstanceOf(Error);
   expect(error!.message).toMatch(/spec not accepted|spec acceptance missing|spec edit time unknown|changed|authority|private|owner|not yours/);
   expect(r.current().sdlc?.acceptance).toBeUndefined();
   expect(r.carryEvents()).toEqual([]);
   expect(r.calls).toHaveLength(expectedReads);
+  expect(r.current()).toEqual(before); expect(r.board.statusRevision()).toBe(revision);
 }
 function assertCarried(r: ReturnType<typeof rig>) {
   expect(r.current().sdlc?.acceptance).toEqual({ ...r.sourceAcceptance, repo: r.destinationRepo, issue: r.destinationIssue });
@@ -165,9 +173,10 @@ test("explicit host null lastEditedAt still carries after a comments-only update
   const r = await ready({ edited: null }); r.host.updatedAt = COMMENTED;
   await r.gate(); assertCarried(r); expect(r.current().sdlc!.acceptance!.updatedAt).toBe(EDITED);
 });
-test("repeat entry validation is idempotent and never manufactures a new person acceptance (#1328)", async () => {
+test("repeat lifecycle recording keeps its existing outer history while carrying person consent only once (#1328)", async () => {
   const r = await ready(); await r.gate(); const first = clone(r.current()); await r.gate();
-  assertCarried(r); expect(r.current().history).toEqual(first.history); expect(r.calls).toHaveLength(2);
+  assertCarried(r); expect(r.current().sdlc).toEqual(first.sdlc); expect(r.calls).toHaveLength(1);
+  expect(r.current().history.slice(first.history.length).map(entry => entry.event)).toEqual(["lifecycle"]);
 });
 test("existing valid destination consent is preserved instead of overwritten by a source (#1328)", async () => {
   const r = await ready();
@@ -180,7 +189,7 @@ test("carry clones only acceptance, never the source's plan review or artifact e
   r.patchSource({ refs: { branch: "old-artifact", commit: "a".repeat(40) }, sdlc: { ...r.sourceNow().sdlc!, stage: "review", pr: 9, head: "a".repeat(40), reviewedHead: "a".repeat(40), localHead: "a".repeat(40), localResult: "passed", planReview: { planner: "claude", planningRevision: 0, recordedAt: CONSENTED_AT } } });
   await r.cancel(); await r.gate(); assertCarried(r);
   for (const field of ["planReview", "pr", "head", "reviewedHead", "localHead", "localResult", "merge", "criteria"] as const) expect(r.current().sdlc?.[field]).toBeUndefined();
-  expect(r.current().sdlc!.stage).toBe("plan"); expect(r.current().refs).toEqual({});
+  expect(r.current().sdlc!.stage).toBe("build"); expect(r.current().refs).toEqual({});
 });
 test("manual acceptance remains USER-only and the wire receipt cannot supply consent (#1328)", () => {
   const r = rig(), edit = { lastEditedAt: EDITED, updatedAt: EDITED };
@@ -262,10 +271,11 @@ test("acceptReviewed consumes only its own carry revision and preserves the new 
   expect(accepted.state).toBe("in_progress"); expect(accepted.sdlc!.planReview).toEqual(originalReview); assertCarried(r);
   expect(r.calls).toHaveLength(2); // One spec-body observation reused for carry/verdict, then the existing plan readback.
 });
-test("specStageGate carries only acceptance for an already-recorded identity and still gates the stage (#1328)", async () => {
-  const r = await ready(); await r.tasks.specStageGate("codex", r.destinationId, { stage: "build" });
-  assertCarried(r); expect(r.current().sdlc!.stage).toBe("plan");
-  expect(r.tasks.recordLifecycle("codex", r.destinationId, { stage: "build" }).sdlc!.stage).toBe("build");
+for (const stage of [false, true]) test(`${stage ? "specStageGate" : "specGate"} stages consent without any Board write (#1328)`, async () => {
+  const r = await ready(), before = clone(r.current()), revision = r.board.statusRevision();
+  const changes: unknown[] = []; r.board.onChange = (...args) => { changes.push(args); };
+  if (stage) await r.tasks.specStageGate("codex", r.destinationId, { stage: "build" }); else await r.tasks.specGate("codex", r.destinationId);
+  expect(r.current()).toEqual(before); expect(r.board.statusRevision()).toBe(revision); expect(changes).toEqual([]);
   expect(r.calls).toHaveLength(1);
 });
 test("a prospective stage relink cannot authorize carry before the destination identity is recorded (#1328)", async () => {
@@ -284,15 +294,14 @@ test("prospective acceptRefs repository correction cannot authorize consent in a
 test("an existing reviewer stage actor may carry consent without becoming the task owner (#1328)", async () => {
   const r = await ready();
   r.board.update(r.destinationId, USER, "fixture stage reviewer", { reviewer: "claude" }); r.roles.claude = ["reviewer"];
-  await r.tasks.specStageGate("claude", r.destinationId, { stage: "build" });
-  assertCarried(r); expect(r.current().owner).toBe("codex"); expect(r.current().sdlc!.stage).toBe("plan");
-  expect(r.tasks.recordLifecycle("claude", r.destinationId, { stage: "build" }).sdlc!.stage).toBe("build");
+  await r.tasks.recordSdlc("claude", r.destinationId, { stage: "build" });
+  assertCarried(r); expect(r.current().owner).toBe("codex"); expect(r.current().sdlc!.stage).toBe("build");
   expect(r.calls).toHaveLength(1);
 });
 test("reviewer role drift during the stage host read cannot carry consent (#1328)", async () => {
   const r = await ready();
   r.board.update(r.destinationId, USER, "fixture stage reviewer", { reviewer: "claude" }); r.roles.claude = ["reviewer"];
-  const hold = r.hold(), outcome = r.tasks.specStageGate("claude", r.destinationId, { stage: "build" }).then(() => undefined, (error: Error) => error);
+  const hold = r.hold(), outcome = r.tasks.recordSdlc("claude", r.destinationId, { stage: "build" }).then(() => undefined, (error: Error) => error);
   await hold.entered;
   try { r.roles.claude = ["planner"]; } finally { hold.release(); }
   expect(await outcome).toBeInstanceOf(Error); expect(r.current().sdlc?.acceptance).toBeUndefined();
@@ -301,4 +310,88 @@ test("reviewer role drift during the stage host read cannot carry consent (#1328
 test("the local supersession parser requires the entire string including its final character (#1328)", () => {
   for (const reference of ["task #2", "#2", "2"]) expect(localSupersedingTask(reference)).toBe(2);
   for (const reference of ["task #2\n", "#2\n", "2\n", "task 2", "#2 extra", "owner/repo#2", "https://github.com/owner/repo/issues/2"]) expect(localSupersedingTask(reference)).toBeUndefined();
+});
+
+for (const stale of [false, true]) test(`valid carry with ${stale ? "stale" : "missing"} plan review refuses accept without a Board write (#1328)`, async () => {
+  const r = await ready();
+  if (stale) r.board.update(r.destinationId, USER, "fixture stale plan review", { sdlc: { ...r.current().sdlc!, planReview: { planner: "claude", planningRevision: 99, recordedAt: Date.now() } } });
+  const before = clone(r.current()), revision = r.board.statusRevision(), changes: unknown[] = [];
+  r.board.onChange = (...args) => { changes.push(args); };
+  await expect(r.tasks.acceptReviewed("codex", r.destinationId)).rejects.toThrow("plan not reviewed");
+  expect(r.current()).toEqual(before); expect(r.board.statusRevision()).toBe(revision); expect(changes).toEqual([]); expect(r.calls).toHaveLength(1);
+});
+test("an outer lifecycle write failure rolls back consent, provenance and status generation together (#1328)", async () => {
+  const r = await ready(), before = clone(r.current()), revision = r.board.statusRevision(), update = r.board.update;
+  const changes: unknown[] = []; r.board.onChange = (...args) => { changes.push(args); }; let writes = 0;
+  r.board.update = function(...args: Parameters<Board["update"]>) { if (++writes === 2) throw new Error("fixture second Board write refused"); return update.apply(this, args); };
+  try { await expect(r.gate()).rejects.toThrow("fixture second Board write refused"); } finally { r.board.update = update; }
+  expect(writes).toBe(2); expect(r.current()).toEqual(before); expect(r.board.statusRevision()).toBe(revision);
+  expect(changes).toEqual([]); expect(r.carryEvents()).toEqual([]);
+});
+test("a caller object cannot forge the opaque lifecycle carry proof (#1328)", async () => {
+  const r = await ready(), before = clone(r.current()), revision = r.board.statusRevision();
+  const forged = { task: r.current(), acceptance: r.sourceAcceptance, carried: true };
+  const record = r.tasks.recordLifecycle.bind(r.tasks) as (by: string, id: number, input: unknown, deliverables?: undefined, proof?: object) => Task;
+  expect(() => record("codex", r.destinationId, { stage: "build" }, undefined, forged)).toThrow();
+  expect(r.current()).toEqual(before); expect(r.board.statusRevision()).toBe(revision); expect(r.carryEvents()).toEqual([]); expect(r.calls).toEqual([]);
+});
+test("incoming done refs in a foreign scope cannot persist staged consent on a refused entry (#1328)", async () => {
+  const r = await ready(), before = clone(r.current()), revision = r.board.statusRevision();
+  await expect(r.tasks.done("codex", r.destinationId, "completed fixture", { repo: "other/repo" })).rejects.toThrow();
+  expect(r.current()).toEqual(before); expect(r.board.statusRevision()).toBe(revision); expect(r.carryEvents()).toEqual([]);
+});
+test("a same-description Symbol cannot forge Board carry authority (#1328)", async () => {
+  const r = await ready(), before = clone(r.current()), revision = r.board.statusRevision(), changes: unknown[] = [];
+  r.board.onChange = (...args) => { changes.push(args); };
+  const forgedAuthority = Symbol("HOST_SPEC_ACCEPTANCE_CARRY") as Parameters<Board["updateWithSpecAcceptance"]>[1];
+  expect(() => r.board.updateWithSpecAcceptance(
+    { source: r.source.id, cancellationRevision: r.sourceCancellationRevision()!, acceptance: r.sourceAcceptance }, forgedAuthority,
+    r.destinationId, "codex", "lifecycle", { sdlc: { ...before.sdlc!, stage: "build" } }, undefined, {}, before.history.length,
+  )).toThrow("host admission authority");
+  expect(r.current()).toEqual(before); expect(r.board.statusRevision()).toBe(revision);
+  expect(changes).toEqual([]); expect(r.carryEvents()).toEqual([]); expect(r.calls).toEqual([]);
+});
+test("both committed carry observers see the admitted final destination state (#1328)", async () => {
+  const r = await ready(), events: string[] = [], seen: Task[] = [], revisions: number[] = [];
+  r.board.onChange = (_task, entry) => { events.push(entry.event); seen.push(clone(r.current())); revisions.push(r.board.statusRevision()); };
+  await r.gate(); assertCarried(r);
+  expect(events).toEqual(["spec acceptance carried", "lifecycle"]);
+  for (const state of seen) expect(state).toEqual(r.current());
+  expect(revisions).toEqual([r.board.statusRevision(), r.board.statusRevision()]);
+  expect(r.current().sdlc!.stage).toBe("build"); expect(r.calls).toHaveLength(1);
+});
+test("returned virtual consent cannot mutate the host's staged acceptance proof (#1328)", async () => {
+  const r = await ready(), before = clone(r.current()), revision = r.board.statusRevision();
+  const result = await r.tasks.specGate("codex", r.destinationId), acceptance = result!.task.sdlc!.acceptance!;
+  expect(Object.isFrozen(acceptance)).toBe(true);
+  for (const [field, value] of Object.entries({ repo: "other/repo", issue: 99, lastEditedAt: CHANGED, updatedAt: CHANGED, acceptedAt: CONSENTED_AT + 1 })) expect(Reflect.set(acceptance, field, value)).toBe(false);
+  expect(acceptance).toEqual({ ...r.sourceAcceptance, repo: r.destinationRepo, issue: r.destinationIssue });
+  expect(acceptance.acceptedAt).toBe(CONSENTED_AT);
+  expect(r.current()).toEqual(before); expect(r.board.statusRevision()).toBe(revision); expect(r.carryEvents()).toEqual([]);
+  expect(r.calls).toHaveLength(1);
+});
+
+test("cohort integration intent keeps HUB attribution while carrying the original owner's consent (#1328)", async () => {
+  const r = await ready({ cohort: true }), head = "b".repeat(40), oldHead = "a".repeat(40), path = "src/independent.ts";
+  r.host.pr = { headRefOid: head, headRefName: "feat/replacement", state: "OPEN", isDraft: false, baseRefName: "main", baseRefOid: "c".repeat(40),
+    statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: [{ path, changeType: "MODIFIED" }], changedFiles: 1 };
+  const scope = { review: { scope: "full" as const, reviewers: 1 }, ci: "full" as const };
+  const planReview = { planner: "claude", planningRevision: 0, recordedAt: Date.now(), scope,
+    issue: { repo: r.destinationRepo, issue: r.destinationIssue, state: "OPEN" as const, editedAt: EDITED, lastEditedAt: EDITED } };
+  r.board.update(r.destinationId, USER, "fixture independently reviewed destination", { plan: { paths: [path], ...scope },
+    sdlc: { ...r.current().sdlc!, pr: 9, head, reviewedHead: head, localHead: head, localResult: "passed", planReview } });
+  r.patchSource({ sdlc: { ...r.sourceNow().sdlc!, pr: 99, head: oldHead, reviewedHead: oldHead, localHead: oldHead, localResult: "failed",
+    planReview: { planner: "old-planner", planningRevision: 8, recordedAt: CONSENTED_AT } } });
+  const other = r.board.propose(USER, { title: "overlapping peer work", class: "implement" });
+  const member = r.board.update(other.id, USER, "fixture cohort owner", { owner: "kimi" });
+  const generation = (task: Task) => task.history.filter(entry => OWNERSHIP_EVENTS.has(entry.event)).length;
+  const joined = r.tasks.cohorts.join(r.current(), [member], generation)!;
+  expect(joined.cohort.silent).toBe(true);
+  r.tasks.cohorts.intent(joined.cohort, member, generation(member));
+  const result = await r.tasks.done("codex", r.destinationId, "replacement implementation complete");
+  expect(result.history.at(-1)).toMatchObject({ event: "integration requested", by: HUB });
+  assertCarried(r); expect(result.sdlc!.planReview).toEqual(planReview);
+  expect(result.sdlc).toMatchObject({ pr: 9, head, reviewedHead: head, localHead: head, localResult: "passed" });
+  expect(result.history.filter(entry => entry.event === "integration requested")).toHaveLength(1);
+  expect(r.tasks.cohorts.of(r.destinationId)!.integration).toMatchObject({ task: r.destinationId, owner: "codex" });
 });

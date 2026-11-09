@@ -19,7 +19,7 @@ import { controlWriteSpan } from "./control-write-trace.ts";
 import { planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { HUB, USER, type PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
-import type { SdlcReceipt } from "./sdlc.ts";
+import type { SpecAcceptance, SdlcReceipt } from "./sdlc.ts";
 import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
 import { parseDeliverableRecords, type DeliverableRecord } from "./deliverables.ts";
 import type { CostPlan, ReviewCost } from "./cost-governance.ts";
@@ -29,6 +29,9 @@ import { campaignHash, parseResearchCampaign, parseResearchHandoff, type Researc
 
 /** Internal host capability; never accepted from a control or tool argument. */
 export const HOST_MERGE_ADOPTION = Symbol("host merge adoption");
+/** Internal publication capability, independent of the person-only acceptance API. */
+export const HOST_SPEC_ACCEPTANCE_CARRY = Symbol("host spec acceptance carry");
+export interface SpecAcceptanceCommit { source: number; cancellationRevision: number; acceptance: SpecAcceptance; }
 
 export interface ResearchCampaignRecord {
   id: string;
@@ -2029,6 +2032,23 @@ export class Board {
       throw new Error("merge adoption requires host authority and a current flow revision; retry through Tasks.adoptMerge");
     return this.update(id, by, "merged outside the hub", { state: "approved", rejections: 0, sdlc: receipt },
       `PR #${receipt.pr} merged outside the hub at ${head}`, undefined, expectedFlowRevision, undefined, authority);
+  }
+
+  /** Consent and the admitted outer event publish together, including observer/status-generation rollback. */
+  updateWithSpecAcceptance(carry: SpecAcceptanceCommit, authority: typeof HOST_SPEC_ACCEPTANCE_CARRY, ...args: Parameters<Board["update"]>): Task {
+    const [id, by, event, patch, note, extra, revision, codeSymbolsAuthority, adoptionAuthority] = args;
+    if (authority !== HOST_SPEC_ACCEPTANCE_CARRY || revision === undefined
+      || !["accepted", "lifecycle", "done", "done (checking)", "integration requested", "integration unresolved", "integrated"].includes(event)) throw new Error("spec carry requires host admission authority; inspect the current task and invoke the action through Tasks");
+    return this.atomic(() => {
+      const task = this.get(id), acceptance = carry.acceptance, receipt = patch.sdlc ?? task?.sdlc;
+      if (!task || task.sdlc?.acceptance || !Number.isSafeInteger(carry.source) || carry.source >= id || carry.source <= 0
+        || !Number.isSafeInteger(carry.cancellationRevision) || carry.cancellationRevision <= 0
+        || !receipt || receipt.repo !== acceptance.repo || receipt.issue !== acceptance.issue
+        || task.sdlc?.repo !== acceptance.repo || task.sdlc.issue !== acceptance.issue) throw new Error("spec carry identity changed before publication; inspect the current task and held deliveries before repeating this action");
+      const carried = this.update(id, HUB, "spec acceptance carried", { sdlc: { ...task.sdlc, acceptance } },
+        `from task #${carry.source}; original person acceptance at ${acceptance.acceptedAt}; cancellation revision ${carry.cancellationRevision}`, {}, revision);
+      return this.update(id, by, event, { ...patch, sdlc: { ...receipt, acceptance } }, note, extra, carried.history.length, codeSymbolsAuthority, adoptionAuthority);
+    });
   }
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
