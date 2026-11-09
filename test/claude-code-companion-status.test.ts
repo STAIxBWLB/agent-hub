@@ -28,7 +28,7 @@ describe("Claude companion closed projections", () => {
     expect(projected.missing).toContain("registration inventory");
     expect(JSON.stringify(projected)).not.toContain("PRIVATE");
     expect(JSON.stringify(projected)).not.toContain(root);
-    expect(projected.missing).toContain("budget");
+    expect(projected.missing).toContain("budget reason/reset time");
     expect(consoleCommand(root)).toBe("ahub --project '/fixture/a b'\\''; $(touch should-not-run)' console");
   });
   test("missing or mismatched daemon identity refuses and a pinned id cannot silently change", async () => {
@@ -163,7 +163,7 @@ test("declared registration on a fake host: pane, pass-through events, no hidden
       return { ...result, stderr: result.stderr ?? "", isStdoutTruncated: false, isStderrTruncated: false };
     } },
     command: { register: async () => { effects++; } },
-    state: { set: async (_ref: unknown, value: Reading) => { effects++; reading = value; }, get: async () => ({ value: reading }) },
+    state: { set: async (_ref: unknown, value: Reading) => { effects++; reading = value; }, get: async (ref: { key: string }) => ({ value: ref.key === "reading" ? reading : undefined, version: 0 }) },
     ui: { panes: async () => { effects++; return open ? [{ id: "agent-hub" }] : []; }, open: async () => { effects++; open = true; }, close: async () => { effects++; open = false; }, resolve: () => ({ Box: "Box", Text: "Text" }), log: forbidden },
     store: new Proxy({}, { get: forbidden }), settings: new Proxy({}, { get: forbidden }), clock: new Proxy({}, { get: forbidden }),
   };
@@ -219,7 +219,7 @@ async function lifecycleHost() {
       return { stdout: JSON.stringify(value), stderr: "", exitCode: 0, isStdoutTruncated: false, isStderrTruncated: false };
     } },
     command: { register: async () => { effects++; } },
-    state: { set: async (_ref: unknown, value: Reading) => { effects++; readings.push(value); } },
+    state: { set: async (_ref: unknown, value: Reading) => { effects++; readings.push(value); }, get: async (ref: { key: string }) => ({ value: ref.key === "reading" ? readings.at(-1) : undefined, version: 0 }) },
     ui: { panes: async () => { effects++; return []; }, open: async () => { effects++; }, close: async () => { effects++; }, log: forbidden },
     store: new Proxy({}, { get: forbidden }), settings: new Proxy({}, { get: forbidden }), clock: new Proxy({}, { get: forbidden }),
   };
