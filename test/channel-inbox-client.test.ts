@@ -283,6 +283,17 @@ test("malformed additive held bodies preserve committed normal inbox, local fall
     expect(result).toContain("2 more waiting"); expect(result).toContain("Held message bodies are unavailable");
     const repeated = output(await f.call("hub_inbox"));
     expect(repeated).not.toContain("LOCAL_HELD_FALLBACK"); expect(repeated).toContain(frame(normal));
+    const escape = String.fromCharCode(27);
+    for (const identity of [{ id: `d${escape}control`, from: "user" }, { id: "d", from: `user${escape}control` }]) {
+      f.inbox({ ok: true, envs: [normal], waiting: 2, waitingImportant: 1, heldRead: { count: 1, rows: [{ id: identity.id, revision: 1, state: "needs_review", messages: [{ id: "e", from: identity.from, kind: "chat", priority: "status", body: "HELD_CONTROL_CANARY" }] }], truncated: false } });
+      const safe = output(await f.call("hub_inbox"));
+      expect(safe).toContain(frame(normal)); expect(safe).toContain("2 more waiting");
+      expect(safe).toContain("Held message bodies are unavailable"); expect(safe).not.toContain(escape); expect(safe).not.toContain("HELD_CONTROL_CANARY");
+    }
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, heldRead: { count: 0, rows: [], truncated: false }, pollingAdvice: { count: 3, minutes: 1 } });
+    const empty = output(await f.call("hub_inbox"));
+    expect(empty).toContain("(no queued hub messages)"); expect(empty).toContain("[polling detected]");
+    expect(empty).not.toContain("Held message bodies are unavailable");
     expect(f.requests.filter(row => ["delivery_complete", "delivery_receipt"].includes(row.t))).toEqual([]);
   } finally { await f.close(); }
 });

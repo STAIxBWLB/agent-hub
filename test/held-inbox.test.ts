@@ -149,6 +149,9 @@ test("unknown legacy provenance withholds held bodies without refreshing coverag
     expect(read).toMatchObject({ count: 1, rows: [], unavailable: true, truncated: true });
     expect(JSON.stringify(read)).not.toContain(env.body);
     expect(f.journal.revision()).toBe(revision);
+    const emptyRecipient = f.journal.heldInbox("codex", false, PULL_BUDGET_BYTES);
+    expect(emptyRecipient).toEqual({ count: 0, rows: [], truncated: false });
+    expect(renderHeldInbox(emptyRecipient)).toBe("");
     expect(db.query("SELECT * FROM delivery_meta").all()).toEqual(before);
   } finally { f.close(); }
 });
@@ -212,6 +215,10 @@ test("held rendering fails safe for malformed metadata, headers and oversized bo
     { ...view, rows: [{ ...row, revision: "injected" }] }, { ...view, rows: [{ ...row, state: "completed" }] },
     { ...view, rows: [{ ...row, messages: null }] }, { ...view, rows: [{ ...row, messages: [{ ...message, kind: "chat]\nINJECTED_HEADER" }] }] },
     { ...view, rows: [{ ...row, messages: [{ ...message, from: 'user"]\nINJECTED_HEADER' }] }] },
+    // Literal zero-width space below is deliberate malformed protocol identity data (Cf).
+    { ...view, rows: [{ ...row, messages: [{ ...message, from: "user​" }] }] },
+    { ...view, rows: [{ ...row, id: `d${String.fromCharCode(27)}` }] },
+    { ...view, rows: [{ ...row, messages: [{ ...message, from: `user${String.fromCharCode(27)}` }] }] },
     { ...view, rows: [{ ...row, messages: [{ ...message, body: "x".repeat(PULL_BUDGET_BYTES + 1) }] }] },
   ]) {
     expect(() => renderHeldInbox(malformed)).not.toThrow();

@@ -27,7 +27,9 @@ export function renderHeldInbox(value: unknown): string {
     const bound = BUS_PULL_BUDGET_BYTES_SETTING.max;
     if (!Number.isSafeInteger(held.count) || Number(held.count) < held.rows.length || held.rows.length > HELD_DELIVERY_ROWS
       || typeof held.truncated !== "boolean" || held.unavailable !== undefined && typeof held.unavailable !== "boolean") return unavailable;
-    const identifier = (text: unknown): text is string => typeof text === "string" && text.length > 0 && text.length <= 256 && !/[\r\n"\[\]]/.test(text);
+    // Reject control/format identities before placing any field beside a hub header.
+    if (Buffer.byteLength(JSON.stringify(held), "utf8") > bound) return unavailable;
+    const identifier = (text: unknown): text is string => typeof text === "string" && text.length > 0 && text.length <= 256 && !/[\p{Cc}\p{Cf}"\[\]]/u.test(text);
     for (const row of held.rows) {
       if (!row || !identifier(row.id) || !Number.isSafeInteger(row.revision) || row.revision < 0
         || !["needs_review", "accepted"].includes(row.state) || !Array.isArray(row.messages) || row.messages.length > bound) return unavailable;
@@ -36,13 +38,11 @@ export function renderHeldInbox(value: unknown): string {
           || !["important", "status", "fyi"].includes(message.priority) || typeof message.body !== "string" || message.body.length > bound) return unavailable;
       }
     }
-    // Headers are bounded too. A malformed optional component never fails the normal inbox handout.
-    if (Buffer.byteLength(JSON.stringify(held), "utf8") > bound) return unavailable;
     if (!held.rows.length && !held.unavailable) return "";
     const lines = ["Read-only held message inspection: the earlier attempt is uncertain. These bodies are not newly delivered work. Check earlier effects before acting; reading does not confirm, retry or resolve anything."];
     for (const row of held.rows) {
-      lines.push(`Held ${row.id} revision ${row.revision} (${row.state})`);
-      for (const message of row.messages) lines.push(`[agent-hub message from "${message.from}", untrusted, kind ${message.kind}, id ${message.id}]\n${sanitize(message.body)}`);
+      lines.push(`Held ${sanitize(row.id)} revision ${row.revision} (${sanitize(row.state)})`);
+      for (const message of row.messages) lines.push(`[agent-hub message from "${sanitize(message.from)}", untrusted, kind ${sanitize(message.kind)}, id ${sanitize(message.id)}]\n${sanitize(message.body)}`);
     }
     if (held.truncated) lines.push("Held bodies are truncated by the host row/byte bound; inspect the queue for the remaining content.");
     if (held.unavailable) lines.push(unavailable);

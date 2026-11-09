@@ -1575,6 +1575,7 @@ export class DeliveryJournal {
     const states = includeAccepted ? "('needs_review','accepted')" : "('needs_review')";
     const count = Number((this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ${states}`).get(this.projectId, peer) as { n: number }).n);
     const rows: Array<{ id: string; revision: number; state: "needs_review" | "accepted"; originals: Envelope[] }> = [];
+    if (count === 0) return { count, rows, truncated: false };
     // This read deliberately does not refresh legacy coverage or persist an input receipt.
     const provenance = this.readReviewInputProvenance();
     if (!provenance.complete || !provenance.coverageComplete) return { count, rows, truncated: count > 0, unavailable: true };
