@@ -1,8 +1,8 @@
-# Qwen 0.27.0 dual-output qualification, matched Q2
+# Qwen 0.27.0 dual-output qualification
 
-Date: 2026-11-10 (KST). Task #850, Refs #888. **Normal-path Q2 PASS on
-matched 0.26.1 and candidate 0.27.0; Q3-Q7 NOT RUN.** No new qwen-dual version
-is admitted. Basic ACP and the live-setter contract are independent. These
+Date: 2026-11-10 (KST). Task #850, Refs #888. **Required normal-Bus Q2 and Q3/Q5/Q6/Q7 PASS on matched 0.26.1 and
+candidate 0.27.0.** This receipt supports exact 0.27.0 admission for the separate
+qwen-dual contract; Q4 retains its existing unsupported external-stop limit. Basic ACP and the live-setter contract are independent. These
 macOS arm64 PTY observations use a local fixture provider, isolated homes and
 private package candidates, without an account or real model inference.
 
@@ -36,7 +36,7 @@ claim was not reproduced by v2's private matched 0.26.1 control. The
 and both markers in one assistant. Extra provider POSTs have no recorded
 format/title-schema/role classification, so their underlying cause remains
 unknown. That direct-busy experiment is characterization, not a required-Q2
-pass/fail and not an assertion about unmeasured 0.27.0 behavior.
+pass/fail and not evidence for the later 0.27.0 measurements recorded separately below.
 
 ## Initial 0.26.1 normal-path control, not qualified
 
@@ -187,6 +187,115 @@ FIRST/SECOND markers and no suggestion prefix; neither run has an extra request.
 This does not establish the earlier third requests' purpose. No raw user body or
 private path is published here.
 
+## Required-suite corrections and matched results
+
+The remaining manual producer is `scratchpad/temp/task850/run-q3-q7-native.ts`
+with a separate Python PTY/provider controller. It extracts only the pinned v2
+assertions/readers/guard, never the original gateway/key harness. The final runs
+measure repository HEAD `b8f2b20d0e62f316a9044f74ce57f2db6aab793a`; the public Q2
+code at that head has the same SHA as the earlier b20080aa native Q2 runs.
+Final required-suite/direct-characterization controller SHA-256 is
+`c75379e644551fb5f79d20902a2214e11f4cd05e0dc43245ec89ba551102e480`, Python
+producer SHA-256 is
+`24c459b7c0ae84a4c11d082f32800a97985c4cef4e3f238cb264c24ee364dfd3`.
+The reviewed manifest binds nine original/copied producer sources, exact clean
+repository HEAD, private package/bin/lock/settings export and the whole-prefix
+count/digest already measured by Q2. The actual before snapshot must match those
+qualified bytes, not just a version or SRI string; before/after source copies,
+project imports and command boundaries remain bound to the reviewed inputs.
+
+Two additional control failures are preserved:
+
+- First required-suite control (18:27:54-18:32:04 UTC): Q7 passed, Q3 allow timed out before its marker
+  effect, and Q5/Q6 were not reached. The retained tool result reports
+  `posix_openpt failed: Operation not permitted`; the guard blocked `models.dev`.
+  Native owned stop/provider close/final closure and all fences passed, while
+  the overall result failed. An uncleared suite-race timer held the controller
+  until 250 seconds; that controller exit time is separate from native cleanup.
+- After supported refresh/PTY corrections (19:04:23-19:04:51 UTC), Q7 and all five Q3 cases passed.
+  Q5 raised `NotImplementedError` during FIFO setup before a Q5 native generation;
+  Q6 was not reached. This is a host helper failure, not a Qwen FIFO protocol
+  failure. Cleanup, guard closure and all fences passed; the controller exited
+  in 27.4 seconds. The unsupported Apple Python 3.9.6 `mkfifo(dir_fd=...)` call
+  was replaced before the next native run, without opening the FIFO.
+
+Shipped 0.26.1 `chunk-Q3NSK7FV.js:48` and 0.27.0 `chunk-576P2HBP.js:48` return
+from `refreshModelCatalog` before fetch/cache refresh when
+`QWEN_CODE_MODELS_DEV_REFRESH=off`. That supported override is supplied to both
+case and native-generation environments; network is still restricted to the
+owned provider port. No ambient catalog cache is injected. The OS profiles
+`application.sb` and `com.apple.neagent.sb` supply the three narrow PTY rules:
+`pseudo-tty`, exact `/dev/ptmx` access, and numeric PTY slaves requiring the
+`com.apple.sandbox.pty` extension. No broad slave write rule is added. A separate
+kernel-only control (19:01:13-19:01:17 UTC) proved a newly owned external decoy slave was write-open
+blocked inside the sandbox while a sandbox-created PTY allocated, round-tripped
+and closed its FDs. The external holder exited with drains/owned cleanup proved;
+that control imported no vendor module and ran no Qwen CLI or provider.
+
+The FIFO helper uses the fresh owned absolute pathname because this host's
+Python lacks `mkfifo`'s dir-fd support, retaining parent/leaf identity checks.
+Its explicit ceiling is a pathname race in that owned setup operation before
+native start, not a general atomic path guarantee. Q5 never opens or reads the
+FIFO, including for readiness. Settled race timers are cleared, and bounded
+producer timeouts carry closed checkpoints; the old failure records are unchanged.
+
+Both final required-suite runs used the same assertions and bounds (240-second
+suite, 300-second controller, bounded files/streams), normal no-bare mode and
+fresh per-case homes/settings with a fake local provider. The 0.26.1 settings
+export is `settings-IMTJFJRU.js`, SHA
+`c21299bbd8c7cc7d18089d3088b74d5ce4d4cbdd4a4d9984a72a1306a57a25a5`;
+0.27.0 uses `settings-LVFIAIC2.js`, SHA
+`bc1d0a513cc5c15bfb8750228e49321424960b103773ab5442179085de44646f`.
+All nine closed configuration checks passed in each prepared case on each version.
+
+| Required-suite observation | Control 0.26.1 | Candidate 0.27.0 |
+| --- | --- | --- |
+| UTC interval, 2026-11-09 (2026-11-10 KST) | 19:11:53-19:12:29 | 19:14:03-19:14:40 |
+| Q7 exact version / positive network guard / kernel controls | PASS | PASS |
+| Q3 allow / deny / own fixture TUI Enter / read-only / real fixture MCP handler | 5 PASS | 5 PASS |
+| Final duplicate RID response count and exact unchanged/append-once effect | 1 / PASS | 1 / PASS |
+| Q5 unread FIFO, provider request, visible answer, native alive | PASS | PASS |
+| Q6 same session, old input prefix, no replay, prior assistant context | PASS | PASS |
+| Q6 old input bytes / assistant context token / user context token | 133 / true / false | 133 / true / false |
+| Owned native generations, all groups gone/drains joined | 8 / true | 8 / true |
+| Provider closed / remaining handlers / provider fault | true / 0 / false | true / 0 / false |
+| Global final closure / closure failures / guard errors | true / none / none | true / none / none |
+| Protected / Q2-qualified whole prefix / nine producer fences | unchanged | unchanged |
+| Controller and producer exit / requiredPassed / safetyAccepted | 0 / true / true | 0 / true / true |
+
+The final snapshot occurs only after all owned native generations stop and the
+provider closes. Q3 effects and all duplicate ACKs are revalidated on frozen
+observations. Q6's registered final callback rechecks its same-session recording,
+no replay and assistant-only context against final frozen data; global
+`finalClosurePassed` is true with no closure failures. The serialized Q6 object
+was spread before that callback, so it has no propagated
+`finalClosureRevalidated` or `finalRecordingProof` fields. Those absent fields are
+not invented here. Q5 leaves event output unread by design and binds identity by
+the unchanged qualified artifact, normal command, owned PID/guard and Q7 exact
+version. Fixed responses establish context transport, not real-model recall quality.
+
+## Direct native busy-submit characterization
+
+This independent report-only pair ran after the required pair, once per version
+with the same frozen sources and containment. Both preparations and final
+closure completed safely; neither is a required-Q2 pass/fail.
+
+| Final observation | Control 0.26.1 | Candidate 0.27.0 |
+| --- | --- | --- |
+| UTC interval, 2026-11-09 | 19:16:12-19:16:28 | 19:17:23-19:17:39 |
+| User / assistant / message_stop events | 1 / 1 / 1 | 1 / 1 / 1 |
+| Provider requests / marker order | 2 / FIRST,SECOND | 2 / FIRST,SECOND |
+| User < combined-marker assistant < Stop indices | 2 < 11 < 12 | 2 < 11 < 12 |
+| Premature second user / observation window expired | false / false | false / false |
+| Final characterization status / requiredPassed | observed-not-admission / null | observed-not-admission / null |
+| Final closure / owned stop / fences / controller exit | true / true / unchanged / 0 | true / true / unchanged / 0 |
+
+A single assistant contains both markers on both measured artifacts. This again
+does not reproduce the original native-busy-submit two-turn claim; it does not
+contradict the separate normal-Bus Q2 proof, which waits for the first final Stop
+before the second delivery. The earlier unclassified extra POSTs remain
+unattributed; these new requests do not retrospectively establish their purpose.
+
 ## Protected fences and retained provenance
 
 The approved task #849 hash-only method protects configuration/auth/extensions,
@@ -216,7 +325,9 @@ are each identical before/after. Producer sources are also unchanged.
 Retained closed evidence is resolved by these workspace-relative pointers under
 `scratchpad/temp/task850`; each native root includes source copies, commands,
 causal records, input/events, full per-scope fences and owned cleanup evidence.
-Only the new final runs retain bounded latest-user diagnostics.
+The Q2 final runs retain bounded latest-user bodies; the remaining producer records
+closed request metadata only. Original failed results and unused stale inputs are
+preserved separately from later corrected runs.
 
 | Pointer | Closed result | SHA-256 |
 | --- | --- | --- |
@@ -225,6 +336,13 @@ Only the new final runs retain bounded latest-user diagnostics.
 | `config-only-root.json` | 0.26.1 `config-only-result.json` | `84c1ee0feea6dc06230699e6a71e950fb4026b54c3e457e59b5c986afdc7656e` |
 | `native-control-v3-root.json` | passing control `q2-result.json` | `3a5099589ff9df657686e7af0fc964041b3d1dcf563105eeb30ee253fec3149d` |
 | `native-candidate-root.json` | passing candidate `q2-result.json` | `2583b82d33fee3b56d810d247b0c32bf322a91461d24dc1f6ee78b5aece44e41` |
+| `required-control-v2-root.json` | first failed `control/q3-q7-result.json` | `b3c150a790cb1ade935390b444f92551a036ec46c147e0219a3d3f6ef98eb53e` |
+| `kernel-pty-control-root.json` | passing `control/kernel-pty-result.json` | `31afa5cc282b92d3a05819981df3407d3323338a78234c82f2c55eafe7bf345f` |
+| `required-control-v3-root.json` | FIFO-helper failed `control/q3-q7-result.json` | `cfe56022aae265e9884ab9a629b2277b4f3fb85e6e5f1b05b302ddd8db4908e2` |
+| `required-control-v4-root.json` | passing control `control/q3-q7-result.json` | `5f54732ce6ffb21cce8330659e957027d8917f9794b62eb6f2a06b614bf0480c` |
+| `required-candidate-root.json` | passing candidate `control/q3-q7-result.json` | `f9ee01b511b33edeff215a710e6f95a609d7b18ed3eddbed74e9361c692d90d5` |
+| `direct-control-root.json` | control characterization `control/q3-q7-result.json` | `3b476a90a829a08e00864c78eb579491937b4f372c1b41b6c46fe04ab268995d` |
+| `direct-candidate-root.json` | candidate characterization `control/q3-q7-result.json` | `e4f4c61326e060f7c8b913db371a92a7abff02d02a17baf3c436a097ed4077b0` |
 
 ## Existing ceilings and remaining native evidence
 
@@ -233,11 +351,17 @@ Normal completion uses non-tool-use assistant plus message_stop. Adoption
 prove native idle in every path. No universal no-active-submit claim or runtime
 fix is made. The premature deny/idle follow-up is outside this task.
 
-Q2 now passes for the matched pair using the approved normal Bus path. Control
-and candidate Q3-Q7 remain **NOT RUN**; direct-native-busy-submit remains historical
-characterization, not a new 0.27.0 observation. Real accounts/models, a person's
-live TUI, Linux and lifetime containment remain unverified. No COMPAT verified
-set, version line, receipt pointer or automation admission changes follow from Q2
-alone. Source focused checks at b20080aa passed (10 controls, 84 assertions plus
-typecheck/inventory); the final repository gate and hosted CI are separate and
-not supplied by these native observations.
+The matched pair passes required normal-Bus Q2 and Q3/Q5/Q6/Q7. Q4 is report-only:
+no new external-cancel behavior is qualified. Exact 0.27.0 admission uses this
+receipt without widening to 0.27.1/0.28.0 or changing the independent basic ACP
+or setter contracts. No automation manifest eligibility or runtime adapter/Bus
+behavior changes.
+
+## Not verified
+
+Real accounts/models, this repository's live dual-output TUI use, Linux and
+lifetime containment remain unverified. The source focused checks at b20080aa
+passed (10 controls, 84 assertions plus typecheck/inventory); final repository
+checks and hosted CI are separate from these native observations. Native measured
+HEADs remain b20080aa (Q2 code) and b8f2b20d (required/direct suites), regardless
+of later documentation/admission commits.

@@ -66,12 +66,12 @@ export const COMPAT = {
     parse: out => plain(out.trim()),
     trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); exact 0.26.9 repeats those account-free probes on macOS arm64. Real model turns and Linux repetition of 0.26.9 remain unverified. Another version may change those contracts.",
     receipt: "docs/verification/2026-11-08-qwen-0269-acp.md" },
-  // Receipt: docs/verification/2026-10-25-qwen-dual-output-t0.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
+  // Receipt: docs/verification/2026-11-10-qwen-0270-dual-output.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
   // the ACP receipts of the headless `qwen` entry say nothing about it, so that entry is not widened and this one carries no `line`.
-  "qwen-dual": { label: "Qwen Code dual-output TUI", verified: ["0.26.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
+  "qwen-dual": { label: "Qwen Code dual-output TUI", verified: ["0.26.1", "0.27.0"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "The dual-output file contract (submit and confirmation_response input, user/assistant/stream_event/control events, session_start identity) was verified on 0.26.1 only. A hub deny ends the turn without any Qwen event, and no external stop of a running turn exists; another version may change either.",
-    receipt: "docs/verification/2026-10-25-qwen-dual-output-t0.md" },
+    trustNote: "Exact 0.27.0 repeats normal-Bus Q2 and account-free normal-mode Q3/Q5/Q6/Q7 on macOS arm64 against 0.26.1. Existing deny and external-stop limits remain. Real model/account turns, Linux and lifetime containment remain unverified; direct busy-submit characterization is separate from normal-Bus Q2.",
+    receipt: "docs/verification/2026-11-10-qwen-0270-dual-output.md" },
 } as const satisfies Record<string, CompatPolicy>;
 export type CompatId = keyof typeof COMPAT;
 type CommandConfig = { codex_bin: string; jcode_cmd: string[]; qwen_cmd: string[]; pi?: { cmd: string[] } };

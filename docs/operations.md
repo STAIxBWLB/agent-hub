@@ -3690,7 +3690,7 @@ The data-only [manifest](../scripts/compat-receipts/manifest.json) and [per-leg 
 | `qwen` | Mac ACP/permission and install replay; recorded Linux run is additional; Mac arm64 repetition required | npm exact | `true` |
 | `qwen-dual` | Version/file-source checks are partial only; Real gateway model and PTY; OS not recorded | npm exact; historical artifact gap | `false` |
 
-Optional model/TUI behavior explicitly left unverified by a model-free receipt is not a new admission leg. `codex-review` requires its separately authorized model-backed tool-call proof. `agy` has no public install source. `qwen-dual` requires real-model and TUI work and its current receipt does not name the OS. The manifest records acquisition metadata separately from historical native-binary evidence; no CLI installation or COMPAT change is made by this audit.
+Optional model/TUI behavior explicitly left unverified by a model-free receipt is not a new admission leg. `codex-review` requires its separately authorized model-backed tool-call proof. `agy` has no public install source. The `qwen-dual` manifest records the original real-model TUI recipe without an OS; the newer [manual macOS arm64 receipt](verification/2026-11-10-qwen-0270-dual-output.md) does not change that manifest's `autoAdmit: false`. The manifest records acquisition metadata separately from historical native-binary evidence; no CLI installation or COMPAT change is made by this audit.
 
 For CI-opened PRs, the person selected `GITHUB_TOKEN` with explicit `check.yml` dispatch on `compat/<id>-<version>` (2026-11-07). The publisher needs `actions: write` for dispatch in addition to its branch, PR and issue permissions. No GitHub App credentials are used. Dispatch supplies exact-head check evidence; it does not trigger the separate PR-only closing-refs/routing-receipt workflows. The T0 audit retains the alternative App-token trade-offs as history. Current [GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) also describes approval-required PR runs for GITHUB_TOKEN automation; that is not unattended CI. See the audit for permissions, queue and gate trade-offs.
 
@@ -5347,7 +5347,7 @@ selected roster and existing capabilities; the TUI is always a person's start.
 
 ### Qwen's own TUI, driven through dual output (#286 Part 3)
 
-`ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the terminal you ran it from. The daemon prepares the two files (mode 0600, under `<state dir>/qwen/qwen-dual/`) and returns the launch; the hub then appends one `submit` line per delivery and tails the event file from a saved offset. It needs a Qwen the dual-output compat entry verifies (`ahub agents` shows `qwen-dual`, verified 0.26.1 only; the headless `qwen` entry has its own ACP receipts) and refuses another version before it creates a file. The TUI is explicit only: `ahub qwen` without `--mode` is still headless, Qwen is not a start-mode peer, and the hub never opens this terminal by itself. The TUI start is refused for an extra Qwen instance, off roster, outside a terminal, and while a headless Qwen runs (`ahub stop qwen` first); a headless start is refused while the TUI holds its terminal.
+`ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the terminal you ran it from. The daemon prepares the two files (mode 0600, under `<state dir>/qwen/qwen-dual/`) and returns the launch; the hub then appends one `submit` line per delivery and tails the event file from a saved offset. It needs a Qwen the dual-output compat entry verifies (`ahub agents` shows `qwen-dual`, verified 0.26.1 and exact 0.27.0; the headless `qwen` entry has its own ACP receipts) and refuses another version before it creates a file. The TUI is explicit only: `ahub qwen` without `--mode` is still headless, Qwen is not a start-mode peer, and the hub never opens this terminal by itself. The TUI start is refused for an extra Qwen instance, off roster, outside a terminal, and while a headless Qwen runs (`ahub stop qwen` first); a headless start is refused while the TUI holds its terminal.
 
 - What the hub does: a delivery becomes a `submit`; the last assistant message of the turn (an `assistant` event whose `stop_reason` is not `tool_use`, then `message_stop`) is shared as the answer; busy and idle follow the events. A `can_use_tool` request goes to the console approval path (`ahub permit`, the dashboard), and the hub's own tools are approved only by their exact `mcp__agent-hub__<tool>` name. If you answer a prompt in the Qwen terminal first, the hub's pending approval is withdrawn.
 - **Limit 1, a deny ends the turn without an answer.** Qwen emits nothing when the hub denies: it cancels the whole turn. The hub ends the turn itself, shares no answer, settles the delivery as `completed` (a deny is a known outcome, and a `needs_review` would hold every later message to Qwen until a person resolved it) and says so in a notice. A turn whose outcome is not known (Qwen exited, an Esc followed by a new prompt, an event file that became unreadable) is the one that settles `needs_review`. Qwen's own notice that a background shell finished (a `user` event that is wholly one or more `<task-notification>` envelopes) is not a new prompt: it ends no hub turn and leaves an idle peer idle (task 517).
@@ -5356,18 +5356,20 @@ selected roster and existing capabilities; the TUI is always a person's start.
 - If the hub cannot read the event file the peer is `detached`, shown as offline with a notice, never idle: Qwen itself keeps working, and the hub reattaches when the file is readable again.
 - Restart: if the hub restarts while your Qwen keeps running, it reads on from its saved offset (no event twice, no launch). If Qwen is gone, `ahub qwen --mode tui` starts `qwen -r <session id>` on the same two files; the earlier submits are not replayed and the recorded answers are not shared again. Recovery never restores this terminal as a headless worker, and `ahub stop qwen` refuses: end Qwen in its own terminal.
 
-The [2026-11-10 account-free Q2 receipt](verification/2026-11-10-qwen-0270-dual-output.md)
-records two distinct normal-Bus turns on matched private 0.26.1 and candidate
-0.27.0 packages: final counts are two user events, two final Stops and two
-ordinary fixture-provider requests after owned stop. Q3-Q7 remain NOT RUN, so
-this partial qualification does not add a qwen-dual version. The original
-native-busy-submit queued-turn claim was not reproduced by the v2 matched
-control; direct busy-submit is separate characterization. Adoption, reattachment
-and hub deny settlement do not prove native quiescence in every path. These
-fixture observations do not describe this repository's live peer or a real-model
-terminal session.
+The [2026-11-10 account-free receipt](verification/2026-11-10-qwen-0270-dual-output.md)
+qualifies exact 0.27.0 against matched private 0.26.1 on macOS arm64. Normal-Bus
+Q2 has two user/final-Stop/ordinary-provider turns after owned stop; Q3's five
+permission cases, unread-FIFO Q5, same-session/no-replay/assistant-context Q6 and
+identity/guard Q7 also passed, with final closure and protected/artifact/source
+fences. Q4 retains the external-stop limit. The separate direct-busy pair emitted
+one user/assistant/Stop with both markers in one assistant, so the original
+native-busy-submit queued-turn claim remains unreproduced. Adoption, reattachment
+and hub deny settlement do not prove native quiescence in every path. Real-model
+turns, this repository's live dual-output TUI use, Linux and lifetime containment
+remain unverified; the basic ACP/setter contracts and automation eligibility are
+separate.
 
-Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)), 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)), 0.26.4 ([0.26.4 ACP receipt](verification/2026-10-31-qwen-0264-acp.md)), 0.26.5 ([0.26.5 ACP receipt](verification/2026-11-03-qwen-0265-acp.md)) and 0.26.8 ([0.26.8 ACP receipt](verification/2026-11-06-qwen-0268-acp.md)). The separate [0.26.4](verification/2026-10-31-qwen-0264-dual-output.md), [0.26.5](verification/2026-11-03-qwen-0265-dual-output.md), and [0.26.8](verification/2026-11-06-qwen-0268-dual-output.md) dual-output attempts did not establish their queued-turn criterion, so `qwen-dual` stays at 0.26.1. A CLI version label alone
+Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)), 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)), 0.26.4 ([0.26.4 ACP receipt](verification/2026-10-31-qwen-0264-acp.md)), 0.26.5 ([0.26.5 ACP receipt](verification/2026-11-03-qwen-0265-acp.md)) and 0.26.8 ([0.26.8 ACP receipt](verification/2026-11-06-qwen-0268-acp.md)). The separate [0.26.4](verification/2026-10-31-qwen-0264-dual-output.md), [0.26.5](verification/2026-11-03-qwen-0265-dual-output.md), and [0.26.8](verification/2026-11-06-qwen-0268-dual-output.md) dual-output attempts did not establish their queued-turn criterion, those versions remain unverified by `qwen-dual`; exact 0.27.0 has the separate matched receipt above. A CLI version label alone
 is insufficient: startup verifies its native identity/version and advertised mode
 ids before any prompt. The earlier local installation reported CLI 0.25.0 while
 its package/ACP source said 0.24.1; that was not a ready identity. The 0.26.0 receipt

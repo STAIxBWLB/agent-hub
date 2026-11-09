@@ -83,15 +83,13 @@ const events = (r: Rig) => readFileSync(join(r.dir, "events.jsonl"), "utf8").spl
 const inputLines = (r: Rig) => readFileSync(join(r.dir, "input.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
 const answered = (r: Rig, n: number, id = "allow") => { r.settle.get(String(n))!(id); };
 
-test("the compat entry for the dual-output contract verifies 0.26.1 only, and does not widen the headless qwen entry", () => {
-  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
+test("the dual-output exact versions stay separate from the headless ACP contract", () => {
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0"]);
   expect("line" in COMPAT["qwen-dual"]).toBe(false);
-  // The entries are separate contracts, so a widening of one never changes the other: #843 AC5 verified 0.26.1 for the
-  // ACP receipt on the headless qwen entry; this dual-output entry stays verified on 0.26.1 only, at its own gate.
-  expect(assessVersion("qwen-dual", "0.26.1", []).ok).toBe(true);
-  expect(assessVersion("qwen-dual", "0.25.0", []).ok).toBe(false);
+  for (const version of ["0.26.1", "0.27.0"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(true);
+  for (const version of ["0.25.0", "0.26.9", "0.27.1", "0.28.0"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(false);
   expect(assessVersion("qwen", "0.26.0", []).ok).toBe(true);
-  expect(assessVersion("qwen", "0.27.0", []).ok).toBe(false);
+  expect(assessVersion("qwen", "0.26.9", []).ok).toBe(true);
 });
 
 test("start prepares private input and event files and the launch carries the dual-output flags", async () => {
@@ -326,8 +324,16 @@ test("the hub never signals or types into Qwen: stop leaves the process running 
   expect(inputLines(r).filter(line => !["submit", "confirmation_response"].includes(line.type))).toHaveLength(0);
 });
 
-test("a TUI that states an unverified version or contract is not attached", async () => {
-  const r = rig({}, { fakeArgs: ["--fake-version", "0.27.0"] });
+test("a receipt-qualified 0.27.0 native session attaches and delivers through the driver", async () => {
+  const r = await attached({ fakeArgs: ["--fake-version", "0.27.0"] });
+  await r.peer.deliver(env("qualified 0.27.0"), "d1");
+  await until(() => r.answers.length === 1);
+  expect(r.peer.state).toBe("idle");
+  expect(inputLines(r).filter(line => line.type === "submit")).toHaveLength(1);
+});
+
+for (const version of ["0.27.1", "0.28.0"]) test(`an unqualified ${version} TUI is refused at native session identity`, async () => {
+  const r = rig({}, { fakeArgs: ["--fake-version", version] });
   await r.peer.start(); r.launch();
   await until(() => r.notices.some(text => text.includes("not verified")));
   expect(r.peer.state).toBe("offline");

@@ -138,4 +138,10 @@ check despite observing two real turns. Shipped-source analysis showed `--bare`
 bypassed the private UI follow-up setting; the corrected fixture loads owned full
 settings. The earlier extra requests remain unattributed because their latest
 user bodies were not retained. The [dated receipt](../verification/2026-11-10-qwen-0270-dual-output.md)
-separates these attempts, the 0.26.1 config-only observation and pending Q3-Q7.
+separates these attempts and the 0.26.1 config-only observation from the later
+passing required Q3/Q5/Q6/Q7 pair. The remaining producer preserved a PTY/catalog
+control failure and a host FIFO-helper setup failure before the final matched
+pair passed with owned cleanup/final closure. The independent direct-busy pair
+on both versions observed one user/assistant/Stop with both markers in one
+assistant, while required normal-Bus Q2 retained two distinct turns. No production
+adapter, Bus or automatic receipt-admission behavior changed.

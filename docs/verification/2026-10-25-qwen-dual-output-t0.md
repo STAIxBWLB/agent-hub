@@ -33,7 +33,10 @@ Bus/QwenDualPeer boundary with two distinct user/final-stop turns, while direct
 native-busy-submit behavior remains recorded characterization. The
 [2026-11-10 receipt](2026-11-10-qwen-0270-dual-output.md) records the revised
 procedure and its own evidence: the private matched 0.26.1 and candidate 0.27.0
-normal-Bus Q2 runs each passed two distinct turns, while Q3-Q7 remain NOT RUN.
+normal-Bus Q2 runs each passed two distinct turns, and the matching required
+Q3/Q5/Q6/Q7 pair subsequently passed with the existing Q4 limit. A separate
+direct-busy characterization on both artifacts observed one user/assistant/Stop
+with both markers in one assistant.
 This does not retrospectively reproduce the native-busy-submit claim. The
 original account/global-install harness is
 not the account-free procedure for that new qualification.
