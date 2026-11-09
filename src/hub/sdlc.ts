@@ -607,8 +607,12 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
     const nodes: unknown[] | undefined = contexts?.nodes;
     let reusedRun: number | undefined;
     const completeChecks = !(contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(nodes) || nodes.length > 100);
-    const checkEvidence = completeChecks ? parsePrEvidence({ headRefOid: pr.headRefOid, state: pr.state, files: [], statusCheckRollup: nodes }).checks.map((check, index) => {
-      const raw = nodes?.[index] as { name?: unknown; status?: unknown; conclusion?: unknown; state?: unknown } | undefined;
+    const requiredNodes = completeChecks ? nodes!.filter(node => {
+      const raw = node as { name?: unknown; context?: unknown } | null | undefined;
+      return full.some(name => (raw?.name ?? raw?.context) === name);
+    }) : [];
+    const checkEvidence = completeChecks ? parsePrEvidence({ headRefOid: pr.headRefOid, state: pr.state, files: [], statusCheckRollup: requiredNodes }).checks.map((check, index) => {
+      const raw = requiredNodes[index] as { name?: unknown; status?: unknown; conclusion?: unknown; state?: unknown } | undefined;
       // Fresh GraphQL admission keeps its original success proof, even when common normalization accepts a legacy shape.
       const success = raw?.name ? raw.status === "COMPLETED" && raw.conclusion === "SUCCESS" : raw?.state === "SUCCESS";
       return check.state === "passed" && !success ? { ...check, state: "unknown" as const } : check;

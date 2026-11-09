@@ -45,3 +45,29 @@ for (const sample of [
   expect(result.ready).toBe(sample.problem === undefined);
   if (sample.problem) expect(result.blockers).toContain(`exact-head full CI is not green: ${sample.problem} gate`);
 });
+
+const validGate = { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" };
+const freshRows = (nodes: unknown[]) => readReviewReadiness({ stage: "build", repo: "owner/repo", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(reply(nodes)) }), ["gate"]);
+for (const sample of [
+  { label: "long nonrequired name", node: { name: "x".repeat(150), status: "QUEUED", conclusion: null } },
+  { label: "malformed nonrequired identity", node: { status: "COMPLETED", conclusion: "SUCCESS" } },
+]) for (const position of ["before", "after"] as const) test(`fresh required rows ignore ${sample.label} ${position} valid gate (#1328)`, async () => {
+  const nodes = position === "before" ? [sample.node, validGate] : [validGate, sample.node];
+  const result = await freshRows(nodes);
+  expect(result.ready).toBe(true); expect(result.blockers).toEqual([]);
+});
+
+test("irrelevant malformed rows cannot supply a missing required check (#1328)", async () => {
+  const result = await freshRows([{ name: "other", status: "COMPLETED", conclusion: "SUCCESS" }, { status: "COMPLETED", conclusion: "SUCCESS" }]);
+  expect(result.ready).toBe(false);
+  expect(result.blockers).toContain("exact-head full CI is not green: missing gate");
+});
+test("required-row selection retains duplicate required records (#1328)", async () => {
+  const result = await freshRows([validGate, validGate]);
+  expect(result.ready).toBe(false); expect(result.blockers).toContain("exact-head full CI is not green: duplicate gate");
+});
+test("fresh inventory bound applies before required-row selection (#1328)", async () => {
+  const nodes = [validGate, ...Array.from({ length: 100 }, (_, i) => ({ name: `other${i}`, status: "COMPLETED", conclusion: "SUCCESS" }))];
+  const result = await freshRows(nodes);
+  expect(result.ready).toBe(false); expect(result.blockers).toContain("exact-head full CI is not green: unknown gate");
+});
