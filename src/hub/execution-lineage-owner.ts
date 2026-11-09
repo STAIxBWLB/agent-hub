@@ -87,13 +87,16 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
     if (input.attemptId !== undefined) root = { v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "attempt", id: input.attemptId };
     if (root.kind === "task" && executionReferenceKey(root) !== executionReferenceKey(taskRef)) return fail("missing");
     const nodes = new Map<string, LineageNode>(), edges: LineageEdge[] = [], external = new Map<string, ExecutionReferenceV1>();
+    const rootKey = executionReferenceKey(root);
+    let rootWithheld = false;
+    const withheld = (ref: ExecutionReferenceV1) => { if (executionReferenceKey(ref) === rootKey) rootWithheld = true; };
     let projectedBytes = 0;
     const account = (value: unknown) => {
       projectedBytes += Buffer.byteLength(JSON.stringify(value), "utf8");
       if (projectedBytes > LINEAGE_LIMITS.sourceBytes) { source.health = "unsupported"; throw new Error("lineage source bound"); }
     };
     const add = (ref: ExecutionReferenceV1, state: string, strength: LineageNode["strength"]): boolean => {
-      if (!ports.metadata(JSON.stringify(ref))) return false;
+      if (!ports.metadata(JSON.stringify(ref))) { withheld(ref); return false; }
       const key = executionReferenceKey(ref);
       if (!nodes.has(key)) { const node = { ref, state, strength }; account(node); nodes.set(key, node); }
       if (nodes.size > LINEAGE_LIMITS.sourceNodes) { source.health = "unsupported"; throw new Error("lineage source bound"); }
@@ -105,9 +108,16 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
       if (edges.length > LINEAGE_LIMITS.sourceEdges) { source.health = "unsupported"; throw new Error("lineage source bound"); }
     };
     if (!add(taskRef, task.state, "host-observed")) return fail("withheld");
-    const publicOutput = (record: NonNullable<Task["history"][number]["deliverables"]>[number]) => !record.private && (!record.path || ports.metadata(record.path));
+    const deliverableRef = (record: NonNullable<Task["history"][number]["deliverables"]>[number]): ExecutionReferenceV1 => ({ v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "deliverable", id: record.id, sha256: record.sha256 });
+    const publicOutput = (record: NonNullable<Task["history"][number]["deliverables"]>[number]) => {
+      const visible = !record.private && (!record.path || ports.metadata(record.path));
+      if (!visible) withheld(deliverableRef(record));
+      return visible;
+    };
     const current = new Map<string, string>();
-    for (const entry of task.history) if (!entry.withheld) for (const output of entry.deliverables ?? []) if (publicOutput(output)) {
+    for (const entry of task.history) for (const output of entry.deliverables ?? []) {
+      if (entry.withheld) { withheld(deliverableRef(output)); continue; }
+      if (!publicOutput(output)) continue;
       if (!current.has(output.id)) account([output.id, output.sha256]);
       current.set(output.id, output.sha256);
       if (current.size > LINEAGE_LIMITS.sourceNodes) { source.health = "unsupported"; throw new Error("lineage source bound"); }
@@ -152,13 +162,31 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
       if (ref.kind === "dispatch") {
         if (ref.revision !== undefined || ref.sha256 !== undefined) return false;
         const delivery = ports.delivery?.(ref.id);
-        if (!delivery || delivery.originals.some(env => env.private || remoteEnvelope(env) || isReviewObserverExcluded(env))) return false;
+        if (!delivery) return false;
         const matches = delivery.originals.some(env => env.refs?.task === String(task.id) && (saved || env.id === task.offer?.envelopeId));
-        return matches && add(ref, delivery.state, "host-observed") && (edge(taskRef, ref, "dispatched", "host-observed"), true);
+        if (!matches) return false;
+        if (delivery.originals.some(env => env.private || remoteEnvelope(env) || isReviewObserverExcluded(env))) { withheld(ref); return false; }
+        return add(ref, delivery.state, "host-observed") && (edge(taskRef, ref, "dispatched", "host-observed"), true);
       }
       if (ref.kind !== "attempt" || ref.revision !== undefined || ref.sha256 !== undefined) return false;
       const attempt = ports.attempt(ref.id);
-      if (!attempt || attempt.private || attempt.project !== ports.project || attempt.attempt.taskId !== task.id) return false;
+      if (!attempt || attempt.project !== ports.project || attempt.attempt.taskId !== task.id) return false;
+      if (attempt.private) {
+        withheld(ref);
+        const address = root.kind === "output" && root.revision === undefined ? /^(ra-[a-f0-9]{12}):([1-9][0-9]*)$/.exec(root.id) : null;
+        const seq = Number(address?.[2]);
+        if (ports.diagnostics && address?.[1] === ref.id && Number.isSafeInteger(seq)) {
+          // The task is authorized. Inspect only this indexed event's reference fields for the
+          // diagnostic boolean; private event text, identifiers and counts never enter a page.
+          const row = ports.events(ref.id, seq - 1, 1).rows.find(item => item.event.seq === seq);
+          if (row?.event.kind === "output") {
+            const body = row.event.body;
+            const sha256 = "id" in body ? body.sha256 : row.observations.find(item => item.eventSeq === seq && item.observation.source === "deliverable")?.observation.values.sha256;
+            if (sha256 === undefined || typeof sha256 === "string") withheld({ v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "output", id: `${ref.id}:${seq}`, ...(sha256 ? { sha256 } : {}) });
+          }
+        }
+        return false;
+      }
       if (!add(ref, ports.attemptStatus(ref.id), "declared")) return false;
       edge(taskRef, ref, "attempted", "host-observed");
       const protocol: ExecutionReferenceV1 = { v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "protocol", id: attempt.attempt.protocolHash };
@@ -171,14 +199,14 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
         if (add(address, "recorded", "runner-attested")) edge(ref, address, "produced", "runner-attested");
       }
       for (const row of events.rows) {
-        if (row.private || row.event.kind !== "output") continue;
+        if (row.event.kind !== "output") continue;
         const body = row.event.body;
-        if (!ports.metadata(JSON.stringify(body))) continue;
         const observation = row.observations.find(item => item.eventSeq === row.event.seq && item.observation.source === "deliverable" && typeof item.observation.values.deliverableId === "string" && typeof item.observation.values.sha256 === "string");
         const id = "id" in body ? body.id : observation?.observation.values.deliverableId;
         const sha256 = "id" in body ? body.sha256 : observation?.observation.values.sha256;
         if (typeof id !== "string" || sha256 !== undefined && typeof sha256 !== "string") continue;
         const output: ExecutionReferenceV1 = { v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "output", id: `${ref.id}:${row.event.seq}`, ...(sha256 ? { sha256 } : {}) };
+        if (row.private || !ports.metadata(JSON.stringify(body))) { withheld(output); continue; }
         const measured = typeof sha256 === "string" && observation?.observation.values.deliverableId === id && observation.observation.values.sha256 === sha256;
         const signed = receipts.some(receipt => receipt.receipt.outputs?.some(item => item.name === id && item.sha256 === sha256));
         const strength = signed ? "runner-attested" : measured ? "host-observed" : "declared";
@@ -202,7 +230,7 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
       edge(link.from, target, "declared-external", "declared");
     }
     if (source.health === "unsupported") return fail("unsupported");
-    if (!nodes.has(executionReferenceKey(root))) return fail("missing");
+    if (!nodes.has(rootKey)) return fail(rootWithheld ? "withheld" : "missing");
     source.nodes = [...nodes.values()]; source.edges = edges; source.admittedExternalTargets = [...external.values()];
     source.revision = createHash("sha256").update(JSON.stringify([task.id, task.created, task.history.length, task.refs.commit, source.nodes, edges])).digest("hex");
     source.health = "ready";

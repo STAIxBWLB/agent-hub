@@ -9575,6 +9575,19 @@ var init_queue_backpressure = __esm(() => {
   QUEUE_BACKPRESSURE_LIMITS = Object.freeze({ max_queued: 1e4, max_oldest_s: 604800 });
   DEFAULT_POLICY = Object.freeze({ max_queued: 0, max_oldest_s: 0 });
 });
+// src/hub/execution-reference.ts
+var EXECUTION_REFERENCE_LIMITS;
+var init_execution_reference = __esm(() => {
+  EXECUTION_REFERENCE_LIMITS = Object.freeze({ id: 256, projectKey: 256, revision: 128, kind: 64 });
+});
+
+// src/hub/execution-links.ts
+var EXECUTION_LINK_LIMITS;
+var init_execution_links = __esm(() => {
+  init_execution_reference();
+  EXECUTION_LINK_LIMITS = Object.freeze({ perTask: 64, read: 65, referenceBytes: 2048, actor: 32 });
+});
+
 // templates/profiles/dev.json
 var dev_default;
 var init_dev = __esm(() => {
@@ -13026,8 +13039,10 @@ var init_research_campaign = __esm(() => {
 });
 
 // src/hub/board.ts
-var CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
+var EXECUTION_REFERENCE_SELECT, CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
+  init_execution_links();
+  init_execution_reference();
   init_research_runner();
   init_packs();
   init_research_evidence();
@@ -13042,6 +13057,16 @@ var init_board = __esm(() => {
   init_review_findings();
   init_deliverables();
   init_research_campaign();
+  EXECUTION_REFERENCE_SELECT = `SELECT
+  CASE WHEN length(CAST(id AS BLOB))=64 THEN id END AS id,
+  CASE WHEN length(CAST(project_id AS BLOB)) BETWEEN 1 AND 256 THEN project_id END AS project_id,
+  task_id,task_created,
+  CASE WHEN length(CAST(from_json AS BLOB))<=${EXECUTION_LINK_LIMITS.referenceBytes} THEN from_json END AS from_json,
+  CASE WHEN length(CAST(from_sha256 AS BLOB))=64 THEN from_sha256 END AS from_sha256,
+  CASE WHEN length(CAST(reference_json AS BLOB))<=${EXECUTION_LINK_LIMITS.referenceBytes} THEN reference_json END AS reference_json,
+  CASE WHEN length(CAST(reference_sha256 AS BLOB))=64 THEN reference_sha256 END AS reference_sha256,
+  CASE WHEN length(CAST(recorded_by AS BLOB)) BETWEEN 1 AND ${EXECUTION_LINK_LIMITS.actor} THEN recorded_by END AS recorded_by,
+  recorded_at FROM execution_reference_links`;
   CLASSES2 = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
   PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"];
   ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims", "proof", "risks"];
@@ -15178,7 +15203,7 @@ var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_
   name,
   description,
   inputSchema: { type: "object", properties: name === "hub_review" || name === "hub_task_propose" ? { ...properties, request_id: toolWriteRequestId } : properties, required, additionalProperties: false }
-}), STUDY_TOOLS, EVIDENCE_RECORD_TOOL, HANDOFF_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, ASK_TOOL, QUESTION_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
+}), STUDY_TOOLS, EVIDENCE_RECORD_TOOL, HANDOFF_TOOLS, LINEAGE_TOOL_NAMES, executionReference, lineageShow, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, ASK_TOOL, QUESTION_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_test_integrity();
   init_sdlc();
@@ -15186,7 +15211,7 @@ var init_hub_tools = __esm(() => {
   init_roles();
   init_registry();
   init_envelope();
-  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record"]);
+  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_lineage_show", "hub_lineage_link"]);
   IMPLEMENTER_PERMISSION_TOOL = {
     name: "hub_permission_request",
     description: "Native permission prompt for this current owned child. The person allows once or denies; failure is deny.",
@@ -15304,9 +15329,31 @@ var init_hub_tools = __esm(() => {
     revision: { type: "integer", minimum: 1, description: "Default 1; later revisions name the existing link id." }
   }, ["taskId", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation"]);
   HANDOFF_TOOLS = new Set(["hub_task_handoff", "hub_task_handoffs"]);
+  LINEAGE_TOOL_NAMES = new Set(["hub_lineage_show", "hub_lineage_link"]);
+  executionReference = { type: "object", properties: {
+    v: { type: "integer", enum: [1] },
+    tool: { type: "string", enum: ["ahub", "ares", "amem", "vmem"] },
+    projectKey: { type: "string", minLength: 1, maxLength: 256 },
+    kind: { type: "string", minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9._-]*$" },
+    id: { type: "string", minLength: 1, maxLength: 256 },
+    revision: { type: "string", minLength: 1, maxLength: 128 },
+    sha256: { type: "string", pattern: "^[a-f0-9]{64}$" }
+  }, required: ["v", "tool", "projectKey", "kind", "id"], additionalProperties: false };
+  lineageShow = {
+    taskId: id2,
+    attemptId: str2,
+    root: executionReference,
+    task: { type: "object", properties: { id: id2, created: { type: "integer", minimum: 0 } }, required: ["id", "created"], additionalProperties: false },
+    cursor: { type: "string", minLength: 1, maxLength: 512 },
+    nodes: { type: "integer", minimum: 1, maximum: 100 },
+    edges: { type: "integer", minimum: 1, maximum: 200 },
+    bytes: { type: "integer", minimum: 4096, maximum: 262144 }
+  };
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
   CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
   TASK_TOOLS = [
+    tool2("hub_lineage_show", "Read bounded execution lineage from exactly one taskId, attemptId or root with optional owning task identity. Explicit recorded relationships only; missing native observations remain unknown. Hidden and absent roots share unavailable. Never probes, fetches, executes or writes memory. Keep cursor and limits bound to the same query.", lineageShow),
+    tool2("hub_lineage_link", "Attach one declared external execution reference through your current task role. Bind taskId, taskCreated and flowRevision copied from the current task view; optional from must already belong to the same admitted neighborhood. Duplicate declarations are idempotent. This inert metadata is not runner attestation, review approval or task progress. Private/review-observer context and recovery refuse.", { taskId: id2, taskCreated: { type: "integer", minimum: 0 }, flowRevision: { type: "integer", minimum: 0 }, reference: executionReference, from: executionReference }, ["taskId", "taskCreated", "flowRevision", "reference"]),
     tool2("hub_task_spec", "Read complete assigned GitHub issue contracts through the bounded hub boundary. Owner/reviewer only; no repository or URL input. Refuses withheld or oversized specs.", { id: id2 }, ["id"]),
     tool2("hub_check_start", "Run an exact-head isolated Linux check for your in-progress task. Trusted opt-in runner only; no host shell or credentials. Tests require one to 32 test/*.test.ts paths. Receipt is Linux evidence.", { id: id2, check: { type: "string", enum: ["test", "typecheck"] }, files: { type: "array", minItems: 1, maxItems: 32, items: str2 } }, ["id", "check"]),
     tool2("hub_check_result", "Read your current task-bound isolated check receipt. Stale ownership/generation refuses; output is policy screened.", { run: str2 }, ["run"]),
@@ -15403,7 +15450,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
-  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_lineage_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
   ROLE_TEXT = {
     conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
     planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
@@ -27259,7 +27306,19 @@ init_db_schema();
 init_hub_tools();
 init_envelope();
 
+// src/hub/execution-lineage-owner.ts
+init_memory_policy();
+init_envelope();
+init_execution_links();
+init_execution_reference();
+
+// src/hub/execution-lineage.ts
+init_execution_reference();
+var LINEAGE_LIMITS = Object.freeze({ nodes: 100, edges: 200, bytes: 256 * 1024, sourceNodes: 2048, sourceEdges: 4096, sourceBytes: 4 * 1024 * 1024, token: 128, state: 64, cursor: 512, minimumBytes: 4096 });
+
 // src/hub/tasks.ts
+init_execution_links();
+init_execution_reference();
 init_research_evidence();
 init_review_anchor();
 init_memory_policy();

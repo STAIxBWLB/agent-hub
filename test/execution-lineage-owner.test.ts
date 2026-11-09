@@ -149,3 +149,34 @@ test("head-only reviews retain old submitted heads and verdict currency after th
   expect(page.edges).toContainEqual({ from: submitted, to: review, relation: "reviewed", strength: "declared" });
   expect(page.nodes.some(node => node.ref.kind === "deliverable")).toBe(false);
 });
+
+
+test("exact hidden deliverable, output and dispatch roots project withheld only to person diagnostics", () => {
+  const cases = ["private-deliverable", "private-path", "withheld-entry", "private-output", "private-attempt-output", "private-dispatch"] as const;
+  for (const kind of cases) {
+    const f = fixture(); let root: ExecutionReferenceV1;
+    if (kind === "private-output" || kind === "private-attempt-output") { f.output.private = true; f.attempt.private = kind === "private-attempt-output"; root = ref("output", `${f.attempt.attemptId}:1`, { sha256: hash }); }
+    else if (kind === "private-dispatch") { f.delivery.originals[0]!.private = true; root = ref("dispatch", f.delivery.id); }
+    else {
+      const output = { id: "d-0123456789ab", path: kind === "private-path" ? "private/hidden" : "public.txt", format: "txt", sha256: hash, bytes: 1, ...(kind === "private-deliverable" ? { private: true as const } : {}) };
+      f.task.history.push({ at: 10, by: "codex", event: "done", deliverables: [output], ...(kind === "withheld-entry" ? { withheld: true as const } : {}) });
+      root = ref("deliverable", output.id, { sha256: hash });
+    }
+    const query = { root, task: { id: 7, created: 10 } };
+    expect(readOwnerExecutionLineage(f.ports, query)).toEqual({ state: "unavailable", reason: "withheld" });
+    expect(readOwnerExecutionLineage({ ...f.ports, diagnostics: false }, query)).toEqual({ state: "unavailable" });
+    const snapshot = executionOwnerSnapshot(f.ports, query);
+    expect(snapshot.source.nodes).toEqual([]); expect(snapshot.source.edges).toEqual([]);
+    if (root.sha256) expect(readOwnerExecutionLineage(f.ports, { ...query, root: { ...root, sha256: "c".repeat(64) } })).toEqual({ state: "unavailable", reason: "missing" });
+    expect(readOwnerExecutionLineage(f.ports, { ...query, root: { ...root, id: "absent" } })).toEqual({ state: "unavailable", reason: "missing" });
+  }
+});
+
+test("task visibility is checked before inspecting a requested private dispatch or output", () => {
+  const f = fixture(); let reads = 0;
+  const ports = { ...f.ports, visible: () => false, delivery: () => { reads++; throw new Error("must not inspect hidden task records"); }, events: () => { reads++; throw new Error("must not inspect hidden task records"); } };
+  for (const root of [ref("dispatch", f.delivery.id), ref("output", `${f.attempt.attemptId}:1`, { sha256: hash })]) {
+    expect(readOwnerExecutionLineage(ports, { root, task: { id: 7, created: 10 } })).toEqual({ state: "unavailable", reason: "withheld" });
+  }
+  expect(reads).toBe(0);
+});
