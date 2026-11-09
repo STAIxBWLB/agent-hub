@@ -199,8 +199,10 @@ PII comments remain board-local and public views expose counts only. Private pat
 
 Review admission (fresh and cached), CI watches and guarded merge resolve the same
 repository-specific and top-level required names. Only `STAIxBWLB/agent-hub` has a
-native fallback including `seeded guards`; another repository with no names stays
-unknown and cannot become ready through an empty CI set. Init discovers names in
+native fallback including `seeded guards` for fresh/cached review admission and
+CI watches. Guarded merge continues to require explicit configured names. Another
+repository with no names stays unknown and cannot become ready through an empty
+CI set. Init discovers names in
 one bounded operation of at most three capped GitHub reads, falling back to bounded
 literal workflow metadata on unknown or incomplete evidence. Enforce without names
 refuses before writes. Read-only settings expose running and file SDLC values

@@ -117,3 +117,16 @@ test("existing matching per-repo checks permit enforce with no discovery; a fore
   expect(() => init(cwd, undefined, false, false, request)).toThrow("required CI checks");
   expect(loadSdlc(cwd).mode).toBe("advise");
 });
+
+test("CI and literal workflow jobs apply the 32-check schema to distinct names (#1328)", async () => {
+  const cwd = fixture();
+  expect(hubGitSync(["init", "-q"], { cwd }).status).toBe(0);
+  expect(hubGitSync(["config", "remote.origin.url", "https://github.com/example/project.git"], { cwd }).status).toBe(0);
+  const jobs = Array.from({ length: 33 }, () => ({ name: "unit" }));
+  let reads = 0;
+  const result = await discoverInitChecks(cwd, async () => ({ code: 0, stdout: JSON.stringify(++reads === 1 ? { default_branch: "main" } : reads === 2 ? { workflow_runs: [{ id: 7, status: "completed", head_branch: "main" }] } : { total_count: jobs.length, jobs }) }));
+  expect(result).toEqual({ source: "CI", names: ["unit"] }); expect(reads).toBe(3);
+  const workflow = (distinct: boolean) => `jobs:\n${Array.from({ length: 33 }, (_, i) => `  job${i}:\n    name: ${distinct ? `unit${i}` : "unit"}\n    runs-on: linux\n`).join("")}`;
+  expect(workflowCheckNames(workflow(false))).toEqual(["unit"]);
+  expect(workflowCheckNames(workflow(true))).toBeUndefined();
+});

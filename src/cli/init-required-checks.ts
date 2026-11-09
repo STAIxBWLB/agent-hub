@@ -48,7 +48,8 @@ export function workflowCheckNames(text: string): string[] | undefined {
     if (/^  \S/.test(line) && !job) dynamic = true;
   }
   finish();
-  return !dynamic && validNames(names) ? [...new Set(names)] : undefined;
+  const unique = [...new Set(names)];
+  return !dynamic && validNames(unique) ? unique : undefined;
 }
 
 function workflowChecks(cwd: string): InitCheckDiscovery {
@@ -105,8 +106,8 @@ export async function discoverInitChecks(cwd: string, run: SdlcGh = sdlcGh): Pro
     const body = await read(["api", "--method", "GET", `repos/${repo}/actions/runs/${latest.id}/jobs`, "-f", `per_page=${DISCOVERY_JOBS}`]);
     const jobs = body.jobs;
     if (!Array.isArray(jobs) || body.total_count !== jobs.length || jobs.length >= DISCOVERY_JOBS) return workflowChecks(cwd);
-    const names: unknown[] = jobs.map(job => job?.name);
-    return validNames(names) ? { names: [...new Set(names)], source: "CI" } : workflowChecks(cwd);
+    const names: unknown[] = [...new Set(jobs.map(job => job?.name))];
+    return validNames(names) ? { names, source: "CI" } : workflowChecks(cwd);
   } catch { return workflowChecks(cwd); }
 }
 
