@@ -270,3 +270,19 @@ test("#493 actionable notices are not FYI in both session instruction modes, sen
   expect(TASK_TOOLS.find(tool => tool.name === "hub_task_done")?.description).toContain("no duplicate");
   expect(TASK_TOOLS.find(tool => tool.name === "hub_review")?.description).toContain("no duplicate");
 });
+
+test("malformed additive held bodies preserve committed normal inbox, local fallback and fresh counts (#1328)", async () => {
+  const f = await client("channel", true);
+  try {
+    f.push({ t: "deliver", envs: [newEnvelope("codex", "LOCAL_HELD_FALLBACK")] });
+    await f.waitFor(() => f.diagnostics().includes("queued for hub_inbox"));
+    const normal = newEnvelope("codex", "NORMAL_COMMITTED_CANARY");
+    f.inbox({ ok: true, envs: [normal], waiting: 2, waitingImportant: 1, heldRead: { count: 1, rows: [{ id: null, revision: "injected", state: "needs_review", messages: null }], truncated: false } });
+    const result = output(await f.call("hub_inbox"));
+    expect(result).toContain(frame(normal)); expect(result).toContain("LOCAL_HELD_FALLBACK");
+    expect(result).toContain("2 more waiting"); expect(result).toContain("Held message bodies are unavailable");
+    const repeated = output(await f.call("hub_inbox"));
+    expect(repeated).not.toContain("LOCAL_HELD_FALLBACK"); expect(repeated).toContain(frame(normal));
+    expect(f.requests.filter(row => ["delivery_complete", "delivery_receipt"].includes(row.t))).toEqual([]);
+  } finally { await f.close(); }
+});

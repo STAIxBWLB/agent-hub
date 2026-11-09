@@ -1,3 +1,4 @@
+import { renderHeldInbox } from "../hub/delivery-public.ts";
 import { realPath } from "../hub/project.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
@@ -479,11 +480,12 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
-    let remote: string[] = [], notice = "", polling = "", counted = false, heldHint = "", metadataWarning = "", heldMetadata: unknown;
+    let remote: string[] = [], notice = "", polling = "", counted = false, heldHint = "", metadataWarning = "", heldBodies = "", heldMetadata: unknown;
     if (hub) {
       try {
         const res = await hub.request({ t: "inbox" });
         heldMetadata = res.held;
+        try { heldBodies = renderHeldInbox(res.heldRead); } catch { heldBodies = "Held message bodies are unavailable; inspect the queue before repeating an action."; }
         const metadataUnavailable = heldMetadataUnavailable(res.held);
         heldHint = renderHeldHint(res.held, Date.now(), !deliveryOnly);
         if (metadataUnavailable) metadataWarning = `Delivery confirmation metadata is unavailable; inspect ahub queue list --peer ${sanitize(peerId)} before deciding whether anything is waiting.`;
@@ -492,7 +494,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
         else {
           pendingQueued = { queued: typeof res.waiting === "number" ? res.waiting : 0, important: typeof res.waitingImportant === "number" ? res.waitingImportant : 0 };
           remote = (res.envs as Envelope[]).map(frame);
-          if (!heldHint && Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10) polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
+          if (!heldHint && !heldBodies && Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10) polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
           // #713: a pull drains what fits one read; what is left is said plainly, with what to do about it. The count already says how many remain, so the pending hint adds only the important ones (#221).
           if (res.waiting) { notice = `(${res.waiting} more waiting: call hub_inbox again before you start work)`; counted = true; }
         }
@@ -502,6 +504,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     const out = [...inbox.splice(0), ...remote];
     if (notice) out.push(notice);
     if (heldHint) out.push(heldHint);
+    if (heldBodies) out.push(heldBodies);
     if (metadataWarning) out.push(metadataWarning);
     let body = out.length ? out.join("\n\n") : "(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.";
     if (out.length === 1 && out[0] === heldHint && heldHint && heldMetadataNeedsReviewOnly(heldMetadata)) {
@@ -509,7 +512,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     }
     const result = text(polling ? `${body}\n${polling}` : body);
     if (counted) Object.defineProperty(result, QUEUED_COUNTED, { value: true });
-    if (heldHint || metadataWarning) Object.defineProperty(result, HELD_HINT_INCLUDED, { value: true });
+    if (heldHint || heldBodies || metadataWarning) Object.defineProperty(result, HELD_HINT_INCLUDED, { value: true });
     return detached === "detached by the person" ? { ...result, isError: true } : result;
   }
   if (name === "hub_send") {

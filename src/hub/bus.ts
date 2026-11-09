@@ -711,6 +711,18 @@ export class Bus {
     return this.storageError ? undefined : this.journal?.heldDeliveryHints(peer, canExposeAccepted);
   }
 
+  /** Read held originals without changing transport, retry or task evidence. */
+  heldInbox(peer: PeerId) {
+    if (this.closed || this.storageError || !this.journal) throw new Error("held inbox unavailable");
+    return this.journal.heldInbox(peer, this.peers.get(peer)?.acceptedSettlement === "explicit", this.opts.pullBudgetBytes?.() ?? PULL_BUDGET_BYTES);
+  }
+
+  hasHeldReviewScope(peer: PeerId): boolean {
+    if (this.closed || this.storageError) return true;
+    try { return this.journal?.hasHeldReviewScope(peer, this.peers.get(peer)?.acceptedSettlement === "explicit", this.opts.pullBudgetBytes?.() ?? PULL_BUDGET_BYTES) ?? false; }
+    catch { return true; } // Unknown provenance excludes observers without failing the caller.
+  }
+
   /** Whether timeout-originated holds still protect the recovery cause from supersession. */
   hasAcceptedTimeoutHolds(): boolean {
     if (this.closed || this.storageError || !this.journal) throw new Error("delivery timeout hold state unavailable");

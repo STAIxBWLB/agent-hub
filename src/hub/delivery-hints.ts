@@ -1,5 +1,6 @@
 import { KINDS, sanitize, type Kind } from "./envelope.ts";
 
+export const HELD_DELIVERY_ROWS = 32;
 export const DELIVERY_RETRY_WARNING = sanitize("Hub redelivery warning: An earlier attempt of this delivery is uncertain; check for its effects before acting.");
 export interface HeldDeliveryHints {
   count: number;
@@ -10,7 +11,7 @@ export function heldDeliveryHints(rows: readonly HeldDeliveryHints["rows"][numbe
   const result: HeldDeliveryHints = { count, rows: [], truncated: count > rows.length };
   for (const row of rows) {
     const value = { ...row, senders: row.senders.map(sanitize) };
-    if (result.rows.length >= 32 || Buffer.byteLength(JSON.stringify({ ...result, rows: [...result.rows, value] }), "utf8") > 3500) { result.truncated = true; break; }
+    if (result.rows.length >= HELD_DELIVERY_ROWS || Buffer.byteLength(JSON.stringify({ ...result, rows: [...result.rows, value] }), "utf8") > 3500) { result.truncated = true; break; }
     result.rows.push(value);
   }
   return result;
@@ -20,7 +21,7 @@ export function renderHeldHint(value: unknown, now = Date.now(), recipientRetry 
   const held = value as HeldDeliveryHints;
   const kinds = new Set<string>(KINDS);
   try {
-    if (!Number.isSafeInteger(held.count) || held.count < 1 || !Array.isArray(held.rows) || held.rows.length > 32 || held.rows.length > held.count || typeof held.truncated !== "boolean" || Buffer.byteLength(JSON.stringify(held), "utf8") > 4096) return "";
+    if (!Number.isSafeInteger(held.count) || held.count < 1 || !Array.isArray(held.rows) || held.rows.length > HELD_DELIVERY_ROWS || held.rows.length > held.count || typeof held.truncated !== "boolean" || Buffer.byteLength(JSON.stringify(held), "utf8") > 4096) return "";
     if (held.rows.some(row => !row || typeof row !== "object" || typeof row.id !== "string" || !row.id.length || row.id.length > 256 || !Number.isFinite(row.createdAt) || !Array.isArray(row.senders) || !Array.isArray(row.kinds) || row.senders.some(sender => typeof sender !== "string" || sender.length > 256) || row.kinds.some(kind => !kinds.has(kind)))) return "";
   } catch { return ""; }
   if (held.rows.some(row => row.state !== undefined && row.state !== "accepted" && row.state !== "needs_review")) return "";
