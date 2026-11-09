@@ -343,7 +343,7 @@ test("incoming done refs in a foreign scope cannot persist staged consent on a r
 test("a same-description Symbol cannot forge Board carry authority (#1328)", async () => {
   const r = await ready(), before = clone(r.current()), revision = r.board.statusRevision(), changes: unknown[] = [];
   r.board.onChange = (...args) => { changes.push(args); };
-  const forgedAuthority = Symbol("HOST_SPEC_ACCEPTANCE_CARRY") as Parameters<Board["updateWithSpecAcceptance"]>[1];
+  const forgedAuthority: Parameters<Board["updateWithSpecAcceptance"]>[1] = Symbol("HOST_SPEC_ACCEPTANCE_CARRY") as Parameters<Board["updateWithSpecAcceptance"]>[1];
   expect(() => r.board.updateWithSpecAcceptance(
     { source: r.source.id, cancellationRevision: r.sourceCancellationRevision()!, acceptance: r.sourceAcceptance }, forgedAuthority,
     r.destinationId, "codex", "lifecycle", { sdlc: { ...before.sdlc!, stage: "build" } }, undefined, {}, before.history.length,
