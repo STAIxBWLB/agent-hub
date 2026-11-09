@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { Board, type ResearchCampaignRecord } from "../src/hub/board.ts";
 import { USER } from "../src/hub/envelope.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+import { loadRouting } from "../src/hub/routing.ts";
 import { canonicalJson } from "../src/hub/packs.ts";
 import { campaignHash, type ResearchCampaignContract } from "../src/hub/research-campaign.ts";
 import { protocolHash, type ExperimentAttemptInput, type ExperimentAttemptRecord, type ExperimentProtocolContract, type ExperimentProtocolRecord, type ExperimentWriteFence } from "../src/hub/research-experiments.ts";
@@ -46,6 +49,30 @@ function fixture() {
   };
   return { file, campaign, parent, taskId, variantId, fence, record, save, attempt, get board() { return board; }, restart() { board.close(); board = new Board(file); } };
 }
+
+test("lineage withholds historical public output after policy narrowing without paging or disclosing the row", () => {
+  const f = fixture(), stored = f.save(), attempt = f.board.createExperimentAttempt(f.attempt("public-output", "1", stored.hash), f.fence());
+  const output = f.board.appendExperimentEvent(attempt.attemptId, "output-key", { kind: "output", body: { id: "d-0123456789ab", sha256: "c".repeat(64) } }, [], "local", NOW, false, 0, f.fence());
+  expect(output.private).toBe(false);
+  f.restart();
+  const bus = new Bus({ batchMs: 0 }), routing = loadRouting(tmpdir()), deny: string[] = [];
+  clean.push(() => bus.closeJournal());
+  const tasks = new Tasks({ board: f.board, bus, cwd: tmpdir(), project: f.campaign.project, roles: {}, notify: () => {}, deny,
+    routing: () => ({ ...routing, signals: { ...routing.signals, pii_patterns: [] } }),
+    executionLineage: { projectKey: "fixture-project", cursorKey: "fixture-private-cursor-key-0000001" } });
+  const queries = [{ attemptId: attempt.attemptId }, { root: { v: 1, tool: "ahub", projectKey: "fixture-project", kind: "output", id: `${attempt.attemptId}:1`, sha256: "c".repeat(64) }, task: { id: f.taskId, created: f.board.get(f.taskId)!.created } }];
+  for (const query of queries) {
+    const page = tasks.executionLineage(USER, query);
+    if (page.state !== "available") throw new Error("stored public output must be visible before narrowing");
+    expect(page.nodes.some(node => node.ref.kind === "output" && node.ref.id === `${attempt.attemptId}:1`)).toBe(true);
+  }
+  deny.push("d-0123456789ab");
+  let reads = 0;
+  f.board.experimentEvents = () => { reads++; throw new Error("withheld event page must not be read"); };
+  for (const query of queries) expect(tasks.executionLineage(USER, query)).toEqual({ state: "unavailable", reason: "unsupported" });
+  expect(tasks.executionLineage(USER, { taskId: f.taskId }).state).toBe("available");
+  expect(reads).toBe(0);
+});
 
 test("protocols and attempts persist without execution; duplicate keys preserve identity and restart readback", () => {
   const f = fixture(), before = f.board.list(), stored = f.save();

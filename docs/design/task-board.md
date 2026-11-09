@@ -165,6 +165,21 @@ Stored evidence adds a conditional `research_evidence` recovery feature and
 store, preserving older recovery records; an empty database requires no new
 feature. Provenance never manufactures a person verdict or readiness result.
 
+## Execution-reference admission (#1220 T2)
+
+`Tasks.linkExecutionReference` admits deduplicated inert metadata using the current
+local task id, creation identity, actor role and flow revision. Privacy and role
+checks run before reads and again after screening, before the atomic Board write.
+An identical reference replay creates no second row; stale authority never becomes
+valid because the metadata already exists. Only these admitted references add
+persistence. Read models reuse existing task/attempt rows and recorded evidence,
+with an explicit owning-task scope for dispatch/output/deliverable roots. They
+perform no whole-board scan, native probe, memory write or external resolution.
+Foreign producer keys remain declared target metadata in their own namespace.
+Review currency retains the exact historical head/hash and never carries to
+changed output. The bounds, unavailable equivalence and source-bound cursors are
+specified in [the execution-reference contract](execution-reference.md).
+
 ## Read models and policy extensions
 
 Agent list reads return bounded, newest-updated compact pages built from public rows, with a keyset cursor and explicit detail/ID reads. Console compatibility is separate. Pagination is not a frozen snapshot during concurrent edits; its purpose is bounded communication without bypassing private-row projection ([#1083](https://github.com/STAIxBWLB/agent-hub/issues/1083)).

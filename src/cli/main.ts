@@ -1225,6 +1225,31 @@ const commands: Record<string, () => Promise<void> | void> = {
     return entry.execute(context);
   }])),
 
+  lineage: async () => {
+    const { parseLineageCommand, renderExecutionLineage, validateLineageReply, validateLineageLink } = await import("./lineage.ts");
+    let command;
+    try { command = parseLineageCommand(args); } catch (error) { return fail((error as Error).message); }
+    if (liveTest && command.op === "link") return fail("live-test cannot register execution links; retry without --live-test as the task's authorized actor");
+    const hub = await connect();
+    try {
+      if (!hub.features.includes("execution_lineage")) return fail("running hub lacks execution_lineage support; upgrade and restart the hub, then retry ahub lineage");
+      const { op, json, ...message } = command;
+      const result = await hub.request({ t: op === "show" ? "lineage_show" : "lineage_link", ...message });
+      if (result.ok !== true) return fail(`${terminalText(result.error ?? "lineage request refused").replace(/[\r\n]+/g, " ").slice(0, 512)}; check task scope, current flow revision and source access before retrying ahub lineage`, result.refusalAudited === true, result.authorityRefused);
+      const options = { json };
+      if (op === "show") {
+        let lineage;
+        try { lineage = validateLineageReply(result.lineage); } catch (error) { return fail((error as Error).message); }
+        if (options.json) console.log(JSON.stringify(lineage, null, 2));
+        else console.log(renderExecutionLineage(lineage).join("\n"));
+      } else {
+        let link;
+        try { link = validateLineageLink(result.link, command); } catch (error) { return fail((error as Error).message); }
+        if (options.json) console.log(JSON.stringify(link, null, 2));
+        else console.log(`Declared execution metadata link ${link.already ? "already registered" : "registered"} for task #${link.taskId}; this does not attest to producer execution.`);
+      }
+    } finally { hub.close(); }
+  },
   model: async () => {
     const { parseModelCommand, projectModelStatus } = await import("./model.ts");
     let command;

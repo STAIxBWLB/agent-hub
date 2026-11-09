@@ -91,6 +91,12 @@ Review of PR #1052 found that full-index trust sweeps and hashing every retained
 
 The ledger review of PR #1052 found that applying the startup admission wait to worker completion could strand the ledger in running state after contention or a crash. Signed process ownership, an atomic dead-owner replacement, a normal worker wait and read-only doctor paths keep deferred maintenance recoverable and visible.
 
+On 2026-11-09, #1220 T1 classified malformed root/limit input as source corruption.
+T2 initially repeated that cause error for an explicit attempt address whose id
+was not an owner-supported attempt id. The query-validation rule in tasks.md
+separates caller mistakes from source failures; the execution-lineage and owner
+fixtures cover both cases, including source-lookup traps and neutral agent replies.
+
 On 2026-11-09, the #1320 Record read projection used the global configuration
 revision. A roster-only reload then discarded a held public recall response, so
 the existing #315 preface test lost its preface even though the independent
