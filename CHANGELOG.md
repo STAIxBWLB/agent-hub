@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.35.0
+
 - Managed headless peers can author compact amem Record capture rows from final answers (#1320), following the package records policy and existing privacy fences. Record lines are removed from shared replies; bounded memory preference uses proven generated-note IDs and anchors without deleting unrelated notes or promoting capture into curated evidence.
 - Hub memory sync supplies amem's public placement attestation per pass (#1173). Typed writer refusals retain their closed category/cause and next step in status and the dashboard, including when the transport returns a generic or quiet result. Placement activation remains a person-run action.
 
