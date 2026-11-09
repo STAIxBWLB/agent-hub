@@ -3844,8 +3844,8 @@
     {
       "id": "queue-pressure-plan-gate-handoff",
       "file": "src/hub/tasks.ts",
-      "search": "const origin = this.d.board.queuePressureStallPage(task.id - 1, 1).rows.find(row => row.task === task.id);",
-      "replacement": "const origin = stall;",
+      "search": "if (this.isHeld(latest)) this.d.board.clearStall(task.id);",
+      "replacement": "if (false) this.d.board.clearStall(task.id);",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "a queue origin hands off to a plan gate after one GitHub read despite unrelated queue wakes"
     },
