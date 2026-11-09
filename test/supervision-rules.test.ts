@@ -48,7 +48,7 @@ test("AC1: ordinary progress, unequal failures and a cleared streak trigger noth
 test("elapsed silence alone is never a trigger: the same records a long time later read the same", () => {
   const quiet = { tasks: [{ id: 13, state: "in_progress" as TaskState, history: [{ at: 0, event: "accepted" }, { at: 9_999_999_999_999, event: "assigned" }] }] };
   expect(evaluateSupervision(quiet)).toEqual({ observations: [], gap: [] });
-  expect(taskRevision(quiet.tasks[0]!)).toEqual({ revision: "1:none", from: 1 });
+  expect(taskRevision(quiet.tasks[0]!)).toEqual({ revision: "1:none", from: 1, accepted: 0 });
 });
 
 test("a changed deliverable invalidates the check recorded on that revision", () => {
@@ -89,6 +89,20 @@ test("declared overlap with integration evidence, or a side that never accepted,
   expect(kinds({ tasks: [task(26, ["proposed", "assigned", "accepted", "done", "approved"]), task(27, ["proposed", "assigned", "accepted"])].map((row) => ({ ...row, state: (row.id === 26 ? "approved" : "in_progress") as TaskState })), overlaps: [{ task: 27, other: 26 }] })).toEqual([]);
 });
 
+test("an overlap whose window is clipped reports unknown coverage instead of assuming no integration", () => {
+  const quiet = Array.from({ length: MAX_RECORDS }, () => "done" as const);
+  const facts: SupervisionFacts = {
+    tasks: [task(70, ["proposed", "assigned", "accepted", ...quiet, "integration requested"]), task(71, ["proposed", "assigned", "accepted"])],
+    overlaps: [{ task: 70, other: 71 }],
+  };
+  const evaluation = evaluateSupervision(facts);
+  // The integration request sits one record past the prefix, so the rule cannot decide: a gap, not an observation.
+  expect(evaluation.observations.filter((observation) => observation.rule === "declared_overlap_without_integration")).toEqual([]);
+  expect(evaluation.gap.filter((gap) => gap.rule === "declared_overlap_without_integration")).toEqual([{ rule: "declared_overlap_without_integration", version: 1, task: 70, revision: "1:none", reason: "history-truncated" }]);
+  // The same pair read inside the prefix is decided, so the gap is about coverage and not about the rule.
+  expect(kinds({ tasks: [task(70, ["proposed", "assigned", "accepted", "done", "integration requested"]), task(71, ["proposed", "assigned", "accepted"])], overlaps: [{ task: 70, other: 71 }] })).toEqual([]);
+});
+
 test("an overlap naming a task outside the fact set is unknown coverage, never a silent pass", () => {
   const facts: SupervisionFacts = { tasks: [task(28, ["proposed", "assigned", "accepted"])], overlaps: [{ task: 28, other: 29 }] };
   expect(evaluateSupervision(facts)).toEqual({ observations: [], gap: [{ rule: "declared_overlap_without_integration", version: 1, task: 28, revision: "1:none", reason: "no-history" }] });
@@ -108,6 +122,22 @@ test("a hand-over starts a new revision, so the failures before it and after it 
   expect(shadow.observe(after)).toHaveLength(1); // the new attempt is a new observation, not a duplicate of the old one
   expect(shadow.observations().map((observation) => observation.revision)).toEqual(["1:none", "3:none"]);
   expect(shadow.counts()).toMatchObject({ evaluations: 3, observations: 2, deduped: 1 });
+});
+
+test("a plan revision starts an attempt of its own, so the previous plan's failures are not re-emitted", () => {
+  const plan = (revision: number) => ({ planRevision: { revision, fingerprint: `f${revision}` } });
+  const changed: Item[] = [...failing(), ["planned", plan(2)]];
+  // Two failures under plan 1 stay plan 1's: the new revision has no record yet, so it reports nothing instead of them.
+  expect(evaluateSupervision({ tasks: [task(61, changed)] }).observations).toEqual([]);
+  // The acceptance still governs the attempt even though the plan change moved the window past it.
+  expect(taskRevision(task(61, changed))).toEqual({ revision: "1:2", from: 9, accepted: 2 });
+  // A failure recorded under the new plan pairs only with one recorded under the new plan.
+  const pairing = task(62, [...changed, ["check failed", { checkKey: "implement" }], "done", ["check failed", { checkKey: "implement" }]]);
+  const observations = evaluateSupervision({ tasks: [pairing] }).observations;
+  expect(observations.map((observation) => observation.revision)).toEqual(["1:2"]);
+  expect(observations[0]!.refs).toEqual(["history:9", "history:11"]);
+  // And a hand-over still clears the acceptance, so a plan change cannot carry the previous owner's acceptance forward.
+  expect(taskRevision(task(63, ["proposed", "assigned", "accepted", "reassigned", ["planned", plan(2)]]))).toEqual({ revision: "2:2", from: 5, accepted: -1 });
 });
 
 test("one revision is bounded: the per-revision cap counts what it refused instead of storing it", () => {
@@ -151,6 +181,16 @@ test("AC2: shadow mode keeps counts and bounded ids, with zero worker turns, act
   // Nothing a rule reports can carry a note, a finding or a file body: the record is a closed shape of codes and ids.
   expect(JSON.stringify(shadow.observations())).not.toContain("secret");
   expect(Object.keys(shadow.observations()[0]!).sort()).toEqual(["action", "limits", "reason", "refs", "revision", "rule", "task", "trigger", "version"]);
+});
+
+test("AC2: retained gaps are bounded too, and a refused gap is counted instead of stored", () => {
+  const tasks = Array.from({ length: MAX_OBSERVATIONS + 1 }, (_, index) => task(200 + index, delivered()));
+  const shadow = new ShadowSupervisor();
+  expect(shadow.observe({ tasks })).toEqual([]);
+  expect(shadow.counts()).toMatchObject({ evaluations: 1, observations: 0, deduped: 0, suppressed: 1, gap: MAX_OBSERVATIONS, workerTurns: 0, actionWrites: 0, notifications: 0 });
+  // The one gap that still cannot be retained is refused again rather than silently forgotten.
+  shadow.observe({ tasks });
+  expect(shadow.counts()).toMatchObject({ suppressed: 2, gap: MAX_OBSERVATIONS });
 });
 
 test("AC2: the rule module has no clock, timer, emit path, board write or private-task reader", () => {

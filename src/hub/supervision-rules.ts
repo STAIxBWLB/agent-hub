@@ -115,19 +115,26 @@ export interface TaskRevision {
   revision: string;
   /** First history index inside the current revision. */
   from: number;
+  /**
+   * History index of the acceptance that still governs this revision, or `-1` when none does. A plan revision keeps the
+   * acceptance (the same owner continues) but moves `from` past it, so this can be earlier than `from`.
+   */
+  accepted: number;
 }
 
 /**
  * The work attempt a record belongs to: the number of owner episodes and the host-authored plan revision. It is not
  * `history.length`: unrelated bookkeeping (a check result, a quiet hub entry) must not split one observation into two.
+ * A plan revision starts an attempt of its own, so failures recorded under the previous plan are not read as this one's.
  */
 export function taskRevision(task: Pick<TaskRevisionFacts, "history">): TaskRevision {
-  let episodes = 0, from = 0, plan = "none";
+  let episodes = 0, from = 0, plan = "none", accepted = -1;
   for (const [index, entry] of task.history.entries()) {
-    if (EPISODE_EVENTS.has(entry.event)) { episodes += 1; from = index + 1; }
-    if (entry.planRevision) plan = String(entry.planRevision.revision);
+    // A reassignment, an escalation or a reopen hands the work to another attempt, so an earlier acceptance stops governing.
+    if (EPISODE_EVENTS.has(entry.event)) { episodes += 1; from = index + 1; accepted = entry.event === "accepted" ? index : -1; }
+    if (entry.planRevision) { plan = String(entry.planRevision.revision); from = index + 1; }
   }
-  return { revision: `${episodes}:${plan}`, from };
+  return { revision: `${episodes}:${plan}`, from, accepted };
 }
 
 /** One classified failure, in a closed vocabulary: the kind of failure, never its text. */
@@ -144,10 +151,7 @@ interface Side {
   task: TaskRevisionFacts;
   revision: string;
   from: number;
-  /**
-   * History index of the acceptance that opened this revision, or `-1`. An acceptance is an episode event, so one
-   * recorded inside the window would have moved `from` past it: the only acceptance a revision carries is its opener.
-   */
+  /** From `taskRevision`: the acceptance still governing this revision, which a plan change can leave before the window. */
   accepted: number;
   window: SupervisionHistoryFact[];
   limits: ObservationLimits;
@@ -194,8 +198,11 @@ function invalidatedCheck(side: Side, measurement: DeliverableMeasurementFact | 
   return { observation: { rule: "deliverable_invalidated_check", version: SUPERVISION_RULE_VERSION.deliverable_invalidated_check, task: side.task.id, revision: side.revision, trigger: `check:${stale.slice(0, MAX_PER_REVISION).join(",")}`, refs: [`history:${side.from + check}`, ...stale.map((id) => `deliverable:${id}`)].slice(0, MAX_REFS), limits: side.limits, action: "recheck", reason: "stale_check" } };
 }
 
-/** Integration evidence recorded after an acceptance, inside the revision that acceptance opened. */
-const integratedAfter = (side: Side, accepted: number): boolean => side.window.slice(accepted - side.from + 1).some((entry) => INTEGRATION_EVENTS.has(entry.event));
+/**
+ * Integration evidence recorded after an acceptance. A plan change can leave the acceptance before the window, so the
+ * read starts at the acceptance when it is inside it and at the window's first record otherwise.
+ */
+const integratedAfter = (side: Side, accepted: number): boolean => side.window.slice(Math.max(0, accepted - side.from + 1)).some((entry) => INTEGRATION_EVENTS.has(entry.event));
 
 /**
  * Declared overlap that outlived both owners' acceptance of their current revision, with no integration evidence since.
@@ -210,6 +217,8 @@ function unintegratedOverlap(pair: DeclaredOverlapFact, sides: Map<number, Side>
   const accepted = [mine.accepted, theirs.accepted] as const;
   if (accepted[0] < 0 || accepted[1] < 0) return {};
   if (integratedAfter(mine, accepted[0]) || integratedAfter(theirs, accepted[1])) return {};
+  // Integration past the read prefix is unknown, not absent: a clipped window cannot report the pair as unintegrated.
+  if (mine.limits.truncated || theirs.limits.truncated) return { gap: gapOf("declared_overlap_without_integration", low, mine.revision, "history-truncated") };
   return {
     observation: {
       rule: "declared_overlap_without_integration", version: SUPERVISION_RULE_VERSION.declared_overlap_without_integration, task: low, revision: mine.revision,
@@ -227,9 +236,8 @@ function unintegratedOverlap(pair: DeclaredOverlapFact, sides: Map<number, Side>
 export function evaluateSupervision(facts: SupervisionFacts): SupervisionEvaluation {
   const observations: SupervisionObservation[] = [], gaps: SupervisionGap[] = [], sides = new Map<number, Side>();
   for (const task of facts.tasks) {
-    const { revision, from } = taskRevision(task);
+    const { revision, from, accepted } = taskRevision(task);
     const window = task.history.slice(from, from + MAX_RECORDS);
-    const accepted = task.history[from - 1]?.event === "accepted" ? from - 1 : -1;
     sides.set(task.id, { task, revision, from, accepted, window, limits: { records: window.length, truncated: task.history.length - from > MAX_RECORDS } });
   }
   const keep = (reading: Reading): void => { if (reading.observation) observations.push(reading.observation); if (reading.gap) gaps.push(reading.gap); };
@@ -245,13 +253,7 @@ export function evaluateSupervision(facts: SupervisionFacts): SupervisionEvaluat
     if (!repeated.length) gaps.push(gapOf("repeated_failure", side.task.id, side.revision, "history-truncated"));
     if (!check.observation && !check.gap) gaps.push(gapOf("deliverable_invalidated_check", side.task.id, side.revision, "history-truncated"));
   }
-  for (const pair of facts.overlaps ?? []) {
-    const overlap = unintegratedOverlap(pair, sides);
-    keep(overlap);
-    if (overlap.observation || overlap.gap) continue;
-    const low = Math.min(pair.task, pair.other), high = Math.max(pair.task, pair.other);
-    if (sides.get(low)?.limits.truncated || sides.get(high)?.limits.truncated) gaps.push(gapOf("declared_overlap_without_integration", low, sides.get(low)?.revision ?? sides.get(high)?.revision ?? "0:none", "history-truncated"));
-  }
+  for (const overlap of facts.overlaps ?? []) keep(unintegratedOverlap(overlap, sides));
   return { observations: observations.sort((a, b) => (observationKey(a) < observationKey(b) ? -1 : observationKey(a) > observationKey(b) ? 1 : 0)), gap: gaps.sort((a, b) => (gapKey(a) < gapKey(b) ? -1 : gapKey(a) > gapKey(b) ? 1 : 0)) };
 }
 
@@ -259,7 +261,7 @@ export interface ShadowCounts {
   evaluations: number;
   observations: number;
   deduped: number;
-  /** Observations a bound refused (the retained cap or the per-revision cap); they are counted, never stored. */
+  /** Observations and gaps a retention bound refused; they are counted, never stored. */
   suppressed: number;
   gap: number;
   /** AC2: shadow mode has no effect path at all, so these are the literal type zero. */
@@ -285,7 +287,12 @@ export class ShadowSupervisor {
   observe(facts: SupervisionFacts): SupervisionObservation[] {
     this.evaluations += 1;
     const evaluation = evaluateSupervision(facts), added: SupervisionObservation[] = [];
-    for (const gap of evaluation.gap) this.gaps.set(gapKey(gap), gap);
+    for (const gap of evaluation.gap) {
+      const key = gapKey(gap);
+      if (this.gaps.has(key)) continue;
+      if (this.gaps.size >= MAX_OBSERVATIONS) { this.suppressed += 1; continue; }
+      this.gaps.set(key, gap);
+    }
     for (const observation of evaluation.observations) {
       const key = observationKey(observation);
       if (this.retained.has(key)) { this.deduped += 1; continue; }

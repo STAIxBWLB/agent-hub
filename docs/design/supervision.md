@@ -34,9 +34,9 @@ Nothing is read from a private task, a cloud observer or a native transcript, an
 
 ## Revision identity
 
-An observation binds to a work attempt, not to a history length. A revision is the number of owner episodes (`accepted`, `reassigned`, `escalated`, `reopened`) and the host-authored plan revision, written as `<episodes>:<plan>`; the current attempt starts at the record after the last episode event. Unrelated bookkeeping (a check result, a quiet entry) therefore cannot split one pattern into two, and replaying the same records cannot move an observation to a different revision.
+An observation binds to a work attempt, not to a history length. A revision is the number of owner episodes (`accepted`, `reassigned`, `escalated`, `reopened`) and the host-authored plan revision, written as `<episodes>:<plan>`; the current attempt starts at the record after the last episode event or plan revision, whichever is later. Unrelated bookkeeping (a check result, a quiet entry) therefore cannot split one pattern into two, and replaying the same records cannot move an observation to a different revision. A plan revision starts an attempt of its own: failures recorded under the previous plan are not read as this plan's and cannot pair with one recorded under the new plan.
 
-An acceptance is an episode event, so a revision's acceptance is the record that opened it (the entry before the attempt's first record); an acceptance recorded inside the attempt would have opened a new one. The overlap rule depends on that boundary.
+The acceptance that governs a revision is the last one before it. An acceptance is an episode event, so an acceptance recorded inside the attempt would have opened a new one; a plan revision keeps the acceptance because the same owner continues, which can leave the acceptance before the attempt's first record. A hand-over clears it: a reassignment, escalation or reopen hands the work to another attempt, and the previous owner's acceptance no longer covers it. The overlap rule depends on both boundaries.
 
 ## Rules
 
@@ -52,7 +52,7 @@ Ordinary progress triggers nothing: a passing check, an unequal pair of failures
 
 ## Unknown coverage is an output, never a zero
 
-A rule that cannot decide says so with a **gap**: rule id, version, task, revision and one of `no-history`, `no-deliverable-measurement`, `history-truncated`. A revision longer than one rule reads is read as a prefix, and every rule that saw only the prefix reports `history-truncated`; a pair naming a task outside the fact set reports `no-history`. Gap and observation are separate lists, so "nothing fired" and "nothing could be decided" can never be mistaken for each other.
+A rule that cannot decide says so with a **gap**: rule id, version, task, revision and one of `no-history`, `no-deliverable-measurement`, `history-truncated`. A revision longer than one rule reads is read as a prefix, and every rule that saw only the prefix reports `history-truncated`; a pair naming a task outside the fact set reports `no-history`. An overlap whose clipped window shows no integration evidence reports `history-truncated` instead of an observation, because integration may sit past the prefix. Gap and observation are separate lists, so "nothing fired" and "nothing could be decided" can never be mistaken for each other.
 
 ## Bounds
 
@@ -61,14 +61,14 @@ A rule that cannot decide says so with a **gap**: rule id, version, task, revisi
 | `MAX_RECORDS` | 64 | records one rule reads from one revision; a longer revision is a prefix and reports `truncated` |
 | `REPEAT_FLOOR` | 2 | equal classified failures before the repetition rule fires: the first is an incident, the second a pattern |
 | `MAX_REFS` | 8 | record refs one observation may carry |
-| `MAX_OBSERVATIONS` | 100 | observations one shadow supervisor retains |
+| `MAX_OBSERVATIONS` | 100 | observations and gaps one shadow supervisor retains |
 | `MAX_PER_REVISION` | 3 | observations one supervisor retains per rule, task and revision |
 
-The two retention bounds count what they refuse instead of storing it, so a bound never reads as "nothing to report".
+The retention bounds count what they refuse instead of storing it, so a bound never reads as "nothing to report". A refused observation or gap increments `suppressed` and is not kept; a gap that still cannot be retained on a later evaluation is refused and counted again rather than silently dropped.
 
 ## The shadow evaluator contract
 
-`ShadowSupervisor.observe(facts)` evaluates, keeps only what is new, and returns the observations it added. An observation is deduplicated by `(rule, task, revision, trigger)`: a replayed fact set, a duplicate event or a third equal failure adds nothing and increments `deduped`. Retention is bounded, ordered by that key, and counts `evaluations`, `observations`, `deduped`, `suppressed` and `gap`.
+`ShadowSupervisor.observe(facts)` evaluates, keeps only what is new, and returns the observations it added. An observation is deduplicated by `(rule, task, revision, trigger)`: a replayed fact set, a duplicate event or a third equal failure adds nothing and increments `deduped`. Retention is bounded and ordered by that key for observations and by `(rule, task, revision, reason)` for gaps, and the counters are `evaluations`, `observations`, `deduped`, `suppressed` and `gap`.
 
 Shadow mode has no effect path at all, and the counters are the literal type zero: `workerTurns: 0`, `actionWrites: 0`, `notifications: 0`. A non-zero value would not typecheck, so AC2 is a property of the type and not only of a fixture. There is no resident worker and no recurring timer; evaluation attaches to events a caller already has.
 
