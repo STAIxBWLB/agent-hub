@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import vm from "node:vm";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
@@ -224,6 +225,29 @@ test("daemon-supplied currentness fence is rechecked after each read", async () 
 test("CLI policy admits only conductor routing and refuses delegated person attribution", () => {
   expect(classifyPeerCommand("sdlc", ["adopt-merge", "1", "--pr", "7"])).toBe("conductor");
   expect(liveTestRefusal("sdlc", ["adopt-merge", "1", "--pr", "7"])).toBe(true);
+});
+
+test("daemon rechecks socket authority after a fresh external-root proof services callbacks", async () => {
+  const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const start = source.indexOf('        if (msg.op === "adopt-merge") {'), end = source.indexOf('        if (msg.op === "merge") {', start);
+  expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  const client = { role: "tools", peer: "conductor", externalOwner: {} }, socket = { data: client, readyState: 1 };
+  let closeDuringProbe = false, writes = 0;
+  let receive!: (value: Record<string, unknown>) => void;
+  const reply = new Promise<Record<string, unknown>>(resolve => { receive = resolve; });
+  const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(`(() => { ${source.slice(start, end)} })();`);
+  vm.runInNewContext(compiled, { c: client, sock: socket, msg: { op: "adopt-merge", id: 1, pr: 7 }, USER,
+    WebSocket: { OPEN: 1 }, reply: receive, recoveryActive: () => false, stopping: false, turns: new Map(), taskOpsInFlight: 0, sanitize: (text: string) => text,
+    operationalCurrent: () => () => { if (socket.readyState !== 1) throw new Error("session closed"); },
+    currentExternalTools: () => { if (closeDuringProbe) socket.readyState = 3; return true; },
+    tasks: { adoptMerge: async (_by: string, _id: number, _pr: number, fence: () => string | undefined) => {
+      // Model the final write fence after the remote await. The synchronous root proof services a close callback.
+      closeDuringProbe = true; const reason = fence(); if (reason) throw new Error(reason);
+      writes++; return { task: 1, state: "approved" };
+    } },
+  });
+  expect(await reply).toMatchObject({ ok: false, error: expect.stringContaining("reconnect") });
+  expect(writes).toBe(0);
 });
 
 test("adopt-merge control requests always reply to invalid arguments, missing task and unauthorized callers", async () => {
