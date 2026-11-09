@@ -1,14 +1,19 @@
 import { createHash } from "node:crypto";
 
 /** Safe, process-local view of the most recent machine memory sync. */
-export type MemorySyncCause = "declined" | "remote" | "binding" | "stopped" | "transport" | "unknown";
+export type MemorySyncCause = "declined" | "remote" | "binding" | "stopped" | "transport" | "writer" | "unknown";
+/** Closed words of a refused writer attestation (agent-mem `PlacementWriterContextError`); never its message, a path or a version. */
+export interface MemorySyncWriterRefusal { writerCategory?: string; writerCauseClass?: string }
+export const WRITER_CATEGORIES: readonly string[] = ["running CLI", "host package", "setup receipt", "declared writer", "active locator", "home floor", "writer renewal", "unknown"];
+export const WRITER_CAUSE_CLASSES: readonly string[] = ["missing", "changed", "unavailable"];
+const closedWriter = (value: unknown, allowed: readonly string[]): string | undefined => typeof value === "string" && allowed.includes(value) ? value : undefined;
 export interface MemorySyncPlacementCounts { withheldCount: number; exportedCount: number }
 export type MemorySyncOutcome =
   | { state: "notrun" }
   | { state: "not-configured"; at: number }
   | { state: "stopped"; at: number }
   | { state: "ok"; at: number; withheldCount?: number; exportedCount?: number }
-  | { state: "failed"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsKnown?: false; placementActive?: false };
+  | { state: "failed"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsKnown?: false; placementActive?: false } & MemorySyncWriterRefusal;
 
 export interface MemorySyncState {
   outcome: MemorySyncOutcome;
@@ -19,7 +24,7 @@ export interface MemorySyncState {
 export type MemorySyncEvent =
   | { type: "success"; at: number; withheldCount?: number; exportedCount?: number }
   | { type: "quiet"; at: number; state: "not-configured" | "stopped" }
-  | { type: "failure"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string; placementActive?: false };
+  | { type: "failure"; at: number; cause: MemorySyncCause; declinedCount?: number; declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string; placementActive?: false } & MemorySyncWriterRefusal;
 
 export const initialMemorySyncState = (): MemorySyncState => ({ outcome: { state: "notrun" } });
 const MAX_DECLINED_ROWS = 20_000;
@@ -50,12 +55,18 @@ export function memorySyncPlacementCounts(value: unknown): MemorySyncPlacementCo
 export function reduceMemorySync(state: MemorySyncState, event: MemorySyncEvent): { state: MemorySyncState; logFailure: boolean } {
   if (event.type === "success") return { state: { outcome: { state: "ok", at: event.at, ...placementCounts(event.withheldCount, event.exportedCount) } }, logFailure: false };
   if (event.type === "quiet") return { state: { outcome: { state: event.state, at: event.at } }, logFailure: false };
-  const signature = [event.cause, event.declinedCount ?? "", event.declinedIdsFingerprint ?? (event.declinedIdsKnown === false ? "ids-unknown" : ""), event.failureDetailHash ?? ""].join("\0");
+  const signature = [event.cause, event.declinedCount ?? "", event.declinedIdsFingerprint ?? (event.declinedIdsKnown === false ? "ids-unknown" : ""), event.failureDetailHash ?? "", event.cause === "writer" ? closedWriter(event.writerCategory, WRITER_CATEGORIES) ?? "" : "", event.cause === "writer" ? closedWriter(event.writerCauseClass, WRITER_CAUSE_CLASSES) ?? "" : ""].join("\0");
   const changed = state.failureSignature !== signature;
   return {
-    state: { outcome: { state: "failed", at: event.at, cause: event.cause, ...(event.declinedCount === undefined ? {} : { declinedCount: event.declinedCount }), ...(event.declinedIdsKnown === false ? { declinedIdsKnown: false as const } : {}), ...(event.cause === "declined" && event.placementActive === false ? { placementActive: false as const } : {}) }, failureSignature: signature },
+    state: { outcome: { state: "failed", at: event.at, cause: event.cause, ...(event.declinedCount === undefined ? {} : { declinedCount: event.declinedCount }), ...(event.declinedIdsKnown === false ? { declinedIdsKnown: false as const } : {}), ...(event.cause === "declined" && event.placementActive === false ? { placementActive: false as const } : {}), ...writerFields(event) }, failureSignature: signature },
     logFailure: changed,
   };
+}
+
+function writerFields(value: { cause?: string } & MemorySyncWriterRefusal): MemorySyncWriterRefusal {
+  if (value.cause !== "writer") return {};
+  const writerCategory = closedWriter(value.writerCategory, WRITER_CATEGORIES), writerCauseClass = closedWriter(value.writerCauseClass, WRITER_CAUSE_CLASSES);
+  return { ...(writerCategory ? { writerCategory } : {}), ...(writerCauseClass ? { writerCauseClass } : {}) };
 }
 
 export interface MemorySyncView {
@@ -67,6 +78,8 @@ export interface MemorySyncView {
   withheldCount?: number;
   exportedCount?: number;
   placementActive?: false;
+  writerCategory?: string;
+  writerCauseClass?: string;
   nextStep?: string;
 }
 
@@ -75,6 +88,7 @@ export function memorySyncNextStep(cause: MemorySyncCause): string {
     : cause === "remote" ? "configure a private sync remote"
     : cause === "binding" ? "ahub memory profile-check"
     : cause === "stopped" ? "retry after hub restart"
+    : cause === "writer" ? "repair the amem install and its host pin, then a person runs amem migrate --sync-placement --dry-run"
     : "run ahub memory sync as a person";
 }
 
@@ -91,6 +105,7 @@ export function memorySyncView(state: MemorySyncState, availability: "enabled" |
     ...(outcome.declinedCount === undefined ? {} : { declinedCount: outcome.declinedCount }),
     ...(outcome.declinedIdsKnown === false ? { declinedIdsKnown: false } : {}),
     ...(outcome.cause === "declined" && outcome.placementActive === false ? { placementActive: false } : {}),
+    ...writerFields(outcome),
     nextStep: memorySyncNextStep(outcome.cause),
   };
 }

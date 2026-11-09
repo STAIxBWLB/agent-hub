@@ -248,7 +248,8 @@ import { SourceRegistry } from "./sources.ts";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead, sourceRead, validateSourceRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
-import { classifyMemorySyncFailure, initialMemorySyncState, memorySyncDeclinedDetails, memorySyncFailureDetailHash, memorySyncView, memorySyncPlacementCounts, reduceMemorySync } from "./memory-sync-state.ts";
+import { hostPlacementAttestation, memorySyncErrorText, writerRefusalOf, type WriterRefusal } from "./memory-sync-attestation.ts";
+import { classifyMemorySyncFailure, initialMemorySyncState, memorySyncDeclinedDetails, memorySyncFailureDetailHash, memorySyncView, memorySyncNextStep, memorySyncPlacementCounts, reduceMemorySync } from "./memory-sync-state.ts";
 import { createMemorySyncPolicy, inspectDeclinedMemoryRows } from "./memory-sync-policy.ts";
 import { DEFAULT_SPECS_CONFIG, parseSpecsConfig, type SpecsConfig } from "./specs-config.ts";
 
@@ -2111,18 +2112,23 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Machine sync, when a person set a remote; one log line per failure, never a blocked turn. Stopping aborts and awaits it. */
   function syncNow(): Promise<void> {
     if (!memoryStore || syncRun || stopping) return syncRun ?? Promise.resolve();
-    const recordFailure = (cause: ReturnType<typeof classifyMemorySyncFailure> & { declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string; placementActive?: false }, errorText?: string) => {
-      if (quietSyncError(errorText)) {
+    let attestation: ReturnType<typeof hostPlacementAttestation> | undefined;
+    const recordFailure = (cause: ReturnType<typeof classifyMemorySyncFailure> & { declinedIdsFingerprint?: string; declinedIdsKnown?: false; failureDetailHash?: string; placementActive?: false; writerCategory?: string; writerCauseClass?: string }, errorText?: string) => {
+      if (cause.cause !== "writer" && quietSyncError(errorText)) {
         const state = errorText?.startsWith("stopped") ? "stopped" : "not-configured";
         memorySyncState = reduceMemorySync(memorySyncState, { type: "quiet", at: Date.now(), state }).state;
         return;
       }
       const reduced = reduceMemorySync(memorySyncState, { type: "failure", at: Date.now(), ...cause });
       memorySyncState = reduced.state;
-      if (reduced.logFailure && !quietSyncError(errorText)) log(`hub memory sync failed: ${cause.cause}${cause.cause === "declined" ? ` (${cause.declinedCount ?? 0} declined)` : ""}`);
+      if (reduced.logFailure) log(`hub memory sync failed: ${cause.cause}${cause.cause === "declined" ? ` (${cause.declinedCount ?? 0} declined)` : cause.cause === "writer" ? ` (${cause.writerCategory ?? "unknown"}, ${cause.writerCauseClass ?? "unavailable"}); next: ${memorySyncNextStep("writer")}` : ""}`);
     };
+    /** #1173: a refused writer attestation is its own closed cause with its category and next step, never a silent skip or a generic unknown. */
+    const writerFailure = (refusal: WriterRefusal) => ({ cause: "writer" as const, writerCategory: refusal.category, writerCauseClass: refusal.causeClass });
     const recordUnexpectedFailure = (error: unknown) => {
-      const errorText = typeof error === "string" ? error : error instanceof Error ? error.message : undefined;
+      const refusal = attestation?.refusal() ?? writerRefusalOf(error);
+      if (refusal) { recordFailure(writerFailure(refusal), undefined); return; }
+      const errorText = memorySyncErrorText(error);
       if (quietSyncError(errorText)) {
         recordFailure(classifyMemorySyncFailure(error), errorText);
         return;
@@ -2134,11 +2140,16 @@ export async function startDaemon(opts: DaemonOptions) {
         checkMemory();
         const policy = currentMemorySyncPolicy();
         const policyVersion = memorySyncPolicyVersion();
+        // Fresh per pass: agent-mem re-measures every writer install on each check; the legacy transport ignores it.
+        attestation = hostPlacementAttestation(memoryStore!.profile.home);
         const r = await (opts.memorySync ?? syncMemory)(memoryStore!, {
           signal: syncStop.signal,
+          placementAttestation: attestation.attest,
           screen: row => policy.screen(row, true).ok,
           policyVersion: () => memorySyncPolicyVersion(),
         });
+        const refused = attestation.refusal();
+        if (refused) { recordFailure(writerFailure(refused)); return; }
         if (memorySyncPolicyVersion() !== policyVersion) {
           recordFailure({ cause: "binding" }, "binding changed");
           return;

@@ -159,6 +159,8 @@ machine, and the hub tells the planner when an installed version is not verified
 Before you migrate a memory home with `amem`, read
 [memory profiles and rollout](docs/memory.md#selected-memory-profile). Every hub that
 uses the home must run a version that understands the new layout.
+Machine sync uses amem's public writer attestation; status and the dashboard
+show an unverified writer's cause and the person-run next step.
 
 ## Where it is going
 
