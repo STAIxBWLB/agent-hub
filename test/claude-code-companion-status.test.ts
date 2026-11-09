@@ -8,7 +8,8 @@ const registration = [{ root, id: binding.projectId }];
 const status = { cwd: root, projectId: binding.projectId, version: "0.35.0", peers: { claude: { state: "idle", queued: 2, attached: true, needsReview: 1, doing: "PRIVATE" } }, tasks: { in_review: 1 }, detail: "PRIVATE" };
 const board = [{ id: 3, title: "public", state: "in_review", notes: "PRIVATE" }, { id: 4, title: "[pii] PRIVATE", state: "in_progress", detail: "PRIVATE" }];
 const response = (value: unknown) => ({ stdout: JSON.stringify(value), exitCode: 0 });
-function harness(script: Response[] = [response(registration), response(status), response(registration), response(board)]) {
+const completeRead = (): Response[] => [response(registration), response(status), response(registration), response(board), response(registration)];
+function harness(script: Response[] = completeRead()) {
   const cli = new FakeClaudeCompanionCli(script);
   let clock = 10000, selected = root, toggles = 0;
   const published: Reading[] = [];
@@ -18,7 +19,7 @@ function harness(script: Response[] = [response(registration), response(status),
 describe("Claude companion closed projections", () => {
   test("projects roots and identifiers stay literal; private fields are discarded and pii is id only", async () => {
     const h = harness(); await h.controller.refresh();
-    expect(h.cli.calls.map(c => c.argv)).toEqual(["projects", "status", "projects", "board"].map(kind => ["--project", root, kind, "--json"]));
+    expect(h.cli.calls.map(c => c.argv)).toEqual(["projects", "status", "projects", "board", "projects"].map(kind => ["--project", root, kind, "--json"]));
     expect(h.cli.calls.every(c => c.cwd === root)).toBe(true);
     const projected = h.published[0]!;
     expect(projected.board).toEqual([{ id: 3, publicTitle: "public", state: "in_review" }, { id: 4 }]);
@@ -38,18 +39,47 @@ describe("Claude companion closed projections", () => {
     const h = harness([response(registration), response(status), response([])]); await h.controller.refresh();
     expect(h.cli.calls).toHaveLength(3); expect(h.published).toEqual([{ state: "binding" }]);
   });
-  test("partial, unknown, stale, old version and offline are distinct; absent is never zero", async () => {
+  test("partial, unknown, stale and old version are distinct; absent is never zero", async () => {
     const partial = projectReading({ ...status, peers: { claude: { state: "new" } } }, [], binding, 100);
     expect(partial.state).toBe("partial"); expect(partial.peers).toEqual([{ id: "claude", state: "unknown" }]);
     expect(lines(partial, 101).join("\n")).toContain("queue unknown");
     expect(aged(partial, 60101).state).toBe("stale"); expect(aged(partial, 99).state).toBe("unknown");
     expect(aged({ state: "running", fetchedAt: 100 }, 101).state).toBe("running");
     expect(projectReading({ cwd: root, projectId: binding.projectId }, [], binding, 100).state).toBe("unavailable_version");
-    const h = harness([response(registration), { exitCode: 1, stdout: "", stderr: "no hub running for fixture" }]);
-    // C0 fake rejects nonzero itself; production classification remains independently covered below.
-    await h.controller.refresh(); expect(h.published[0]?.state).toBe("unknown");
-    h.ports.run = async () => ({ exitCode: 1, stdout: "", stderr: "no hub running for fixture" }); h.tick(1000);
-    await h.controller.refresh(); expect(h.published.at(-1)?.state).toBe("offline");
+  });
+  test("a held board cannot publish across replaced, missing or duplicate registration", async () => {
+    for (const replacement of [[{ root, id: "p_replacement" }], [], [...registration, ...registration]]) {
+      const h = harness(); const run = h.ports.run;
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const atBoard = new Promise<void>(resolve => { entered = resolve; });
+      let rows = registration, afterBoard = false, rechecks = 0;
+      h.ports.run = async call => {
+        if (afterBoard && call.argv[2] === "projects") {
+          rechecks++;
+          return new FakeClaudeCompanionCli([response(rows)]).run(call);
+        }
+        if (call.argv[2] === "board") { entered(); await held; afterBoard = true; }
+        return run(call);
+      };
+      const reading = h.controller.refresh(); await atBoard;
+      rows = replacement; release(); await reading;
+      expect(rechecks).toBe(1); expect(h.published).toEqual([{ state: "binding" }]);
+      expect(JSON.stringify(h.published)).not.toContain("public");
+    }
+  });
+  test("offline uses the exact real CLI stderr prefix, never a substring", async () => {
+    for (const [stderr, exitCode, state] of [
+      ["ahub: no hub running for /fixture/state (run: ahub up)\n", 1, "offline"],
+      ["ahub: request failed: no hub running for /fixture/state\n", 1, "nonzero"],
+      ["no hub running for /fixture/state\n", 1, "nonzero"],
+      ["ahub: no hub running for /fixture/state\n", 2, "nonzero"],
+    ] as const) {
+      const h = harness(); const calls: string[] = [];
+      h.ports.run = async call => { calls.push(call.argv[2]!); return call.argv[2] === "projects" ? response(registration) : { stdout: "", stderr, exitCode }; };
+      await h.controller.refresh(); expect(h.published).toEqual([{ state }]);
+      expect(calls).toEqual(["projects", "status"]);
+    }
   });
   test("malformed/schema/bytes/timeout/nonzero failures have fixed projection only", async () => {
     expect(() => parse("{" )).toThrow(CompanionError);
@@ -74,41 +104,50 @@ describe("event and gesture boundaries", () => {
   test("only bounded event reads, interval and one inflight coalescing; no unsolicited loop", async () => {
     const h = harness(); let release!: () => void;
     const wait = new Promise<void>(resolve => { release = resolve; }); const run = h.ports.run;
-    h.ports.run = async call => { await wait; return run(call); };
-    const first = h.controller.event("session.start");
+    let entered!: () => void; const atRun = new Promise<void>(resolve => { entered = resolve; });
+    h.ports.run = async call => { entered(); await wait; return run(call); };
+    const first = h.controller.event("session.start"); await atRun;
     expect(h.controller.event("turn.end")).toBe(first);
-    release(); await first; expect(h.cli.calls).toHaveLength(4);
-    await h.controller.event("turn.end"); expect(h.cli.calls).toHaveLength(4);
-    h.tick(1001); await h.controller.event("tool.done", "unrelated"); expect(h.cli.calls).toHaveLength(4);
+    release(); await first; expect(h.cli.calls).toHaveLength(5);
+    await h.controller.event("turn.end"); expect(h.cli.calls).toHaveLength(5);
+    h.tick(1001); await h.controller.event("tool.done", "unrelated"); expect(h.cli.calls).toHaveLength(5);
   });
 
   test("long inflight events coalesce once, and a new selection survives the old finally", async () => {
-    const h = harness([response(registration), response(status), response(registration), response(board), response(registration), response(status), response(registration), response(board)]);
+    const h = harness([...completeRead(), ...completeRead()]);
     let release!: () => void;
     const wait = new Promise<void>(resolve => { release = resolve; }); const run = h.ports.run;
-    let firstCall = true;
-    h.ports.run = async call => { if (firstCall) { firstCall = false; await wait; } return run(call); };
-    const first = h.controller.refresh(); await Promise.resolve(); await Promise.resolve();
+    let firstCall = true; let entered!: () => void; const atRun = new Promise<void>(resolve => { entered = resolve; });
+    h.ports.run = async call => { if (firstCall) { firstCall = false; entered(); await wait; } return run(call); };
+    const first = h.controller.refresh(); await atRun;
     h.controller.refresh(); h.controller.refresh(); h.tick(2000); release(); await first;
-    expect(h.cli.calls).toHaveLength(8); expect(h.published).toHaveLength(2);
+    expect(h.cli.calls).toHaveLength(10); expect(h.published).toHaveLength(2);
     // A reset while an old result waits cannot overwrite the new selection.
     const race = harness(); let finish!: () => void;
     const held = new Promise<void>(resolve => { finish = resolve; }); let old = true;
-    race.ports.run = async call => { if (old) { old = false; await held; return response(registration); }
+    let enteredOld!: () => void; const oldAtRun = new Promise<void>(resolve => { enteredOld = resolve; });
+    race.ports.run = async call => { if (old) { old = false; enteredOld(); await held; return response(registration); }
       if (call.argv[2] === "projects") return response([{ root: "/new", id: "p_new" }]);
       if (call.argv[2] === "status") return response({ ...status, cwd: "/new", projectId: "p_new" });
       return response([]);
     };
-    const previous = race.controller.refresh(); await Promise.resolve(); await Promise.resolve();
-    race.select("/new"); race.controller.reset(); race.controller.refresh(); finish(); await previous;
+    const previous = race.controller.refresh(); await oldAtRun;
+    race.select("/new"); race.controller.reset(); const selectedRead = race.controller.refresh(); finish(); await Promise.all([previous, selectedRead]);
     expect(race.published).toHaveLength(1); expect(race.published[0]?.state).toBe("partial");
+  });
+  test("completed hub tool prefixes refresh, unrelated tool names do not", async () => {
+    const h = harness([...completeRead(), ...completeRead()]);
+    await h.controller.event("tool.done", "mcp__plugin_agent-hub_agent-hub__hub_status"); expect(h.cli.calls).toHaveLength(5);
+    h.tick(1001); await h.controller.event("tool.done", "mcp__other__hub_status"); expect(h.cli.calls).toHaveLength(5);
+    await h.controller.event("tool.done", "mcp__agent-hub__hub_task_done"); expect(h.cli.calls).toHaveLength(10);
   });
   test("held success/error and disable never republish an old binding", async () => {
     for (const failure of [false, true]) {
       const h = harness(); let release!: () => void;
       const wait = new Promise<void>(resolve => { release = resolve; });
-      h.ports.run = async () => { await wait; if (failure) throw new Error("PRIVATE"); return response(registration); };
-      const first = h.controller.refresh(); await Promise.resolve(); await Promise.resolve();
+      let entered!: () => void; const atRun = new Promise<void>(resolve => { entered = resolve; });
+      h.ports.run = async () => { entered(); await wait; if (failure) throw new Error("PRIVATE"); return response(registration); };
+      const first = h.controller.refresh(); await atRun;
       h.controller.disable(); release(); await first;
       expect(h.published).toHaveLength(0);
       await h.controller.refresh(); expect(h.published).toHaveLength(0);
@@ -117,8 +156,9 @@ describe("event and gesture boundaries", () => {
   test("selection changes during a held read refuse; reset invalidates stale finally", async () => {
     const h = harness(); let release!: () => void;
     const wait = new Promise<void>(resolve => { release = resolve; });
-    h.ports.run = async () => { await wait; return response(registration); };
-    const first = h.controller.refresh(); await Promise.resolve(); await Promise.resolve();
+    let entered!: () => void; const atRun = new Promise<void>(resolve => { entered = resolve; });
+    h.ports.run = async () => { entered(); await wait; return response(registration); };
+    const first = h.controller.refresh(); await atRun;
     h.select("/new"); release(); await first; expect(h.published).toEqual([{ state: "binding" }]);
     h.controller.reset(); h.controller.disable(); expect(h.published).toHaveLength(1);
   });
@@ -133,7 +173,7 @@ test("declared registration on a fake host: pane, pass-through events, no hidden
   register((name: string, matcher: unknown, handler?: Handler) => { hooks.set(name, (handler ?? matcher) as Handler); }, {});
   let effects = 0, open = false;
   let reading: Reading | undefined;
-  const cli = new FakeClaudeCompanionCli([response(registration), response(status), response(registration), response(board)]);
+  const cli = new FakeClaudeCompanionCli(completeRead());
   const forbidden = () => { throw new Error("forbidden persistent or unrelated host access"); };
   const host = {
     session: { root: async () => { effects++; return root; } },
@@ -151,7 +191,7 @@ test("declared registration on a fake host: pane, pass-through events, no hidden
   const invoke = (name: string, event: any, result: any = event) => hooks.get(name)!(host, event, async passed => { expect(passed).toBe(event); return result; });
   await invoke("command.run", { args: "refresh", origin: { kind: "plugin", name: "fixture" } }); expect(effects).toBe(0);
   const start = { cwd: root }; expect(await invoke("session.start", start)).toBe(start);
-  expect(cli.calls).toHaveLength(4); expect(open).toBe(false); expect(reading?.state).toBe("partial");
+  expect(cli.calls).toHaveLength(5); expect(open).toBe(false); expect(reading?.state).toBe("partial");
   const before = effects;
   const expected = await invoke("command.run", { args: "console", origin: { kind: "composer" } });
   for (const kind of ["plugin", "sdk", "bridge", "unclassified"]) {
@@ -171,4 +211,9 @@ test("declared registration on a fake host: pane, pass-through events, no hidden
   await invoke("command.run", { args: "", origin: { kind: "composer" } }); expect(open).toBe(true);
   await invoke("session.end", { reason: "exit" });
   const disabledEffects = effects; await invoke("command.run", { args: "refresh", origin: { kind: "composer" } }); expect(effects).toBe(disabledEffects);
+  const freshHooks = new Map<string, Handler>();
+  register((name: string, matcher: unknown, handler?: Handler) => { freshHooks.set(name, (handler ?? matcher) as Handler); }, {});
+  host.process.run = async () => { throw Object.assign(new Error("PRIVATE"), { code: "ENOENT" }); };
+  await freshHooks.get("session.start")!(host, start, async event => event);
+  expect(reading).toEqual({ state: "missing_cli" });
 });

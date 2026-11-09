@@ -9,7 +9,7 @@ export interface Ports {
   publish(reading: Reading): void | Promise<void>;
   toggle(): void | Promise<void>;
 }
-export const COMMAND_TEXT = { hub: "Hub pane toggled.", refresh: "Hub refresh requested.", invalid: "Use /hub, /hub refresh or /hub console." } as const;
+export const COMMAND_TEXT = { hub: "Hub pane command received.", refresh: "Hub refresh requested.", invalid: "Use /hub, /hub refresh or /hub console." } as const;
 export const commandText = (argument: string, root: string): string => argument === "console" ? consoleCommand(root) : argument === "refresh" ? COMMAND_TEXT.refresh : argument === "" ? COMMAND_TEXT.hub : COMMAND_TEXT.invalid;
 /** Session-local coordinator. Retains no raw CLI output; no timers and no persistent host APIs. */
 export class CompanionController {
@@ -52,7 +52,7 @@ export class CompanionController {
           if (!current() || await this.ports.realRoot() !== root) throw new CompanionError("binding");
           if ((result.durationMs ?? 0) > LIMITS.timeoutMs) throw new CompanionError("timeout");
           if (new TextEncoder().encode(result.stdout + (result.stderr ?? "")).length > LIMITS.maxOutputBytes) throw new CompanionError("oversized");
-          if (result.exitCode !== 0) throw new CompanionError(result.exitCode === 1 && (result.stderr ?? "").startsWith("no hub running") ? "offline" : "nonzero");
+          if (result.exitCode !== 0) throw new CompanionError(result.exitCode === 1 && (result.stderr ?? "").startsWith("ahub: no hub running for ") ? "offline" : "nonzero");
           return parse(result.stdout);
         };
         const binding = parseRegistration(await readBound("projects"), root, this.binding?.projectId);
@@ -64,6 +64,8 @@ export class CompanionController {
         // A registration is rechecked before every public data read.
         parseRegistration(await readBound("projects"), root, binding.projectId);
         const board = await readBound("board");
+        // Board rows have no binding header: verify their owner after the awaited read.
+        parseRegistration(await readBound("projects"), root, binding.projectId);
         const projection = projectReading(status, board, binding, this.ports.now());
         if (await this.ports.realRoot() !== root) throw new CompanionError("binding");
         if (current()) await this.ports.publish(projection);
