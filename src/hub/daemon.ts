@@ -11614,6 +11614,33 @@ export async function startDaemon(opts: DaemonOptions) {
           }
           return;
         }
+        if (msg.op === "adopt-merge") {
+          const asker = c.role === "console" ? USER : c.role === "tools" && c.peer ? c.peer : undefined;
+          if (!asker) return void reply({ ok: false, error: "only the person or the current configured conductor may adopt a merge; ask the person to run ahub sdlc adopt-merge" });
+          let actorCurrent: () => void;
+          const externalOwner = c.externalOwner;
+          try {
+            const sessionCurrent = c.role === "console" ? () => {
+              if (sock.data !== c || sock.readyState !== WebSocket.OPEN || c.role !== "console") throw new Error("person session changed");
+            } : operationalCurrent(sock);
+            actorCurrent = () => {
+              sessionCurrent();
+              if (c.peer !== (asker === USER ? undefined : asker) || c.externalOwner !== externalOwner || externalOwner && !currentExternalTools(c, true)) throw new Error("actor session or execution root changed");
+            };
+            actorCurrent();
+          }
+          catch { return void reply({ ok: false, error: "current person or configured conductor session unavailable; reconnect the conductor or ask the person to run ahub sdlc adopt-merge" }); }
+          const fence = () => {
+            try { actorCurrent(); } catch { return "person or conductor session changed; reconnect and retry ahub sdlc adopt-merge"; }
+            return recoveryActive() || stopping || c.peer && turns.get(c.peer)?.private ? "recovery, shutdown or a private turn holds adoption; retry ahub sdlc adopt-merge after it ends" : undefined;
+          };
+          taskOpsInFlight++;
+          void tasks.adoptMerge(asker, msg.id, msg.pr, fence).then(
+            result => reply({ ok: true, ...result }),
+            (error: Error) => reply({ ok: false, error: sanitize(error.message) }),
+          ).finally(() => { taskOpsInFlight--; });
+          return;
+        }
         if (msg.op === "merge") {
           // #786 T1: the person or the one configured conductor asks for a guarded merge. Every request gets a reply, a refusal included.
           const asker = c.role === "console" ? USER : c.role === "tools" && c.peer && conductorPeer(config.roles) === c.peer && !c.toolsOwner && !turns.get(c.peer)?.private && !contextPii(c.peer) ? c.peer : undefined;

@@ -1862,6 +1862,17 @@ const commands: Record<string, () => Promise<void> | void> = {
       } finally { hub.close(); }
       return;
     }
+    if (sub === "adopt-merge") {
+      const flags = takeFlags(args.slice(2), ["--pr"], []), pr = Number(flags.one["--pr"]);
+      if (flags.rest.length || !Number.isSafeInteger(id) || id! <= 0 || !Number.isSafeInteger(pr) || pr <= 0) fail("usage: ahub sdlc adopt-merge <task> --pr <n>");
+      const hub = await connect();
+      try {
+        const reply = await hub.request({ t: "sdlc", op: "adopt-merge", id, pr }, 60_000);
+        if (!reply.ok) fail(reply.error);
+        console.log(`task #${id}: merged outside the hub; approved`);
+      } finally { hub.close(); }
+      return;
+    }
     if (sub === "merge") {
       // #786 T1: the guarded merge of one approved task; a person or the configured conductor asks, the daemon re-reads every gate.
       // #899: the decision prints for a person; `--json` is the same view as a document. The presentation flags are read before the

@@ -27,7 +27,7 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     // #601: a campaign's draft, revise, approve and close are the person's verdicts; only `show` is a read. Without this an agent shell could run them as the person through `--live-test`.
     || (command === "study" && sub !== "show" && sub !== "experiments")
     || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
-    || (command === "board" && args[0] === "import") || (command === "sdlc" && (args[0] === "record" || args[0] === "accept" || args[0] === "accept-departure"))
+    || (command === "board" && args[0] === "import") || (command === "sdlc" && (args[0] === "record" || args[0] === "accept" || args[0] === "accept-departure" || args[0] === "adopt-merge"))
     || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet"
     // #691: trusting an untested agent CLI version is the person's consent, never a delegated live-test operation.
     || command === "autonomy" || command === "title"
@@ -155,7 +155,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (command === "stop") return "console";
   if (command === "sdlc" && ["release-guard", "release-guard-hook"].includes(args[0] ?? "")) return "allowed";
   // #786, #1063: guarded merge and recording explicitly instructed release consent admit the person or unique configured conductor; the daemon checks the role.
-  if (command === "sdlc" && ["merge", "authorize-release"].includes(args[0] ?? "")) return "conductor";
+  if (command === "sdlc" && ["merge", "authorize-release", "adopt-merge"].includes(args[0] ?? "")) return "conductor";
   if (command === "role") return ["list", "show"].includes(args[0] ?? "") ? "allowed" : "console";
   if (command === "task") {
     // #933: cancel, label and role act on the caller's own task only; the daemon refuses another peer's task by role (Tasks.cancel, task_catalog_role, task_label_check).

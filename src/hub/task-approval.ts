@@ -5,8 +5,8 @@ const fullHead = (value: unknown): string | undefined => typeof value === "strin
 
 /** The last approval remains historical evidence after a new delivery or a withdrawal. Unknown legacy heads stay unknown. */
 export function approvalBinding(task: Task): ApprovalBinding | undefined {
-  const verdict = task.history.findLast(entry => entry.event === "approved");
-  if (!verdict) return undefined;
+  const verdict = task.history.findLast(entry => entry.event === "approved" || entry.event === "merged outside the hub");
+  if (!verdict || verdict.event === "merged outside the hub") return undefined;
   const head = fullHead(verdict.reviewedHead) ?? fullHead(verdict.reviewFindings?.head)
     ?? (task.state === "approved" ? fullHead(task.sdlc?.reviewedHead) : undefined);
   const latestHead = fullHead(task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead);

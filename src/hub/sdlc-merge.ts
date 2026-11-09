@@ -2,7 +2,7 @@ import { findingsForHead, findingHead, findingTally } from "./review-findings.ts
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
 import { evalGapBlockers, evalGateView, evalReportedGap, evalRequiredChecks, readEvalFor, type EvalResult } from "./eval-gate.ts";
 import { mergeCostFrom } from "./cost-governance.ts";
-import { readPrCostHistory, readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord } from "./sdlc.ts";
+import { parsePrEvidence, readPrCostHistory, readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord, type SdlcReceipt } from "./sdlc.ts";
 
 /**
  * #786 T1/T2: the one guarded merge. Given a task and the head its reviewer approved, it re-reads the PR (`readSdlcPr`) and the merge queue
@@ -88,6 +88,38 @@ function checkGates(evidence: PrEvidence, required: readonly string[], extra: re
     const state = !matches.length ? "missing" : matches.some(c => c.state === "failed") ? "failing" : matches.some(c => c.state === "pending") ? "pending" : matches.some(c => c.state !== "passed") ? "unknown" : undefined;
     if (state) gates.push(`required check ${name}: ${state}`);
   }
+  return gates;
+}
+
+/** One bounded GitHub snapshot for adoption: no bodies, no merge or cleanup mutation, and complete head-bound review/check coverage. */
+export async function readAdoptMergeEvidence(receipt: SdlcReceipt, run: SdlcGh): Promise<PrEvidence | undefined> {
+  if (!REPO.test(receipt.repo ?? "") || receipt.repo!.startsWith("-") || !Number.isSafeInteger(receipt.pr) || receipt.pr! <= 0) return undefined;
+  const [owner, name] = receipt.repo!.split("/");
+  const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state reviewDecision isDraft mergeCommit{oid} reviewRequests(first:100){nodes{requestedReviewer{__typename}} pageInfo{hasNextPage}} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}} commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}}}}}";
+  try {
+    const result = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${receipt.pr}`]);
+    if (result.code !== 0) return undefined;
+    const response = JSON.parse(result.stdout), pr = response?.data?.repository?.pullRequest;
+    const commit = pr?.commits?.nodes?.length === 1 ? pr.commits.nodes[0]?.commit : undefined, checks = commit?.statusCheckRollup?.contexts;
+    if (response.errors !== undefined || !pr || commit?.oid !== pr.headRefOid || checks?.pageInfo?.hasNextPage !== false || !Array.isArray(checks.nodes)) return undefined;
+    const threads = pr.reviewThreads, requests = pr.reviewRequests;
+    const threadComplete = threads?.pageInfo?.hasNextPage === false && Array.isArray(threads.nodes) && threads.nodes.every((node: { isResolved?: unknown } | null) => typeof node?.isResolved === "boolean");
+    const requestComplete = requests?.pageInfo?.hasNextPage === false && Array.isArray(requests.nodes) && requests.nodes.every((node: { requestedReviewer?: { __typename?: unknown } } | null) => typeof node?.requestedReviewer?.__typename === "string");
+    // Files are outside adoption's decision. Keep their coverage explicitly unknown in the shared evidence shape.
+    return { ...parsePrEvidence({ ...pr, statusCheckRollup: checks.nodes, files: [], ...(threadComplete ? { unresolvedThreads: threads.nodes.filter((node: { isResolved: boolean }) => !node.isResolved).length } : {}), reviewRequests: requestComplete ? requests.nodes : undefined }), pathsComplete: false, typesComplete: false };
+  } catch { return undefined; }
+}
+
+/** #1328 T3: adoption observes a completed merge; it never dispatches a merge or invents a reviewer verdict. */
+export function adoptMergeGates(evidence: PrEvidence | undefined, head: string, required: readonly string[]): string[] {
+  if (!evidence) return ["PR evidence unavailable; restore GitHub access and retry ahub sdlc adopt-merge"];
+  const gates: string[] = [];
+  if (evidence.state !== "MERGED") gates.push("PR is not merged; complete the normal review and guarded merge before adopting it");
+  if (evidence.head !== head) gates.push("PR head differs from the task's last recorded full head; record the correct task head before retrying ahub sdlc adopt-merge");
+  if (evidence.unresolved === null || evidence.unresolved > 0) gates.push("PR review threads are unresolved or unknown; resolve the threads and restore complete GitHub readback before retrying ahub sdlc adopt-merge");
+  if (evidence.pendingReviews === null || evidence.pendingReviews > 0) gates.push("PR review requests are pending or unknown; settle the requests and restore complete GitHub readback before retrying ahub sdlc adopt-merge");
+  if (evidence.review === "changes_requested") gates.push("PR has a pending change request; settle the review before retrying ahub sdlc adopt-merge");
+  gates.push(...checkGates(evidence, required).map(gate => `${gate}; configure required_checks in .agenthub/sdlc.toml and get every required check green at the recorded head before retrying ahub sdlc adopt-merge`));
   return gates;
 }
 
