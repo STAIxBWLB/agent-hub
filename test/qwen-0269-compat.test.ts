@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMPAT, assessVersion } from "../src/adapters/compat.ts";
 
-test("Qwen ACP 0.26.9 is exact receipt-verified without widening dual-output or adjacent versions", () => {
+test("Qwen ACP 0.26.9 stays verified while its dual-output version and adjacent ACP versions remain refused", () => {
   expect(assessVersion("qwen", "0.26.9", [])).toEqual({ ok: true, state: "verified", version: "0.26.9" });
   for (const version of ["0.26.10", "0.27.1", "0.28.0"]) expect(assessVersion("qwen", version, []).ok, version).toBe(false);
   expect(COMPAT.qwen.receipt).toBe("docs/verification/2026-11-09-qwen-0270-acp.md");
-  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0"]);
   expect(Object.hasOwn(COMPAT.qwen, "line")).toBe(false);
   expect(Object.hasOwn(COMPAT["qwen-dual"], "line")).toBe(false);
   expect(assessVersion("qwen-dual", "0.26.9", []).ok).toBe(false);
