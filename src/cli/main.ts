@@ -46,6 +46,7 @@ import { autonomyHomeStatus, usedClaudeHomes } from "./autonomy-homes.ts";
 import { shellQuote } from "./shell-quote.ts";
 import { discoverClaudeHomes } from "./claude-homes.ts";
 import { setupClaudeHomes } from "./setup-homes.ts";
+import { setupResearchDefault } from "./setup-research.ts";
 import { registerAconPlugin } from "./acon-register.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
 import { PET_WINDOW_RETIRED_NOTICE, petPalette } from "../pet/config.ts";
@@ -76,7 +77,7 @@ import { inspectProject, startProject, stopProject, runProjectDaemon } from "../
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
-import { autonomyInheritanceChange, init, initSettingRows, planInit } from "./init.ts";
+import { autonomyInheritanceChange, init, initNextSteps, initResearchDefault, withInitResearch, initSettingRows, planInit } from "./init.ts";
 import { discoverInitChecks, withInitChecks } from "./init-required-checks.ts";
 import { INIT_USAGE, parseInitSettings } from "./init-settings.ts";
 import { promptGate, runInitPrompt, settingLines, shadowOffered, type InitAnswers } from "./init-prompt.ts";
@@ -1066,9 +1067,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     recoveryLauncherCurrent?.();
     assertLifecycleAvailable(cwd);
     const root = join(import.meta.dir, "..", "..");
-    const setupFlags = takeFlags(args.filter(arg => arg !== "--yes"), ["--agents"], []);
-    if (setupFlags.rest.length) fail("usage: ahub setup [--yes] [--agents <a,b>]");
+    if (args.includes("--research") && args.includes("--no-research")) fail("--research conflicts with --no-research; give one; nothing was written");
+    const research = args.includes("--research") ? true : args.includes("--no-research") ? false : undefined;
+    const setupFlags = takeFlags(args.filter(arg => !["--yes", "--research", "--no-research"].includes(arg)), ["--agents"], []);
+    if (setupFlags.rest.length) fail("usage: ahub setup [--yes] [--agents <a,b>] [--research|--no-research]");
+    if (research !== undefined && (liveTest || delegatedPeer || recoveryLauncherCurrent)) fail("the machine research default requires the person's own ahub setup; nothing was written");
     const registry = new Registry(), rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    let machineRoots = [cwd];
     let homesFailed = false, homesFailure: unknown;
     try {
       const found = recoveryLauncherCurrent || delegatedPeer ? await discoverClaudeHomes({ home: homedir(), env: process.env }) : await usedClaudeHomes(registry, homedir(), process.env);
@@ -1089,8 +1094,11 @@ const commands: Record<string, () => Promise<void> | void> = {
           ...(rl ? { ask: async (prompt: string) => { try { return await rl.question(prompt); } catch { return null; } } } : {}), print: line => console.log(terminalText(line)) });
         if (refused) fail(refused);
       }
+      if (research !== undefined) machineRoots = [...registry.list().map(row => row.root), cwd];
     } finally { registry.close(); rl?.close(); }
     if (homesFailed) fail(startupDiagnostic(homesFailure));
+    try { if (research !== undefined) assertLifecycleAvailable(cwd); const line = setupResearchDefault(hubHome(), machineRoots, research); if (line) console.log(terminalText(line)); }
+    catch (error) { return fail((error as Error).message); }
     // #935: register the acon console plugin (acon reads it at its next start; no acon install is needed for this).
     const acon = registerAconPlugin(hubHome(), join(root, "src", "ui", "plugin.ts"));
     console.log("error" in acon ? `acon plugin not registered: ${acon.error}` : acon.changed ? `acon plugin registered: ${acon.path}` : `acon plugin up to date: ${acon.path}`);
@@ -1107,6 +1115,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // A pack is a project file in .agenthub/roles/<name>.pack.json (#513a); init resolves the name and refuses an unknown one with the profiles and packs it knows.
     let requestedProfile = flags.one["--profile"];
     const newProject = !existsSync(join(cwd, ".agenthub/config.json"));
+    const initMachine = newProject ? readAutonomyDefaults(hubHome(), [cwd]) : undefined;
     let request = settings.request, asked = Object.keys(request.values).length > 0;
     let shadow = args.includes("--shadow"), releaseGuard = args.includes("--release-guard");
     // #1065 T2: a person at a terminal on a new project, with no flag that sets anything and no --yes, is asked each setting (init-prompt.ts). Every other run, including a delegated peer, a live test and any run
@@ -1119,8 +1128,9 @@ const commands: Record<string, () => Promise<void> | void> = {
       const ask = (question: string): Promise<string | null> => Promise.race([rl.question(question).catch(() => null), interrupted]);
       const machine = readAutonomyDefaults(hubHome(), [cwd]);
       const preview = (answers: InitAnswers): string[] => {
-        const rows = initSettingRows(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
-        const plan = planInit(cwd, answers.profile, answers.shadow, answers.releaseGuard, answers.request);
+        const planned = withInitResearch(cwd, answers.request, initMachine?.researchEnabled);
+        const rows = initSettingRows(cwd, answers.profile, answers.shadow, answers.releaseGuard, planned);
+        const plan = planInit(cwd, answers.profile, answers.shadow, answers.releaseGuard, planned);
         // The same autonomy-inheritance row `--dry-run` shows, from the one helper: a new project inherits the trusted machine preset after the writes unless the answer was off.
         const inherit = autonomyInheritanceChange(cwd, machine.enabled, answers.request.autonomy);
         if (inherit) plan.push(inherit);
@@ -1129,11 +1139,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       let result: Awaited<ReturnType<typeof runInitPrompt>>;
       try {
         result = await runInitPrompt({ ask, print: line => console.log(terminalText(line)) },
-          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), packs: [...loadPacks(cwd).packs.keys()], discoverChecks: async () => (await discoverInitChecks(cwd)).names, shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
+          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), machineResearch: initResearchDefault(cwd, initMachine?.researchEnabled), packs: [...loadPacks(cwd).packs.keys()], discoverChecks: async () => (await discoverInitChecks(cwd)).names, shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
       } finally { rl.close(); }
       if (!result.ok) { console.error(`ahub init: ${result.reason === "refused" ? result.message : result.reason === "interrupted" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === "refused" ? 1 : 0; return; }
       requestedProfile = result.answers.profile; request = result.answers.request; asked = Object.keys(request.values).length > 0; shadow = result.answers.shadow; releaseGuard = result.answers.releaseGuard;
     }
+    request = withInitResearch(cwd, request, initMachine?.researchEnabled);
     try { request = await withInitChecks(cwd, request); } catch (error) { return fail((error as Error).message); }
     // `--autonomy off` skips the machine inheritance on a new project; `inherit` is today's behaviour. Neither changes an existing project.
     const inheritAutonomy = newProject && request.autonomy !== "off";
@@ -1152,8 +1163,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     assertLifecycleAvailable(cwd);
     if (inheritAutonomy && delegatedPeer && readAutonomyDefaults(hubHome(), [cwd]).enabled) fail("machine autonomy inheritance is person-only; delegated live tests cannot apply it (ahub init --autonomy off skips it)");
-    let changed: string[];
-    try { changed = init(cwd, requestedProfile, shadow, releaseGuard, request); } catch (error) { return fail((error as Error).message); }
+    let changed: string[], nextSteps: string[];
+    try { nextSteps = initNextSteps(cwd, request); changed = init(cwd, requestedProfile, shadow, releaseGuard, request); } catch (error) { return fail((error as Error).message); }
     const project = registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
     if (newProject) {
@@ -1167,6 +1178,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     const config = projectConfig(), examples = resolveProfile(config.profile, config.profile_overrides).example_checks;
     if (examples.length) console.log(terminalText("Example checks (advisory):\n" + examples.map(example => "- " + example).join("\n")));
+    console.log(nextSteps.join("\n"));
   },
 
   // Internal: the detached daemon process started by ahub up or the manager.

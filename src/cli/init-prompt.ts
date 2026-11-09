@@ -85,6 +85,8 @@ const oneOf = (id: string, label: string, values: readonly string[], shown: stri
 export interface InitQuestionContext {
   /** The agent set `ahub setup` chose on this machine (the default shown for the agents question), or `undefined` for the shipped default. */
   machineAgents?: readonly string[];
+  /** Effective research default for this new project, read from the trusted setup choice (else off). */
+  machineResearch?: boolean;
   /** Project packs a profile answer may name besides the shipped profiles. */
   packs?: readonly string[];
   discoverChecks?: () => Promise<readonly string[]>;
@@ -107,7 +109,7 @@ export function initQuestions(context: InitQuestionContext = {}): InitQuestion[]
     id: "start.agents", label: "Agents ahub up starts", choices: `${START_AGENTS_ALLOWED.join(",")} as a comma list, or none`, shown: (context.machineAgents ?? START_AGENTS_DEFAULT).join(", ") || "none",
     read: text => INIT_SETTINGS.find(row => row.id === "start.agents")!.parse(text.trim().toLowerCase()),
   };
-  const switches = INIT_SETTINGS.filter(row => row.id.endsWith(".enabled") && !["specs.enabled", "memory.enabled", "snapshots.enabled"].includes(row.id));
+  const switches = INIT_SETTINGS.filter(row => row.id.endsWith(".enabled") && !["specs.enabled", "memory.enabled", "research.enabled", "snapshots.enabled"].includes(row.id));
   const all: InitQuestion[] = [
     profile,
     agents,
@@ -117,6 +119,7 @@ export function initQuestions(context: InitQuestionContext = {}): InitQuestion[]
     { id: "sdlc.required_checks", label: "Required CI checks", choices: "comma-separated names", shown: "none", read: text => INIT_SETTINGS.find(row => row.id === "sdlc.required_checks")!.parse(text) },
     oneOf("coordination", "Coordination", COORDINATION_MODES, shownDefault("coordination")),
     onOff("memory.enabled", "Shared memory", shownDefault("memory.enabled") as "on" | "off"),
+    onOff("research.enabled", "Research records", context.machineResearch === true ? "on" : "off"),
     onOff("snapshots.enabled", "Per-turn snapshots", shownDefault("snapshots.enabled") as "on" | "off"),
     ...switches.map(row => onOff(row.id, row.describe.charAt(0).toUpperCase() + row.describe.slice(1), shownDefault(row.id) as "on" | "off")),
     oneOf("autonomy", "Machine autonomy preset", AUTONOMY_CHOICES, "inherit"),

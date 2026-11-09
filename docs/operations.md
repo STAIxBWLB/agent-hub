@@ -1055,6 +1055,16 @@ ahub up
 `ahub init` writes the project configuration and managed instruction blocks.
 Run it after an upgrade when those blocks need refreshing.
 
+After a successful init, the short next-steps block says to review and commit
+`AGENTS.md`, `.agenthub/config.json` and the other shared init changes, keeping
+`config.local.json` untracked, then start with `ahub up` or `ahub claude` so hub
+pushes reach the session. In SDLC `advise` or `enforce`, it names the person's
+spec acceptance (`ahub sdlc accept <task> --issue <n>`), plan-departure consent
+when needed (`ahub sdlc accept-departure <task> <head> <reason...>`) and guarded
+merge (`ahub sdlc merge <task>`) after the owner calls `hub_task_done` on an open
+PR, reviewer approval and green exact-head CI. Preview, declined prompt and
+refusal paths print no success next steps.
+
 `ahub up` waits for authenticated readiness. After 12 seconds, a verified live
 child that is still pending produces a `still starting, pid N` message on stderr;
 the CLI keeps waiting and confirms the retained runtime when it becomes ready.
@@ -1071,8 +1081,8 @@ seed I/O from bounded usage-rollup I/O and records the isolated measurements.
 
 Settings flags (#1100) set the main project settings without a file edit.
 `--agents <a,b,...|none>` (`start.agents`) and `--autonomy inherit|off` (whether a
-new project inherits the machine autonomy preset) go to the untracked
-`config.local.json`. `--sdlc off|advise|enforce` sets `mode` in `sdlc.toml` (`off`
+new project inherits the machine autonomy preset), plus `--research`/`--no-research`
+(`research.enabled`), go to the untracked `config.local.json`. `--sdlc off|advise|enforce` sets `mode` in `sdlc.toml` (`off`
 writes no file on a new project). `--coordination advisory|turn-free`,
 `--memory`/`--no-memory`, `--snapshots`/`--no-snapshots` and `--pi`/`--no-pi` set
 their keys in `config.json`. On an existing project only a flag you give changes
@@ -1085,7 +1095,7 @@ and permissions have no flags; they stay file edits.
 A person at a terminal who runs `ahub init` on a new project with no flag that
 sets anything and no `--yes` is asked each setting in turn (#1065 T2): profile,
 the agents `ahub up` starts, design specs and their review mode, SDLC mode,
-coordination, shared memory, snapshots, the Pi peer, the machine autonomy
+coordination, shared memory, research records, snapshots, the Pi peer, the machine autonomy
 preset, the release guard, and shadow history (asked in a folder with no Git
 work tree, and kept for an existing shadow repository, never in a Git
 repository). Each question is one line, the label, the choices and the default in
@@ -1104,7 +1114,7 @@ existing project is never asked. The questions are built from the init settings
 table (`INIT_SETTINGS`), so a setting added there is asked without another
 change, and `test/init-prompt.test.ts` fails when the two disagree. The default
 in each bracket is read from where the writer gets it (`templates/config.json`,
-the loader's own defaults), and that test reads every one back through the
+the loader's own defaults, or the trusted setup research choice), and that test reads every one back through the
 loaders after a flagless `ahub init`, so a changed default cannot leave the
 prompt showing one value while Enter writes another. `--dry-run` and the
 prompt's plan take the machine-autonomy row from the same helper
@@ -1758,7 +1768,18 @@ redistributed (rules: [events](events.md#per-task-usage-reports)).
 
 ## Research records
 
-With `"research": { "enabled": true }` in `.agenthub/config.json` (off by default), the hub keeps one record per
+`ahub init --research` or `--no-research` chooses research recording in the
+project's untracked `.agenthub/config.local.json`. A new project defaults to
+the trusted machine choice from an explicit `ahub setup --research` or
+`ahub setup --no-research`, otherwise off. The choice is an optional boolean
+`research.enabled` in the existing owner-only `~/.agenthub/defaults.json`;
+setup preserves autonomy and the start-agent choice through the same guarded
+compare-and-swap. Ordinary `ahub setup` leaves research unchanged. Init only
+reads this default, never writes it, and refreshing an existing project changes
+research only with an explicit flag. Missing, unreadable or untrusted machine
+defaults remain off. The guided prompt shows the same choice its plan will write.
+
+With `"research": { "enabled": true }` in project configuration, the hub keeps one record per
 task that reaches a terminal state (approved or cancelled) in `~/.agenthub/research/`, shared by every project that opts in:
 outcome, review rounds and findings, delivery and merge figures, rework, failed checks, tokens and time per peer and model,
 never task or message text ([schema](research.md)). Unknown values are null and counted, never zero.
