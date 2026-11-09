@@ -5356,6 +5356,17 @@ selected roster and existing capabilities; the TUI is always a person's start.
 - If the hub cannot read the event file the peer is `detached`, shown as offline with a notice, never idle: Qwen itself keeps working, and the hub reattaches when the file is readable again.
 - Restart: if the hub restarts while your Qwen keeps running, it reads on from its saved offset (no event twice, no launch). If Qwen is gone, `ahub qwen --mode tui` starts `qwen -r <session id>` on the same two files; the earlier submits are not replayed and the recorded answers are not shared again. Recovery never restores this terminal as a headless worker, and `ahub stop qwen` refuses: end Qwen in its own terminal.
 
+The [2026-11-10 account-free Q2 receipt](verification/2026-11-10-qwen-0270-dual-output.md)
+records two distinct normal-Bus turns on matched private 0.26.1 and candidate
+0.27.0 packages: final counts are two user events, two final Stops and two
+ordinary fixture-provider requests after owned stop. Q3-Q7 remain NOT RUN, so
+this partial qualification does not add a qwen-dual version. The original
+native-busy-submit queued-turn claim was not reproduced by the v2 matched
+control; direct busy-submit is separate characterization. Adoption, reattachment
+and hub deny settlement do not prove native quiescence in every path. These
+fixture observations do not describe this repository's live peer or a real-model
+terminal session.
+
 Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)), 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)), 0.26.4 ([0.26.4 ACP receipt](verification/2026-10-31-qwen-0264-acp.md)), 0.26.5 ([0.26.5 ACP receipt](verification/2026-11-03-qwen-0265-acp.md)) and 0.26.8 ([0.26.8 ACP receipt](verification/2026-11-06-qwen-0268-acp.md)). The separate [0.26.4](verification/2026-10-31-qwen-0264-dual-output.md), [0.26.5](verification/2026-11-03-qwen-0265-dual-output.md), and [0.26.8](verification/2026-11-06-qwen-0268-dual-output.md) dual-output attempts did not establish their queued-turn criterion, so `qwen-dual` stays at 0.26.1. A CLI version label alone
 is insufficient: startup verifies its native identity/version and advertised mode
 ids before any prompt. The earlier local installation reported CLI 0.25.0 while

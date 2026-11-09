@@ -106,6 +106,7 @@ revision preserves both behaviors; capture still uses its stricter turn fence.
 
 ## Changes
 
+- 2026-11-10: #850 distinguishes normal-Bus Q2 proof from direct busy-submit characterization and preserves adoption/reattach/deny quiescence ceilings.
 - 2026-11-09: #1328 T6 extended the closed machine-default schema for an explicit setup research choice, reusing guarded publication and preserving the existing autonomy and start choices.
 
 ## 2026-11-10: Qwen dual-output Q2
@@ -129,3 +130,12 @@ report idle before proving native quiescence; deny marks the hub turn ended befo
 native consumption is acknowledged. Those existing ceilings prevent an absolute
 claim that no input can ever reach a native active turn. The premature deny/idle
 follow-up is outside this compatibility change; the production adapter is unchanged.
+
+The final account-free normal-Bus Q2 runs passed on the private 0.26.1 control
+and 0.27.0 candidate, with two user/final-stop/provider turns after evidence was
+frozen at owned stop. Two earlier normal-path controls failed the strict provider
+check despite observing two real turns. Shipped-source analysis showed `--bare`
+bypassed the private UI follow-up setting; the corrected fixture loads owned full
+settings. The earlier extra requests remain unattributed because their latest
+user bodies were not retained. The [dated receipt](../verification/2026-11-10-qwen-0270-dual-output.md)
+separates these attempts, the 0.26.1 config-only observation and pending Q3-Q7.
