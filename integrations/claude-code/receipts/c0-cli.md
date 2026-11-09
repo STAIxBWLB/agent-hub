@@ -24,9 +24,11 @@ This receipt proves CLI availability and a scratch daemon's read boundary. It do
 
 `tail` is also unsuitable by source inspection: `src/cli/main.ts` renders event, context, notice and permission free text. The companion excludes it rather than reading bodies or introducing a poller.
 
-Real `~/.claude/settings.json`, read-only SHA-256:
+Real `~/.claude/settings.json`, read-only SHA-256 at the isolated native-probe boundary only:
 
 - Before: `1935b1c8fb7fa8cc7530f25f472cad87d269b0b6e5e3803aecf41a2b799e1f70`
 - After: `1935b1c8fb7fa8cc7530f25f472cad87d269b0b6e5e3803aecf41a2b799e1f70`
 
-No real `statusLine`, statusline-tee or hub was loaded or edited. Scratch CLI proof is separate from the four NOT RUN surface receipts. No claim of native isolation confinement, supported mod version or UX improvement follows from these probes.
+A later read-only pre-push audit, independently confirmed at **2026-11-09T08:12:37Z**, observed SHA-256 `0c0243e6a7bc58d814ee26efe4d98469ffddffb013ed5d50dc1e3e6233cc2b2b`. Cause: **UNKNOWN**. The matching before/after hashes above cover the native-probe boundary, not the whole task or PR interval. No settings contents were read, no restore or write was attempted, and no further native probe was run after this observation.
+
+No real `statusLine`, statusline-tee or hub was loaded or edited by this task. Scratch CLI proof is separate from the four NOT RUN surface receipts. No claim of native isolation confinement, supported mod version or UX improvement follows from these probes.

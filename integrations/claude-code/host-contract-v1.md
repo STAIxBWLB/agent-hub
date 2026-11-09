@@ -6,7 +6,7 @@ The [JSON contract](host-contract-v1.json) is checked by `test/claude-code-compa
 
 # Evidence and capability decisions
 
-Installed Claude Code **2.1.319** ran only with isolated HOME and CLAUDE_CONFIG_DIR. A registered scratch hub outside Git used agent-hub **0.35.0**. [Direct evidence](receipts/c0-cli.md) separates successful command reads from unobserved mod APIs. No Claude credentials were copied and no model turn was used. An initial unrelated inherited credential environment was removed, then all retained probe outcomes were reproduced with an explicit noncredential environment allowlist; the receipt records the correction. The unchanged real settings hashes are recorded there and in JSON.
+Installed Claude Code **2.1.319** ran only with isolated HOME and CLAUDE_CONFIG_DIR. A registered scratch hub outside Git used agent-hub **0.35.0**. [Direct evidence](receipts/c0-cli.md) separates successful command reads from unobserved mod APIs. No Claude credentials were copied and no model turn was used. An initial unrelated inherited credential environment was removed, then all retained probe outcomes were reproduced with an explicit noncredential environment allowlist; the receipt records the correction. The matching real settings hashes at the native-probe boundary are recorded there and in JSON. A later read-only pre-push audit differed (confirmed 2026-11-09T08:12:37Z); cause UNKNOWN. This is time-separated evidence, not an unchanged-through-task claim.
 
 | C0 question | Verdict | Consequence |
 | --- | --- | --- |

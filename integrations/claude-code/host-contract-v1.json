@@ -17,7 +17,14 @@
     "claudeCredentialsCopied": false,
     "initialInheritedCredentialEnvironment": true,
     "finalProbeExplicitEnvironment": true,
-    "environmentCorrection": "The initial scratch environment snapshot retained an unrelated inherited credential variable. Both snapshots were deleted; version, host-kit and scratch CLI reads were repeated with an explicit noncredential environment allowlist. No value was printed, tracked or used for a model turn."
+    "environmentCorrection": "The initial scratch environment snapshot retained an unrelated inherited credential variable. Both snapshots were deleted; version, host-kit and scratch CLI reads were repeated with an explicit noncredential environment allowlist. No value was printed, tracked or used for a model turn.",
+    "realSettingsHashScope": "Before/after hashes cover the isolated native probe boundary only, not the entire task or PR interval.",
+    "laterSettingsHashObservation": {
+      "confirmedAt": "2026-11-09T08:12:37Z",
+      "sha256": "0c0243e6a7bc58d814ee26efe4d98469ffddffb013ed5d50dc1e3e6233cc2b2b",
+      "cause": "UNKNOWN",
+      "note": "A later read-only pre-push audit differed from the matching probe-boundary hashes. No settings contents were read, no restore or write was attempted, and no further native probe was run."
+    }
   },
   "capabilities": [
     {
