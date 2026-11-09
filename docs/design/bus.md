@@ -9,6 +9,7 @@ paths:
   - src/hub/envelope.ts
   - src/hub/limits.ts
   - src/hub/delivery-journal.ts
+  - src/hub/delivery-public.ts
   - src/hub/delivery-superseded.ts
   - src/hub/deferred-hub.ts
   - src/cli/reset.ts
