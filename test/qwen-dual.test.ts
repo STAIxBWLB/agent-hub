@@ -91,7 +91,8 @@ test("the compat entry for the dual-output contract verifies 0.26.1 only, and do
   expect(assessVersion("qwen-dual", "0.26.1", []).ok).toBe(true);
   expect(assessVersion("qwen-dual", "0.25.0", []).ok).toBe(false);
   expect(assessVersion("qwen", "0.26.0", []).ok).toBe(true);
-  expect(assessVersion("qwen", "0.27.0", []).ok).toBe(false);
+  expect(assessVersion("qwen", "0.27.0", []).ok).toBe(true);
+  expect(assessVersion("qwen-dual", "0.27.0", []).ok).toBe(false);
 });
 
 test("start prepares private input and event files and the launch carries the dual-output flags", async () => {

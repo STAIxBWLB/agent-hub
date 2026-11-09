@@ -3677,12 +3677,11 @@ Agent CLIs update themselves often, and a hub release cannot follow every one. O
 
 ### Qwen 0.27.0 receipt attempt (#849)
 
-The [0.27.0 ACP attempt](verification/2026-11-09-qwen-0270-acp.md) stopped during private installation:
-its required actual-configuration fingerprint changed. The global/managed package fingerprint stayed
-unchanged and owned cleanup was confirmed, but ACP, permission, separate lifecycle replay and
-[model-setter](verification/2026-11-09-qwen-0270-model-setter-1317.md) legs were NOT RUN. No candidate
-admission follows from a successful install or source gate: `COMPAT.qwen` retains its last passing
-0.26.9 receipt, Qwen live setters remain unsupported, and `qwen-dual` stays separately verified on 0.26.1.
+The [0.27.0 ACP receipt](verification/2026-11-09-qwen-0270-acp.md) records passing account-free
+ACP/permission/lifecycle checks after explicit runtime-state fence rulings, separately preserving earlier
+controller preflight failures. Its [model-setter check](verification/2026-11-09-qwen-0270-model-setter-1317.md)
+observed A/B/B after acknowledged B/A setters, so baseline clear failed. Basic ACP 0.27.0 is exact-receipt admitted independently of that failed optional live-setter contract.
+The production Qwen setter remains unavailable; `qwen-dual` remains separate at 0.26.1.
 
 ### Receipt automation audit (#1248 T0)
 
