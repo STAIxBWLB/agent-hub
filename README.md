@@ -104,6 +104,8 @@ defaults. The
   agents read them with `hub_specs`. Only a person stamps a spec as reviewed
   (`ahub specs stamp`). Fixture-tested only so far: this repository's own specs in
   `docs/design/` are unstamped drafts ([dogfood](docs/dogfood.md#operations)).
+  The [guidance variant contract](docs/design/guidance-experiments.md) defines
+  immutable advisory role proposals, not activation, permissions or probe execution.
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,
