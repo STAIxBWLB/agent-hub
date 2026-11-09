@@ -16,8 +16,8 @@ existing SDLC limit of 32 distinct checks, each at most 120 characters.
 
 The guided prompt shows the found names after choosing advise/enforce and lets
 the person confirm or edit them. `--yes` accepts discovery; `--required-checks`
-skips discovery. Existing configured names are retained unless explicitly
-replaced. Enforce with no known names refuses before any initialization write.
+skips discovery. Existing configured names, including the matching `[repos]` table, are retained
+unless explicitly replaced. Enforce with no known names refuses before any initialization write.
 
 Only `STAIxBWLB/agent-hub` retains the native three-check fallback including
 `seeded guards`. Other repositories without configured checks report

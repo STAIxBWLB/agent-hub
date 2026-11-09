@@ -1,6 +1,7 @@
 import { constants, openSync, fstatSync, readSync, closeSync, readdirSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { githubOriginRepository } from "../hub/task-repository.ts";
+import { requiredChecksFor } from "../hub/sdlc-merge.ts";
 import { hubGitSync } from "../hub/git.ts";
 import { loadSdlc, sdlcGh, type SdlcGh } from "../hub/sdlc.ts";
 import type { InitSettingsRequest } from "./init-settings.ts";
@@ -32,8 +33,17 @@ export function workflowCheckNames(text: string): string[] | undefined {
     if (named) {
       const raw = named[1]!;
       if (/\$\{|^[>|*&!{\[]/.test(raw)) { dynamic = true; continue; }
-      try { name = raw.startsWith('"') ? JSON.parse(raw) : raw.startsWith("'") && raw.endsWith("'") ? raw.slice(1, -1).replaceAll("''", "'") : raw.replace(/\s+#.*$/, ""); }
-      catch { dynamic = true; }
+      try {
+        if (raw.startsWith("'")) {
+          const quoted = /^'((?:[^']|'')*)'\s*(?:#.*)?$/.exec(raw);
+          if (!quoted) { dynamic = true; continue; }
+          name = quoted[1]!.replaceAll("''", "'");
+        } else if (raw.startsWith('"')) {
+          const quoted = /^("(?:[^"\\]|\\.)*")\s*(?:#.*)?$/.exec(raw);
+          if (!quoted) { dynamic = true; continue; }
+          name = JSON.parse(quoted[1]!);
+        } else name = raw.replace(/\s+#.*$/, "");
+      } catch { dynamic = true; }
     }
     if (/^  \S/.test(line) && !job) dynamic = true;
   }
@@ -84,7 +94,8 @@ export async function discoverInitChecks(cwd: string, run: SdlcGh = sdlcGh): Pro
       return JSON.parse(reply.stdout);
     };
     const local = hubGitSync(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], { cwd, encoding: "utf8", timeout: DISCOVERY_READ_MS });
-    let branch = local.status === 0 ? local.stdout.trim().replace(/^refs\/remotes\/origin\//, "") : undefined;
+    const target = local.status === 0 ? hubGitSync(["rev-parse", "--verify", "refs/remotes/origin/HEAD^{commit}"], { cwd, encoding: "utf8", timeout: Math.max(1, Math.min(DISCOVERY_READ_MS, deadline - performance.now())) }) : undefined;
+    let branch = local.status === 0 && target?.status === 0 ? local.stdout.trim().replace(/^refs\/remotes\/origin\//, "") : undefined;
     if (!branch) branch = (await read(["api", `repos/${repo}`])).default_branch;
     if (typeof branch !== "string" || !branch || /[\r\n]/.test(branch)) return workflowChecks(cwd);
     const runs = await read(["api", "--method", "GET", `repos/${repo}/actions/runs`, "-f", `branch=${branch}`, "-f", "status=completed", "-f", "per_page=1"]);
@@ -101,7 +112,7 @@ export async function discoverInitChecks(cwd: string, run: SdlcGh = sdlcGh): Pro
 /** The CLI resolves discovery before preview or write; an override never contacts GitHub. */
 export async function withInitChecks(cwd: string, request: InitSettingsRequest, discover = discoverInitChecks): Promise<InitSettingsRequest> {
   if (!["advise", "enforce"].includes(String(request.values["sdlc.mode"])) || Object.hasOwn(request.values, "sdlc.required_checks")) return request;
-  if (loadSdlc(cwd).requiredChecks.length) return request;
+  if (requiredChecksFor(loadSdlc(cwd), githubOriginRepository(cwd)).length) return request;
   const result = await discover(cwd);
   if (!result.names.length && request.values["sdlc.mode"] === "enforce") throw new Error(`enforce needs required CI checks: ${result.reason}; nothing was written`);
   return { ...request, values: { ...request.values, "sdlc.required_checks": result.names } };

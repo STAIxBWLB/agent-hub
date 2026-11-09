@@ -70,6 +70,8 @@ test("local origin/HEAD saves one gh read; truncated and failed inventories fall
   const cwd = fixture();
   expect(hubGitSync(["init", "-q"], { cwd }).status).toBe(0);
   expect(hubGitSync(["config", "remote.origin.url", "https://github.com/example/project.git"], { cwd }).status).toBe(0);
+  expect(hubGitSync(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], { cwd }).status).toBe(0);
+  expect(hubGitSync(["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd }).status).toBe(0);
   expect(hubGitSync(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], { cwd }).status).toBe(0);
   for (const fail of [false, true]) {
     const calls: string[][] = [];
@@ -81,4 +83,37 @@ test("local origin/HEAD saves one gh read; truncated and failed inventories fall
     });
     expect(calls).toHaveLength(2); expect(found).toEqual({ source: "workflows", names });
   }
+});
+
+test("quoted literal workflow names strip comments without changing their value (#1328)", () => {
+  expect(workflowCheckNames("jobs:\n  build:\n    name: 'Build job' # comment\n")).toEqual(["Build job"]);
+  expect(workflowCheckNames('jobs:\n  build:\n    name: "Build job" # comment\n')).toEqual(["Build job"]);
+  expect(workflowCheckNames("jobs:\n  build:\n    name: 'Builder''s job' # comment\n")).toEqual(["Builder's job"]);
+  expect(workflowCheckNames("jobs:\n  build:\n    name: 'Build job' trailing\n")).toBeUndefined();
+});
+
+test("dangling local origin/HEAD is unknown and fetches the default branch (#1328)", async () => {
+  const cwd = fixture();
+  expect(hubGitSync(["init", "-q"], { cwd }).status).toBe(0);
+  expect(hubGitSync(["config", "remote.origin.url", "https://github.com/example/project.git"], { cwd }).status).toBe(0);
+  expect(hubGitSync(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/absent"], { cwd }).status).toBe(0);
+  const calls: string[][] = [];
+  const found = await discoverInitChecks(cwd, async args => { calls.push(args); return { code: 1, stdout: "" }; });
+  expect(calls).toEqual([["api", "repos/example/project"]]); expect(found.names).toEqual(names);
+});
+
+test("existing matching per-repo checks permit enforce with no discovery; a foreign table grants nothing (#1328)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-repo-checks-")); roots.push(cwd);
+  expect(hubGitSync(["init", "-q"], { cwd }).status).toBe(0);
+  expect(hubGitSync(["config", "remote.origin.url", "https://github.com/example/project.git"], { cwd }).status).toBe(0);
+  mkdirSync(join(cwd, ".agenthub"));
+  writeFileSync(join(cwd, ".agenthub/sdlc.toml"), 'mode = "advise"\n[repos."example/project"]\nrequired_checks = ["project gate"]\n');
+  const request = parseInitSettings(["--sdlc", "enforce"]).request;
+  expect(await withInitChecks(cwd, request, async () => { throw new Error("no discovery"); })).toBe(request);
+  init(cwd, undefined, false, false, request);
+  expect(loadSdlc(cwd).mode).toBe("enforce"); expect(loadSdlc(cwd).requiredChecks).toEqual([]);
+  writeFileSync(join(cwd, ".agenthub/sdlc.toml"), 'mode = "advise"\n[repos."foreign/project"]\nrequired_checks = ["foreign gate"]\n');
+  await expect(withInitChecks(cwd, request, async () => ({ source: "unknown", names: [], reason: "no CI" }))).rejects.toThrow("nothing was written");
+  expect(() => init(cwd, undefined, false, false, request)).toThrow("required CI checks");
+  expect(loadSdlc(cwd).mode).toBe("advise");
 });

@@ -12,6 +12,8 @@ import { hubGitArgv, hubGitEnv, hubGitSync } from "../hub/git.ts";
 import { KIMI_MCP_FILE } from "./kimi-mcp.ts";
 import { AGY_PLUGIN_FILES } from "./agy-mcp.ts";
 import { loadConfig } from "../hub/daemon.ts";
+import { requiredChecksFor } from "../hub/sdlc-merge.ts";
+import { githubOriginRepository } from "../hub/task-repository.ts";
 import { sdlcConfig } from "../hub/sdlc.ts";
 import { VERSION } from "../version.ts";
 import { planInitSettings, type InitSettingFile, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
@@ -275,7 +277,7 @@ function checkCandidate(cwd: string, plan: readonly PlannedWrite[]): void {
   if (sdlc !== undefined) {
     try {
       const lifecycle = sdlcConfig(Bun.TOML.parse(sdlc), VERSION);
-      if (lifecycle.mode === "enforce" && !lifecycle.requiredChecks.length) throw new Error("enforce needs required CI checks; pass --required-checks <a,b,...>");
+      if (lifecycle.mode === "enforce" && !requiredChecksFor(lifecycle, githubOriginRepository(cwd)).length) throw new Error("enforce needs required CI checks; pass --required-checks <a,b,...>");
     }
     catch (error) { throw new Error(`the resulting .agenthub/sdlc.toml does not pass the hub's check: ${(error as Error).message}; fix it in your editor, then run ahub init again; nothing was written`); }
   }
