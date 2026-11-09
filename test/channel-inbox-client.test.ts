@@ -270,3 +270,47 @@ test("#493 actionable notices are not FYI in both session instruction modes, sen
   expect(TASK_TOOLS.find(tool => tool.name === "hub_task_done")?.description).toContain("no duplicate");
   expect(TASK_TOOLS.find(tool => tool.name === "hub_review")?.description).toContain("no duplicate");
 });
+
+test("malformed additive held bodies preserve committed normal inbox, local fallback and fresh counts (#1328)", async () => {
+  const f = await client("channel", true);
+  try {
+    f.push({ t: "deliver", envs: [newEnvelope("codex", "LOCAL_HELD_FALLBACK")] });
+    await f.waitFor(() => f.diagnostics().includes("queued for hub_inbox"));
+    const normal = newEnvelope("codex", "NORMAL_COMMITTED_CANARY");
+    f.inbox({ ok: true, envs: [normal], waiting: 2, waitingImportant: 1, heldRead: { count: 1, rows: [{ id: null, revision: "injected", state: "needs_review", messages: null }], truncated: false } });
+    const result = output(await f.call("hub_inbox"));
+    expect(result).toContain(frame(normal)); expect(result).toContain("LOCAL_HELD_FALLBACK");
+    expect(result).toContain("2 more waiting"); expect(result).toContain("Held message bodies are unavailable");
+    const repeated = output(await f.call("hub_inbox"));
+    expect(repeated).not.toContain("LOCAL_HELD_FALLBACK"); expect(repeated).toContain(frame(normal));
+    const escape = String.fromCharCode(27);
+    for (const identity of [{ id: `d${escape}control`, from: "user" }, { id: "d", from: `user${escape}control` }]) {
+      f.inbox({ ok: true, envs: [normal], waiting: 2, waitingImportant: 1, heldRead: { count: 1, rows: [{ id: identity.id, revision: 1, state: "needs_review", messages: [{ id: "e", from: identity.from, kind: "chat", priority: "status", body: "HELD_CONTROL_CANARY" }] }], truncated: false } });
+      const safe = output(await f.call("hub_inbox"));
+      expect(safe).toContain(frame(normal)); expect(safe).toContain("2 more waiting");
+      expect(safe).toContain("Held message bodies are unavailable"); expect(safe).not.toContain(escape); expect(safe).not.toContain("HELD_CONTROL_CANARY");
+    }
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, heldRead: { count: 0, rows: [], truncated: false }, pollingAdvice: { count: 3, minutes: 1 } });
+    const empty = output(await f.call("hub_inbox"));
+    expect(empty).toContain("(no queued hub messages)"); expect(empty).toContain("[polling detected]");
+    expect(empty).not.toContain("Held message bodies are unavailable");
+    expect(f.requests.filter(row => ["delivery_complete", "delivery_receipt"].includes(row.t))).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("held inspection has its own MCP text block while the normal empty queue block keeps its prefix (#1328)", async () => {
+  const f = await client("plain");
+  try {
+    const env = newEnvelope("user", "HELD_SECOND_BLOCK_CANARY");
+    const row = { id: "held-block", revision: 1, state: "needs_review", createdAt: Date.now(), senders: ["user"], kinds: ["chat"] };
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, held: { count: 1, rows: [row], truncated: false },
+      heldRead: { count: 1, rows: [{ id: row.id, revision: row.revision, state: row.state, messages: [{ id: env.id, from: env.from, kind: env.kind, priority: env.priority, body: env.body }] }], truncated: false } });
+    const result = await f.call("hub_inbox");
+    expect(result.content[0].text).toStartWith("(no queued hub messages)");
+    expect(result.content[0].text).not.toContain(env.body);
+    expect(result.content[1].text).toContain("Read-only held message inspection");
+    expect(result.content[1].text).toContain(env.body);
+    expect(output(result)).toContain(env.body);
+    expect(f.requests.filter(request => ["delivery_receipt", "delivery_complete"].includes(request.t))).toEqual([]);
+  } finally { await f.close(); }
+});
