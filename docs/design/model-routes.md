@@ -177,7 +177,15 @@ Accepted classification proposal, to be validated against owned consumers:
   a passing test clears only retained test-category failures. Spinning divides
   that largest group by the retained failure count when the group has at least
   two observations. A zero-failure pass summary stays successful unless an
-  explicit error outcome or a separate diagnostic establishes failure.
+  explicit error outcome or a separate diagnostic establishes failure. Counted
+  zero-failure forms such as `0 tests failed` are excluded before fault detection.
+  An explicitly empty run (`0 passed, 0 failed`) is unknown test evidence, never
+  a passing recovery that clears retained failures. Recovery requires a positive
+  pass count, or an entire affirmative line matching `tests passed`,
+  `all tests pass` or `all tests passed` (singular `test` is also accepted), with only
+  surrounding horizontal whitespace and an optional final `.` or `!`. Substring
+  matches, negated statements and additional prose do not establish an
+  unqualified pass. This is a closed lexical grammar, not a language inference.
 - Severity maps `none/reported/exception/critical` to `0/0.3/0.7/1`;
   spinning is the bounded repeated-failure proportion. Exploring and production
   intensity are the inspected read/mutation proportions. Empty denominators

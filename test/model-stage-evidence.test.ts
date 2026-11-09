@@ -42,3 +42,19 @@ test("test outcome belongs to the latest inspected completed result", () => {
   const packet = evidence(["2 failed", "18 passed, 0 failed", "fixture read ready"]);
   expect(packet.signals).toMatchObject({ failures: 0, repeatedFailures: 0, tests: "none", fault: "none" });
 });
+
+test("an empty test run never clears retained failed tests", () => {
+  const retained = evidence(["4 tests failed", "4 tests failed", "0 passed, 0 failed"]);
+  expect(retained.signals).toMatchObject({ failures: 2, repeatedFailures: 2, tests: "unknown", fault: "reported" });
+  const recovered = evidence(["4 tests failed", "4 tests failed", "0 tests failed; 18 passed"]);
+  expect(recovered.signals).toMatchObject({ failures: 0, repeatedFailures: 0, tests: "pass", fault: "none" });
+});
+
+test("negated and embedded uncounted success cannot clear failed test history", () => {
+  for (const summary of ["No tests passed", "not all tests passed", "summary: all tests passed"]) {
+    const retained = evidence(["5 tests failed", "5 tests failed", summary]);
+    expect(retained.signals.failures).toBe(2);
+    expect(retained.signals.repeatedFailures).toBe(2);
+    expect(retained.signals.tests).not.toBe("pass");
+  }
+});
