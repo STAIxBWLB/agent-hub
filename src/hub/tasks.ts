@@ -6535,7 +6535,7 @@ export class Tasks {
     if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "off" || !this.isBuildTask(task)) return this.accept(by, id, plan, metadata);
     const spec = await this.specGate(by, id, draft.refs);
     if (spec?.carry) draft = metadata ? { ...spec.task, refs: { ...spec.task.refs, ...metadata } } : spec.task;
-    await this.planEntryGate(by, draft);
+    await this.planEntryGate(by, draft, spec?.carry);
     requestCheck();
     const current = this.need(id, false, true);
     this.mine(current, by, "owner", true);
@@ -6546,12 +6546,12 @@ export class Tasks {
   }
 
   /** Spec and plan readbacks share the caller's original task snapshot until the final acceptance write. */
-  private async planEntryGate(by: PeerId, task: Task): Promise<void> {
+  private async planEntryGate(by: PeerId, task: Task, specCarry?: object): Promise<void> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off" || !this.isBuildTask(task)) return;
     const gap = await this.planReviewGap(task);
     if (mode === "advise" && !task.sdlc?.planReview?.scope) this.releaseNotice(`task ${this.publicTitle(task)}: cost scope unspecified`);
-    const current = this.need(task.id, false, true);
+    const current = this.stagedSpec(by, this.need(task.id, false, true), specCarry);
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during plan readback");
     if (gap && mode === "enforce") throw new PreEffectToolRefusal(this.entryDiagnostic(current, gap) ?? gap);
@@ -7039,7 +7039,7 @@ export class Tasks {
     if (task.state === "proposed" || task.state === "changes_requested") {
       const admission = await this.specGate(by, task.id, { ...task.refs, ...cleanRefs(refs) });
       specCarry = admission?.carry;
-      await this.planEntryGate(by, admission?.carry ? admission.task : task);
+      await this.planEntryGate(by, admission?.carry ? admission.task : task, specCarry);
       task = valid();
     }
     // #694: stage the identities the hub can verify; the gates read them, and only the admitted done persists them.
