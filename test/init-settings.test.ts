@@ -31,7 +31,7 @@ const out = (result: { stdout: Buffer; stderr: Buffer }) => `${result.stdout.toS
 
 test("each settings flag writes its key to the stated file on a new project (#1065 AC1)", () => {
   const p = fixture(), cwd = p.repo("new");
-  const done = p.run(cwd, ["init", "--agents", "claude,codex", "--sdlc", "enforce", "--coordination", "turn-free", "--no-memory", "--no-snapshots", "--pi", "--autonomy", "off"]);
+  const done = p.run(cwd, ["init", "--agents", "claude,codex", "--sdlc", "enforce", "--required-checks", "unit", "--coordination", "turn-free", "--no-memory", "--no-snapshots", "--pi", "--autonomy", "off"]);
   expect(done.exitCode, out(done)).toBe(0);
   const config = p.json(cwd, "config.json");
   expect(config.coordination).toBe("turn-free");
@@ -40,7 +40,7 @@ test("each settings flag writes its key to the stated file on a new project (#10
   expect(config.pi.enabled).toBe(true);
   expect(config.memory.inject_tokens).toBe(2000); // a neighbour key of a written one is the template's
   expect(p.json(cwd, "config.local.json")).toEqual({ start: { agents: ["claude", "codex"] } });
-  expect(p.text(cwd, "sdlc.toml")).toBe('mode = "enforce"\n');
+  expect(p.text(cwd, "sdlc.toml")).toBe('mode = "enforce"\nrequired_checks = ["unit"]\n');
   expect(loadSdlc(cwd).mode).toBe("enforce");
   expect(loadConfig(cwd).coordination).toBe("turn-free");
 });
@@ -53,7 +53,7 @@ test("every flag of the table writes a different key in the right file, and --me
   expect(p.json(cwd, "config.local.json").start.agents).toEqual([]);
   expect(p.text(cwd, "sdlc.toml")).toBe('mode = "advise"\n');
   // The table lists exactly the flags the CLI owns, so a row added later is reachable and tested through the same path.
-  expect(INIT_SETTING_FLAGS.slice().sort()).toEqual(["--agents", "--autonomy", "--coordination", "--memory", "--no-memory", "--no-pi", "--no-snapshots", "--no-specs", "--pi", "--sdlc", "--snapshots", "--spec-review", "--specs"].sort());
+  expect(INIT_SETTING_FLAGS.slice().sort()).toEqual(["--required-checks", "--agents", "--autonomy", "--coordination", "--memory", "--no-memory", "--no-pi", "--no-snapshots", "--no-specs", "--pi", "--sdlc", "--snapshots", "--spec-review", "--specs"].sort());
   expect(new Set(INIT_SETTINGS.map(row => row.id)).size).toBe(INIT_SETTINGS.length);
 });
 
@@ -146,7 +146,7 @@ test("a flag equal to the current value is a no-op: no row, no write (#1065 AC2)
 
 test("without a flag an existing project keeps every setting: re-running init changes none of them (#1065 AC2)", () => {
   const p = fixture(), cwd = p.repo("keep");
-  expect(p.run(cwd, ["init", "--coordination", "turn-free", "--no-memory", "--agents", "claude", "--sdlc", "enforce"]).exitCode).toBe(0);
+  expect(p.run(cwd, ["init", "--coordination", "turn-free", "--no-memory", "--agents", "claude", "--sdlc", "enforce", "--required-checks", "unit"]).exitCode).toBe(0);
   const before = p.tree(cwd);
   expect(p.run(cwd, ["init"]).exitCode).toBe(0);
   expect(p.tree(cwd)).toEqual(before);

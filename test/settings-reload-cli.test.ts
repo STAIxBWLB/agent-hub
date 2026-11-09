@@ -109,3 +109,13 @@ for (const [name, confirmation] of [
   expect(result.code).toBe(1); expect(result.requests).toEqual([{ t: "settings_reload" }]);
   expect(result.out).not.toContain("Apply guarded settings"); expect(result.err).toContain("review");
 });
+
+test("#1328 SDLC get prints distinct running/file values and stays read-only", async () => {
+  for (const key of ["sdlc.mode", "sdlc.required_checks"]) {
+    const value = key === "sdlc.mode" ? "advise" : ["old gate"], fileValue = key === "sdlc.mode" ? "enforce" : ["new gate"];
+    const result = await cli({ args: ["settings", "get", key, "--json"], reply: { ok: true, sdlc: { [key]: { value, fileValue } } } });
+    expect(result.code, result.err).toBe(0);
+    expect(JSON.parse(result.out)).toEqual({ key, value, fileValue });
+    expect(result.requests).toEqual([{ t: "settings_get" }]);
+  }
+});

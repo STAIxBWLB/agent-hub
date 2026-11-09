@@ -273,7 +273,10 @@ function checkCandidate(cwd: string, plan: readonly PlannedWrite[]): void {
     catch (error) { throw new Error(`the resulting .agenthub config does not pass the hub's config check: ${(error as Error).message}; fix that key in your editor, then run ahub init again; nothing was written`); }
   }
   if (sdlc !== undefined) {
-    try { sdlcConfig(Bun.TOML.parse(sdlc), VERSION); }
+    try {
+      const lifecycle = sdlcConfig(Bun.TOML.parse(sdlc), VERSION);
+      if (lifecycle.mode === "enforce" && !lifecycle.requiredChecks.length) throw new Error("enforce needs required CI checks; pass --required-checks <a,b,...>");
+    }
     catch (error) { throw new Error(`the resulting .agenthub/sdlc.toml does not pass the hub's check: ${(error as Error).message}; fix it in your editor, then run ahub init again; nothing was written`); }
   }
 }

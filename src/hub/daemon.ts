@@ -8853,6 +8853,14 @@ export async function startDaemon(opts: DaemonOptions) {
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).slice(0, 128).filter(([key]) => /^[A-Za-z][A-Za-z0-9_]*$/.test(key)).map(([key, item]) => [key, publicReadValue(item, depth + 1)]));
     return null;
   }
+  function sdlcSettingsView() {
+    let file: ReturnType<typeof loadSdlc> | undefined;
+    try { file = loadSdlc(opts.cwd, VERSION); } catch { /* unreadable file stays unknown */ }
+    return {
+      "sdlc.mode": { value: lifecycleConfig.mode, fileValue: file?.mode ?? null, ...(!file ? { problem: "file unavailable" } : {}) },
+      "sdlc.required_checks": { value: lifecycleConfig.requiredChecks, fileValue: file?.requiredChecks ?? null, ...(!file ? { problem: "file unavailable" } : {}) },
+    };
+  }
   function publicSettingsView() {
     const view = settingsView();
     const rows = view.rows.flatMap(row => {
@@ -8877,7 +8885,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(row.min !== undefined ? { min: row.min } : {}), ...(row.max !== undefined ? { max: row.max } : {}),
         ...(row.locked ? { locked: "read-only" } : {}), ...(opaque ? { withheld: true } : {}) }];
     });
-    return { rows, roster: rosterView().map(row => ({ peer: row.peer, on: row.on, startMode: row.startMode, state: row.state, queued: row.queued, tasks: row.tasks })), public: true, withheld: ["file", "source", "notes", "undo", "configEdit"] };
+    return { rows, sdlc: Object.fromEntries(Object.entries(sdlcSettingsView()).map(([key, value]) => [key, publicReadValue(value)])), roster: rosterView().map(row => ({ peer: row.peer, on: row.on, startMode: row.startMode, state: row.state, queued: row.queued, tasks: row.tasks })), public: true, withheld: ["file", "source", "notes", "undo", "configEdit"] };
   }
   function publicReleaseShow(input: Record<string, any>) {
     const release = input.id !== undefined ? Number.isSafeInteger(input.id) && input.id > 0 ? board.release(input.id) : undefined
@@ -11898,7 +11906,7 @@ export async function startDaemon(opts: DaemonOptions) {
           try { const current = publicReadCurrent(sock); current(); const view = publicSettingsView(); current(); return void reply({ ok: true, ...view }); }
           catch { return void reply({ ok: false, error: "public settings read unavailable for this caller" }); }
         }
-        return void reply({ ok: true, ...settingsView(), roster: rosterView(), configEdit: (() => { const view = configEditor!.view(); return { revisions: view.revisions, known: view.known }; })() });
+        return void reply({ ok: true, ...settingsView(), sdlc: sdlcSettingsView(), roster: rosterView(), configEdit: (() => { const view = configEditor!.view(); return { revisions: view.revisions, known: view.known }; })() });
       case "settings_reload":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
         return void reloadConfig("terminal", undefined, msg.confirm).then(reply, () => reply({ ok: false, error: "configuration reload could not be confirmed; inspect hub.log" }));

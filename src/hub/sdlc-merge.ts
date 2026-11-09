@@ -2,7 +2,7 @@ import { findingsForHead, findingHead, findingTally } from "./review-findings.ts
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
 import { evalGapBlockers, evalGateView, evalReportedGap, evalRequiredChecks, readEvalFor, type EvalResult } from "./eval-gate.ts";
 import { mergeCostFrom } from "./cost-governance.ts";
-import { readPrCostHistory, readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord } from "./sdlc.ts";
+import { requiredCheckNames, readPrCostHistory, readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord } from "./sdlc.ts";
 
 /**
  * #786 T1/T2: the one guarded merge. Given a task and the head its reviewer approved, it re-reads the PR (`readSdlcPr`) and the merge queue
@@ -65,7 +65,7 @@ export function mergeModeFor(config: SdlcConfig, repo: string | undefined): Auto
 }
 /** Required checks of one repository: its table first, then the top-level `required_checks`, each name once. */
 export function requiredChecksFor(config: SdlcConfig, repo: string | undefined): string[] {
-  return [...new Set([...(repo ? config.repos?.[repo.toLowerCase()]?.requiredChecks ?? [] : []), ...config.requiredChecks])];
+  return requiredCheckNames(repo, [...new Set([...(repo ? config.repos?.[repo.toLowerCase()]?.requiredChecks ?? [] : []), ...config.requiredChecks])]);
 }
 
 /** The exact argv `on` mode runs, or an error. A closed shape: anything else is refused before it reaches gh. */

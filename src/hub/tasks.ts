@@ -43,7 +43,7 @@ import { NoWriteTurns } from "./no-writes.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
-import { guardedMerge, mergeModeFor, mergeView, type MergeView } from "./sdlc-merge.ts";
+import { guardedMerge, requiredChecksFor, mergeModeFor, mergeView, type MergeView } from "./sdlc-merge.ts";
 import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
 import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-scope.ts";
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
@@ -746,7 +746,7 @@ export class Tasks {
   constructor(private readonly d: TasksDeps) {
     this.ciWatchers = new CiWatchers({
       ...d.ciWatch,
-      poll: watch => pollCi(watch, watch.head, d.sdlc?.config().requiredChecks ?? [], d.sdlc?.gh ?? sdlcGh),
+      poll: watch => pollCi(watch, watch.head, d.sdlc ? requiredChecksFor(d.sdlc.config(), watch.repo) : [], d.sdlc?.gh ?? sdlcGh),
       current: watch => this.ciWatchCurrent(watch),
       finish: (watch, outcome) => this.ciCompleted(watch, outcome),
     });
@@ -7146,7 +7146,7 @@ export class Tasks {
     };
     const evidence: ReviewReadiness = this.isPii(task)
       ? { ready: false, blockers: ["private review readiness unavailable"] }
-      : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc?.config().requiredChecks ?? []) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc?.config().requiredChecks ?? []) : { ready: false, blockers: ["review PR identity missing"] };
+      : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc ? requiredChecksFor(this.d.sdlc.config(), task.sdlc.repo) : [], task.sdlc.repo) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc ? requiredChecksFor(this.d.sdlc.config(), task.sdlc.repo) : []) : { ready: false, blockers: ["review PR identity missing"] };
     const currentHead = refileHead && !evidence.head && task.sdlc ? await readSdlcPrHead(task.sdlc, read) : evidence.head;
     const current = guard();
     const admitted: ReviewReadiness = quietDrift ? { ready: false, blockers: ["review readiness unknown: task changed during readback"] } : evidence;
