@@ -110,7 +110,9 @@ binds a missing PR from the explicit command in the established task repository
 recorded full head, green configured required checks at that head and no open
 Important finding. Complete known-zero review threads and pending requests are
 also required, and an explicit change request refuses. No GitHub approving
-verdict is invented or required. Unknown evidence refuses with a next step. The entire task
+verdict is invented or required. One capped GraphQL snapshot supplies the
+head-commit checks and review coverage; incomplete coverage refuses. Unknown
+evidence refuses with a next step. The entire task
 flow and identity, current actor/session, privacy and SDLC policy are fenced
 before and after each awaited GitHub read and immediately before the write.
 Recovery, shutdown and storage holds refuse adoption.
@@ -119,6 +121,8 @@ The state becomes `approved` through Tasks, with the actual actor and the
 `merged outside the hub` history event. Ordinary dependent release runs after
 the saved approval. Adoption creates no reviewer verdict, review metric,
 reviewed-head receipt, guarded-merge result, GitHub mutation or branch cleanup.
+A prior withdrawn reviewer approval remains historical and cannot become a
+current reviewer binding through adoption.
 Private tasks and private turns refuse before any GitHub read for every actor,
 including the person. The person's local review authority does not authorize
 sending private task metadata to an external observer. Delegated `--live-test`

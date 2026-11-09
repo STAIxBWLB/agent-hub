@@ -62,7 +62,7 @@ async function refused(f: ReturnType<typeof fixture>, reason: string, by = USER,
 
 test("AC4: observed merge approves and releases dependents without a reviewer verdict, gh merge or cleanup", async () => {
   const f = fixture();
-  const child = f.board.propose(USER, { title: "dependent", class: "answer", deps: [f.id] });
+  const child = f.board.propose(USER, { title: "dependent", class: "summarize", deps: [f.id] });
   const result = await f.tasks.adoptMerge(USER, f.id, 7);
   expect(result).toEqual({ task: f.id, state: "approved" });
   const now = f.board.get(f.id)!;

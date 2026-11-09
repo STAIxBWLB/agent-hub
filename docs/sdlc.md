@@ -189,7 +189,9 @@ repository and PR and requires it merged at the task's last recorded full head,
 with every configured required check green at that head and no open Important
 finding. Unresolved or unknown review threads, pending or unknown review
 requests, and an explicit change request refuse too. A GitHub approval is not
-required when review coverage is complete and clean. Missing, pending, failed or unknown checks refuse with their names and
+required when review coverage is complete and clean. The hub observes one
+bounded GraphQL snapshot with checks bound to its head commit. Missing, pending,
+failed or unknown checks refuse with their names and
 a next step. A missing artifact, missing full head, changed task or policy,
 stale actor/session or a held hub also refuses without changing the task.
 
