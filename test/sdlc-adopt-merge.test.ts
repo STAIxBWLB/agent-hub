@@ -22,13 +22,14 @@ const HEAD = "a".repeat(40), OTHER = "b".repeat(40);
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 
-function fixture() {
+function fixture(turnFree = false) {
   const roster: Record<string, boolean> = {};
   const root = mkdtempSync(join(tmpdir(), "ahub-adopt-merge-")), board = new Board(join(root, "hub.db")), bus = new Bus({ batchMs: 0, rostered: peer => roster[peer] !== false });
+  const working = new Set(["codex", "kimi"]);
   const calls: string[][] = [], notices: string[] = [], roles: Record<string, "conductor"[]> = { claude: ["conductor"] };
   let config = sdlcConfig({ mode: "enforce", required_checks: ["gate"], auto_merge: "on" });
   let privateTurn = false, sessionCurrent = true, hold = false, onRead: ((index: number) => void) | undefined;
-  const world = { head: HEAD, state: "MERGED", checks: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] as { name: string; status: string; conclusion: string | null }[], unavailable: false, review: "APPROVED" as string | null, requests: [] as unknown[] | undefined, threads: [] as { isResolved: boolean }[] | undefined, threadsComplete: true, requestsComplete: true, checksComplete: true, commitHead: undefined as string | undefined, errors: undefined as unknown[] | undefined };
+  const world = { head: HEAD, state: "MERGED", checks: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] as Record<string, unknown>[], unavailable: false, review: "APPROVED" as string | null, requests: [] as unknown[] | undefined, threads: [] as { isResolved: boolean }[] | undefined, threadsComplete: true, requestsComplete: true, checksComplete: true, commitHead: undefined as string | undefined, errors: undefined as unknown[] | undefined };
   const gh: SdlcGh = async args => {
     calls.push(args);
     expect(args[0] === "api" && args[1] === "graphql").toBe(true);
@@ -43,12 +44,13 @@ function fixture() {
     } } } }) };
   };
   const tasks = new Tasks({ board, bus, roles, cwd: root, project: "fixture", repository: "owner/repo", routing: () => loadRouting(root), notify: line => notices.push(line),
+    turnFree: () => turnFree, capable: () => true, idle: peer => !working.has(peer),
     privateTurn: () => privateTurn, sweepHeld: () => hold, requestAuthority: () => () => sessionCurrent ? undefined : "session changed; reconnect and retry ahub sdlc adopt-merge",
     sdlc: { config: () => config, gh } });
   const task = board.propose(USER, { title: "PRIVATE_TITLE", class: "implement" });
   board.update(task.id, USER, "accepted", { state: "in_progress", owner: "codex", reviewer: "kimi", refs: { commit: HEAD }, sdlc: { repo: "owner/repo", pr: 7, stage: "build" } });
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); });
-  return { root, board, bus, roster, tasks, roles, calls, gh, world, notices, id: task.id,
+  return { root, board, bus, roster, tasks, roles, calls, gh, world, working, notices, id: task.id,
     setRead: (fn: typeof onRead) => { onRead = fn; }, setPrivate: () => { privateTurn = true; }, revokeSession: () => { sessionCurrent = false; },
     hold: () => { hold = true; }, config: (value: Record<string, unknown>) => { config = sdlcConfig(value); } };
 }
@@ -152,6 +154,50 @@ test("partial check/request pages, GraphQL errors and a mismatched head commit n
     (f: ReturnType<typeof fixture>) => { f.world.errors = [{ message: "PRIVATE_REMOTE_ERROR" }]; },
   ]) {
     const f = fixture(); mutate(f); await refused(f, "ahub sdlc adopt-merge");
+  }
+});
+
+test.each([
+  ["missing CheckRun status", { name: "gate", conclusion: "SUCCESS" }],
+  ["null CheckRun status", { name: "gate", status: null, conclusion: "SUCCESS" }],
+  ["malformed CheckRun status", { name: "gate", status: 7, conclusion: "SUCCESS" }],
+  ["WAITING CheckRun status", { name: "gate", status: "WAITING", conclusion: "SUCCESS" }],
+  ["missing CheckRun conclusion", { name: "gate", status: "COMPLETED", state: "SUCCESS" }],
+  ["StatusContext conflicting conclusion", { context: "gate", state: "FAILURE", conclusion: "SUCCESS" }],
+] as const)("adoption refuses normalized green with %s and writes nothing", async (_label, raw) => {
+  const f = fixture(); f.world.checks = [raw]; await refused(f, "required check gate: unknown");
+});
+test.each([
+  { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" },
+  { context: "gate", state: "SUCCESS" },
+])("adoption accepts canonical raw green metadata %#", async raw => {
+  const f = fixture(); f.world.checks = [raw]; await f.tasks.adoptMerge(USER, f.id, 7);
+  expect(f.board.get(f.id)!.state).toBe("approved");
+});
+test.each(["in_progress", "changes_requested"] as const)("adoption closes %s cohort members and retires silence only after native settlement", async state => {
+  for (const busy of [false, true]) {
+    const f = fixture(true), other = f.board.propose(USER, { title: "overlap", class: "implement" });
+    f.board.update(other.id, USER, "accepted", { state: "in_progress", owner: "kimi", reviewer: "claude", refs: { commit: HEAD }, sdlc: { repo: "owner/repo", pr: 7, stage: "build" } });
+    f.tasks.cohorts.join(f.board.get(f.id)!, [f.board.get(other.id)!], () => 1, () => 0);
+    expect(f.tasks.silenced("codex", "kimi")).toBeDefined();
+    if (state === "changes_requested") {
+      f.board.update(f.id, USER, "done", { state: "in_review" }); f.tasks.cohorts.closed(f.id);
+      f.board.update(f.id, USER, "changes_requested", { state: "changes_requested" }); f.tasks.cohorts.withdraw(f.id);
+    }
+    if (!busy) f.working.clear();
+    await f.tasks.adoptMerge(USER, f.id, 7);
+    const member = f.tasks.cohorts.of(f.id)!.members.get(f.id)!;
+    expect(member.closedAt).toBeDefined(); expect(member.settledAt === undefined).toBe(busy);
+    await f.tasks.adoptMerge(USER, other.id, 7);
+    if (busy) {
+      expect(f.tasks.silenced("codex", "kimi")).toBeDefined();
+      f.working.delete("codex"); f.tasks.cohorts.turnEnded("codex");
+      expect(f.tasks.silenced("codex", "kimi")).toBeUndefined(); expect(f.tasks.silenced("kimi", "codex")).toBeDefined();
+      f.working.delete("kimi"); f.tasks.cohorts.turnEnded("kimi");
+    }
+    expect(f.tasks.cohorts.list()).toEqual([]);
+    expect(f.tasks.silenced("codex", "kimi")).toBeUndefined(); expect(f.tasks.silenced("kimi", "codex")).toBeUndefined();
+    expect(f.board.get(f.id)!.history.some(entry => entry.event === "approved")).toBe(false);
   }
 });
 

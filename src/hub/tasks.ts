@@ -5938,6 +5938,7 @@ export class Tasks {
     const capacity = this.capacityBefore(now);
     current(); // No await between the last authority/privacy/flow check and the sole approval write.
     const next = this.d.board.adoptMerge(now.id, by, receipt, head, now.history.length, HOST_MERGE_ADOPTION);
+    this.cohorts.closed(next.id);
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id);
     this.writePlannerNotices(next, capacity, true);
     this.releaseNotice(`task #${next.id}: merged outside the hub; approved`);

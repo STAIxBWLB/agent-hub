@@ -105,8 +105,14 @@ export async function readAdoptMergeEvidence(receipt: SdlcReceipt, run: SdlcGh):
     const threads = pr.reviewThreads, requests = pr.reviewRequests;
     const threadComplete = threads?.pageInfo?.hasNextPage === false && Array.isArray(threads.nodes) && threads.nodes.every((node: { isResolved?: unknown } | null) => typeof node?.isResolved === "boolean");
     const requestComplete = requests?.pageInfo?.hasNextPage === false && Array.isArray(requests.nodes) && requests.nodes.every((node: { requestedReviewer?: { __typename?: unknown } } | null) => typeof node?.requestedReviewer?.__typename === "string");
+    const evidence = parsePrEvidence({ ...pr, statusCheckRollup: checks.nodes, files: [], ...(threadComplete ? { unresolvedThreads: threads.nodes.filter((node: { isResolved: boolean }) => !node.isResolved).length } : {}), reviewRequests: requestComplete ? requests.nodes : undefined });
+    evidence.checks = evidence.checks.map((check, index): PrEvidence["checks"][number] => {
+      const raw = checks.nodes[index];
+      const green = raw.name ? (raw.status === "COMPLETED" && raw.conclusion === "SUCCESS") : raw.state === "SUCCESS";
+      return check.state === "passed" && !green ? { ...check, state: "unknown" } : check;
+    });
     // Files are outside adoption's decision. Keep their coverage explicitly unknown in the shared evidence shape.
-    return { ...parsePrEvidence({ ...pr, statusCheckRollup: checks.nodes, files: [], ...(threadComplete ? { unresolvedThreads: threads.nodes.filter((node: { isResolved: boolean }) => !node.isResolved).length } : {}), reviewRequests: requestComplete ? requests.nodes : undefined }), pathsComplete: false, typesComplete: false };
+    return { ...evidence, pathsComplete: false, typesComplete: false };
   } catch { return undefined; }
 }
 
