@@ -89,6 +89,8 @@ Scope: the Codex, ACP and Pi adapters and the Pi extension (turn `generation` an
 
 ## Qwen's dual-output TUI (#286 Part 3)
 
+- Before qualifying another dual-output version, read the required Q2 normal-path contract in `docs/specs/2026-09-19-agent-hub-design.md` (Qwen dual-output TUI amendment) and use `scripts/compat-receipts/proofs/qwen-dual-bus-q2.ts`. Keep direct-native-busy-submit characterization separate; do not change automation admission from this manual proof. Background for changing this rule: `README.md` in this directory.
+
 - `src/adapters/qwen-dual.ts` drives Qwen's own TUI through `--input-file` and `--json-file`; it is started only by `ahub qwen --mode tui`, through the definition's `start.createTui` and the `qwen-dual` daemon port, both fixed-builtin capabilities (`assertNativeCapabilityScope`). Qwen's `start.forms` stays `["headless"]`: never add `tui` to it (that would make Qwen a start-mode peer the hub opens by itself, and would change `START_MODE_PEERS`, a cross-release probe). The launcher needs a terminal and the base `qwen` id; the daemon refuses a TUI start for a declared instance, off roster or while a headless Qwen runs.
 - Judge a Qwen TUI by `holdsTerminal()` (its bound owner verified alive, or a session seen with no owner bound), never by peer state: a detached TUI reads offline while Qwen keeps running. A headless start over a held terminal is refused and a TUI start answers `already`.
 - Gate the TUI on `COMPAT["qwen-dual"]` (verified 0.26.1, no `line`), both before the start (`qwenDualVersionAsync`) and from the TUI's own `session_start` (version, `protocol_version` 2, the events read). Never widen the headless `qwen` entry for it, or the other way round: their receipts are separate.

@@ -107,3 +107,25 @@ revision preserves both behaviors; capture still uses its stricter turn fence.
 ## Changes
 
 - 2026-11-09: #1328 T6 extended the closed machine-default schema for an explicit setup research choice, reusing guarded publication and preserving the existing autonomy and start choices.
+
+## 2026-11-10: Qwen dual-output Q2
+
+The v2 native workload appended a second submit directly while the first provider
+response was held. Its private 0.26.1 matched control and later candidates emitted
+one user event and one final assistant/stop containing both markers. The extra
+provider POSTs were not classified by response format or role counts, so their
+underlying cause is unknown. That workload did not reproduce the original
+0.26.1 receipt's native-queued-turn claim; the original used a real gateway and a
+global installation that changed during the day.
+
+Ruling fa75c5f2-fc78-42a1-85dc-cf206e6a7825 makes required Q2 follow the actual normal
+Bus and QwenDualPeer path. The second envelope waits in the Bus during the held
+first response. Distinct native user/provider/final assistant/stop boundaries
+remain necessary. Direct native busy-submit behavior is separate characterization.
+The manual producer does not make the receipt harness eligible for automation.
+
+Adoption can report idle with an unknown pre-existing turn; reattachment can
+report idle before proving native quiescence; deny marks the hub turn ended before
+native consumption is acknowledged. Those existing ceilings prevent an absolute
+claim that no input can ever reach a native active turn. The premature deny/idle
+follow-up is outside this compatibility change; the production adapter is unchanged.

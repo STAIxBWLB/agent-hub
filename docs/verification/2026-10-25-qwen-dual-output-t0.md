@@ -18,3 +18,19 @@
 ## Consequence for #286 AC9
 
 AC9 is conditional on Q2 to Q6 passing. Q4 fails, so the condition does not hold as written. Building Part 3 anyway needs an owner decision and a spec amendment that names the two limits: the watchdog reports a stalled Qwen TUI turn to the person instead of stopping it, and the adapter itself marks the turn ended when the hub sends a deny, because Qwen emits nothing for it.
+
+## Later Q2 reproduction boundary (2026-11-10)
+
+The historical Q2 Pass above describes this original real-model run and is not a
+new exact-artifact qualification. The fixed-provider v2 workload later failed
+its two-user-turn assertion on a private matched 0.26.1 control as well as newer
+candidates ([0.26.8 receipt](2026-11-06-qwen-0268-dual-output.md)). That did not
+reproduce the original native-busy-submit queue observation. The extra provider
+POSTs are unclassified, so no underlying native cause is inferred.
+
+Ruling fa75c5f2-fc78-42a1-85dc-cf206e6a7825 defines required Q2 at the actual normal
+Bus/QwenDualPeer boundary with two distinct user/final-stop turns, while direct
+native-busy-submit behavior remains recorded characterization. The
+[2026-11-10 receipt](2026-11-10-qwen-0270-dual-output.md) records the revised
+procedure and its own evidence. The original account/global-install harness is
+not the account-free procedure for that new qualification.
