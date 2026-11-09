@@ -207,6 +207,21 @@ Stored evidence adds a conditional `research_evidence` recovery feature and
 store, preserving older recovery records; an empty database requires no new
 feature. Provenance never manufactures a person verdict or readiness result.
 
+## Execution-reference admission (#1220 T2)
+
+`Tasks.linkExecutionReference` admits deduplicated inert metadata using the current
+local task id, creation identity, actor role and flow revision. Privacy and role
+checks run before reads and again after screening, before the atomic Board write.
+An identical reference replay creates no second row; stale authority never becomes
+valid because the metadata already exists. Only these admitted references add
+persistence. Read models reuse existing task/attempt rows and recorded evidence,
+with an explicit owning-task scope for dispatch/output/deliverable roots. They
+perform no whole-board scan, native probe, memory write or external resolution.
+Foreign producer keys remain declared target metadata in their own namespace.
+Review currency retains the exact historical head/hash and never carries to
+changed output. The bounds, unavailable equivalence and source-bound cursors are
+specified in [the execution-reference contract](execution-reference.md).
+
 ## Read models and policy extensions
 
 Agent list reads return bounded, newest-updated compact pages built from public rows, with a keyset cursor and explicit detail/ID reads. Console compatibility is separate. Pagination is not a frozen snapshot during concurrent edits; its purpose is bounded communication without bypassing private-row projection ([#1083](https://github.com/STAIxBWLB/agent-hub/issues/1083)).
@@ -236,3 +251,18 @@ Placement is computed before reads and sends, never persisted over the stored an
 Periodic dashboard snapshots perform no comment-material Git or GitHub reads. Explicit task open or refresh requests the review section; a failed read marks only that section unavailable. Material uses the recorded task head and never substitutes the worktree HEAD for a missing commit. Material comes only from guarded immutable Git snapshots in the task's declared refs, plan paths or sections, or complete same-head verified PR paths. Every operation shares eight distinct files, eight seconds including head/PR preparation and 12000 serialized presentation bytes. Both sides share the budget. Truncated material cannot establish placement. Raw hashes bind bytes; projected hashes bind only UTF-8 projected text. The projection name is `text-projection:<extension>` and its version is the existing configured converter fingerprint. This is an opaque configuration identity, not an upstream semantic version; a converter version protocol would be the upgrade path.
 
 PII comments remain board-local and public views expose counts only. Private paths retain only supplied lineRange or structural selectors; no coordinate is invented when unsafe selectors are removed. Public review packets carry a host-only opaque package marker so their intended owner receives the packet while logs, operational tails, incoming labels, capture and memory observers receive no quote or body. This marker does not turn an ordinary task into a PII turn. Structured anchored verdicts retain the GitHub verdict mirror with a verdict-only headline when quote provenance is present. Decision metadata, contradiction and safe recurring criteria retain their existing paths; quote-bearing finding proposals remain excluded. The configured PII screen checks reviewer prose before owner-facing publication without receiving source quote selectors. Durable open sent comments and outstanding anchored findings bind shared-memory admission only to the task a note names and its recipient, across restart and intervening chat. Sent comments hold those task-bound writes until resolution or person dismissal; resolved or dismissed comments alone do not retain reviewer history scope. They do not hold notes for an unrelated task or an untagged note after ordinary new input. Anchored-finding scope is conservatively held until the task closes, including later fixed dispositions; a persisted review-package epoch is the path to narrower closure. The metadata scope read is cached against database change stamps and fails closed above 500 role tasks or 16 MiB of UTF-8 history. This exclusion does not hide the owner's summary or check output from its reviewer or owner. Review requests retain trusted observer provenance whenever historical anchors or non-draft comments can be reflected in the completion text, including after comment resolution. Current input provenance separately holds all shared-memory writes and observer sinks for an actually delivered quote-bearing review input or a newly submitted anchored verdict, even if the verdict is refused or immediately closes the task. This exclusion is latched for the input turn until a permitted ordinary next-turn handoff replaces it; restored pull-only sessions instead require a changed native identity. Resolving comments or ending the task alone does not clear it. Bounded ID-only journal receipts preserve held session/input provenance across daemon restart. No matching held record in a complete, intact and readable store is clean; missing expected prior-session records and unreadable, corrupt or unconfirmed session coverage remain unknown. A validated matching release receipt confirms only its own identity. Restored pull-only sessions retain their hold until the native identity changes, regardless of inbox handout. An empty in-memory map alone is not replacement proof. Presence-only traffic and additional inputs within the same active turn cannot clear a latched exclusion. Committed inbox handouts carry the same current-input provenance as push input without claiming a native ACK. Local-worker batches latch before executing any tool, and their final answer and retained history obey the same exclusion. Owner-addressed review outcomes cannot be automatically settled merely because task or reviewer state moved. Original saved-package recipients retain comment scope while comments remain sent, and queued/deferred or unsettled delivery records retain their actual recipients independently of current task roles. A comment dismissal is not a delivery-consumption receipt; any separate uncertainty hold requires explicit disposition. Recovery treats an absent comment section as empty and checks the optional section's counts and digest when present.
+
+## Repository required checks (#1328 T1)
+
+Review admission (fresh and cached), CI watches and guarded merge resolve the same
+repository-specific and top-level required names. Only `STAIxBWLB/agent-hub` has a
+native fallback including `seeded guards` for fresh/cached review admission and
+CI watches. Guarded merge continues to require explicit configured names. Another
+repository with no names stays unknown and cannot become ready through an empty
+CI set. Init discovers names in
+one bounded operation of at most three capped GitHub reads, falling back to bounded
+literal workflow metadata on unknown or incomplete evidence. Enforce without names
+refuses before writes. Read-only settings expose running and file SDLC values
+without adding writable settings or widening caller authority. See
+[SDLC required checks](../sdlc.md#required-checks-at-initialization) for bounds and
+unsupported workflow shapes.

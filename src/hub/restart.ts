@@ -47,6 +47,7 @@ export interface RestartSnapshot {
     boardDigest: string;
     budgetDigest: string;
     modelOverrides?: { count: number; digest: string };
+    executionReferences?: { count: number; digest: string };
     /** Whole captured binding set; portable identities are covered alongside queue/board integrity. */
     externalBindingsDigest?: string;
     /** Research state remains part of controlled-recovery integrity when present. */
@@ -111,6 +112,11 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
   if (s.integrity && Object.hasOwn(s.integrity, "externalBindingsDigest") && (typeof s.integrity.externalBindingsDigest !== "string" || !/^[a-f0-9]{64}$/.test(s.integrity.externalBindingsDigest))) return undefined;
   if (s.integrity && Object.hasOwn(s.integrity, "modelOverrides")) {
     const value = s.integrity.modelOverrides;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "count,digest"
+      || !Number.isSafeInteger(value.count) || value.count < 0 || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "executionReferences")) {
+    const value = s.integrity.executionReferences;
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "count,digest"
       || !Number.isSafeInteger(value.count) || value.count < 0 || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }

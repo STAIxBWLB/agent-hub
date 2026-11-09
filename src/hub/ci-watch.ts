@@ -1,4 +1,4 @@
-import { parsePrEvidence, type SdlcGh } from "./sdlc.ts";
+import { requiredCheckNames, parsePrEvidence, type SdlcGh } from "./sdlc.ts";
 
 /**
  * #785 P1b: one bounded watcher per exact PR head. It starts when `hub_task_done` names a head whose CI was not green,
@@ -8,8 +8,6 @@ import { parsePrEvidence, type SdlcGh } from "./sdlc.ts";
  */
 export const CI_WATCH_DEADLINE_MS = 45 * 60_000;
 export const CI_WATCH_POLL_MS = 60_000;
-/** Same default set as `readReviewReadiness`, which is the authoritative read the review admission makes. */
-const DEFAULT_CHECKS = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 /** How many finished heads are remembered, so one head never tells the same outcome twice. */
 const SETTLED_CAP = 256;
@@ -25,6 +23,8 @@ type Entry = { watch: CiWatch; timer?: ReturnType<typeof setTimeout>; reported?:
 /** One read of the PR: the head, its state and the required checks of that head. A failed or unreadable read is `pending`; the deadline bounds the retries. */
 export async function pollCi(target: { repo: string; pr: number }, head: string, required: readonly string[], run: SdlcGh): Promise<CiPoll> {
   if (!REPO.test(target.repo) || !Number.isSafeInteger(target.pr) || target.pr < 1) return "closed";
+  const names = requiredCheckNames(target.repo, required);
+  if (!names.length) return "incomplete";
   try {
     const view = await run(["pr", "view", String(target.pr), "--repo", target.repo, "--json", "headRefOid,state,statusCheckRollup"], 10_000, undefined, 512 * 1024);
     if (view.code !== 0) return "pending";
@@ -33,7 +33,7 @@ export async function pollCi(target: { repo: string; pr: number }, head: string,
     if (body.state !== "OPEN") return "closed";
     // The same check-state mapping as every other PR read; files are not requested here.
     const evidence = parsePrEvidence({ ...body, files: [], changedFiles: 0 });
-    const rows = (required.length ? required : DEFAULT_CHECKS).map(name => evidence.checks.filter(check => check.name === name));
+    const rows = names.map(name => evidence.checks.filter(check => check.name === name));
     if (rows.some(row => row.some(check => check.state === "failed"))) return "failed";
     if (rows.some(row => row.length === 0 || row.some(check => check.state === "pending"))) return "pending";
     return rows.every(row => row.length === 1 && row[0]!.state === "passed") ? "passed" : "incomplete";

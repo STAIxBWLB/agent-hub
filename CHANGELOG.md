@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Bounded execution lineage reads and deduplicated declared external references are available through Tasks, CLI and MCP (#1220 T2). Admission rechecks current task role, revision, project and privacy; reads retain historical review bindings and explicit observation gaps without scanning the board or contacting producers.
+
 ## 0.35.0
 
 - Managed headless peers can author compact amem Record capture rows from final answers (#1320), following the package records policy and existing privacy fences. Record lines are removed from shared replies; bounded memory preference uses proven generated-note IDs and anchors without deleting unrelated notes or promoting capture into curated evidence.

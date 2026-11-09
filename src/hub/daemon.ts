@@ -180,7 +180,7 @@ import { canonicalPath, realPath, hubHome } from "./project.ts";
 import { HandoffRefusal, checkTarget, handoffAge, handoffCatchUpRow, handoffChunks, handoffConnectFailure, handoffLogGate, handoffOutcomeUnknown, handoffReach, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
-import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
+import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, LINEAGE_TOOL_NAMES, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
 import { effectiveClass, listedCapabilities, PublishRefusal, readShare, shareView, validatePublished, type CapabilityManifest } from "./capabilities.ts";
 import { invocationApproval, checkArgs, DEFAULT_TIMEOUT_S, InvocationLedger, invocationRefusal, refusedBy, renderInvocationResult, requestText, type InvocationOutcome, type InvocationRow } from "./invocations.ts";
 import { Conductor, ConductorHolds, conductorPeer, requireConductor, conductorProgressSink, publicConductorTask, publicPeerBudget, taskShowAllowed, type ConductEvent } from "./conductor.ts";
@@ -417,7 +417,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -1855,6 +1855,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // normalized origin remote, the same on every machine; without one, its path). Fail-open: without it the hub works as before.
   // Daemon start never depends on the memory home: an unresolvable home falls back to the raw key.
   const memoryProjectRaw = memoryProjectKey(opts.cwd);
+  const executionLineageProjectKey = `ahub-${createHash("sha256").update(memoryProjectRaw).digest("hex")}`;
+  const executionLineageCursorKey = randomBytes(32).toString("hex");
   const memoryProject = (() => { try { return memoryProjectFor(opts.cwd); } catch { return memoryProjectRaw; } })();
   let memoryStore: MemoryStore | undefined;
   let memoryBinding: MemoryProfileBinding | undefined;
@@ -2264,6 +2266,12 @@ export async function startDaemon(opts: DaemonOptions) {
   const inboxPolling = new InboxPolling();
   startupTimings.mark("model_runtime");
   const board = new Board(join(opts.stateDir, "hub.db"));
+  try {
+    const retainedExecutionReferences = board.executionReferencesIntegrity(), expected = restored?.integrity?.executionReferences;
+    if (restored?.integrity && (expected ? expected.count !== retainedExecutionReferences.count || expected.digest !== retainedExecutionReferences.digest : retainedExecutionReferences.count !== 0)) throw new Error("changed recovery binding");
+  } catch {
+    board.close(); throw new Error("execution reference state or recovery binding is unavailable; restore trusted project state and choose a compatible recovery target before retrying");
+  }
   const visuals = new VisualStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => visuals.close());
   // Held recovery must compare the source's exact rows before any retention mutation.
@@ -2942,6 +2950,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(config.memory.enabled ? { memory } : {}),
     candidates, candidateScreen: screenMemory, privateTurn: peer => !!turns.get(peer)?.private || contextPii(peer),
     memoryCheck: checkMemory,
+    executionLineage: { projectKey: executionLineageProjectKey, cursorKey: executionLineageCursorKey, readDelivery: id => journal.get(id) },
     briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, () => config.memory.brief_items,
       memoryStore ? taskMemoryItems : undefined,
       (peer, task, counts) => event({ type: "memory_brief", source: "amem", peer, task, ...counts }),
@@ -4888,13 +4897,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
       if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
-      const hint = args[3] && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
+      const hint = args[3] && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
@@ -5249,10 +5258,21 @@ export async function startDaemon(opts: DaemonOptions) {
     } catch { throw new Error(`visual ${id} was stored but its stub delivery failed; inspect the visual before posting again`); }
     return `visual ${id}`;
   }
+  function executionLineageRead(by: PeerId, input: unknown, piiTurn = false): Record<string, unknown> {
+    const excluded = piiTurn || !!turns.get(by)?.private || contextPii(by) || reviewObserverHeld(by) || reviewObserverInput(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
+    return { ok: true, lineage: excluded || stopping || recoveryActive() || bus.isRecoveryHeld ? { state: "unavailable" } : tasks.executionLineage(by, input) };
+  }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     if (op === "hub_visual" || op === "hub_visual_show") return visualTool(by, op, a, piiTurn);
     const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
+    if (LINEAGE_TOOL_NAMES.has(op)) {
+      const excluded = piiTurn || !!turns.get(by)?.private || contextPii(by) || reviewTurn || reviewObserverInput(by);
+      if (op === "hub_lineage_show") return JSON.stringify(executionLineageRead(by, a, piiTurn));
+      if (excluded) throw new PreEffectToolRefusal("execution reference linking is unavailable in a private or review-observer context; retry only in a public task context");
+      if (stopping || recoveryActive() || bus.isRecoveryHeld) throw new PreEffectToolRefusal("recovery or shutdown is holding execution reference links; wait for release and retry");
+      return JSON.stringify({ ok: true, link: await tasks.linkExecutionReference(by, a) });
+    }
     if (op === "hub_ask") {
       // #1053: a structured question for the person. Refused before any row for a read-only instance, a PII turn's own words are marked private by the desk's `isPrivate`.
       if (by === USER) throw new PreEffectToolRefusal("hub_ask is for the agents of this project; the person answers with the console (ahub status shows open questions)");
@@ -6681,12 +6701,13 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchComparisons = board.researchComparisonIntegrity();
     const researchRunners = board.runnerReceiptIntegrity();
     const researchEvidence = board.researchEvidenceIntegrity();
+    const executionReferences = board.executionReferencesIntegrity();
     const reviewComments = board.reviewCommentsIntegrity();
     const modelState = modelOverrides.integrity();
     const visualIntegrity = visuals.integrity();
     if (!Number.isSafeInteger(visualIntegrity.count) || visualIntegrity.count < 0 || !/^[a-f0-9]{64}$/.test(visualIntegrity.digest))
       throw new Error("visual recovery integrity unavailable; inspect the retained store before recovery");
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -8853,6 +8874,14 @@ export async function startDaemon(opts: DaemonOptions) {
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).slice(0, 128).filter(([key]) => /^[A-Za-z][A-Za-z0-9_]*$/.test(key)).map(([key, item]) => [key, publicReadValue(item, depth + 1)]));
     return null;
   }
+  function sdlcSettingsView() {
+    let file: ReturnType<typeof loadSdlc> | undefined;
+    try { file = loadSdlc(opts.cwd, VERSION); } catch { /* unreadable file stays unknown */ }
+    return {
+      "sdlc.mode": { value: lifecycleConfig.mode, fileValue: file?.mode ?? null, ...(!file ? { problem: "file unavailable" } : {}) },
+      "sdlc.required_checks": { value: lifecycleConfig.requiredChecks, fileValue: file?.requiredChecks ?? null, ...(!file ? { problem: "file unavailable" } : {}) },
+    };
+  }
   function publicSettingsView() {
     const view = settingsView();
     const rows = view.rows.flatMap(row => {
@@ -8877,7 +8906,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(row.min !== undefined ? { min: row.min } : {}), ...(row.max !== undefined ? { max: row.max } : {}),
         ...(row.locked ? { locked: "read-only" } : {}), ...(opaque ? { withheld: true } : {}) }];
     });
-    return { rows, roster: rosterView().map(row => ({ peer: row.peer, on: row.on, startMode: row.startMode, state: row.state, queued: row.queued, tasks: row.tasks })), public: true, withheld: ["file", "source", "notes", "undo", "configEdit"] };
+    return { rows, sdlc: Object.fromEntries(Object.entries(sdlcSettingsView()).map(([key, value]) => [key, publicReadValue(value)])), roster: rosterView().map(row => ({ peer: row.peer, on: row.on, startMode: row.startMode, state: row.state, queued: row.queued, tasks: row.tasks })), public: true, withheld: ["file", "source", "notes", "undo", "configEdit"] };
   }
   function publicReleaseShow(input: Record<string, any>) {
     const release = input.id !== undefined ? Number.isSafeInteger(input.id) && input.id > 0 ? board.release(input.id) : undefined
@@ -10127,6 +10156,10 @@ export async function startDaemon(opts: DaemonOptions) {
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
     const incompatibleRecoveryTarget = () => {
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("execution_lineage")) {
+        try { if (board.hasExecutionReferences()) return "target lacks execution_lineage; retained declared references require a supporting daemon; choose a target advertising execution_lineage"; }
+        catch { return "execution reference compatibility is unknown; inspect the retained store or choose a supporting target"; }
+      }
       if ((!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("model_overrides")) && modelOverrides.hasRecords()) return "target lacks model_overrides; retained runtime model choices require a supporting daemon; clear them with ahub model clear or choose a supporting target";
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("visuals")) {
         try {
@@ -11919,6 +11952,25 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ ok: false, error: "autonomy is a person-only command; run ahub autonomy in a person's terminal" });
         void autonomyCommand(msg.action, msg.environment, msg.confirmed, msg.confirmation).then(reply, () => reply({ ok: false, error: "project autonomy could not be changed" }));
         return;
+      case "lineage_show":
+      case "lineage_link": {
+        const role = c.role, actor = role === "console" ? USER : role === "tools" && typeof c.peer === "string" && PEER_ID.test(c.peer) ? c.peer : undefined;
+        if (!actor) return void reply({ ok: false, error: "execution lineage is unavailable for this caller; use an authorized project session" });
+        const { t: _t, rid: _rid, ...input } = msg;
+        const ownedCurrent = c.toolsOwner ? captureImplementerTools(c) : undefined;
+        const current = () => {
+          if (sock.data !== c || c.closed || sock.readyState !== WebSocket.OPEN || c.role !== role || (role === "tools" && c.peer !== actor) || stopping) throw new PreEffectToolRefusal("execution lineage caller changed; reconnect and retry");
+          if (c.externalOwner && !currentExternalTools(c, true) || ownedCurrent && !ownedCurrent()) throw new PreEffectToolRefusal("execution lineage owner changed; reconnect in the current project session");
+        };
+        const op = msg.t === "lineage_show" ? "hub_lineage_show" : "hub_lineage_link";
+        try { current(); } catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
+        // A pure read is checked and serialized in this stack, without a new policy-change await.
+        if (op === "hub_lineage_show") return void reply(executionLineageRead(actor, input));
+        void childToolAuthority.run({ by: actor, current: () => { try { current(); return true; } catch { return false; } } }, () => taskOp(actor, op, input)).then(
+          text => { try { current(); reply(JSON.parse(text)); } catch { reply({ ok: false, error: "execution lineage caller changed; reconnect and retry" }); } },
+          error => reply({ ok: false, error: error instanceof Error ? error.message : "execution lineage unavailable; inspect the project task and retry" }));
+        return;
+      }
       case "model":
         if (c.role !== "console") return void reply(modelFailure("model overrides are person-only; run ahub model in a person's terminal"));
         return void reply(modelCommandSafe(msg, { source: "cli", scope: c, current: () => c.authed === true && !c.closed && c.role === "console" && sock.readyState === WebSocket.OPEN }));
@@ -11927,7 +11979,7 @@ export async function startDaemon(opts: DaemonOptions) {
           try { const current = publicReadCurrent(sock); current(); const view = publicSettingsView(); current(); return void reply({ ok: true, ...view }); }
           catch { return void reply({ ok: false, error: "public settings read unavailable for this caller" }); }
         }
-        return void reply({ ok: true, ...settingsView(), roster: rosterView(), configEdit: (() => { const view = configEditor!.view(); return { revisions: view.revisions, known: view.known }; })() });
+        return void reply({ ok: true, ...settingsView(), sdlc: sdlcSettingsView(), roster: rosterView(), configEdit: (() => { const view = configEditor!.view(); return { revisions: view.revisions, known: view.known }; })() });
       case "settings_reload":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
         return void reloadConfig("terminal", undefined, msg.confirm).then(reply, () => reply({ ok: false, error: "configuration reload could not be confirmed; inspect hub.log" }));

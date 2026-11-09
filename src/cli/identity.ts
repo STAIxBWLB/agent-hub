@@ -15,6 +15,7 @@ export const LIVE_TEST_PERSON_REFUSAL = "live-test cannot write person-attribute
 
 /** Person verdicts and user-authored workflow content are never delegated. */
 export function liveTestRefusal(command: string, args: readonly string[], context: { repairedFresh?: boolean } = {}): boolean {
+  if (command === "lineage" && args[0] === "link") return true;
   if (command === "model") return true; // #1317: even listing runtime overrides is person-only, never live-test delegated.
   if (command === "sdlc" && (args[0] === "authorize-release" || args[0] === "plan-review" || args[0] === "release-assign" || args[0] === "merge" || args[0] === "train" && args[1] !== "report")) return true;
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
@@ -157,6 +158,8 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   // #786, #1063, #1328: guarded merge, merge adoption and explicitly instructed release consent admit the person or unique configured conductor; the daemon checks the role.
   if (command === "sdlc" && ["merge", "authorize-release", "adopt-merge"].includes(args[0] ?? "")) return "conductor";
   if (command === "role") return ["list", "show"].includes(args[0] ?? "") ? "allowed" : "console";
+  // The original tools identity reaches Tasks for read visibility or task-scoped link admission.
+  if (command === "lineage") return ["show", "link"].includes(args[0] ?? "") ? "allowed" : "console";
   if (command === "task") {
     // #933: cancel, label and role act on the caller's own task only; the daemon refuses another peer's task by role (Tasks.cancel, task_catalog_role, task_label_check).
     if (["propose", "show", "cancel", "label", "role"].includes(args[0] ?? "")) return "allowed";
@@ -196,6 +199,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
 
 /** No argument text is included: notices and refusal logs must not copy task text or credentials. */
 export function cliCommandLabel(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): string {
+  if (command === "lineage") return ["show", "link"].includes(args[0] ?? "") ? `lineage ${args[0]}` : "lineage";
   if (command === "model") return ["list", "set", "clear"].includes(args[0] ?? "") ? `model ${args[0]}` : "model";
   if (command === "peer") return args[0] === "takeover" ? "peer takeover" : "peer";
   if (command === "backlog") return ["list", "add", "pull", "pull-ready", "split", "return", "plan", "pin", "undo"].includes(args[0] ?? "") ? `backlog ${args[0]}` : "backlog";

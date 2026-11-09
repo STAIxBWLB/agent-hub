@@ -1,3 +1,9 @@
+import { taskShowAllowed } from "./conductor.ts";
+import { executionOwnerSnapshot, parseOwnerLineageQuery, type ExecutionLineageOwnerPorts } from "./execution-lineage-owner.ts";
+import { readExecutionLineage, type LineageResult } from "./execution-lineage.ts";
+import { parseExecutionLinkInput, taskExecutionReference, executionLinkActor, type ExecutionLinkInput } from "./execution-links.ts";
+import { executionReferenceKey, type ExecutionReferenceV1 } from "./execution-reference.ts";
+import type { JournalDelivery } from "./delivery-journal.ts";
 import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt } from "./research-evidence.ts";
 import type { ActionMeta, ReviewAnchor } from "@staix/agent-console/contract";
 import { parseReviewAnchor, reviewAnchorErrorMessage, anchorStatus, type ReviewAnchorStatus } from "./review-anchor.ts";
@@ -49,7 +55,7 @@ import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
-import { matchesPolicy, policyRealPath, insideRoot } from "./path-policy.ts";
+import { matchesPolicy, matchesPolicyLexically, policyRealPath, insideRoot } from "./path-policy.ts";
 import { isDenied } from "../local/deny.ts";
 import { foldSegment, isHubWritePath } from "./permission-mode.ts";
 import { correctionInput, resolveVisibleMemory } from "./memory-candidates.ts";
@@ -78,7 +84,7 @@ import { HOST_MERGE_ADOPTION, parseClaimVerdict, taskClaimIdentity, CLASSES, OUT
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
-import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, writesRepository, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
+import { assign, isRemotePeerId, detectSignals, peerEntry, predictSplit, relayCandidates, writesRepository, ownerRoleOfClass, type Assignment, type InstanceRoutingOptions, type PeerCapabilities, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
@@ -141,6 +147,8 @@ export interface TasksDeps {
   ownerIsolation?: () => Readonly<Record<string, boolean>>;
   cwd: string;
   project: string;
+  /** Startup-bound namespace/key and an already-open exact-id journal read; never query-controlled. */
+  executionLineage?: { projectKey: string; cursorKey: string; readDelivery?(id: string): JournalDelivery | undefined };
   profile?: ProfileName;
   profileData?: ProjectProfile;
   piiPaths?: string[];
@@ -746,7 +754,7 @@ export class Tasks {
   constructor(private readonly d: TasksDeps) {
     this.ciWatchers = new CiWatchers({
       ...d.ciWatch,
-      poll: watch => pollCi(watch, watch.head, d.sdlc?.config().requiredChecks ?? [], d.sdlc?.gh ?? sdlcGh),
+      poll: watch => pollCi(watch, watch.head, d.sdlc ? requiredChecksFor(d.sdlc.config(), watch.repo) : [], d.sdlc?.gh ?? sdlcGh),
       current: watch => this.ciWatchCurrent(watch),
       finish: (watch, outcome) => this.ciCompleted(watch, outcome),
     });
@@ -4866,6 +4874,112 @@ export class Tasks {
     // Advice joins the planner's next delivery; it must not manufacture a turn beside a withheld backlog batch.
     for (const peer of this.taskPlanner(task).filter(peer => this.d.bus.isRostered(peer))) this.releaseNotice(`task #${task.id}: stall notice unavailable`, () => this.d.tell?.(peer, noteLine(HUB, "finding", text)));
   }
+  /** Pure read screen: never resolve an address or a path to decide whether to publish it. */
+  private lineageMetadata(text: string): boolean {
+    try {
+      if (!this.nameable(text) || looksSecret(text)) return false;
+      const policy = [...this.d.piiPaths ?? [], ...this.d.deny ?? []];
+      if (!policy.length) return true;
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { return false; } // direct stored paths have no alias proof
+      const strings = (value: unknown): string[] => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : value && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
+      // ponytail: a path-shaped opaque field has no cached alias proof. Withhold it until owner-maintained
+      // public metadata can prove it without filesystem discovery on this read path.
+      return strings(parsed).every(value => !/[\\/]|\.[a-zA-Z]/.test(value) && !matchesPolicyLexically(this.d.cwd, value, policy));
+    } catch { return false; }
+  }
+
+  private lineageVisible(by: PeerId, task: Task): boolean {
+    try {
+      if (this.d.privateTurn?.(by) || this.d.reviewObserverInput?.(by) || this.reviewTaskPrivate(task)) return false;
+      if (this.d.piiPaths?.length && ((task.refs.paths?.length ?? 0) || (task.plan?.paths?.length ?? 0) || (task.plan?.sections?.length ?? 0))) return false;
+      if (this.repositories.cachedScope(task.refs)?.key !== this.repositories.project.key) return false;
+      return by === USER || this.d.bus.isRostered(by) && taskShowAllowed(by, task, this.d.roles, this.isConfiguredPlanner(by));
+    } catch { return false; }
+  }
+
+  private lineagePorts(by: PeerId): ExecutionLineageOwnerPorts | undefined {
+    const binding = this.d.executionLineage;
+    if (!binding) return undefined;
+    // Agent-wide roles do not grant diagnostic authority over a hidden or staged source.
+    const diagnostics = by === USER;
+    // ponytail: raw50 event pages cannot prove current field privacy after policy narrowing.
+    // Refuse by policy alone until a privacy-aware page source supplies a complete public projection.
+    let eventProjectionSupported = false;
+    try { eventProjectionSupported = !this.d.piiPaths?.length && !this.d.deny?.length && !this.d.routing().signals.pii_patterns.length; } catch { /* unknown current policy cannot admit event projection */ }
+    return { project: this.d.project, projectKey: binding.projectKey, cursorKey: binding.cursorKey,
+      scope: createHash("sha256").update(by).digest("hex"), diagnostics, eventProjectionSupported,
+      task: id => this.d.board.get(id), visible: task => this.lineageVisible(by, task), metadata: text => this.lineageMetadata(text),
+      links: task => this.d.board.executionReferences(binding.projectKey, task.id, task.created),
+      delivery: binding.readDelivery,
+      attempt: id => this.d.board.experimentAttempt(id), events: (id, after, limit) => this.d.board.experimentEvents(id, after, limit),
+      receipts: id => this.d.board.runnerReceipts(id), attemptStatus: id => this.d.board.experimentAttemptStatus(id) };
+  }
+
+  /** Read one explicit owner neighborhood; unauthorized, private and missing roots are indistinguishable. */
+  executionLineage(by: PeerId, input: unknown): LineageResult {
+    if (!executionLinkActor(by) || by === HUB || by === "admin") return { state: "unavailable" };
+    try {
+      const check = this.requestCheck(by);
+      if (this.d.privateTurn?.(by) || this.d.reviewObserverInput?.(by)) return { state: "unavailable" };
+      const ports = this.lineagePorts(by);
+      if (!ports) return { state: "unavailable" };
+      let query;
+      try { query = parseOwnerLineageQuery(input); }
+      catch { return ports.diagnostics ? { state: "unavailable", reason: "invalid" } : { state: "unavailable" }; }
+      const snapshot = executionOwnerSnapshot(ports, query);
+      check();
+      if (this.d.privateTurn?.(by) || this.d.reviewObserverInput?.(by)) return { state: "unavailable" };
+      if (snapshot.task) {
+        const current = this.d.board.get(snapshot.task.id);
+        if (!current || current.created !== snapshot.task.created || current.history.length !== snapshot.task.history.length || !this.lineageVisible(by, current)) return { state: "unavailable" };
+      }
+      return readExecutionLineage(snapshot.source, snapshot.query);
+    } catch { return { state: "unavailable" }; }
+  }
+
+  /** A declaration carries no resolver, runner attestation, review approval or model-execution authority. */
+  async linkExecutionReference(by: PeerId, input: unknown): Promise<{ id: string; taskId: number; reference: ExecutionReferenceV1; strength: "declared"; already: boolean }> {
+    if (!executionLinkActor(by) || by === HUB || by === "admin") throw new PreEffectToolRefusal("execution links require a current local task actor; ask the person or the task owner to record the declaration");
+    const check = this.requestCheck(by, () => this.studyHold() ? "execution links are held; inspect ahub status and retry after recovery or shutdown" : undefined);
+    let proposed: ExecutionLinkInput;
+    try { proposed = parseExecutionLinkInput(input); } catch { throw new PreEffectToolRefusal("execution link fields are invalid; refresh the task identity and use a bounded execution reference"); }
+    return this.studyWrite(async () => {
+      const context = () => {
+        check();
+        const ports = this.lineagePorts(by);
+        if (!ports) throw new PreEffectToolRefusal("execution reference storage is unavailable; inspect ahub status before retrying");
+        let task: Task;
+        try { task = this.studyParent(proposed.taskId); } catch { throw new PreEffectToolRefusal("execution link task is unavailable in this project; refresh ahub task show before retrying"); }
+        const role = by === task.owner ? ownerRoleOfClass(task.class) : by === task.reviewer ? "reviewer" : undefined;
+        if (by !== USER && (!role || !this.d.roles?.[by]?.includes(role) || !this.d.bus.isRostered(by))) throw new PreEffectToolRefusal("execution links require the task's current owner or reviewer role; ask that peer or the person to record the declaration");
+        if (!this.lineageVisible(by, task)) throw new PreEffectToolRefusal("execution links require a public task outside private or review input; refresh the current task policy before retrying");
+        if (task.created !== proposed.taskCreated || task.history.length !== proposed.flowRevision) throw new PreEffectToolRefusal("execution link task identity or revision changed; refresh ahub task show before retrying");
+        const from = proposed.from ?? taskExecutionReference(ports.projectKey, task.id, task.created);
+        const scope = { id: task.id, created: task.created };
+        const origin = executionOwnerSnapshot(ports, { root: from, task: scope });
+        if (origin.source.health !== "ready" || !origin.source.nodes.some(node => executionReferenceKey(node.ref) === executionReferenceKey(from))) throw new PreEffectToolRefusal("execution link origin is not recorded in this task; select an existing public task-scoped reference");
+        if (proposed.reference.tool === "ahub") {
+          const target = executionOwnerSnapshot(ports, { root: proposed.reference, task: scope });
+          if (target.source.health !== "ready" || !target.source.nodes.some(node => executionReferenceKey(node.ref) === executionReferenceKey(proposed.reference))) throw new PreEffectToolRefusal("local execution target is not recorded in this task; select a verified task-scoped reference");
+        }
+        const metadata = JSON.stringify([from, proposed.reference]);
+        if (!this.publicMetadataText(metadata)) throw new PreEffectToolRefusal("execution reference metadata is private or sensitive; use public metadata before retrying");
+        return { ports, task, from, metadata, key: JSON.stringify([task.created, task.history.length, task.owner, task.reviewer, task.state, origin.source.revision]) };
+      };
+      const before = context();
+      if (this.screenOn()) {
+        const result = await this.screenCall(before.metadata);
+        if (result.label !== "clear") throw new PreEffectToolRefusal("execution reference privacy screening did not clear the metadata; retry with public metadata when screening is available");
+      }
+      check();
+      const current = context();
+      if (current.key !== before.key) throw new PreEffectToolRefusal("execution link authority or source changed during admission; refresh the task and source references before retrying");
+      const saved = this.d.board.recordExecutionReference(current.ports.projectKey, { ...proposed, from: current.from }, { by, at: this.d.now?.() ?? Date.now() });
+      return { id: saved.record.id, taskId: saved.record.taskId, reference: saved.record.reference, strength: "declared", already: saved.already };
+    });
+  }
+
   /** T1 records declared provenance only; no locator resolution or #901 judgment is manufactured. */
   async evidenceRecord(by: PeerId, input: unknown): Promise<EvidenceReceipt> {
     try { requireLocalTaskPeer(by); }
@@ -7207,7 +7321,7 @@ export class Tasks {
     };
     const evidence: ReviewReadiness = this.isPii(task)
       ? { ready: false, blockers: ["private review readiness unavailable"] }
-      : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc?.config().requiredChecks ?? []) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc?.config().requiredChecks ?? []) : { ready: false, blockers: ["review PR identity missing"] };
+      : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc ? requiredChecksFor(this.d.sdlc.config(), task.sdlc.repo) : [], task.sdlc.repo) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc ? requiredChecksFor(this.d.sdlc.config(), task.sdlc.repo) : []) : { ready: false, blockers: ["review PR identity missing"] };
     const currentHead = refileHead && !evidence.head && task.sdlc ? await readSdlcPrHead(task.sdlc, read) : evidence.head;
     const current = guard();
     const admitted: ReviewReadiness = quietDrift ? { ready: false, blockers: ["review readiness unknown: task changed during readback"] } : evidence;

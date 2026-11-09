@@ -48,6 +48,11 @@ export const INIT_SETTINGS: readonly InitSettingDef[] = [
       catch (error) { throw new Error(`${(error as Error).message}; allowed: ${START_AGENTS_ALLOWED.join(", ")} or none; nothing was written`); }
     } },
   { id: "sdlc.mode", flags: [{ flag: "--sdlc" }], file: "sdlc.toml", path: ["mode"], allowed: SDLC_MODES.join("|"), describe: "SDLC mode", parse: choice("sdlc.mode", "--sdlc", SDLC_MODES) },
+  { id: "sdlc.required_checks", flags: [{ flag: "--required-checks" }], file: "sdlc.toml", path: ["required_checks"], allowed: "comma-separated check names", describe: "required CI checks", parse: text => {
+    const names = text.split(",").map(name => name.trim());
+    if (!names.length || names.some(name => !name || name.length > 120 || /[\p{Cc}]/u.test(name)) || new Set(names).size !== names.length || names.length > 32) throw new Error("--required-checks needs 1 to 32 distinct check names, each at most 120 characters; nothing was written");
+    return names;
+  } },
   { id: "coordination", flags: [{ flag: "--coordination" }], file: "config.json", path: ["coordination"], allowed: COORDINATION_MODES.join("|"), describe: "coordination mode", parse: choice("coordination", "--coordination", COORDINATION_MODES) },
   { id: "memory.enabled", flags: [{ flag: "--memory", value: true }, { flag: "--no-memory", value: false }], file: "config.json", path: ["memory", "enabled"], allowed: "on|off", describe: "shared memory", parse: () => { throw new Error("unreachable"); } },
   { id: "snapshots.enabled", flags: [{ flag: "--snapshots", value: true }, { flag: "--no-snapshots", value: false }], file: "config.json", path: ["snapshots", "enabled"], allowed: "on|off", describe: "per-turn snapshots", parse: () => { throw new Error("unreachable"); } },
@@ -70,7 +75,7 @@ export interface InitSettingsRequest {
 }
 
 /** The usage line `ahub init` prints for a bad argument; help.ts shows the same flags. */
-export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--coordination advisory|turn-free] [--memory|--no-memory] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
+export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--required-checks <a,b,...>] [--coordination advisory|turn-free] [--memory|--no-memory] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
 
 /** Every flag the table and the two non-key choices own, for the caller's own argument loop and for help. */
 export const INIT_SETTING_FLAGS: readonly string[] = [...INIT_SETTINGS.flatMap(row => row.flags.map(flag => flag.flag)), "--autonomy"];
@@ -207,13 +212,13 @@ export function planInitSettings(request: InitSettingsRequest, texts: InitSettin
     if (!Object.hasOwn(request.values, row.id)) continue;
     const to = request.values[row.id];
     if (row.file === "sdlc.toml") {
-      let from: unknown = "off";
+      let from: unknown = row.id === "sdlc.mode" ? "off" : [];
       if (texts["sdlc.toml"] !== null) {
-        try { const mode = (Bun.TOML.parse(texts["sdlc.toml"]) as Record<string, unknown>).mode; if (mode !== undefined) from = mode; }
+        try { const held = (Bun.TOML.parse(texts["sdlc.toml"]) as Record<string, unknown>)[row.path[0]!]; if (held !== undefined) from = held; }
         catch { throw new Error(".agenthub/sdlc.toml is not valid TOML; fix it in your editor, then run ahub init again; nothing was written"); }
       }
       if (same(from, to)) continue; // off with no file is the shipped state: no file is written for it
-      const text = editSdlcText(next["sdlc.toml"] ?? texts["sdlc.toml"], [{ path: ["mode"], value: to }]);
+      const text = editSdlcText(next["sdlc.toml"] ?? texts["sdlc.toml"], [{ path: [...row.path], value: to }]);
       if (text !== null) next["sdlc.toml"] = text;
       rows.push({ key: row.id, file: "sdlc.toml", from, to });
       continue;

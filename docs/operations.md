@@ -1380,6 +1380,34 @@ callbacks. The instrumentation is intended to diagnose the next naturally
 occurring stall; it has not been run against the live daemon by that task.
 
 
+## Execution lineage (#1220 T2)
+
+`ahub lineage show --task <id>` reads a bounded, public metadata neighborhood.
+`--attempt <ra-id>` selects an existing research attempt. To name a dispatch,
+deliverable or output explicitly, use `--root '<ExecutionReferenceV1 JSON>'`
+with `--task-scope <id> --task-created <epoch-ms>`; the hub verifies exact
+membership in that task. A missing owner scope is unavailable, not a board scan.
+Use `--json` for the wire document; `--cursor` continues the same source snapshot.
+A changed source or restart invalidates the cursor, so refresh the root.
+
+`ahub lineage link --task <id> --task-created <epoch-ms> --revision <flow-revision>
+--ref '<ExecutionReferenceV1 JSON>' [--from '<local source reference JSON>']` admits inert, deduplicated declared metadata
+through Tasks. Read `ahub task show <id> --json` first to obtain the task's current
+creation identity and history revision. A stale revision or changed actor,
+project or privacy scope refuses without writing. A reference never fetches the
+producer or attests to a runner outcome. Foreign project keys remain opaque in
+their producer namespace. The equivalent agent tools are `hub_lineage_show` and
+`hub_lineage_link` on ordinary MCP sessions. Configured read-only MCP publication
+and isolated reviewers retain their existing fixed tool lists.
+
+Reads expose no titles, prompts, paths, session ids or review bodies. Unsupported,
+missing and denied reads have the same unavailable shape for ordinary callers;
+only an authorized diagnostic operator sees a reason. Pages are at most 100 nodes,
+200 edges and 256 KiB, with explicit truncation. Historical reviews retain their
+old head/hash binding; a changed output or head does not inherit that currency.
+The console panel and large-board performance receipt belong to T3; native causal
+coverage remains unverified. See [the address contract](design/execution-reference.md).
+
 ## A two-agent task and review
 
 Choose an owner explicitly, then inspect the reviewer selected by the project
@@ -6972,3 +7000,11 @@ Headless Record handling follows amem's effective machine and repository policy.
 Upgrade every amem consumer sharing a memory home together, including native CLI hooks and embedded hub/plugin copies. A 0.22.1 hook drain silently discards Record format-3 spool entries without a counted loss, and its config parser refuses the `records` key even when false, so set `records: false` only after every consumer is upgraded. The hub exact-pins 0.23.1 and uses its public `recordsEnabled` accessor for the active home and execution repository; it does not upgrade the other consumers automatically. No real home is migrated by the feature's fixtures.
 
 Count-only `records capture`, `records forwarded`, `records brief` and `records recall` diagnostics report accepted/dropped rows or before/after UTF-8 bytes. Record text, anchors, native session IDs and credentials are absent from these diagnostics. An absent registry proof or an unavailable Record source preserves old note content; a privacy or policy change during a read withholds the stale block.
+
+## Claude Code companion contract (#1338 C0)
+
+The [versioned host contract](../integrations/claude-code/host-contract-v1.md) freezes the seven C0 questions and two counted baseline procedures. Claude Code 2.1.319 and a scratch agent-hub 0.35.0 were probed with isolated HOME and CLAUDE_CONFIG_DIR, outside Git, with no Claude credentials copied or model turns. The final probes used an explicit noncredential environment allowlist after the initial inherited environment was corrected (receipt records the distinction). Real settings.json hashes matched at the isolated native-probe boundary only. A later read-only pre-push audit differed (confirmed 2026-11-09T08:12:37Z, cause UNKNOWN); the contract and receipt retain both observations without attributing the change.
+
+Agent-marked direct CLI status, board and project reads succeeded; calling them from a live mod's `$.process` remains unproven. Channel delivery origins, gesture origins, panes/bands, statusLine coexistence and minimum mod version remain unproven. The status-line and channel-delivery surfaces are dropped pending proof; `ahub tail` is excluded (person-only refusal and free text). No surface is supported by C0, and every native surface receipt remains NOT RUN. No native UX improvement is claimed by passing fixture tests.
+
+There is no companion to install or enable yet. The existing separate-terminal fallback is `ahub --project <quoted root> console` for attention, or `ahub --project <quoted root> status` for peer liveness. Both baseline procedures count two actions from a focused Claude session (open terminal, submit command), with selection or consent counted separately. Install/remove, a one-action attention journey, disable independence and on/off model-input equality require later native receipts. No channel plugin, runtime, real statusLine or statusline-tee was changed.

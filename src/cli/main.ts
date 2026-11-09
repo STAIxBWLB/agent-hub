@@ -77,6 +77,7 @@ import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
 import { autonomyInheritanceChange, init, initSettingRows, planInit } from "./init.ts";
+import { discoverInitChecks, withInitChecks } from "./init-required-checks.ts";
 import { INIT_USAGE, parseInitSettings } from "./init-settings.ts";
 import { promptGate, runInitPrompt, settingLines, shadowOffered, type InitAnswers } from "./init-prompt.ts";
 import { loadPacks } from "../hub/packs.ts";
@@ -1128,11 +1129,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       let result: Awaited<ReturnType<typeof runInitPrompt>>;
       try {
         result = await runInitPrompt({ ask, print: line => console.log(terminalText(line)) },
-          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), packs: [...loadPacks(cwd).packs.keys()], shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
+          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), packs: [...loadPacks(cwd).packs.keys()], discoverChecks: async () => (await discoverInitChecks(cwd)).names, shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
       } finally { rl.close(); }
       if (!result.ok) { console.error(`ahub init: ${result.reason === "refused" ? result.message : result.reason === "interrupted" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === "refused" ? 1 : 0; return; }
       requestedProfile = result.answers.profile; request = result.answers.request; asked = Object.keys(request.values).length > 0; shadow = result.answers.shadow; releaseGuard = result.answers.releaseGuard;
     }
+    try { request = await withInitChecks(cwd, request); } catch (error) { return fail((error as Error).message); }
     // `--autonomy off` skips the machine inheritance on a new project; `inherit` is today's behaviour. Neither changes an existing project.
     const inheritAutonomy = newProject && request.autonomy !== "off";
     if (!newProject && request.autonomy !== undefined) console.error("note: --autonomy applies to a new project only; this project already exists, so its autonomy settings are unchanged");
@@ -1225,6 +1227,31 @@ const commands: Record<string, () => Promise<void> | void> = {
     return entry.execute(context);
   }])),
 
+  lineage: async () => {
+    const { parseLineageCommand, renderExecutionLineage, validateLineageReply, validateLineageLink } = await import("./lineage.ts");
+    let command;
+    try { command = parseLineageCommand(args); } catch (error) { return fail((error as Error).message); }
+    if (liveTest && command.op === "link") return fail("live-test cannot register execution links; retry without --live-test as the task's authorized actor");
+    const hub = await connect();
+    try {
+      if (!hub.features.includes("execution_lineage")) return fail("running hub lacks execution_lineage support; upgrade and restart the hub, then retry ahub lineage");
+      const { op, json, ...message } = command;
+      const result = await hub.request({ t: op === "show" ? "lineage_show" : "lineage_link", ...message });
+      if (result.ok !== true) return fail(`${terminalText(result.error ?? "lineage request refused").replace(/[\r\n]+/g, " ").slice(0, 512)}; check task scope, current flow revision and source access before retrying ahub lineage`, result.refusalAudited === true, result.authorityRefused);
+      const options = { json };
+      if (op === "show") {
+        let lineage;
+        try { lineage = validateLineageReply(result.lineage); } catch (error) { return fail((error as Error).message); }
+        if (options.json) console.log(JSON.stringify(lineage, null, 2));
+        else console.log(renderExecutionLineage(lineage).join("\n"));
+      } else {
+        let link;
+        try { link = validateLineageLink(result.link, command); } catch (error) { return fail((error as Error).message); }
+        if (options.json) console.log(JSON.stringify(link, null, 2));
+        else console.log(`Declared execution metadata link ${link.already ? "already registered" : "registered"} for task #${link.taskId}; this does not attest to producer execution.`);
+      }
+    } finally { hub.close(); }
+  },
   model: async () => {
     const { parseModelCommand, projectModelStatus } = await import("./model.ts");
     let command;
@@ -2253,7 +2280,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!Object.hasOwn(allowed, sub) || flags.some((flag) => !allowed[sub]!.includes(flag)) || extra.length) fail(usage);
     if ((sub === "get" && (!key || text !== undefined)) || (sub === "set" && (!key || text === undefined)) || ((sub === "list" || sub === "undo" || sub === "reload") && key !== undefined)) fail(usage);
     const { scope: settingScope, error: settingScopeError } = localDeclarations();
-    const def = key === undefined ? undefined : settingDef(key, settingScope.instances, settingScope.catalog);
+    const sdlcRead = sub === "get" && ["sdlc.mode", "sdlc.required_checks"].includes(key ?? "");
+    const def = key === undefined || sdlcRead ? undefined : settingDef(key, settingScope.instances, settingScope.catalog);
     if (typeof def === "string") fail(settingScopeError && def.startsWith("unknown setting") ? `${key}: ${def}; the project config could not be read: ${settingScopeError}` : `${key}: ${def}`);
     if (flags.includes("--now") && (typeof def !== "object" || def.group !== "Roster")) fail(usage);
     const value = sub === "set" ? parseSettingText(def!, text!) : undefined;
@@ -2272,6 +2300,12 @@ const commands: Record<string, () => Promise<void> | void> = {
         }
         return reply;
       };
+      if (sdlcRead) {
+        const view = await request({ t: "settings_get" }), entry = view.sdlc?.[key!];
+        if (!entry || !Object.hasOwn(entry, "value") || !Object.hasOwn(entry, "fileValue")) fail("running hub lacks SDLC settings reads; upgrade and restart it first");
+        if (flags.includes("--json")) return console.log(JSON.stringify({ key, ...entry }, null, 2));
+        return console.log(terminalText(`${key}: running ${JSON.stringify(entry.value)}; file ${JSON.stringify(entry.fileValue)}${entry.problem ? "; file unavailable" : ""}`));
+      }
       if (sub === "reload") {
         let result = await request({ t: "settings_reload" });
         const confirmation = result.confirmation;

@@ -17,6 +17,8 @@ export interface ExecutionLineageSource {
    * owner's indexed read before these arrays or their bounds exist; never pass hidden rows here. */
   nodes: readonly LineageNode[];
   edges: readonly LineageEdge[];
+  /** Explicit host admission from saved declared references, privacy-projected independently of producer edges. */
+  admittedExternalTargets?: readonly ExecutionReferenceV1[];
 }
 export interface LineageQuery { root: ExecutionReferenceV1; cursor?: string; nodes?: number; edges?: number; bytes?: number }
 export type LineageResult = { state: "unavailable"; reason?: "missing" | "corrupt" | "unsupported" | "withheld" | "cursor_invalid" | "invalid" }
@@ -48,25 +50,37 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
     const rootKey = executionReferenceKey(root);
     if (![source.id, source.revision, source.scope].every(value => executionText(value, LINEAGE_LIMITS.token)) ||
         !executionText(source.cursorKey, LINEAGE_LIMITS.token) || Buffer.byteLength(source.cursorKey) < 32 ||
-        !executionText(source.projectKey, EXECUTION_REFERENCE_LIMITS.projectKey) || root.projectKey !== source.projectKey) return unavailable("invalid");
+        !executionText(source.projectKey, EXECUTION_REFERENCE_LIMITS.projectKey) || root.tool !== "ahub" || root.projectKey !== source.projectKey) return unavailable("invalid");
     // ponytail: oversized neighborhoods need source-owner indexed paging, never a larger inbox scan.
-    if (source.nodes.length > LINEAGE_LIMITS.sourceNodes || source.edges.length > LINEAGE_LIMITS.sourceEdges) return unavailable("unsupported");
-    const nodes = new Map<string, LineageNode>();
-    let size = 0;
+    if (source.nodes.length > LINEAGE_LIMITS.sourceNodes || source.edges.length > LINEAGE_LIMITS.sourceEdges ||
+        source.admittedExternalTargets !== undefined && (!Array.isArray(source.admittedExternalTargets) || source.admittedExternalTargets.length > LINEAGE_LIMITS.sourceNodes)) return unavailable("unsupported");
+    const admittedTargets: ExecutionReferenceV1[] = [], admittedKeys = new Set<string>();
+    for (const raw of source.admittedExternalTargets ?? []) {
+      const ref = parseExecutionReference(raw), key = executionReferenceKey(ref);
+      if (ref.tool === "ahub" || admittedKeys.has(key)) return unavailable("corrupt");
+      admittedTargets.push(ref); admittedKeys.add(key);
+    }
+    const nodes = new Map<string, LineageNode>(), externalKeys = new Set<string>();
+    let size = source.admittedExternalTargets === undefined ? 0 : bytes(admittedTargets);
     for (const raw of source.nodes) {
       const ref = parseExecutionReference(raw.ref), key = executionReferenceKey(ref);
-      if (ref.projectKey !== source.projectKey || !executionText(raw.state, LINEAGE_LIMITS.state) ||
+      if ((ref.tool === "ahub" ? ref.projectKey !== source.projectKey : !admittedKeys.has(key) || raw.strength !== "declared") || !executionText(raw.state, LINEAGE_LIMITS.state) ||
           !/^[a-z][a-z0-9_-]*$/.test(raw.state) || !STRENGTHS.includes(raw.strength) || nodes.has(key)) return unavailable("corrupt");
       const node = { ref, state: raw.state, strength: raw.strength };
       nodes.set(key, node); size += bytes(node);
+      if (ref.tool !== "ahub") externalKeys.add(key);
     }
     if (!nodes.has(rootKey)) return unavailable("missing");
     const edges: LineageEdge[] = [], edgeKeys = new Set<string>();
-    const adjacent = new Map<string, string[]>();
+    const adjacent = new Map<string, string[]>(), targetedExternal = new Set<string>();
     for (const raw of source.edges) {
       const from = parseExecutionReference(raw.from), to = parseExecutionReference(raw.to);
       const fromKey = executionReferenceKey(from), toKey = executionReferenceKey(to);
-      if (!nodes.has(fromKey) || !nodes.has(toKey)) return unavailable("corrupt");
+      if (!nodes.has(fromKey) || !nodes.has(toKey) || from.tool !== "ahub" || from.projectKey !== source.projectKey) return unavailable("corrupt");
+      if (to.tool !== "ahub") {
+        if (!admittedKeys.has(toKey) || raw.relation !== "declared-external" || raw.strength !== "declared") return unavailable("corrupt");
+        targetedExternal.add(toKey);
+      }
       if (!RELATIONS.includes(raw.relation) || !STRENGTHS.includes(raw.strength) ||
           (raw.relation === "declared-external" && raw.strength !== "declared")) return unavailable("corrupt");
       const edge = { from, to, relation: raw.relation, strength: raw.strength }, key = JSON.stringify(edge);
@@ -76,6 +90,7 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
         const neighbors = adjacent.get(a) ?? []; neighbors.push(b); adjacent.set(a, neighbors);
       }
     }
+    if ([...externalKeys].some(key => !targetedExternal.has(key))) return unavailable("corrupt");
     if (size > LINEAGE_LIMITS.sourceBytes) return unavailable("unsupported");
     const seen = new Set([rootKey]), queue = [rootKey];
     for (let i = 0; i < queue.length; i++) for (const key of adjacent.get(queue[i]!) ?? []) {
@@ -83,7 +98,7 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
     }
     const visibleNodes = queue.map(key => nodes.get(key)!);
     const visibleEdges = edges.filter(edge => seen.has(executionReferenceKey(edge.from)) && seen.has(executionReferenceKey(edge.to)));
-    const binding = hash([source.id, source.revision, source.scope, root, nodeLimit, edgeLimit, byteLimit, visibleNodes, visibleEdges]);
+    const binding = hash([source.id, source.revision, source.scope, root, nodeLimit, edgeLimit, byteLimit, admittedTargets, visibleNodes, visibleEdges]);
     const sign = (n: number, e: number): string => createHmac("sha256", source.cursorKey).update(JSON.stringify([binding, n, e])).digest("hex");
     let n = 0, e = 0;
     if (query.cursor !== undefined) {

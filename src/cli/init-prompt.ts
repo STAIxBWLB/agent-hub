@@ -64,6 +64,7 @@ export function shownDefault(id: string): string {
     : id === "coordination" ? DEFAULT_CONFIG.coordination
     : id === "specs.enabled" ? DEFAULT_SPECS_CONFIG.enabled
     : id === "specs.review" ? DEFAULT_SPECS_CONFIG.review
+    : id === "sdlc.required_checks" ? "none"
     : id === "sdlc.mode" ? "off"                    // no file is written for it: the loader's own default (src/hub/sdlc.ts)
     : row.id.endsWith(".enabled") ? false           // a legacy `<kind>.enabled` switch that the template does not carry reads as off
     : undefined;
@@ -86,6 +87,7 @@ export interface InitQuestionContext {
   machineAgents?: readonly string[];
   /** Project packs a profile answer may name besides the shipped profiles. */
   packs?: readonly string[];
+  discoverChecks?: () => Promise<readonly string[]>;
   /** Shadow history is offered only for a folder with no Git work tree. */
   shadowAvailable?: boolean;
 }
@@ -112,6 +114,7 @@ export function initQuestions(context: InitQuestionContext = {}): InitQuestion[]
     onOff("specs.enabled", "Design specs and their freshness checks", shownDefault("specs.enabled") as "on" | "off"),
     oneOf("specs.review", "Spec review mode", SPEC_REVIEW_MODES, shownDefault("specs.review")),
     oneOf("sdlc.mode", "SDLC mode", SDLC_MODES, shownDefault("sdlc.mode")),
+    { id: "sdlc.required_checks", label: "Required CI checks", choices: "comma-separated names", shown: "none", read: text => INIT_SETTINGS.find(row => row.id === "sdlc.required_checks")!.parse(text) },
     oneOf("coordination", "Coordination", COORDINATION_MODES, shownDefault("coordination")),
     onOff("memory.enabled", "Shared memory", shownDefault("memory.enabled") as "on" | "off"),
     onOff("snapshots.enabled", "Per-turn snapshots", shownDefault("snapshots.enabled") as "on" | "off"),
@@ -133,7 +136,14 @@ export const questionLine = (question: InitQuestion): string => `${question.labe
 export async function runInitPrompt(ports: InitPromptPorts, context: InitQuestionContext, preview: (answers: InitAnswers) => string[]): Promise<InitPromptResult> {
   const answers: InitAnswers = { request: { values: {} }, shadow: false, releaseGuard: false };
   ports.print("ahub init: press Enter to keep the default in brackets. N at the end, Ctrl-C or Ctrl-D writes nothing.");
-  for (const question of initQuestions(context)) {
+  for (const original of initQuestions(context)) {
+    let question = original;
+    if (question.id === "sdlc.required_checks") {
+      if (!["advise", "enforce"].includes(String(answers.request.values["sdlc.mode"]))) continue;
+      const names = await context.discoverChecks?.() ?? [];
+      answers.request.values["sdlc.required_checks"] = [...names];
+      question = { ...question, shown: names.join(", ") || "none; supply check names" };
+    }
     let settled = false;
     for (let attempt = 0; attempt < MAX_TRIES && !settled; attempt++) {
       const answer = await ports.ask(questionLine(question));
