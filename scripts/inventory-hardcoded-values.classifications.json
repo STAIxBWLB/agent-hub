@@ -275,6 +275,8 @@
   "scripts/compat-receipts/proofs/qwen-acp.py:rpc:inline:timeout=10#0": "operational",
   "scripts/compat-receipts/proofs/qwen-acp.py:rpc:inline:timeout=3#0": "operational",
   "scripts/compat-receipts/proofs/qwen-acp.py:rpc:inline:timeout=3#1": "operational",
+  "scripts/compat-receipts/proofs/qwen-dual-bus-q2.ts:<anonymous>:inline:Math.max=0#0": "operational",
+  "scripts/compat-receipts/proofs/qwen-dual-bus-q2.ts:batchMs:inline:batchMs=0#0": "operational",
   "scripts/compat-receipts/proofs/qwen.ts:rpcTimeoutMs:inline:Math.min=30_000#0": "operational",
   "scripts/compat-receipts/python-startup-measure.mjs:CHILD_MS:constant:CHILD_MS=15000#0": "operational",
   "scripts/compat-receipts/python-startup-measure.mjs:OUTPUT_BYTES:constant:OUTPUT_BYTES=4096#0": "safety floor",
