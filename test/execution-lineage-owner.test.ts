@@ -19,7 +19,7 @@ function fixture() {
   task.offer = { envelopeId: offer.id, owner: "codex", assignmentFlowRevision: 0 };
   const delivery: JournalDelivery = { id: "dispatch-1", peer: "codex", state: "completed", revision: 1, createdAt: 10, updatedAt: 10, originals: [offer], out: [offer] };
   const links: ExecutionLinkRecord[] = [];
-  const ports: ExecutionLineageOwnerPorts = { project: "fixture", projectKey, cursorKey: "fixture-private-cursor-key-0000001", scope: "fixture-user", diagnostics: true,
+  const ports: ExecutionLineageOwnerPorts = { project: "fixture", projectKey, cursorKey: "fixture-private-cursor-key-0000001", scope: "fixture-user", diagnostics: true, eventProjectionSupported: true,
     task: id => id === task.id ? task : undefined, visible: row => !row.signals.includes("pii"), metadata: text => !text.includes("private/"), links: () => links,
     delivery: id => id === delivery.id ? delivery : undefined, attempt: id => id === attempt.attemptId ? attempt : undefined,
     events: () => ({ rows: [output], afterSeq: 1, done: true }), receipts: () => [], attemptStatus: () => "failed" };
@@ -194,4 +194,101 @@ test("owner-unrecognized explicit attempt ids never invoke a source lookup or cl
   if (page.state !== "available") throw new Error("fixture unavailable");
   expect(page.nodes.map(node => node.ref)).toEqual([f.taskRef]);
   expect(lookups).toBe(0);
+});
+
+test("private and withheld history appends preserve public pages, source revision and usable cursors", () => {
+  const f = fixture(), output = { id: "d-0123456789ab", path: "public.txt", format: "txt", sha256: hash, bytes: 1 };
+  f.task.history = [{ at: 10, by: "codex", event: "done", deliverables: [output] }, { at: 11, by: "claude", event: "approved", reviewedHead: head, deliverables: [output] }];
+  const query = { taskId: 7, nodes: 1, edges: 1 }, before = readOwnerExecutionLineage(f.ports, query);
+  if (before.state !== "available" || !before.cursor) throw new Error("fixture must paginate");
+  const revision = executionOwnerSnapshot(f.ports, query).source.revision;
+  const continuation = { ...query, cursor: before.cursor }, next = readOwnerExecutionLineage(f.ports, continuation);
+  f.task.history.push({ at: 12, by: "codex", event: "done", deliverables: [{ ...output, id: "d-fedcba987654", private: true }] },
+    { at: 13, by: "codex", event: "done", deliverables: [{ ...output, id: "d-fedcba987653", path: "private/hidden" }] },
+    { at: 14, by: "claude", event: "approved", reviewedHead: "c".repeat(40), deliverables: [output], withheld: true });
+  expect(executionOwnerSnapshot(f.ports, query).source.revision).toBe(revision);
+  expect(readOwnerExecutionLineage(f.ports, query)).toEqual(before);
+  expect(readOwnerExecutionLineage(f.ports, continuation)).toEqual(next);
+  f.task.history.push({ at: 15, by: "codex", event: "done", deliverables: [{ ...output, id: "d-fedcba987652" }] });
+  expect(readOwnerExecutionLineage(f.ports, continuation)).toEqual({ state: "unavailable", reason: "cursor_invalid" });
+});
+
+test("unprojected task head fields never invalidate a public cursor", () => {
+  const f = fixture(), output = { id: "d-0123456789ab", format: "txt", sha256: hash, bytes: 1 };
+  f.task.history = [{ at: 10, by: "codex", event: "done", deliverables: [output] }];
+  const query = { taskId: 7, nodes: 1, edges: 1 }, before = readOwnerExecutionLineage(f.ports, query);
+  if (before.state !== "available" || !before.cursor) throw new Error("fixture must paginate");
+  const next = readOwnerExecutionLineage(f.ports, { ...query, cursor: before.cursor });
+  f.task.refs.commit = "c".repeat(40); // no review/head node projects this field
+  expect(readOwnerExecutionLineage(f.ports, query)).toEqual(before);
+  expect(readOwnerExecutionLineage(f.ports, { ...query, cursor: before.cursor })).toEqual(next);
+});
+
+test("review currency compares the entire current public submission set without depending on its order", () => {
+  for (const change of ["replacement", "addition", "removal", "reorder"] as const) {
+    const f = fixture(), d1 = { id: "d-0123456789ab", format: "txt", sha256: hash, bytes: 1 }, d2 = { ...d1, id: "d-fedcba987654", sha256: "c".repeat(64) };
+    const initial = change === "removal" || change === "reorder" ? [d1, d2] : [d1];
+    const submitted = change === "replacement" ? [d2] : change === "addition" ? [d1, d2] : change === "removal" ? [d1] : [d2, d1];
+    f.task.history = [{ at: 10, by: "codex", event: "done", deliverables: initial }, { at: 11, by: "claude", event: "approved", reviewedHead: head, deliverables: initial },
+      { at: 12, by: "codex", event: "done", deliverables: submitted }];
+    const page = readOwnerExecutionLineage(f.ports, { taskId: 7 });
+    if (page.state !== "available") throw new Error("fixture unavailable");
+    expect(page.nodes.find(node => node.ref.kind === "review")?.state).toBe(change === "reorder" ? "approved" : "approved_stale");
+    for (const record of initial) expect(page.nodes).toContainEqual({ ref: ref("deliverable", record.id, { sha256: record.sha256 }), state: submitted.some(now => now.id === record.id && now.sha256 === record.sha256) ? "recorded" : "stale", strength: "host-observed" });
+    expect(page.nodes.find(node => node.ref.kind === "review")?.ref.revision).toBe(head);
+  }
+});
+
+test("review copies cannot restore an older submission after a public replacement", () => {
+  const f = fixture(), d1 = { id: "d-0123456789ab", format: "txt", sha256: hash, bytes: 1 }, d2 = { ...d1, id: "d-fedcba987654" };
+  f.task.history = [{ at: 10, by: "codex", event: "done", deliverables: [d1] }, { at: 11, by: "claude", event: "approved", reviewedHead: head, deliverables: [d1] },
+    { at: 12, by: "codex", event: "done", deliverables: [d2] }, { at: 13, by: "claude", event: "changes_requested", reviewedHead: head, deliverables: [d1] }];
+  const page = readOwnerExecutionLineage(f.ports, { taskId: 7 });
+  if (page.state !== "available") throw new Error("fixture unavailable");
+  expect(page.nodes.filter(node => node.ref.kind === "review").map(node => node.state)).toEqual(["approved_stale", "changes_requested_stale"]);
+  expect(page.nodes.find(node => node.ref.kind === "deliverable" && node.ref.id === d1.id)?.state).toBe("stale");
+  expect(page.nodes.find(node => node.ref.kind === "deliverable" && node.ref.id === d2.id)?.state).toBe("recorded");
+});
+
+
+test("a withheld current head has the same public graph and pages as an absent current head", () => {
+  const f = fixture(), output = { id: "d-0123456789ab", format: "txt", sha256: hash, bytes: 1 };
+  f.task.history = [{ at: 10, by: "codex", event: "done", deliverables: [output] }, { at: 11, by: "claude", event: "approved", reviewedHead: head, deliverables: [output] }];
+  const hidden = "c".repeat(40), metadata = f.ports.metadata;
+  f.ports.metadata = text => !text.includes(hidden) && metadata(text);
+  f.task.refs.commit = hidden;
+  const query = { taskId: 7, nodes: 1, edges: 1 };
+  const denied = readOwnerExecutionLineage(f.ports, { taskId: 7 });
+  const page = readOwnerExecutionLineage(f.ports, query);
+  if (denied.state !== "available" || page.state !== "available" || !page.cursor) throw new Error("fixture must paginate");
+  expect(denied.nodes.find(node => node.ref.kind === "review")?.state).toBe("approved_unknown");
+  expect(denied.nodes).toContainEqual({ ref: ref("head", head), state: "submitted", strength: "declared" });
+  expect(JSON.stringify(denied)).not.toContain(hidden);
+  const continuation = readOwnerExecutionLineage(f.ports, { ...query, cursor: page.cursor });
+  delete f.task.refs.commit;
+  expect(readOwnerExecutionLineage(f.ports, { taskId: 7 })).toEqual(denied);
+  expect(readOwnerExecutionLineage(f.ports, query)).toEqual(page);
+  expect(readOwnerExecutionLineage(f.ports, { ...query, cursor: page.cursor })).toEqual(continuation);
+});
+
+
+test("unsupported current event policy is independent of filtered event counts and never pages events", () => {
+  for (const filtered of [0, 51]) {
+    const f = fixture(); let reads = 0;
+    const ports: ExecutionLineageOwnerPorts = { ...f.ports, eventProjectionSupported: false, events: () => { reads++; return { rows: Array.from({ length: filtered }, () => ({ ...f.output, private: true })), afterSeq: filtered, done: filtered === 0 }; } };
+    for (const root of [ref("attempt", f.attempt.attemptId), ref("output", `${f.attempt.attemptId}:1`, { sha256: hash })]) {
+      const query = { root, task: { id: 7, created: 10 } };
+      expect(readOwnerExecutionLineage(ports, query)).toEqual({ state: "unavailable", reason: "unsupported" });
+      expect(readOwnerExecutionLineage({ ...ports, diagnostics: false }, query)).toEqual({ state: "unavailable" });
+      expect(readOwnerExecutionLineage({ ...ports, diagnostics: false, visible: () => false }, query)).toEqual({ state: "unavailable" });
+    }
+    expect(readOwnerExecutionLineage({ ...ports, diagnostics: false }, { root: ref("attempt", "ra-fedcba987654"), task: { id: 7, created: 10 } })).toEqual({ state: "unavailable" });
+    const foreign = ref("claim", "public-claim", { tool: "ares", projectKey: "foreign-project" });
+    f.links.push({ id: "foreign-only", projectKey, taskId: 7, taskCreated: 10, from: f.taskRef, reference: foreign, strength: "declared", recordedBy: "codex", recordedAt: 10 });
+    const metadata = readOwnerExecutionLineage(ports, { taskId: 7 });
+    expect(metadata.state === "available" && metadata.nodes.some(node => node.ref.tool === "ares")).toBe(true);
+    f.links.push({ id: "requires-attempt", projectKey, taskId: 7, taskCreated: 10, from: f.taskRef, reference: ref("attempt", f.attempt.attemptId), strength: "declared", recordedBy: "codex", recordedAt: 10 });
+    expect(readOwnerExecutionLineage(ports, { taskId: 7 })).toEqual({ state: "unavailable", reason: "unsupported" });
+    expect(reads).toBe(0);
+  }
 });

@@ -198,6 +198,17 @@ withheld. This conservative ceiling prevents a read from resolving symlinks or
 probing a producer address; a future owner-maintained public metadata projection
 can recover those slices without weakening privacy.
 
+Attempt-event projection also requires a host-owned capability derived from the
+current policy. Any configured PII path, local deny entry or routing PII pattern
+makes raw event paging unsupported: neither zero filtered rows nor a longer raw
+page proves a complete public neighborhood. Attempt/output roots and local
+attempt/output traversals then refuse before event paging, including task-root
+neighborhoods whose declarations require those records; they never return a
+partial graph as complete. Task, head, deliverable and foreign declared metadata
+remain available when their own privacy checks pass and no event source is needed.
+This capability is not query-selectable. The upgrade path is an owner-maintained
+complete public metadata reader, not an index or unbounded scan added by T2.
+
 No read infers an edge from a title, time, shared path or matching hash. The
 missing dispatch-to-attempt observation remains missing unless a separately
 admitted declaration explicitly names it; declared metadata never upgrades the
@@ -205,10 +216,18 @@ strength of surrounding evidence. Read operations never spawn, probe, fetch,
 replay, write memory or admit a reference.
 
 Historical review metadata stays visible only through its public source view.
-Review currency binds the exact reviewed output hash and submitted head; a later
-recorded output or head invalidates current currency while retaining the old evidence
-as historical. This is currency against recorded source metadata, not a live file or
-Git freshness probe; unrecorded changes remain unknown. A declared external reference cannot make a review current. Code-only reviews
+Review currency binds the full reviewed public id/hash set and submitted head to the
+latest public deliverable submission, using the existing delivery-history semantics.
+Approved and changes-requested review copies are not new submissions. A public
+replacement, addition or removal outside that reviewed set invalidates the old
+verdict even when a retained artifact's hash and head are unchanged; reordered
+identical sets remain equivalent. Wholly private or withheld submission updates do
+not change public currency or cursor bindings. Historical evidence remains visible
+under its original verdict and exact hash/head references. This is currency against
+recorded public source metadata, not a blanket task approval or a live file or Git
+freshness probe; unrecorded changes remain unknown. Source revisions and cursors
+bind only the authorized public graph, never raw history counts or unprojected task
+fields. A declared external reference cannot make a review current. Code-only reviews
 retain an explicit recorded-head node even when no deliverable was submitted;
 a head string alone is declared source metadata, not a Git observation. Review
 state tokens retain the original verdict with a stale or unknown suffix when

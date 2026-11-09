@@ -22,10 +22,10 @@ async function fixture(policy: { piiPaths?: string[]; deny?: string[] } = {}) {
   const task = board.propose(USER, { title: "PRIVATE_TASK_TITLE", class: "implement" });
   board.update(task.id, USER, "accepted", { owner: "codex", reviewer: "claude", state: "in_progress" });
   const roles: Record<string, string[]> = { codex: ["implementer"], claude: ["reviewer"], kimi: ["implementer"] };
-  const control: { private: boolean; review: boolean; held: boolean; screening: boolean; screen?: () => Promise<void>; authority?: string } = { private: false, review: false, held: false, screening: false };
+  const control: { private: boolean; review: boolean; held: boolean; screening: boolean; screen?: () => Promise<void>; authority?: string; patterns?: string[] } = { private: false, review: false, held: false, screening: false };
   const routing = loadRouting(cwd), projectKey = "ahub-execution-fixture";
   const tasks = new Tasks({ board, bus, cwd, project: "fixture", roles, notify: () => {}, ...policy,
-    routing: () => ({ ...routing, signals: { ...routing.signals, pii_screen: control.screening ? "local" : "off" }, constraints: { ...routing.constraints, pii: "local_only" } }),
+    routing: () => ({ ...routing, signals: { ...routing.signals, pii_screen: control.screening ? "local" : "off", pii_patterns: control.patterns ?? routing.signals.pii_patterns }, constraints: { ...routing.constraints, pii: "local_only" } }),
     privateTurn: () => control.private, reviewObserverInput: () => control.review, sweepHeld: () => control.held,
     requestAuthority: () => () => control.authority, piiScreen: async () => { await control.screen?.(); return { label: "clear", ms: 0 }; },
     executionLineage: { projectKey, cursorKey: "fixture-private-cursor-key-0000001", readDelivery: () => undefined } });
@@ -163,4 +163,35 @@ test("a conductor cannot distinguish staged backlog or private task existence fr
   }
   // Restricting diagnostics does not revoke ordinary authorized reads of a public task.
   expect(f.tasks.executionLineage("kimi", { taskId: f.task.id }).state).toBe("available");
+});
+
+test("hidden history preserves a public read cursor without relaxing execution-link write revision fences", async () => {
+  const f = await fixture();
+  await f.tasks.linkExecutionReference("codex", f.input());
+  await f.tasks.linkExecutionReference("codex", { ...f.input(), reference: { ...f.reference, id: "second-public-ref" } });
+  const query = { taskId: f.task.id, nodes: 1, edges: 1 }, page = f.tasks.executionLineage("codex", query);
+  if (page.state !== "available" || !page.cursor) throw new Error("fixture must paginate");
+  const continuation = { ...query, cursor: page.cursor }, next = f.tasks.executionLineage("codex", continuation);
+  const staleWrite = { ...f.input(), reference: { ...f.reference, id: "third-public-ref" } };
+  f.board.update(f.task.id, USER, "note", {}, "PRIVATE_HISTORY_CANARY", { withheld: true });
+  expect(f.tasks.executionLineage("codex", query)).toEqual(page);
+  expect(f.tasks.executionLineage("codex", continuation)).toEqual(next);
+  await expect(f.tasks.linkExecutionReference("codex", staleWrite)).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  await f.tasks.linkExecutionReference("codex", { ...f.input(), reference: staleWrite.reference });
+  expect(f.tasks.executionLineage("codex", continuation)).toEqual({ state: "unavailable" });
+});
+
+
+test("event projection capability is derived from current host policy and cannot be selected by a query", async () => {
+  const paths: string[] = [], deny: string[] = [], f = await fixture({ piiPaths: paths, deny });
+  f.control.patterns = [];
+  const host = f.tasks as unknown as { lineagePorts(by: string): { eventProjectionSupported: boolean } };
+  expect(host.lineagePorts("codex").eventProjectionSupported).toBe(true);
+  paths.push("private/**"); expect(host.lineagePorts("codex").eventProjectionSupported).toBe(false); paths.pop();
+  deny.push(".git"); expect(host.lineagePorts("codex").eventProjectionSupported).toBe(false); deny.pop();
+  f.control.patterns.push("sensitive"); expect(host.lineagePorts("codex").eventProjectionSupported).toBe(false);
+  expect(f.tasks.executionLineage(USER, { taskId: f.task.id, eventProjectionSupported: true })).toEqual({ state: "unavailable", reason: "invalid" });
+  f.control.patterns = [];
+  expect(host.lineagePorts("codex").eventProjectionSupported).toBe(true);
+  expect(f.tasks.executionLineage("codex", { taskId: f.task.id }).state).toBe("available");
 });

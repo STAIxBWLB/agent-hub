@@ -4902,8 +4902,10 @@ export class Tasks {
     if (!binding) return undefined;
     // Agent-wide roles do not grant diagnostic authority over a hidden or staged source.
     const diagnostics = by === USER;
+    let eventProjectionSupported = false;
+    try { eventProjectionSupported = !this.d.piiPaths?.length && !this.d.deny?.length && !this.d.routing().signals.pii_patterns.length; } catch { /* unknown current policy cannot admit event projection */ }
     return { project: this.d.project, projectKey: binding.projectKey, cursorKey: binding.cursorKey,
-      scope: createHash("sha256").update(by).digest("hex"), diagnostics,
+      scope: createHash("sha256").update(by).digest("hex"), diagnostics, eventProjectionSupported,
       task: id => this.d.board.get(id), visible: task => this.lineageVisible(by, task), metadata: text => this.lineageMetadata(text),
       links: task => this.d.board.executionReferences(binding.projectKey, task.id, task.created),
       delivery: binding.readDelivery,

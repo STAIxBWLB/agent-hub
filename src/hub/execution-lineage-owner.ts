@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { types } from "node:util";
 import type { Board, Task } from "./board.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
+import { latestDeliverables } from "./deliverables.ts";
 import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { remoteEnvelope } from "./envelope.ts";
 import { EXECUTION_LINK_LIMITS, taskExecutionReference, type ExecutionLinkRecord } from "./execution-links.ts";
@@ -14,6 +15,8 @@ export interface OwnerLineageQuery {
 }
 export interface ExecutionLineageOwnerPorts {
   project: string; projectKey: string; cursorKey: string; scope: string; diagnostics: boolean;
+  /** Host capability only: raw event paging cannot prove a complete public projection under dynamic field policy. */
+  eventProjectionSupported: boolean;
   task(id: number): Task | undefined;
   visible(task: Task): boolean;
   metadata(text: string): boolean;
@@ -81,8 +84,10 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
     if (taskId === undefined) return fail("unsupported");
     const task = ports.task(taskId);
     if (!task) return fail("missing");
-    if (!ports.visible(task) || firstAttempt?.private) return fail("withheld");
+    if (!ports.visible(task)) return fail("withheld");
     if (input.task && input.task.created !== task.created) return fail("missing");
+    if ((attemptRoot !== undefined || root.kind === "output") && !ports.eventProjectionSupported) return fail("unsupported");
+    if (firstAttempt?.private) return fail("withheld");
     const taskRef = taskExecutionReference(ports.projectKey, task.id, task.created);
     if (input.taskId !== undefined) root = taskRef;
     if (input.attemptId !== undefined) root = { v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "attempt", id: input.attemptId };
@@ -116,20 +121,32 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
       return visible;
     };
     const current = new Map<string, string>();
-    for (const entry of task.history) for (const output of entry.deliverables ?? []) {
-      if (entry.withheld) { withheld(deliverableRef(output)); continue; }
-      if (!publicOutput(output)) continue;
-      if (!current.has(output.id)) account([output.id, output.sha256]);
-      current.set(output.id, output.sha256);
-      if (current.size > LINEAGE_LIMITS.sourceNodes) { source.health = "unsupported"; throw new Error("lineage source bound"); }
+    let publicSubmission = false;
+    for (const entry of task.history) {
+      if (entry.withheld) { for (const output of entry.deliverables ?? []) withheld(deliverableRef(output)); continue; }
+      const outputs = (entry.deliverables ?? []).filter(publicOutput);
+      // Review copies bind a verdict, not a new submission. Wholly hidden updates do not replace
+      // the current public submission or reveal their presence through review currency.
+      if (entry.event === "approved" || entry.event === "changes_requested" || !outputs.length) continue;
+      const submitted = latestDeliverables([{ event: entry.event, deliverables: outputs }]);
+      if (!submitted) continue;
+      current.clear(); publicSubmission = true;
+      for (const output of submitted) {
+        account([output.id, output.sha256]); current.set(output.id, output.sha256);
+        if (current.size > LINEAGE_LIMITS.sourceNodes) { source.health = "unsupported"; throw new Error("lineage source bound"); }
+      }
     }
-    const head = task.refs.commit ?? task.sdlc?.head;
+    const currentHead = task.refs.commit ?? task.sdlc?.head;
+    const head = currentHead && ports.metadata(JSON.stringify({ v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "head", id: currentHead })) ? currentHead : undefined;
     for (const [index, entry] of task.history.entries()) {
       if (entry.withheld) continue;
       const reviewed = entry.event === "approved" || entry.event === "changes_requested", reviewedHead = entry.reviewedHead ?? entry.reviewFindings?.head;
       const outputs = (entry.deliverables ?? []).filter(publicOutput);
       if (reviewed && entry.deliverables?.length && !outputs.length) continue;
-      const currency = !reviewedHead || !head ? `${entry.event}_unknown` : reviewedHead !== head || outputs.some(record => current.get(record.id) !== record.sha256) ? `${entry.event}_stale` : entry.event;
+      const sameSubmission = outputs.length === current.size && outputs.every(record => current.get(record.id) === record.sha256);
+      const currency = !reviewedHead || !head ? `${entry.event}_unknown`
+        : reviewedHead !== head || publicSubmission && !sameSubmission ? `${entry.event}_stale`
+        : outputs.length && !publicSubmission ? `${entry.event}_unknown` : entry.event;
       const review: ExecutionReferenceV1 = { v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "review", id: `${task.id}:${task.created}:${index}`, ...(reviewedHead ? { revision: reviewedHead } : {}) };
       if (reviewed && (outputs.length || reviewedHead)) {
         add(review, currency, "host-observed");
@@ -143,7 +160,7 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
       }
       for (const output of outputs) {
         const ref: ExecutionReferenceV1 = { v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "deliverable", id: output.id, sha256: output.sha256 };
-        if (add(ref, current.get(output.id) === output.sha256 ? "recorded" : "stale", "host-observed")) {
+        if (add(ref, !publicSubmission ? "historical" : current.get(output.id) === output.sha256 ? "recorded" : "stale", "host-observed")) {
           edge(taskRef, ref, "produced", "host-observed");
           if (reviewed) edge(ref, review, "reviewed", "host-observed");
         }
@@ -155,6 +172,7 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
       if (ref.tool !== "ahub" || ref.projectKey !== ports.projectKey) return false;
       if (nodes.has(executionReferenceKey(ref))) return true;
       if (ref.kind === "output") {
+        if (!ports.eventProjectionSupported) { source.health = "unsupported"; return false; }
         const address = /^(ra-[a-f0-9]{12}):([1-9][0-9]*)$/.exec(ref.id);
         if (!address || ref.revision !== undefined) return false;
         const owner: ExecutionReferenceV1 = { v: 1, tool: "ahub", projectKey: ports.projectKey, kind: "attempt", id: address[1]! };
@@ -170,6 +188,7 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
         return add(ref, delivery.state, "host-observed") && (edge(taskRef, ref, "dispatched", "host-observed"), true);
       }
       if (ref.kind !== "attempt" || !/^ra-[a-f0-9]{12}$/.test(ref.id) || ref.revision !== undefined || ref.sha256 !== undefined) return false;
+      if (!ports.eventProjectionSupported) { source.health = "unsupported"; return false; }
       const attempt = ports.attempt(ref.id);
       if (!attempt || attempt.project !== ports.project || attempt.attempt.taskId !== task.id) return false;
       if (attempt.private) {
@@ -232,8 +251,10 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
     }
     if (source.health === "unsupported") return fail("unsupported");
     if (!nodes.has(rootKey)) return fail(rootWithheld ? "withheld" : "missing");
-    source.nodes = [...nodes.values()]; source.edges = edges; source.admittedExternalTargets = [...external.values()];
-    source.revision = createHash("sha256").update(JSON.stringify([task.id, task.created, task.history.length, task.refs.commit, source.nodes, edges])).digest("hex");
+    source.nodes = [...nodes.values()]; source.edges = [...new Map(edges.map(edge => [JSON.stringify(edge), edge])).values()]; source.admittedExternalTargets = [...external.values()];
+    // The core also binds the visible graph. Hidden history and unprojected task fields are
+    // never a source revision: otherwise a private append would invalidate a public cursor.
+    source.revision = createHash("sha256").update(JSON.stringify([source.nodes, source.edges, source.admittedExternalTargets])).digest("hex");
     source.health = "ready";
     return { source, query: query(), task };
   } catch { return fail(source.health === "unsupported" ? "unsupported" : "corrupt"); }
