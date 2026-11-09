@@ -1,0 +1,213 @@
+{
+  "schema": 1,
+  "issue": 1338,
+  "task": "C0",
+  "recordedAt": "2026-11-09",
+  "kind": "Contract and fixture baseline only; no installed companion and no native UX qualification",
+  "evidence": {
+    "claudeCode": "2.1.319",
+    "hub": "0.35.0",
+    "sourceBase": "34773d2e40e935a6c05444ae352ec2363be72673",
+    "bun": "1.4.4 macOS arm64",
+    "modelTurns": 0,
+    "realSettingsSha256Before": "1935b1c8fb7fa8cc7530f25f472cad87d269b0b6e5e3803aecf41a2b799e1f70",
+    "realSettingsSha256After": "1935b1c8fb7fa8cc7530f25f472cad87d269b0b6e5e3803aecf41a2b799e1f70",
+    "receipt": "receipts/c0-cli.md",
+    "isolation": "Dedicated HOME, CLAUDE_CONFIG_DIR, AGENTHUB_HOME and AMEM_HOME beneath mktemp outside any Git repository. Only scratch registry and daemon used; no native peers or models started.",
+    "claudeCredentialsCopied": false,
+    "initialInheritedCredentialEnvironment": true,
+    "finalProbeExplicitEnvironment": true,
+    "environmentCorrection": "The initial scratch environment snapshot retained an unrelated inherited credential variable. Both snapshots were deleted; version, host-kit and scratch CLI reads were repeated with an explicit noncredential environment allowlist. No value was printed, tracked or used for a model turn.",
+    "realSettingsHashScope": "Before/after hashes cover the isolated native probe boundary only, not the entire task or PR interval.",
+    "laterSettingsHashObservation": {
+      "confirmedAt": "2026-11-09T08:12:37Z",
+      "sha256": "0c0243e6a7bc58d814ee26efe4d98469ffddffb013ed5d50dc1e3e6233cc2b2b",
+      "cause": "UNKNOWN",
+      "note": "A later read-only pre-push audit differed from the matching probe-boundary hashes. No settings contents were read, no restore or write was attempted, and no further native probe was run."
+    }
+  },
+  "capabilities": [
+    {
+      "id": "process-reads",
+      "question": "Which reads answer from $.process under Claude session markers?",
+      "verdict": "unproven",
+      "evidence": [
+        "Claude Code 2.1.319 --version and plugin --help exit 0 under isolated HOME and CLAUDE_CONFIG_DIR.",
+        "ahub 0.35.0 source CLI child argv under CLAUDECODE=1, CLAUDE_CODE_SESSION_ID=c0-isolated-session, AGENTHUB_PEER_ID=claude: status --json, board --json and projects --json exit 0 against an isolated registered scratch daemon.",
+        "No call from an actual running mod through $.process was observed. CLI subprocess proof is narrower than host API proof."
+      ],
+      "consequence": "C1 may use these fixed read argv only after a native mod $.process receipt; no effect command or automatic launcher is admitted."
+    },
+    {
+      "id": "channel-receive",
+      "question": "Does session.receive see agent-hub deliveries and which origin?",
+      "verdict": "unproven",
+      "evidence": [
+        "No channel plugin or native peer was loaded; no inbound channel event was observed.",
+        "claude plugin test can load a scratch hooks module and pass an empty assertion, but its synthetic session.receive method is not channel delivery evidence."
+      ],
+      "consequence": "Drop channel-row rendering and delivery-trigger refresh. Keep session-start, turn-end, completed hub-tool and person-refresh candidates subject to their own receipts."
+    },
+    {
+      "id": "status-coexistence",
+      "question": "Does $.ui.status coexist with statusLine and statusline-tee?",
+      "verdict": "unproven",
+      "evidence": [
+        "The real settings.json SHA-256 is unchanged; no real statusLine or tee was run or edited.",
+        "No native status entry plus user statusLine plus quota-tee session was observed in the isolated profile."
+      ],
+      "consequence": "Drop the status-line entry; do not alter statusLine or quota capture. Pane and attention band are independent, still unqualified."
+    },
+    {
+      "id": "command-origin",
+      "question": "What are command.run origins for composer, model and plugin?",
+      "verdict": "unproven",
+      "evidence": [
+        "plugin test help describes a host-like test environment, not a native person gesture.",
+        "No person Enter, model-invoked command or plugin-triggered command origin was captured from an interactive session."
+      ],
+      "consequence": "No effectful slash command is admitted. C1 must prove composer origin; other origins get text only. Console remains printed guidance."
+    },
+    {
+      "id": "render-surfaces",
+      "question": "Which surfaces actually draw panes and bands?",
+      "verdict": "unproven",
+      "evidence": [
+        "No pane or AbovePrompt band was rendered in an interactive terminal.",
+        "Desktop, VS Code and mobile were not driven; each receipt is NOT RUN."
+      ],
+      "consequence": "No terminal or other surface is supported yet. Drop each unproven surface separately; no support inference from a terminal test or typings."
+    },
+    {
+      "id": "minimum-version",
+      "question": "What is the minimum supported Claude Code version?",
+      "verdict": "unproven",
+      "evidence": [
+        "Only installed Claude Code 2.1.319 was executed.",
+        "plugin init, plugin validate help and plugin test help are available at that version. No older version or native mod UX was qualified."
+      ],
+      "consequence": "2.1.319 is the observed CLI version, not a minimum or supported-mod claim. C1 must qualify a version and feature-detect APIs; older or unknown hosts refuse."
+    },
+    {
+      "id": "tail-events",
+      "question": "Is ahub tail a safe event source?",
+      "verdict": "unsupported",
+      "evidence": [
+        "Against the scratch daemon, ahub --project <root> tail exits 1: claude cannot run ahub tail; inherited Claude markers identify the agent shell.",
+        "src/cli/main.ts tail renders event, context, notice and permission free text. It is not a bounded closed public-field event stream."
+      ],
+      "consequence": "Exclude tail entirely. No polling timer or log stream replaces it; refresh remains event-driven or person-driven."
+    }
+  ],
+  "surfaces": [
+    {
+      "name": "terminal",
+      "status": "NOT RUN",
+      "receipt": "receipts/terminal.md"
+    },
+    {
+      "name": "desktop",
+      "status": "NOT RUN",
+      "receipt": "receipts/desktop.md"
+    },
+    {
+      "name": "vscode",
+      "status": "NOT RUN",
+      "receipt": "receipts/vscode.md"
+    },
+    {
+      "name": "mobile",
+      "status": "NOT RUN",
+      "receipt": "receipts/mobile.md"
+    }
+  ],
+  "fixture": {
+    "cli": "test/fakes/claude-code-companion-cli.ts",
+    "test": "test/claude-code-companion-contract.test.ts",
+    "bounds": {
+      "timeoutMs": 5000,
+      "maxOutputBytes": 262144,
+      "maxRows": 256,
+      "maxText": 240
+    },
+    "argv": [
+      "ahub",
+      "--project",
+      "<bound real root>",
+      "status|board|projects",
+      "--json"
+    ],
+    "statusFields": [
+      "cwd -> root",
+      "projectId",
+      "version",
+      "peers[].id (object key)",
+      "peers[].state",
+      "peers[].queued",
+      "peers[].attached (optional, never inferred)",
+      "peers[].needsReview (optional)",
+      "tasks[].state (object key)",
+      "tasks[].count"
+    ],
+    "boardFields": [
+      "id",
+      "title -> publicTitle (already public in ahub)",
+      "state"
+    ],
+    "pii": "A board title containing [pii] yields its id only. Never copy detail, notes, paths, doing, logs or review bodies.",
+    "ceiling": "In-memory specification fixture, not shipped parsing code or native host emulation. New status fields for budget, permission and held delivery detail remain unavailable until their public shape is proven; missing is partial, never zero.",
+    "errors": [
+      "invalid_request",
+      "disabled",
+      "unscripted",
+      "timeout",
+      "oversized",
+      "nonzero",
+      "malformed",
+      "binding",
+      "schema"
+    ],
+    "refresh": "No timer. Future event-trigger refresh: one in-flight read, coalesced, minimum interval 1000 ms. No delivery trigger before channel-receive proof.",
+    "binding": "Read projects registration before status and board. Exactly one exact real root and id; recheck each refresh. Missing, changed or duplicate refuses before further reads. This C0 fixture tests status binding only; registration orchestration belongs to C1.",
+    "states": [
+      "running",
+      "offline",
+      "unknown",
+      "partial",
+      "stale (>60000 ms)",
+      "unavailable_version",
+      "missing_cli",
+      "timeout",
+      "nonzero",
+      "oversized",
+      "unrecognized"
+    ],
+    "persistence": "No store, settings, logs or credentials. Future mod state only in per-session $.state."
+  },
+  "baseline": {
+    "rule": "One explicit chord/click that changes focus or opens a terminal, or one submitted command, is one action. Typing within the same submitted command and waiting add none. Start: Claude session focused, exact project root known, no separate terminal open. End: existing screen visibly answers the question. Consent and project selection, if needed, add one action each.",
+    "journeys": [
+      {
+        "id": "what-needs-me",
+        "steps": [
+          "Open a separate terminal (one action).",
+          "Submit ahub --project <quoted root> console (one action); inspect the existing attention screen and its person-only commands."
+        ],
+        "procedureActions": 2,
+        "observedUiActions": null,
+        "observedResult": "NOT RUN; CLI read proof does not measure this UI journey."
+      },
+      {
+        "id": "peer-liveness",
+        "steps": [
+          "Open a separate terminal (one action).",
+          "Submit ahub --project <quoted root> status (one action); inspect peer X state, attachment and queue."
+        ],
+        "procedureActions": 2,
+        "observedUiActions": null,
+        "observedResult": "NOT RUN; scripted status --json succeeded on an empty scratch hub, without a live peer X."
+      }
+    ],
+    "target": "C2 native what-needs-me receipt must show at most one action without leaving Claude Code. No improvement or native liveness proof is claimed in C0."
+  }
+}
