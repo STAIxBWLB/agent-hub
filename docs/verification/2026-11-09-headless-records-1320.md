@@ -79,6 +79,19 @@ labels below; the baseline is unchanged.
 | Registry matches 32 | operational | host result-list cap |
 | Registry matching limit below 1 | contract | parameter meaning |
 
+The eight earlier author-added source keys use these same call-site rules:
+
+| New key / call site | Label | Reason |
+| --- | --- | --- |
+| Brief `RECORD_BYTES` 2048 | safety floor | admission bound on model/native-authored stored excerpts before parsing |
+| Brief `RECORD_ROWS` 32 | contract | published package candidate-window shape |
+| Brief `legacyBytes` 2048 | operational | old rendered-block byte budget |
+| Brief `indexLines.reduce` 0 | operational | internal byte-sum initialization (R5) |
+| Brief `maximumLineBytes` 2048 | operational | host rendering budget |
+| Brief `maxBytes ?? 2048` | operational | host rendering default |
+| Capture session digest prefix 16 | contract | stored opaque identity width |
+| Capture turn/status digest prefix 16 | contract | stored opaque identity width |
+
 ## Synthetic byte measurements
 
 | Projection | Before UTF-8 bytes | After UTF-8 bytes |

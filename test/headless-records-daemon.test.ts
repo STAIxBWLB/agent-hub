@@ -50,9 +50,9 @@ function fixture(policy: "enabled" | "disabled" | "production" | "throw" = "enab
   };
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8"), start = source.indexOf("  const recordOwners ="), end = source.indexOf("  // Hoisted for the Tasks ports above", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
-  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.records = {bind:bindRecordOwner, inputs:recordInputs, close:closeRecordFrame, read:readRecordSnapshot, steer:noteRecordSteered, project:projectRecordRecall};");
+  const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.records = {bind:bindRecordOwner, inputs:recordInputs, close:closeRecordFrame, read:readRecordSnapshot, steer:noteRecordSteered, project:projectRecordRecall, version:recordReadVersion};");
   runInNewContext(script, state);
-  const ports = (state as typeof state & { records: { bind(owner: PeerAdapter, cwd: string, session: () => string | undefined): void; inputs: Map<string, { owner: PeerAdapter; originals: Envelope[]; tainted?: true }>; steer(peer: string, originals: Envelope[]): void; close(peer: string): void; read(task?: { owner?: string; title: string; refs: { paths?: string[] } }): RecordBriefSnapshot | undefined; project(peer: string, original: string, tokens: number): { before: string; after: string; records?: number; current?: () => boolean } | undefined } }).records;
+  const ports = (state as typeof state & { records: { bind(owner: PeerAdapter, cwd: string, session: () => string | undefined): void; inputs: Map<string, { owner: PeerAdapter; originals: Envelope[]; tainted?: true }>; steer(peer: string, originals: Envelope[]): void; version(task?: { owner?: string; title: string; refs: { paths?: string[] } }): string; close(peer: string): void; read(task?: { owner?: string; title: string; refs: { paths?: string[] } }): RecordBriefSnapshot | undefined; project(peer: string, original: string, tokens: number): { before: string; after: string; records?: number; current?: () => boolean } | undefined } }).records;
   const hookStart = source.indexOf("onGeneratedNote: "), hookEnd = source.indexOf(", onNote:", hookStart);
   expect(hookStart).toBeGreaterThan(0); expect(hookEnd).toBeGreaterThan(hookStart);
   runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync("globalThis.generatedNote = " + source.slice(hookStart + "onGeneratedNote: ".length, hookEnd) + ";"), state);
@@ -134,6 +134,29 @@ test("production late machine or execution-repository flag drift revokes capture
     expect(f.rows()).toHaveLength(1); expect(snapshot?.current?.()).toBe(false); expect(projection?.current?.()).toBe(false);
     expect(f.ports.read({ owner: "codex", title: "Synthetic task", refs: {} })).toBeUndefined(); expect(f.logs).toEqual(logs);
   }
+});
+
+test("unrelated reload preserves an in-flight legacy recall while Record policy and profile changes still revoke reads", async () => {
+  const f = fixture("production");
+  expect(f.owner.recordInstruction?.()).toBe(RECORD_INSTRUCTION); f.finish(record);
+  const task = { owner: "codex", title: "Synthetic task", refs: {} }, version = f.ports.version(task);
+  const snapshot = f.ports.read(task);
+  expect(snapshot?.current?.()).toBe(true);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const client = { contextInject: async () => { await gate; return "# [fixture]\n### Today\ncontext"; } } as unknown as MemoryClient;
+  const pending = recallFor("codex", client, ["synthetic-project"], 10_000, {
+    allowed: () => true, policyVersion: () => f.ports.version(task), project: original => f.ports.project("codex", original, 10_000),
+  });
+  f.state.configRevision++;
+  expect(f.ports.version(task)).toBe(version); expect(snapshot?.current?.()).toBe(true);
+  release(); expect(await pending).toContain("### Today\ncontext");
+  // The capture frame keeps its separate whole-turn configuration fence.
+  expect(f.owner.recordInstruction?.()).toBeUndefined(); f.finish(record.replace("synthetic failure", "synthetic late failure")); expect(f.rows()).toHaveLength(1);
+  f.profileChanged(); expect(f.ports.version(task)).not.toBe(version); expect(snapshot?.current?.()).toBe(false);
+  const profileVersion = f.ports.version(task);
+  writeFileSync(join(f.memoryDir, "amem.config.json"), JSON.stringify({ records: false }));
+  expect(f.ports.version(task)).not.toBe(profileVersion);
 });
 
 test("private/review/recovery/TUI/invocation/remote inputs refuse before the effective policy is read", () => {

@@ -3397,7 +3397,7 @@ export async function startDaemon(opts: DaemonOptions) {
     try { return config.memory.enabled && !stopping && !recoveryActive() && !bus.isRecoveryHeld && !memoryProblem && !!captureBinding
       && (task ? corpusBriefAllowed(task) : true) && recordPolicy(cwd)?.enabled === true; } catch { return false; }
   }
-  function recordReadVersion(task?: BriefTask): string { const cwd = recordReadCwd(task); return JSON.stringify([configRevision, memorySyncPolicyVersion(), cwd, recordPolicy(cwd)]); }
+  function recordReadVersion(task?: BriefTask): string { const cwd = recordReadCwd(task); return JSON.stringify([memorySyncPolicyVersion(), cwd, recordPolicy(cwd)]); }
   function readRecordSnapshot(task?: BriefTask, peer?: PeerId): import("../memory/brief.ts").RecordBriefSnapshot | undefined {
     const selectedPeer = task?.owner ?? peer;
     if (selectedPeer && (reviewOnlyPeer(selectedPeer) || contextPii(selectedPeer) || reviewObserverInput(selectedPeer))) return;
