@@ -209,5 +209,25 @@
       }
     ],
     "target": "C2 native what-needs-me receipt must show at most one action without leaving Claude Code. No improvement or native liveness proof is claimed in C0."
+  },
+  "c1": {
+    "amendment": "2026-11-09 owner decision: build read-only pane and hub commands against declared types and fake host; native terminal person-run NOT RUN",
+    "support": "fixture_only",
+    "declaredHostTypes": {
+      "version": "2.1.319",
+      "sha256": "4ac104a8b4390e4db51d64451cf7e5ad7fe01190e78c640288100aaf7731204e",
+      "workspaceAsset": "scratchpad/temp/agent-hub-846/claude-code-2.1.319/types/claude-code.d.ts",
+      "committed": false
+    },
+    "hostProcess": "process.run(argv,{cwd,timeoutMs}); host buffers first 4MiB per stream; adapter rejects truncation and combined output over262144 bytes before parsing. No custom host maxOutputBytes option exists.",
+    "nativeReceipt": "receipts/terminal.md",
+    "excluded": [
+      "status line",
+      "channel rows",
+      "delivery refresh",
+      "hub ui",
+      "attention band"
+    ],
+    "c0Matrix": "Unchanged. Declared types and fake host do not prove native APIs."
   }
 }

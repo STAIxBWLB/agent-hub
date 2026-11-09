@@ -17,3 +17,7 @@ Status: **NOT RUN**. No support or native UX claim. C0 CLI evidence is separate 
 - Process argv, timeout and combined byte cap enforced in native host: NOT RUN
 
 Use only an isolated profile. Stop if this surface needs the real home. Record each missing leg as unknown; never turn a fixture result into UI evidence.
+
+# C1 fixture-only boundary
+
+The amended C1 ships a read-only pane and /hub, /hub refresh, /hub console against declared 2.1.319 types and a fake host. Native installation, painting, genuine origins, process behavior and action counts remain NOT RUN. Attention band, channel rows, status-line coexistence and delivery refresh are excluded from C1 and remain separate future legs. Do not mark this receipt passed from source validation. Native support requires the person to record exact head, host version, scratch profile and project, root/registration refusals, bounded reads, visible pane, read-only gestures and disable/remove independence.
