@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.34.1, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.35.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 Inspect bounded task and attempt metadata with `ahub lineage show`; admit external
@@ -108,6 +108,9 @@ defaults. The
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,
   git sync between machines). Agents get
   it as a recall preface, as briefs on a task, and through bounded search tools.
+  Managed headless peers can save compact `amem:` records from final answers; the
+  hub follows amem's `records` policy and removes record lines from shared replies
+  ([details](docs/memory.md#agent-authored-records-1320)).
 - **Local and on-prem models.** Pi and the local worker can run on DGX or local MLX
   through an authenticated relay. Tasks marked as PII stay on the on-prem worker.
 - **Guard rails.** The local worker and Pi run in a sandbox, and their writes and
@@ -173,7 +176,7 @@ show an unverified writer's cause and the person-run next step.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-11-07-0.34.0.md) and the
+[release verification report](docs/verification/2026-11-09-0.35.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

@@ -96,3 +96,9 @@ T2 initially repeated that cause error for an explicit attempt address whose id
 was not an owner-supported attempt id. The query-validation rule in tasks.md
 separates caller mistakes from source failures; the execution-lineage and owner
 fixtures cover both cases, including source-lookup traps and neutral agent replies.
+
+On 2026-11-09, the #1320 Record read projection used the global configuration
+revision. A roster-only reload then discarded a held public recall response, so
+the existing #315 preface test lost its preface even though the independent
+off-roster attach guard remained correct. The memory/privacy-specific read
+revision preserves both behaviors; capture still uses its stricter turn fence.

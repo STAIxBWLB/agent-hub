@@ -5,6 +5,7 @@ import { BOUNDED_TASK_TOOLS, LINEAGE_TOOL_NAMES, CAPABILITY_TOOLS, HANDOFF_TOOLS
 import { MEMORY_READ_TOOLS } from "../hub/read-tools.ts";
 import { isDenied } from "../local/deny.ts";
 import type { MemoryClient } from "./client.ts";
+import { stripRecordLines } from "./records.ts";
 
 export interface CaptureOptions {
   project: string;
@@ -62,7 +63,7 @@ export class Capture {
 
   summarize(lastAssistantMessage: string): void {
     if (!this.sessionId) return;
-    void this.client.appendCapture({ project: this.opts.project, cwd: this.opts.cwd, at: new Date().toISOString(), sessionId: this.sessionId, toolUseId: `summary:${++this.sequence}`, agent: this.agentId, event: "Stop", excerpt: lastAssistantMessage, platformSource: this.platformSource });
+    void this.client.appendCapture({ project: this.opts.project, cwd: this.opts.cwd, at: new Date().toISOString(), sessionId: this.sessionId, toolUseId: `summary:${++this.sequence}`, agent: this.agentId, event: "Stop", excerpt: stripRecordLines(lastAssistantMessage), platformSource: this.platformSource });
   }
 
   /** Awaited by the caller: the hub process exits right after stop(), and an unawaited request would die with it. The synchronous published store operation has completed before this promise settles. */

@@ -775,7 +775,8 @@ export class PiPeer extends BasePeer {
       this.noteActivity();
       attempted = true;
       if (deliveryId) this.activeDeliveryIds.add(deliveryId);
-      const message = [envs.some(env => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join("\n");
+      const recordPrompt = this.opts.mode === "tui" ? "" : this.turnRecordPrompt("");
+      const message = [recordPrompt, envs.some(env => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join("\n");
       if (this.opts.mode === "tui") { const pending = this.sendTui({ type: "prompt", message }); promptId = this.pendingPromptId; await pending; }
       else await this.sendRpc({ type: "prompt", message });
       if (promptId !== undefined && promptId !== this.pendingPromptId) return;
@@ -992,7 +993,7 @@ export class PiPeer extends BasePeer {
       else if (error?.startsWith("execution budget")) this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
       else if (approvalStopReason) this.onMessage?.(approvalStopReason, reply);
       else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling);
-      else if (text) this.onMessage?.(text, reply);
+      else if (text) this.finalAnswer(text, reply);
       for (const id of this.activeDeliveryIds) this.delivery({ id, state: approvalStopReason ? "completed" : error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
       this.activeDeliveryIds.clear();
       this.currentReply = undefined; this.activeEnvs = [];

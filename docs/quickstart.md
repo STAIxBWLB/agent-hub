@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.34.1
+bun add -g github:STAIxBWLB/agent-hub#v0.35.0
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -47,6 +47,12 @@ move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
+
+## Upgrading to 0.35.0
+
+The hub now exact-pins `@staix/agent-mem` 0.23.1 (0.34.x pinned 0.22.1), and managed headless peers (Codex, headless Kimi, Qwen, Jcode, Pi, `local`) start saving compact `amem:` Record lines from their final answers; the hub strips those lines from shared replies (#1320). Upgrade every hub, global `amem` CLI and native amem hook that shares a memory home together: a 0.22.1 hook drain silently discards Record format-3 spool entries, and 0.22.1 refuses the `records` key even when false. To turn Records off, set `records: false` in the amem configuration only after every install is upgraded ([agent-authored records](operations.md#agent-authored-records)). Machine memory sync now supplies amem's placement attestation on every pass (#1173); a refused writer shows as cause `writer` in `ahub status` and the dashboard, with the next step. The budget gate default is 0.99 instead of 0.9 (#1292), but a project whose tracked `.agenthub/config.json` has `"gate": 0.9` from an older `ahub init` keeps 0.9 until you remove that key or run `ahub settings set budget.gate <value>`. On Kimi 2.5.2, `ahub kimi` installs a launch-scoped plugin so turns you start in its TUI leave results (#1282), and `ahub agy` turns off agy's self-update for the run (#1286). Nothing else changes until you use it: `ahub model set|clear|list` (person only) selects a supported peer's next-turn model (#1321), peers can post bounded visuals with `hub_visual` (#1315), and `ahub research export --dataset <dir>` writes per-project research datasets (#1290). N-1 is published 0.34.1 and control remains 16 through 17.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.35.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.34.1
 
@@ -232,7 +238,7 @@ The restarted Claude planner gets the release-train tools (`hub_release_new`, `h
 
 Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.22.1. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
+Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.23.1. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
@@ -310,7 +316,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 ## Shared memory
 
-The hub exact-pins the first-party `@staix/agent-mem` <!-- facts:agent-mem-pin -->0.23.0<!-- /facts:agent-mem-pin --> core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
+The hub exact-pins the first-party `@staix/agent-mem` <!-- facts:agent-mem-pin -->0.23.1<!-- /facts:agent-mem-pin --> core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
 
 Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
