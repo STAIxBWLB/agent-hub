@@ -8,6 +8,13 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+
+class RetainedPlanner extends BasePeer {
+  async deliver(): Promise<void> { throw new Error("the source planner stays offline under the recovery hold"); }
+  async start(): Promise<void> {}
+  async stop(): Promise<void> {}
+}
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -26,6 +33,7 @@ test("#1350 ordinary startup durably releases hub task notices before Tasks exis
   // Use the real hold/publication/checkpoint path, not hand-edited journal rows or a copied silence callback.
   const journal = new DeliveryJournal({ file: join(stateDir, "hub.db"), projectRoot: cwd, projectId, instanceId: "source" });
   const source = new Bus({ journal, batchMs: 0, rostered: peer => peer === "claude" });
+  source.add(new RetainedPlanner("claude"));
   const notices = ["first persisted workflow notice", "second persisted workflow notice"].map(body => newEnvelope(HUB, body, { to: ["claude"], kind: "task", priority: "status" }));
   try {
     source.setRecoveryHold(true, true);
