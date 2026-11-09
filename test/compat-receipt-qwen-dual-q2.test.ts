@@ -25,13 +25,15 @@ function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user
         const row = rows[offset];
         if (row.type !== "submit") throw Error("unexpected synthetic input");
         if (offset === 0) {
-          requests.push({ marker: "first", responseFormat: "absent", schemaHasTitle: false, messageCount: 2, userMessages: 1 });
+          requests.push({ marker: "first", responseFormat: "absent", schemaHasTitle: false, messageCount: 2, userMessages: 1,
+            roles: { system: 1, developer: 0, user: 1, assistant: 0, tool: 0, other: 0 } });
           write(user(row.text), { type: "stream_event", event: { type: "content_block_delta", delta: { text: "Q2_FIRST_BEGIN" } } });
           if (mode === "tool-stop") write({ type: "assistant", message: { stop_reason: "tool_use", content: [{ type: "tool_use", id: "fixture-tool", name: "fixture" }] } }, stop);
           held();
         } else if (offset === 1) {
           if (!released) throw Error("second input escaped while first was held");
-          requests.push({ marker: "second", responseFormat: "absent", schemaHasTitle: false, messageCount: 4, userMessages: mode === "same-provider-user-count" ? 1 : 2 });
+          requests.push({ marker: "second", responseFormat: "absent", schemaHasTitle: false, messageCount: 4, userMessages: mode === "same-provider-user-count" ? 1 : 2,
+            roles: { system: 1, developer: 0, user: 2, assistant: 1, tool: 0, other: 0 } });
           write(user(row.text), assistant("Q2_SECOND_DONE"), stop);
         } else throw Error("too many synthetic submits");
       }
@@ -70,6 +72,8 @@ for (const mode of ["ordinary", "tool-stop"] as const) test(`manual Q2 actual Bu
     expect(result.secondBusDelivered).toBe(true);
     expect(result.barriers).toEqual(["native-session-ready", "provider-first-response-held", "first-stream-consumed-by-driver",
       "second-envelope-queued-with-one-submit", "first-provider-response-released", "distinct-native-turns-and-second-bus-delivery"]);
+    expect(result.barrierRecords.map(row => row.barrier)).toEqual(result.barriers);
+    expect(result.barrierRecords.every((row, index, all) => index === 0 || row.elapsedMs >= all[index - 1]!.elapsedMs)).toBe(true);
     expect(f.submitsAtRelease).toEqual([1]);
     expect(result.userCount).toBe(2); expect(result.firstStop).toBeLessThan(result.secondUser); expect(result.secondUser).toBeLessThan(result.secondStop);
     expect(result.providerRequests.map(row => row.marker)).toEqual(["first", "second"]);
