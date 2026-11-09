@@ -201,13 +201,16 @@ can recover those slices without weakening privacy.
 Attempt-event projection also requires a host-owned capability derived from the
 current policy. Any configured PII path, local deny entry or routing PII pattern
 makes raw event paging unsupported: neither zero filtered rows nor a longer raw
-page proves a complete public neighborhood. Attempt/output roots and local
+page proves a complete public neighborhood. This includes historical public
+events whose fields a later policy narrowing would now withhold; the refusal is
+data-independent and does not disclose whether such a row exists. Attempt/output roots and local
 attempt/output traversals then refuse before event paging, including task-root
 neighborhoods whose declarations require those records; they never return a
 partial graph as complete. Task, head, deliverable and foreign declared metadata
 remain available when their own privacy checks pass and no event source is needed.
-This capability is not query-selectable. The upgrade path is an owner-maintained
-complete public metadata reader, not an index or unbounded scan added by T2.
+This capability is not query-selectable. The upgrade path is a privacy-aware page
+source supplying complete public metadata, not a derived privacy index, backfill
+or unbounded scan added by T2.
 
 No read infers an edge from a title, time, shared path or matching hash. The
 missing dispatch-to-attempt observation remains missing unless a separately

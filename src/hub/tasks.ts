@@ -4903,6 +4903,8 @@ export class Tasks {
     if (!binding) return undefined;
     // Agent-wide roles do not grant diagnostic authority over a hidden or staged source.
     const diagnostics = by === USER;
+    // ponytail: raw50 event pages cannot prove current field privacy after policy narrowing.
+    // Refuse by policy alone until a privacy-aware page source supplies a complete public projection.
     let eventProjectionSupported = false;
     try { eventProjectionSupported = !this.d.piiPaths?.length && !this.d.deny?.length && !this.d.routing().signals.pii_patterns.length; } catch { /* unknown current policy cannot admit event projection */ }
     return { project: this.d.project, projectKey: binding.projectKey, cursorKey: binding.cursorKey,
