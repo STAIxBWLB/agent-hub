@@ -358,3 +358,18 @@ test("planInit and initSettingRows agree, and neither writes (#1065 AC1)", () =>
   init(cwd, undefined, false, false, request);
   expect(JSON.parse(readFileSync(join(cwd, ".agenthub/config.json"), "utf8")).snapshots.enabled).toBe(false);
 });
+
+test("#1328 CLI enforce --yes records fake gh discovered checks and refuses an empty repository without writes", () => {
+  const p = fixture(), cwd = p.repo("checks"), empty = p.repo("empty-checks");
+  const bin = join(p.root, "bin"), log = join(p.root, "gh-reads.jsonl"); mkdirSync(bin);
+  const names = ["check (ubuntu-latest)", "check (macos-latest)", "ci-ok"];
+  writeFileSync(join(bin, "gh"), `#!/usr/bin/env bun\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nconst args = process.argv.slice(2);\nconsole.log(JSON.stringify(args.some(arg => arg.endsWith("/jobs")) ? { total_count: 3, jobs: ${JSON.stringify(names.map(name => ({ name })))} } : args.some(arg => arg.endsWith("/runs")) ? { workflow_runs: [{ id: 7, status: "completed", head_branch: "main" }] } : { default_branch: "main" }));\n`, { mode: 0o755 });
+  expect(hubGitSync(["config", "remote.origin.url", "https://github.com/example/project.git"], { cwd, env: p.env }).status).toBe(0);
+  const done = p.run(cwd, ["init", "--sdlc", "enforce", "--yes", "--autonomy", "off"], { PATH: `${bin}:${p.env.PATH}` });
+  expect(done.exitCode, out(done)).toBe(0);
+  expect(loadSdlc(cwd).requiredChecks).toEqual(names);
+  expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(3);
+  const refused = p.run(empty, ["init", "--sdlc", "enforce", "--yes", "--autonomy", "off"]);
+  expect(refused.exitCode).toBe(1); expect(out(refused)).toContain("nothing was written");
+  expect(existsSync(join(empty, ".agenthub"))).toBe(false); expect(existsSync(join(empty, "AGENTS.md"))).toBe(false);
+});

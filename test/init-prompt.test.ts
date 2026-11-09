@@ -151,7 +151,7 @@ test("the real ahub init under a pty: Enter on every question produces the same 
 
 test("the real ahub init under a pty: answering each question writes the files the equivalent flags write (#1065 AC4)", async () => {
   const p = fixture(), guided = p.repo("guided"), flagged = p.repo("flagged");
-  const answers = ["", "claude", "off", "", "advise", "turn-free", "off", "", "on", "off", "", "y"];
+  const answers = ["", "claude", "off", "", "advise", "", "turn-free", "off", "", "on", "off", "", "y"];
   const done = await p.session(guided, ["init"], answers);
   expect(done.code, done.text).toBe(0);
   const flags = ["init", "--agents", "claude", "--no-specs", "--sdlc", "advise", "--coordination", "turn-free", "--no-memory", "--pi", "--autonomy", "off"];
