@@ -13061,7 +13061,7 @@ var init_research_campaign = __esm(() => {
 });
 
 // src/hub/board.ts
-var HOST_MERGE_ADOPTION, EXECUTION_REFERENCE_SELECT, CLASSES2, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
+var HOST_MERGE_ADOPTION, EXECUTION_REFERENCE_SELECT, CLASSES2, SPEC_ACCEPTANCE_FIELD_BYTES, SPEC_ACCEPTANCE_TOTAL_BYTES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
   init_execution_links();
   init_execution_reference();
@@ -13091,6 +13091,8 @@ var init_board = __esm(() => {
   CASE WHEN length(CAST(recorded_by AS BLOB)) BETWEEN 1 AND ${EXECUTION_LINK_LIMITS.actor} THEN recorded_by END AS recorded_by,
   recorded_at FROM execution_reference_links`;
   CLASSES2 = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
+  SPEC_ACCEPTANCE_FIELD_BYTES = 64 * 1024;
+  SPEC_ACCEPTANCE_TOTAL_BYTES = 256 * 1024;
   PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"];
   ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims", "proof", "risks"];
   OUTCOMES_KEPT_MS = 7 * 24 * 3600000;
