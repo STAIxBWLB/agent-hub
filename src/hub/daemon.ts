@@ -3349,11 +3349,11 @@ export async function startDaemon(opts: DaemonOptions) {
     catch { return false; }
   }
   function recordOwnerEligible(owner: PeerAdapter): boolean {
-    const peer = owner.id, input = recordInputs.get(peer), proxy = frontendProxyState(peer, owner);
+    const recordPeerId = owner.id, input = recordInputs.get(recordPeerId), proxy = frontendProxyState(recordPeerId, owner);
     if (proxy.present && (!proxy.port || proxy.port.attached)) return false;
-    return config.memory.enabled && !stopping && !recoveryActive() && !bus.isRecoveryHeld && recordOwners.has(owner) && bus.peers.get(peer) === owner
-      && membershipAllowed(peer) && owner.state === "busy" && !reviewOnlyPeer(peer) && !definitionOf(peer)?.reviewer && !contextPii(peer)
-      && !!input && !input.tainted && input.owner === owner && recordInputAllowed(peer, input.originals);
+    return config.memory.enabled && !stopping && !recoveryActive() && !bus.isRecoveryHeld && recordOwners.has(owner) && bus.peers.get(recordPeerId) === owner
+      && membershipAllowed(recordPeerId) && owner.state === "busy" && !reviewOnlyPeer(recordPeerId) && !definitionOf(recordPeerId)?.reviewer && !contextPii(recordPeerId)
+      && !!input && !input.tainted && input.owner === owner && recordInputAllowed(recordPeerId, input.originals);
   }
   function noteRecordSteered(peer: PeerId, originals: readonly Envelope[]): void {
     const input = recordInputs.get(peer), owner = bus.peers.get(peer);
