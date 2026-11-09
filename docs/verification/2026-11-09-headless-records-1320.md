@@ -99,6 +99,20 @@ than unrelated configuration reloads. Current privacy screens, capture's stricte
 turn-generation fence and off-roster attachment admission remain independent.
 The frozen lock and generated bundles were stable on the second build.
 
+At `9365c5650ffdecb81f1b4de36218857c67e8c133`, typecheck, inventory and 191 tests
+across fourteen files passed, including the unchanged ACP no-override observer
+case and roster preface case. The final-answer bridge now preserves the current
+`onMessage` chain once, with a host-only scoped marker and stale-owner exclusion.
+The frozen lock and generated bundle were stable on the additional build.
+
+An earlier full-suite attempt also reported one unchanged `route-relay` cooldown
+case. Exact-head and immutable main `cd2080ecf8e54145c34ec8259ec35fa4909c3b7d`
+probes each passed the unchanged original case and a metadata-only instrumented
+copy, with transport failures and the expected cooldown. The original test and
+product routing code remained unchanged. A closed-port reuse path is a candidate,
+not a confirmed cause; a passing focused retry is not full-suite evidence.
+The final canonical run remains required.
+
 ## Synthetic byte measurements
 
 | Projection | Before UTF-8 bytes | After UTF-8 bytes |
