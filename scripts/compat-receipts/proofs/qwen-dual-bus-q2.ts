@@ -97,7 +97,8 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
   const barriers: string[] = [];
   const barrierRecords: { barrier: string; elapsedMs: number }[] = [];
   const mark = (barrier: string) => { barriers.push(barrier); barrierRecords.push({ barrier, elapsedMs: performance.now() - monotonicStart }); };
-  let heldSubmitCount = 0, heldQueued = false, secondBusDelivered = false, outcome = { userCount: 0, firstStop: -1, secondUser: -1, secondStop: -1 };
+  let heldSubmitCount = 0, heldQueued = false, secondBusDelivered = false, chronologyObserved = false;
+  let outcome = { userCount: 0, firstStop: -1, secondUser: -1, secondStop: -1 };
   const wake = () => { for (const waiter of [...waiters]) waiter(); };
   const peer = new QwenDualPeer("qwen", { cwd: options.cwd, stateDir: options.stateDir, cmd: options.command,
     mcpServers: [], ...options.host,
@@ -161,6 +162,9 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
       return observed.firstStops.length > 0 && observed.secondStops.length > 0 && peer.state === "idle";
     }, "second-distinct-completion");
     const observed = chronology(records(events, options.bounds).rows);
+    outcome = { userCount: observed.users.length, firstStop: observed.firstStops[0] ?? -1,
+      secondUser: observed.users[1]?.index ?? -1, secondStop: observed.secondStops[0] ?? -1 };
+    chronologyObserved = true;
     requireProof(observed.users.length === 2 && observed.firstStops.length === 1 && observed.secondStops.length === 1, "turn-count");
     requireProof(observed.users[0]!.text.includes(FIRST) && !observed.users[0]!.text.includes(SECOND)
       && observed.users[1]!.text.includes(SECOND), "user-markers");
@@ -178,7 +182,6 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
       && ordinary.every(row => row.roles.user === row.userMessages && Object.values(row.roles).every(count => Number.isSafeInteger(count) && count >= 0)
         && Object.values(row.roles).reduce((sum, count) => sum + count) === row.messageCount)
       && ordinary.every(row => row.responseFormat === "absent" && !row.schemaHasTitle), "ordinary-provider-turns");
-    outcome = { userCount: observed.users.length, firstStop: observed.firstStops[0]!, secondUser: observed.users[1]!.index, secondStop: observed.secondStops[0]! };
     checkpoint = "passed";
   } catch (error) { checkpoint = error instanceof Checkpoint ? error.checkpoint : "host-proof-error"; }
   finally {
@@ -188,7 +191,7 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
     try { ownedStopConfirmed = (await ports.stop()).ownedStopConfirmed; } catch { ownedStopConfirmed = false; }
   }
   return { schemaVersion: 1, manualOnly: true, autoAdmit: false, evidenceKind: ports.kind,
-    passed: checkpoint === "passed" && ownedStopConfirmed, checkpoint, heldSubmitCount, heldQueued, secondBusDelivered, barriers, barrierRecords, ...outcome,
+    passed: checkpoint === "passed" && ownedStopConfirmed, checkpoint, heldSubmitCount, heldQueued, secondBusDelivered, barriers, barrierRecords, chronologyObserved, ...outcome,
     providerRequests: ports.requests().slice(0, options.bounds.records).map(row => ({ marker: row.marker,
       responseFormat: row.responseFormat, schemaHasTitle: row.schemaHasTitle, messageCount: row.messageCount,
       userMessages: row.userMessages, roles: { system: row.roles.system, developer: row.roles.developer, user: row.roles.user,

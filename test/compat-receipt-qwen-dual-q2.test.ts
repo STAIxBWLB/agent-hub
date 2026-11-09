@@ -97,6 +97,8 @@ test("manual Q2 rejects two marker requests that do not represent the next ordin
     const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
       bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(result.passed).toBe(false); expect(result.checkpoint).toBe("ordinary-provider-turns");
+    expect(result.chronologyObserved).toBe(true); expect(result.userCount).toBe(2);
+    expect(result.firstStop).toBeLessThan(result.secondUser); expect(result.secondUser).toBeLessThan(result.secondStop);
   } finally { f.close(); }
 });
 
