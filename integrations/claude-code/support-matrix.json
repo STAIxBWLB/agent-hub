@@ -43,6 +43,7 @@
   "evidence": {
     "source": "test/claude-code-companion-status.test.ts with fake host and C0 fake CLI",
     "native": "NOT RUN",
-    "hostedCI": "PR-specific; never inferred from fixtures"
+    "hostedCI": "PR-specific; never inferred from fixtures",
+    "staticValidation": "Claude Code2.1.319 plugin validate --json on isolated allowlisted copy: exit0, no manifest/hook errors; author/icon warnings; no plugin load/model/native UI"
   }
 }

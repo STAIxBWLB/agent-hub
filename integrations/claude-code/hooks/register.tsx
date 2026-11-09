@@ -5,22 +5,19 @@ import { CompanionError, LIMITS, lines, type Reading } from "./status.ts";
 const PANE = "agent-hub";
 const READING = { plugin: "agent-hub-companion", key: "reading" } as const;
 
-/** Uses declared 2.1.319 host APIs only. Loading is optional and not native-qualified. */
-export const register: Register = on => {
-  let controller: CompanionController | undefined;
-  let root = "";
-  const realRoot = async ($: EngineInterface) => {
-    const spelling = await $.session.root();
-    const stat = await $.fs.stat(spelling, { resolve: true });
-    if (stat.kind !== "dir" || !stat.realPath?.startsWith("/")) throw new CompanionError("binding");
-    return stat.realPath;
-  };
-  const getController = ($: EngineInterface) => controller ??= new CompanionController({
+async function realRoot($: EngineInterface) {
+  const spelling = await $.session.root();
+  const stat = await $.fs.stat(spelling, { resolve: true });
+  if (stat.kind !== "dir" || !stat.realPath?.startsWith("/")) throw new CompanionError("binding");
+  return stat.realPath;
+}
+function createController($: EngineInterface, selected: { root: string }): CompanionController {
+  return new CompanionController({
     realRoot: async () => {
       const current = await realRoot($);
       // Bind to the session's root, never a cwd or node fallback.
-      if (root && root !== current) throw new CompanionError("binding");
-      root = current;
+      if (selected.root && selected.root !== current) throw new CompanionError("binding");
+      selected.root = current;
       return current;
     },
     now: () => Date.now(),
@@ -41,24 +38,34 @@ export const register: Register = on => {
       else await $.ui.open({ id: PANE, title: "agent-hub (fixture only)" });
     },
   });
+}
+
+/** Uses declared 2.1.319 host APIs only. Loading is optional and not native-qualified. */
+export const register: Register = on => {
+  let controller: CompanionController | undefined;
+  const selected = { root: "" };
   on("session.start", async ($, e, next) => {
     await $.command.register({ name: "hub", description: "Read-only hub pane: /hub, /hub refresh, /hub console" });
-    await getController($).event("session.start");
+    await (controller ??= createController($, selected)).event("session.start");
     return next(e);
   });
   on("command.run", { command: "hub" }, async ($, e) => {
     // A non-person origin cannot instantiate a controller or read even the root.
-    const answer = e.origin.kind === "composer" ? await getController($).command(e.args, e.origin.kind, root) : commandText(e.args, root);
-    return { text: root || e.args !== "console" ? answer : "Hub project is unavailable. Run /hub refresh." };
+    const answer = e.origin.kind === "composer" ? await (controller ??= createController($, selected)).command(e.args, e.origin.kind, selected.root) : commandText(e.args, selected.root);
+    return { text: selected.root || e.args !== "console" ? answer : "Hub project is unavailable. Run /hub refresh." };
   });
   on("turn.complete", async ($, e, next) => {
     const result = await next(e);
-    if (e.agentId === undefined) await getController($).event("turn.end");
+    if (e.agentId === undefined) {
+      try { await (controller ??= createController($, selected)).event("turn.end"); } catch { /* Display failures cannot replace the completed turn. */ }
+    }
     return result;
   });
   on("tool.call", async ($, e, next) => {
     const result = await next(e);
-    if (e.agentId === undefined) await getController($).event("tool.done", e.tool);
+    if (e.agentId === undefined) {
+      try { await (controller ??= createController($, selected)).event("tool.done", e.tool); } catch { /* Display failures cannot replace a tool result. */ }
+    }
     return result;
   });
   on("session.end", ($, e, next) => { controller?.disable(); return next(e); });

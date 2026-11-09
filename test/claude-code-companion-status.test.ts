@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CompanionController, type Ports } from "../integrations/claude-code/hooks/controller.ts";
+import { CompanionController, type Ports, type Response } from "../integrations/claude-code/hooks/controller.ts";
 import { CompanionError, LIMITS, aged, consoleCommand, lines, parse, parseRegistration, projectReading, type Reading } from "../integrations/claude-code/hooks/status.ts";
 import { FakeClaudeCompanionCli } from "./fakes/claude-code-companion-cli.ts";
 const root = "/fixture/a b'; $(touch should-not-run)";
@@ -8,11 +8,11 @@ const registration = [{ root, id: binding.projectId }];
 const status = { cwd: root, projectId: binding.projectId, version: "0.35.0", peers: { claude: { state: "idle", queued: 2, attached: true, needsReview: 1, doing: "PRIVATE" } }, tasks: { in_review: 1 }, detail: "PRIVATE" };
 const board = [{ id: 3, title: "public", state: "in_review", notes: "PRIVATE" }, { id: 4, title: "[pii] PRIVATE", state: "in_progress", detail: "PRIVATE" }];
 const response = (value: unknown) => ({ stdout: JSON.stringify(value), exitCode: 0 });
-function harness(script = [response(registration), response(status), response(registration), response(board)]) {
+function harness(script: Response[] = [response(registration), response(status), response(registration), response(board)]) {
   const cli = new FakeClaudeCompanionCli(script);
   let clock = 10000, selected = root, toggles = 0;
   const published: Reading[] = [];
-  const ports: Ports = { realRoot: async () => selected, run: call => cli.run(call), now: () => clock, publish: value => published.push(value), toggle: () => toggles++ };
+  const ports: Ports = { realRoot: async () => selected, run: call => cli.run(call), now: () => clock, publish: value => { published.push(value); }, toggle: () => { toggles++; } };
   return { cli, ports, published, controller: new CompanionController(ports), tick: (value: number) => { clock += value; }, select: (value: string) => { selected = value; }, toggles: () => toggles };
 }
 describe("Claude companion closed projections", () => {
