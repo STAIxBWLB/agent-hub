@@ -103,9 +103,11 @@ test("restart reader validates optional execution-reference integrity without wi
   }
 });
 
-test("lineage tools stay out of capture and owner progress while read-only projects receive show only", () => {
+test("lineage tools stay out of capture, owner progress, and read-only project publication", () => {
   const names = projectToolList(TASK_TOOLS, true).map(tool => tool.name);
-  expect(names).toContain("hub_lineage_show"); expect(names).not.toContain("hub_lineage_link");
+  expect(names).not.toContain("hub_lineage_show"); expect(names).not.toContain("hub_lineage_link");
+  const ordinaryNames = projectToolList(TASK_TOOLS).map(tool => tool.name);
+  expect(ordinaryNames).toContain("hub_lineage_show"); expect(ordinaryNames).toContain("hub_lineage_link");
   expect(IMPLEMENTER_HUB_TOOL_NAMES).toContain("hub_lineage_show"); expect(IMPLEMENTER_HUB_TOOL_NAMES).toContain("hub_lineage_link");
   const captured: unknown[] = [], client = { appendCapture: async (value: unknown) => { captured.push(value); } } as unknown as MemoryClient;
   const capture = new Capture(client, { project: "fixture", cwd: "/fixture", deny: [] }); capture.init("fixture-session", "public fixture"); captured.length = 0;

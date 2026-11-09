@@ -217,3 +217,8 @@ its binding is no longer current or cannot be established.
 T2 exposes diagnostic reasons only to the authenticated console person. Agents,
 including the conductor, receive the neutral unavailable shape for denied, hidden,
 invalid and absent reads; a global role never grants access to staged backlog ids.
+
+The ordinary CLI/MCP surfaces share the same Tasks projection. Configured
+read-only MCP sessions keep their existing publication list, and isolated
+reviewers keep exactly their existing two tools. The new metadata-link operation
+never becomes a read-only tool.

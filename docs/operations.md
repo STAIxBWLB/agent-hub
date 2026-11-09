@@ -1397,7 +1397,8 @@ creation identity and history revision. A stale revision or changed actor,
 project or privacy scope refuses without writing. A reference never fetches the
 producer or attests to a runner outcome. Foreign project keys remain opaque in
 their producer namespace. The equivalent agent tools are `hub_lineage_show` and
-`hub_lineage_link`; isolated reviewers retain their existing two-tool surface.
+`hub_lineage_link` on ordinary MCP sessions. Configured read-only MCP publication
+and isolated reviewers retain their existing fixed tool lists.
 
 Reads expose no titles, prompts, paths, session ids or review bodies. Unsupported,
 missing and denied reads have the same unavailable shape for ordinary callers;
