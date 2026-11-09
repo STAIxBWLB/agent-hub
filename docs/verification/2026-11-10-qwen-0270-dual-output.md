@@ -1,6 +1,6 @@
 # Qwen 0.27.0 dual-output qualification, Q2 source controls
 
-Date: 2026-11-10. Task #850, Refs #888. **Native qualification: NOT RUN.**
+Date: 2026-11-10. Task #850, Refs #888. **Candidate 0.27.0 native qualification: NOT RUN.**
 This draft records the reviewed Q2 method, source controls and the initial
 0.26.1 matched-control attempt below; it admits no new
 qwen-dual version. The basic ACP receipt and failed live-setter contract are
@@ -43,8 +43,8 @@ Node 24.18.1 and an isolated private 0.26.1 package. Official npm integrity is
 `sha512-4kpIzrlrgmawivim0yCZjr1AP5cfHTanyL7eL1g2R8WYU6QDBq7j9fiAye7REXL4EEXkRIq45D7+ngTw5n3GqQ==`;
 its metadata derives bin `cli-entry.js`, SHA-256
 `113efe4104a9fc66f507d34bfd6abbd896ceb77de47f4b468a0825a327fdc6a5`.
-Normal private installation, reviewed audio lifecycle, kernel controls and
-protected before/after fences passed before Qwen execution. CLI flag and
+Normal private installation (scripts enabled and audio installer source reviewed),
+kernel controls and protected before/after fences passed before Qwen execution. CLI flag and
 no-title support were read from shipped source and the earlier matched-control
 recipe; those source facts are separate from this new native observation.
 
@@ -97,8 +97,8 @@ Normal completion uses non-tool-use assistant plus message_stop. Adoption
 prove native idle in every path. No universal no-active-submit claim or runtime
 fix is made. The premature deny/idle follow-up is outside this task.
 
-Matched 0.26.1 and candidate 0.27.0 native PTY/provider Q2-Q7, exact artifact
-binding, the reviewed protected-config/global fence, owned cleanup and native
-results remain NOT RUN. The original T0 gateway/key harness is never executed
+The first 0.26.1 Q2 control was ATTEMPTED/FAILED as recorded above. Corrected
+0.26.1 Q2 revalidation, control Q3-Q7 and candidate 0.27.0 native qualification
+remain NOT RUN; no admission follows from source controls or the initial attempt. The original T0 gateway/key harness is never executed
 by this procedure. Source checks, native account-free results and hosted CI
 remain separate evidence. This draft will be finalized from actual results.
