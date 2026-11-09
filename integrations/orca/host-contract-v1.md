@@ -51,6 +51,45 @@ command fallback. The machine-readable matrix is [host-contract-v1.json](host-co
 | Existing terminal focus | Plugin terminal ids are shared among context/agent/send/read methods. CLI `terminal switch` takes a runtime-issued handle scoped to its execution server. The references do not equate those identifiers. No host terminal-focus method is documented. | Unsupported until an exact same-host mapping and freshness proof exist; workspace/manual navigation only |
 | Remote, Windows, browser/mobile | A Node worker runs where its Orca host runs, which need not be the selected workspace's machine. Remote loopback is not local browser loopback. Browser clients lack desktop external navigation. | Unqualified individually; never execute a remote path locally |
 
+## Terminal focus recheck (O4, 2026-11-09)
+
+**Orca 1.4.254: unsupported; plugin terminal id to CLI handle remains unproven.**
+This recheck changes no runtime code. The O0 version and hashes above remain the
+original baseline; the O4 evidence is recorded separately in the JSON matrix.
+
+Read-only evidence from the installed distribution:
+
+- `orca --version` returned `1.4.254`. `orca plugin types <empty-scratch> --json`
+  succeeded offline; its `orca`, `orca/worker` and `orca/host` declaration hashes
+  are identical to the O0 hashes above.
+- The shipped `plugins/types/orca-host.d.ts` declares `workspace.readContext`
+  terminal `{ id, title? }`, `agents.list` terminalId, and `terminal.create`,
+  `terminal.sendText` and `terminal.read` using terminalId. It declares no terminal
+  focus/switch method or equivalence between terminalId and a CLI handle. The
+  generated and shipped declarations were both inspected; their separate hashes
+  are retained in `terminalFocusRecheck.shippedTypes` in the JSON matrix.
+- `orca terminal switch --help` accepts a runtime-issued handle. Its help states
+  handles belong to the issuing server; this is not a plugin-id mapping.
+- `orca terminal list --limit 10000 --json` succeeded: 42 rows, `totalCount: 42`,
+  `truncated: false`, hostScope `hostIds: [local]`, no omitted hosts. Its envelope
+  includes `_meta.runtimeId`; its result includes `topologyRevisions`. Rows expose
+  `handle`, `ptyId`, `incarnationId`, `worktreeId` and `executionHostId`, but no
+  plugin terminalId field or statement equating a plugin id with any of them.
+  These fields could support freshness checks only after an identity mapping is
+  established. Names, titles, branch labels and apparent string similarity do
+  not establish that mapping. No terminal text or live identifiers are retained
+  in this contract.
+
+No plugin was loaded, no live terminal was switched, driven or replaced, and no
+plugin-host result was observed. Shipped declarations and CLI inventory alone
+cannot establish a current same-host binding. A future proof must bind the exact
+plugin id, CLI handle, workspace and execution host, recheck the runtime and
+terminal incarnation before each focus, and refuse missing, stale, ambiguous or
+cross-host bindings. Until then the existing command (`ahub console`, or `acon ui`
+for the family console) and workspace/manual navigation remain the fallback.
+The native focus leg remains **person-run, NOT RUN** in
+[native-receipt.md](native-receipt.md); there is no focus action to qualify today.
+
 ## Exact selector and execution contract
 
 The person selects an explicit inventory row. Its binding contains the exact

@@ -37,5 +37,54 @@
   "terminalIdToCliHandle": "unproven",
   "automaticFocusedSelection": "unsupported",
   "installedCompanion": false,
-  "runtimeChanged": false
+  "runtimeChanged": false,
+  "terminalFocusRecheck": {
+    "stage": "O4",
+    "recordedAt": "2026-11-09",
+    "installedCliVersion": "1.4.254",
+    "verdict": "unsupported",
+    "terminalIdToCliHandle": "unproven",
+    "generatedTypesUnchangedFromO0": true,
+    "shippedTypes": [
+      {
+        "path": "plugins/types/orca-frame.d.ts",
+        "sha256": "013d5b4d1c4f5f206a7cb30eb2ba4cf21c0f2cadb9e3536b14427562f4724c83"
+      },
+      {
+        "path": "plugins/types/orca-worker.d.ts",
+        "sha256": "40ddb3a58cbe5804d9b25c92b256654354bc6aee4bf2e8891aa1d4a54359b171"
+      },
+      {
+        "path": "plugins/types/orca-host.d.ts",
+        "sha256": "8c1a38c2f7be222cae567d93537edffafbc089d5b7e1d26126f9f37c7dc61232"
+      }
+    ],
+    "hostFocusMethod": "not-declared",
+    "cliInventory": {
+      "command": "orca terminal list --limit 10000 --json",
+      "ok": true,
+      "totalCount": 42,
+      "truncated": false,
+      "hostScope": {
+        "hostIds": [
+          "local"
+        ],
+        "omittedHostIds": []
+      },
+      "identityFields": [
+        "handle",
+        "ptyId",
+        "incarnationId",
+        "worktreeId",
+        "executionHostId"
+      ],
+      "freshnessFields": [
+        "runtimeId",
+        "topologyRevisions"
+      ],
+      "pluginTerminalIdField": false
+    },
+    "native": "not-run",
+    "runtimeChanged": false
+  }
 }

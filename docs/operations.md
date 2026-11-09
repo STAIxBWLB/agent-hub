@@ -6801,6 +6801,19 @@ pairing option.
 are procedure counts, remote, Windows and mobile stay unqualified (O3), and there is no focus-existing-console
 action.
 
+### Orca terminal focus evidence recheck (#1198 O4)
+
+The [O4 host-contract evidence](../integrations/orca/host-contract-v1.md#terminal-focus-recheck-o4-2026-11-09)
+records installed Orca 1.4.254. Generated plugin types match the O0 hashes; neither those types nor the
+shipped host declarations expose terminal focus or equate plugin terminalId with a CLI handle. The
+read-only CLI inventory was complete for its local host scope and carried runtime, incarnation and
+workspace identity fields, but no plugin-id mapping. Those freshness fields alone do not prove a binding.
+
+Focus remains unsupported and runtime code is unchanged. Use the existing `ahub console` / `acon ui`
+command or select the terminal manually. No plugin was loaded into the everyday profile and no live
+terminal was switched, driven or replaced. The separate [O4 native receipt rows](../integrations/orca/native-receipt.md#terminal-focus-recheck-o4-person-run-leg)
+remain person-run **NOT RUN**; source checks, hosted CI and native acceptance are separate evidence.
+
 ## Herdr companion host contract (#1199 H0)
 
 [`integrations/herdr/host-contract-v1.md`](../integrations/herdr/host-contract-v1.md) freezes what an optional Herdr mod may
