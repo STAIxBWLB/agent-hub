@@ -197,3 +197,12 @@ test("supervision closes mixed approved and cancelled rounds with accurate separ
   expect(f.feed.checkRound()).toBe(true); expect(f.notices.at(-1)!.body).toContain("1 task closed");
   expect(f.notices.at(-1)!.body).toContain("0 approved"); expect(f.notices.at(-1)!.body).toContain("1 cancelled");
 });
+
+
+test("merge adoption emits only the approved supervision milestone, never a review verdict", () => {
+  const t = task(1, "claude", "approved"), f = fixture([t]);
+  f.feed.taskChanged(t, { at: 4, by: "user", event: "merged outside the hub", note: "PRIVATE NOTE" }, { verdict: "approved" });
+  expect(f.notices.some(n => n.key === "supervision:claude:task:1:approved")).toBe(true);
+  expect(f.notices.some(n => n.key === "supervision:claude:task:1:review")).toBe(false);
+  expect(JSON.stringify(f.notices)).not.toMatch(/verdict|PRIVATE/);
+});

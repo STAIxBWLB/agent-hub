@@ -27,6 +27,9 @@ import type { SpecRef, SpecTaskReport } from "./specs-task.ts";
 export type { SpecAck, SpecRef, SpecTaskReport } from "./specs-task.ts";
 import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
 
+/** Internal host capability; never accepted from a control or tool argument. */
+export const HOST_MERGE_ADOPTION = Symbol("host merge adoption");
+
 export interface ResearchCampaignRecord {
   id: string;
   project: string;
@@ -1958,13 +1961,26 @@ export class Board {
     return Object.fromEntries(rows.map((r) => [r.state, r.n]));
   }
 
+  /** Tasks alone calls this after current actor, privacy, artifact and GitHub evidence fences. Generic MOVES stays unchanged. */
+  adoptMerge(id: number, by: PeerId, receipt: SdlcReceipt, head: string, expectedFlowRevision: number, authority: typeof HOST_MERGE_ADOPTION): Task {
+    if (authority !== HOST_MERGE_ADOPTION || !Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0)
+      throw new Error("merge adoption requires host authority and a current flow revision; retry through Tasks.adoptMerge");
+    return this.update(id, by, "merged outside the hub", { state: "approved", rejections: 0, sdlc: receipt },
+      `PR #${receipt.pr} merged outside the hub at ${head}`, undefined, expectedFlowRevision, undefined, authority);
+  }
+
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "planner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "invocation" | "plannerReason" | "planAuthor" | "selfReview" | "profile" | "sweep" | "reason" | "from" | "capacity" | "conductorManual" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewScope" | "evidenceOnly" | "reviewedHead" | "reviewFindings" | "unmetCriteria" | "deliverables" | "checkKey" | "missingKeys" | "claim" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | "specReport" | "specRefBinding" | "resolvedReviewComments" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
-    if (extra.resolvedReviewComments?.length && !this.db.inTransaction) return this.atomic(() => this.update(id, by, event, patch, note, extra, expectedFlowRevision, codeSymbolsAuthority));
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "planner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "invocation" | "plannerReason" | "planAuthor" | "selfReview" | "profile" | "sweep" | "reason" | "from" | "capacity" | "conductorManual" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewScope" | "evidenceOnly" | "reviewedHead" | "reviewFindings" | "unmetCriteria" | "deliverables" | "checkKey" | "missingKeys" | "claim" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | "specReport" | "specRefBinding" | "resolvedReviewComments" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS, adoptionAuthority?: typeof HOST_MERGE_ADOPTION): Task {
+    if (extra.resolvedReviewComments?.length && !this.db.inTransaction) return this.atomic(() => this.update(id, by, event, patch, note, extra, expectedFlowRevision, codeSymbolsAuthority, adoptionAuthority));
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
+    const adoption = event === "merged outside the hub" && adoptionAuthority === HOST_MERGE_ADOPTION && expectedFlowRevision !== undefined
+      && ["in_progress", "in_review", "changes_requested"].includes(task.state) && !task.draft
+      && !task.signals.includes("pii") && !task.signals.includes("pii_path") && patch.state === "approved"
+      && Object.keys(patch).every(key => ["state", "rejections", "sdlc"].includes(key));
+    if (event === "merged outside the hub" && !adoption) throw new Error(`task #${id} in state ${task.state}: merge adoption requires a host-only eligible transition and current flow revision; retry through Tasks.adoptMerge`);
     const untouchedReturn = event === "backlog returned untouched" && patch.state === "backlog" && patch.owner === null && patch.reviewer === null
       && ["proposed", "in_progress"].includes(task.state) && expectedFlowRevision !== undefined && !!note?.trim() && !taskHasWorkEvidence(task);
     const returnPlanning: HistoryEntry["planning"] = untouchedReturn && Object.hasOwn(patch, "reserved")
@@ -1983,7 +1999,7 @@ export class Board {
         || event === "changes_requested" && patch.state === "changes_requested" && (by === task.reviewer || by === "user"));
     if (extra.reviewedHead !== undefined && (!/^[a-f0-9]{40}$/.test(extra.reviewedHead) || !["approved", "changes_requested"].includes(event))) throw new Error("invalid verdict head");
     if (task.draft && patch.state && patch.state !== "backlog" && patch.state !== "cancelled") throw new Error(`task #${id} is an intake draft; the person approves it first`);
-    if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state) && !untouchedReturn && !reviewCheck && !approvalReopen) {
+    if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state) && !untouchedReturn && !reviewCheck && !approvalReopen && !adoption) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
     const planner = Object.hasOwn(patch, "planner") ? plannerValue(patch.planner) : task.planner ?? null;

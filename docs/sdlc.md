@@ -204,6 +204,50 @@ Two triggers, neither blocking: an approving `hub_review` at the PR's current he
 
 `on` runs exactly `gh pr merge <pr> --repo <repo> --squash --match-head-commit <head>` (a closed argv shape checked right before the call) and reads the PR back: only GitHub reporting `MERGED` is a merge, whatever the exit code. Never `--admin`, never a ref update used to perform the merge, and no `--auto` while the repository does not allow auto-merge (a person's repository setting). `dry-run` reports the same decision and the argv it would run and runs nothing; `off` reads nothing. Logs and notices name the task number and gates only. The verdict mirror is described in the next section.
 
+## Adopting a PR merged outside the hub (#1328 T3)
+
+If a PR was merged before its task could finish the normal review flow, the
+person or the current configured conductor runs:
+
+```sh
+ahub sdlc adopt-merge <task> --pr <n>
+```
+
+The task must already establish its repository. `--pr` can bind a missing PR
+link; a conflicting recorded PR or repository refuses. The hub reads that
+repository and PR and requires it merged at the task's last recorded full head,
+with every configured required check green at that head and no open Important
+finding. Unresolved or unknown review threads, pending or unknown review
+requests, and an explicit change request refuse too. A GitHub approval is not
+required when review coverage is complete and clean. The hub observes one
+bounded GraphQL snapshot with checks bound to its head commit. Missing, pending,
+failed or unknown checks refuse with their names and
+a next step. A missing artifact, missing full head, changed task or policy,
+stale actor/session or a held hub also refuses without changing the task.
+
+Eligible task states are exactly `in_progress`, `in_review` and
+`changes_requested`, with all Important findings dispositioned. `proposed` and
+`backlog` tasks must be assigned and accepted first. `approved` and `cancelled`
+are already closed. Each refusal names the state and the next step. The Board
+transition is host-only and requires the current flow revision; the generic
+state transition table is unchanged.
+
+A successful adoption records `merged outside the hub` as the actual person's
+or conductor's action, moves the task to `approved`, and releases dependents as
+an ordinary approval does. It does not invent a reviewer verdict or reviewed
+head, run `gh pr merge`, post a review, or remove a branch or worktree. A task
+already approved or cancelled is not adopted again.
+Observed `sdlc.head` follows the proven PR head; older local/reviewed metadata
+remain unchanged and noncurrent. Normal settlement observers receive the
+approval (origin follow-back, supervision, research recording and release/profile
+timing), without adding a review verdict or automatic-done count. Release timing
+never counts an adoption that occurred after the release.
+
+Private tasks and private
+turns refuse for every actor before GitHub reads; use the person's local review
+workflow for private work. `--live-test` cannot delegate this approval as the
+person.
+
 ## Merge result and cleanup (#786 T2)
 
 Post-run reads make at most three attempts within a shared six-second budget. Only a GitHub MERGED observation with its merge commit permits cleanup; the CLI exit is recorded separately, including a nonzero exit when GitHub confirms the merge. Non-merged, missing or unreadable evidence records the bounded result and leaves branches alone. Off and dry-run create no merge record or cleanup effects.

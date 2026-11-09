@@ -49,7 +49,7 @@ import { NoWriteTurns } from "./no-writes.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
-import { guardedMerge, requiredChecksFor, mergeModeFor, mergeView, type MergeView } from "./sdlc-merge.ts";
+import { adoptMergeGates, guardedMerge, mergeModeFor, mergeView, readAdoptMergeEvidence, requiredChecksFor, type MergeView } from "./sdlc-merge.ts";
 import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
 import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-scope.ts";
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
@@ -80,7 +80,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type NoteInput, type Scope, type Tier } from "@staix/agent-mem";
-import { parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
+import { HOST_MERGE_ADOPTION, parseClaimVerdict, taskClaimIdentity, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding, type SpecAck, type SpecTaskReport } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -5884,6 +5884,68 @@ export class Tasks {
     }
     return report;
   }
+  /** #1328 T3: approve a merge observed outside the hub, without attributing a verdict to a reviewer. */
+  async adoptMerge(by: PeerId, id: unknown, pr: unknown, fence?: () => string | undefined): Promise<{ task: number; state: "approved" }> {
+    const check = this.requestCheck(by, fence);
+    const authority = () => {
+      check();
+      if (by !== USER && (!this.configuredManualConductor(by) || !this.d.bus.isRostered(by)))
+        throw new PreEffectToolRefusal("only the person or the current configured conductor may adopt a merge; ask the person to run ahub sdlc adopt-merge");
+      if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("merge adoption is unavailable in a private turn; finish that turn and retry ahub sdlc adopt-merge");
+      if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError)
+        throw new PreEffectToolRefusal("hub recovery, storage or task writes are held; clear the hold before retrying ahub sdlc adopt-merge");
+    };
+    authority();
+    if (!Number.isSafeInteger(pr) || (pr as number) <= 0) throw new PreEffectToolRefusal("merge adoption needs a positive PR number; run ahub sdlc adopt-merge <task> --pr <n>");
+    if (!Number.isSafeInteger(id) || (id as number) <= 0) throw new PreEffectToolRefusal("merge adoption needs a positive task id; run ahub sdlc adopt-merge <task> --pr <n>");
+    const task = this.d.board.get(id as number);
+    if (!task) throw new PreEffectToolRefusal("merge adoption task does not exist; inspect ahub task list and choose the task to adopt");
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined), head = this.reviewHead(task);
+    const identity = (row: Task) => JSON.stringify([row, this.isPii(row)]);
+    const before = identity(task), policy = JSON.stringify(config);
+    const current = () => {
+      authority();
+      const now = this.d.board.get(task.id);
+      if (!now || identity(now) !== before || JSON.stringify(this.d.sdlc?.config() ?? sdlcConfig(undefined)) !== policy)
+        throw new PreEffectToolRefusal("task, privacy or SDLC policy changed during merge adoption; reload the task and retry ahub sdlc adopt-merge");
+      if (this.isPii(now) || now.signals.includes("pii") || now.signals.includes("pii_path")) throw new PreEffectToolRefusal("a private task cannot send merge evidence to GitHub; keep its approval local through the person's review workflow");
+      return now;
+    };
+    current();
+    if (task.draft) throw new PreEffectToolRefusal(`task #${task.id} is a ${task.state} intake draft; approve the intake through ahub intake approve before retrying ahub sdlc adopt-merge`);
+    if (task.state === "proposed" || task.state === "backlog") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}; assign and accept it first, then retry ahub sdlc adopt-merge`);
+    if (task.state === "approved" || task.state === "cancelled") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state} and already closed; inspect ahub task show ${task.id} and choose an active task instead`);
+    if (!head || !/^[a-f0-9]{40}$/.test(head)) throw new PreEffectToolRefusal("the task has no recorded full head; record its full commit SHA before retrying ahub sdlc adopt-merge");
+    const scope = this.repositories.scope(task.refs), repo = task.sdlc?.repo ?? (scope.key.startsWith("repo:") ? scope.key.slice("repo:".length) : undefined);
+    if (!repo || this.repositories.scope({ repo }).key !== scope.key || task.sdlc?.pr !== undefined && task.sdlc.pr !== pr)
+      throw new PreEffectToolRefusal("PR repository or number differs from the task's recorded artifact, or its repository is unknown; record its correct repository and PR before retrying ahub sdlc adopt-merge");
+    const receipt = { ...task.sdlc, stage: lifecycleStage(config, "merge"), repo, pr: pr as number, head };
+    const important = () => findingTally(findingsForHead(this.reviewFindingSets(current()), head)).openImportant > 0;
+    if (important()) throw new PreEffectToolRefusal("open Important finding blocks merge adoption; resolve the finding and record its disposition before retrying ahub sdlc adopt-merge");
+    const deadline = performance.now() + 20_000;
+    const run: SdlcGh = async (args, timeout, cwd, cap) => {
+      current();
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new PreEffectToolRefusal("merge evidence read timed out; restore GitHub access and retry ahub sdlc adopt-merge");
+      const result = await (this.d.sdlc?.gh ?? sdlcGh)(args, Math.min(timeout ?? 10_000, remaining), cwd, cap);
+      current();
+      return result;
+    };
+    const evidence = await readAdoptMergeEvidence(receipt, run);
+    const now = current();
+    const gates = adoptMergeGates(evidence, head, requiredChecksFor(config, repo));
+    if (gates.length) throw new PreEffectToolRefusal(gates.join("; "));
+    const capacity = this.capacityBefore(now);
+    current(); // No await between the last authority/privacy/flow check and the sole approval write.
+    const next = this.d.board.adoptMerge(now.id, by, receipt, head, now.history.length, HOST_MERGE_ADOPTION);
+    this.cohorts.closed(next.id);
+    this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id);
+    this.writePlannerNotices(next, capacity, true);
+    this.releaseNotice(`task #${next.id}: merged outside the hub; approved`);
+    await this.releaseDependents(next);
+    return { task: next.id, state: "approved" };
+  }
+
   private readonly mergesInFlight = new Set<number>();
   /** #786: who may ask for a guarded merge. The hub's own approval trigger acts as HUB; a peer must be the one configured conductor. */
   private mergeAuthority(by: PeerId): boolean {

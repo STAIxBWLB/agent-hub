@@ -190,6 +190,7 @@ export function handoffEventFor(entryEvent: string, state: string): HandoffEvent
   if (entryEvent === "cancelled" && state === "cancelled") return "cancelled";
   if (entryEvent === "done" && state === "in_review") return "in_review";
   if (entryEvent === "approved" && state === "approved") return "approved";
+  if (entryEvent === "merged outside the hub" && state === "approved") return "approved";
   // #733 (agent-hub#1203 H10): a reviewer's changes_requested, and the hub's return of that task to its owner, are states the origin used to hear nothing about. A withdrawn approval is the same
   // verdict on an approved task: the row it reopens is picked up through the sequence.
   if (entryEvent === "changes_requested" && state === "changes_requested") return "changes_requested";

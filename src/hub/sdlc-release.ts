@@ -254,7 +254,7 @@ export function releaseMetrics(releases: Release[], tasks: Task[]) {
     const scope = train.scope ?? [...train.history].reverse().find(row => row.event === "cut")?.scope;
     if (!scope) { unknown.add(release.id); continue; }
     for (const id of scope) {
-      const task = byTask.get(id), approved = task?.history.findLast(row => row.at <= event.at && (row.event === "approved" || row.event === "done" && task.state === "approved" && task.reviewer === null))?.at ?? null;
+      const task = byTask.get(id), approved = task?.history.findLast(row => row.at <= event.at && (row.event === "approved" || row.event === "merged outside the hub" || row.event === "done" && task.state === "approved" && task.reviewer === null))?.at ?? null;
       const ms = approved !== null && approved <= event.at ? event.at - approved : null;
       if (ms === null) unknown.add(release.id);
       approvalToReleaseMs.push({ release: release.id, task: id, ms });

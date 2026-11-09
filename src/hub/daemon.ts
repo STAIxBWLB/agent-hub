@@ -3308,7 +3308,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if ((h.event === "proposed" || h.event === "backlog pulled" || h.event === "catalog role changed") && (t.role ? catalog.roles.has(t.role) : h.event === "catalog role changed")) event({ type: "role", task: t.id, actor: h.by, stage: "assigned", roles: t.role ? [roleIdentity(catalog.roles.get(t.role)!)] : [] });
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, ...(t.profile ? { profile: t.profile, profileClass: t.profileClass } : {}), ...(t.role ? { role: t.role, ...(catalog.roles.has(t.role) ? { roleIdentity: roleIdentity(catalog.roles.get(t.role)!) } : {}) } : {}), pii: tasks.isPii(t), ...(t.planningRevision ? { release: t.release ?? null, priority: t.priority ?? null, plannedStart: t.plannedStart ?? null, due: t.due ?? null } : {}), ...(h.reason ? { reason: h.reason } : {}) });
     // #1277 AC6: a cancelled task is a terminal task too, and the guarded merge writes its receipt after the approval, so its result completes the record's merge block.
-    if (config.research.enabled && ((t.state === "approved" && (h.event === "approved" || h.event === "done" || h.event === "merge result")) || (t.state === "cancelled" && h.event === "cancelled"))) recordResearch(t.id);
+    if (config.research.enabled && ((t.state === "approved" && (h.event === "approved" || h.event === "done" || h.event === "merged outside the hub" || h.event === "merge result")) || (t.state === "cancelled" && h.event === "cancelled"))) recordResearch(t.id);
     if (memoryStore && (t.state === "in_progress" || h.event === "done") && !tasks.isPii(t)) renewLeases(t);
     if ((h.event === "proposed" || h.event === "backlog pulled") && projections.enabled && turnLog) {
       const created = taskProposalAt(t);
@@ -11645,6 +11645,35 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!parsed.ok) return void reply({ ok: false, error: parsed.reason });
             reply(releaseAuthorizations.guardPush(parsed.remoteName, parsed.remoteUrl, parsed.updates));
           }
+          return;
+        }
+        if (msg.op === "adopt-merge") {
+          const asker = c.role === "console" ? USER : c.role === "tools" && c.peer ? c.peer : undefined;
+          if (!asker) return void reply({ ok: false, error: "only the person or the current configured conductor may adopt a merge; ask the person to run ahub sdlc adopt-merge" });
+          let actorCurrent: () => void;
+          const externalOwner = c.externalOwner;
+          try {
+            const sessionCurrent = c.role === "console" ? () => {
+              if (sock.data !== c || sock.readyState !== WebSocket.OPEN || c.role !== "console") throw new Error("person session changed");
+            } : operationalCurrent(sock);
+            actorCurrent = () => {
+              sessionCurrent();
+              if (externalOwner && !currentExternalTools(c, true)) throw new Error("actor execution root changed");
+              sessionCurrent(); // A fresh execution-root probe can service callbacks before it returns.
+              if (c.peer !== (asker === USER ? undefined : asker) || c.externalOwner !== externalOwner) throw new Error("actor session changed");
+            };
+            actorCurrent();
+          }
+          catch { return void reply({ ok: false, error: "current person or configured conductor session unavailable; reconnect the conductor or ask the person to run ahub sdlc adopt-merge" }); }
+          const fence = () => {
+            try { actorCurrent(); } catch { return "person or conductor session changed; reconnect and retry ahub sdlc adopt-merge"; }
+            return recoveryActive() || stopping || c.peer && turns.get(c.peer)?.private ? "recovery, shutdown or a private turn holds adoption; retry ahub sdlc adopt-merge after it ends" : undefined;
+          };
+          taskOpsInFlight++;
+          void tasks.adoptMerge(asker, msg.id, msg.pr, fence).then(
+            result => reply({ ok: true, ...result }),
+            (error: Error) => reply({ ok: false, error: sanitize(error.message) }),
+          ).finally(() => { taskOpsInFlight--; });
           return;
         }
         if (msg.op === "merge") {

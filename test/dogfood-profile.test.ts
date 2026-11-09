@@ -429,3 +429,28 @@ test("a parsed research plan counts an undeclared key as zero and a malformed li
     expect(JSON.stringify(collected)).not.toMatch(/PRIVATE_CLAIM/);
   } finally {f.close();}
 });
+
+
+test("profile adoption settlement counts approval and lead time but never a review or automatic done", () => {
+  const i = input(), base = task(1), adopted = { ...base, profileMetadata: { ...base.profileMetadata, state: "approved" } };
+  adopted.profileMetadata.history = [{ at: 10, event: "proposed" }, { at: 120, event: "accepted" }, { at: 300, event: "merged outside the hub" }];
+  i.tasks = source([adopted]);
+  let flow = aggregate(i).flow;
+  expect(flow).toMatchObject({ approved: 1, reviewRounds: 0, firstPassApproval: null, autoApprovalTransitions: { value: 0 }, proposeToApproveMs: { samples: 1, p50: 290 } });
+  i.events = missing([]);
+  expect(aggregate(i).flow).toMatchObject({ approved: 1, autoApprovalTransitions: { value: null }, proposeToApproveMs: { samples: 1, p50: 290 } });
+  i.events = source([]);
+
+  adopted.profileMetadata.history.push({ at: 2000, event: "merged outside the hub" });
+  expect(aggregate(i).flow.proposeToApproveMs.p50).toBe(290);
+  const changed = task(2); changed.profileMetadata.history = [{ at: 10, event: "proposed" }, { at: 120, event: "accepted" }, { at: 160, event: "changes_requested" }, { at: 300, event: "merged outside the hub" }];
+  i.tasks = source([adopted, changed]);
+  expect(aggregate(i).flow).toMatchObject({ approved: 2, reviewRounds: 1, firstPassApproval: null, autoApprovalTransitions: { value: 0 } });
+  expect(aggregate(i).review.changesRequested).toBe(1);
+
+  i.tasks = missing([]);
+  i.events = source([event(120, { type: "task", id: 1, event: "accepted", state: "in_progress", class: "implement", profile: "writing", profileClass: "draft", pii: false }),
+    event(300, { type: "task", id: 1, event: "merged outside the hub", state: "approved", class: "implement", profile: "writing", profileClass: "draft", pii: false })]);
+  flow = aggregate(i).flow;
+  expect(flow).toMatchObject({ approved: 1, reviewRounds: 0, firstPassApproval: null, autoApprovalTransitions: { value: 0 }, proposeToApproveMs: { samples: null } });
+});

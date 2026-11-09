@@ -101,6 +101,48 @@ Review independence and declared scope are different controls. Selection exclude
 
 Task text and private-turn words can reach owners, reviewers, overlap notices and memory. Public views use the host's current privacy projection; PII tasks remain stubs for unauthorized observers, and private turns cannot write ordinary shared task text. The projection belongs at the shared boundary because filtering individual callers would leave another observer exposed ([#198](https://github.com/STAIxBWLB/agent-hub/issues/198), [#230](https://github.com/STAIxBWLB/agent-hub/issues/230)).
 
+## Merged PR adoption (#1328 T3)
+
+The person or the single current configured, rostered conductor can run
+`ahub sdlc adopt-merge <task> --pr <n>` for an active task. `Tasks.adoptMerge`
+binds a missing PR from the explicit command in the established task repository
+(and refuses conflicting bindings), requires a merged PR at the task's last
+recorded full head, green configured required checks at that head and no open
+Important finding. Complete known-zero review threads and pending requests are
+also required, and an explicit change request refuses. No GitHub approving
+verdict is invented or required. One capped GraphQL snapshot supplies the
+head-commit checks and review coverage; incomplete coverage refuses. Unknown
+evidence refuses with a next step. The entire task
+flow and identity, current actor/session, privacy and SDLC policy are fenced
+before and after each awaited GitHub read and immediately before the write.
+Recovery, shutdown and storage holds refuse adoption.
+
+Eligible task states are exactly `in_progress`, `in_review` and
+`changes_requested`, with all Important findings dispositioned. `proposed` and
+`backlog` tasks must be assigned and accepted first. `approved` and `cancelled`
+are already closed. Each refusal names the state and the next step. The Board
+transition is host-only and requires the current flow revision; the generic
+state transition table is unchanged.
+
+The state becomes `approved` through Tasks, with the actual actor and the
+`merged outside the hub` history event. Ordinary dependent release runs after
+the saved approval. Adoption creates no reviewer verdict, review metric,
+reviewed-head receipt, guarded-merge result, GitHub mutation or branch cleanup.
+A prior withdrawn reviewer approval remains historical and cannot become a
+current reviewer binding through adoption. Historical completion time is the first approval or adoption
+settlement time, separately from reviewer verdict metrics.
+Adoption updates only the GitHub-observed head; existing local and reviewed-head
+metadata remain historical and cannot establish a current reviewer binding.
+Origin follow-back, supervision's approved milestone, task research recording,
+and release/profile settlement timing consume the actual completion. Reviewer
+verdict metrics and reviewerless automatic-done counts remain separate. A later
+adoption never establishes approval before an earlier release.
+
+Private tasks and private turns refuse before any GitHub read for every actor,
+including the person. The person's local review authority does not authorize
+sending private task metadata to an external observer. Delegated `--live-test`
+commands cannot borrow the person's authority.
+
 ## Claim evidence records (#931 T1)
 
 The #901 owner boundary exposes one canonical `taskClaimIdentity(task, slot)`.

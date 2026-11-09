@@ -89,3 +89,12 @@ test("release lead time starts at the final approval after rework, not an earlie
   const reworked = task(1, 1, { history: [{ at: 100, by: "claude", event: "approved" }, { at: 200, by: "claude", event: "changes_requested" }, { at: 500, by: "claude", event: "approved" }] });
   expect(releaseMetrics([shipped], [reworked]).approvalToReleaseMs).toEqual([{ release: 1, task: 1, ms: 400 }]);
 });
+
+
+test("release lag includes adoption settlement only when observed no later than ship", () => {
+  const shipped = release(1, { state: "shipped", shippedAt: 900, train: train([1], [{ at: 900, by: "user", event: "shipped", ciRuns: 0, reviews: 0 }]) });
+  for (const [at, ms] of [[500, 400], [900, 0], [1000, null]] as const) {
+    const adopted = task(1, 1, { history: [{ at, by: "user", event: "merged outside the hub" }] });
+    expect(releaseMetrics([shipped], [adopted]).approvalToReleaseMs).toEqual([{ release: 1, task: 1, ms }]);
+  }
+});

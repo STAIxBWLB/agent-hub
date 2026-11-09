@@ -278,3 +278,9 @@ test("#734 H7 the log gate lets one line per target and cause through each windo
   for (let n = 0; n < 1000; n++) handoffLogGate(seen, `p_${n}|x`, 5000, W, 8);
   expect(seen.size).toBeLessThanOrEqual(8);                                                        // bounded by max
 });
+
+
+test("merge adoption propagates actual approval settlement to the origin only in approved state", () => {
+  expect(handoffEventFor("merged outside the hub", "approved")).toBe("approved");
+  for (const state of ["in_progress", "in_review", "changes_requested", "cancelled"]) expect(handoffEventFor("merged outside the hub", state)).toBeUndefined();
+});

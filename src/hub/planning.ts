@@ -77,7 +77,7 @@ export function planningPatch(input: unknown = {}): PlanningPatch {
 /** Structured lifecycle events only, including reviewerless approval via done. */
 export function actualTaskDates(task: Pick<Task, "history" | "state" | "reviewer">) {
   const first = (events: readonly string[]) => task.history.find(entry => events.includes(entry.event))?.at ?? null;
-  const approved = first(["approved"]), reviewed = task.reviewer !== null || task.history.some(entry => entry.event === "approved" || entry.event === "changes_requested");
+  const approved = first(["approved", "merged outside the hub"]), reviewed = task.reviewer !== null || task.history.some(entry => entry.event === "approved" || entry.event === "changes_requested");
   const reviewerlessDone = task.state === "approved" && !task.reviewer ? [...task.history].reverse().find(entry => entry.event === "done")?.at ?? null : null;
   return { startedAt: first(["accepted"]), reviewAt: reviewed ? first(["done"]) : null, doneAt: approved ?? reviewerlessDone };
 }

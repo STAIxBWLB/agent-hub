@@ -1901,6 +1901,21 @@ const commands: Record<string, () => Promise<void> | void> = {
       } finally { hub.close(); }
       return;
     }
+    if (sub === "adopt-merge") {
+      const flags = takeFlags(args.slice(2), ["--pr"], []), pr = Number(flags.one["--pr"]);
+      if (flags.rest.length || !Number.isSafeInteger(id) || id! <= 0 || !Number.isSafeInteger(pr) || pr <= 0) fail("usage: ahub sdlc adopt-merge <task> --pr <n>");
+      const hub = await connect();
+      try {
+        const reply = await hub.request({ t: "sdlc", op: "adopt-merge", id, pr }, 60_000);
+        if (!reply.ok) {
+          const reason = typeof reply.error === "string" ? reply.error : "merge adoption failed without a reason; inspect the hub log and retry ahub sdlc adopt-merge";
+          if (/unknown SDLC operation|does not know|SDLC readback is console only/.test(reason)) fail(`${reason}; the running hub does not support adopt-merge; upgrade agent-hub and run ahub restart before retrying ahub sdlc adopt-merge`);
+          fail(reason);
+        }
+        console.log(`task #${id}: merged outside the hub; approved`);
+      } finally { hub.close(); }
+      return;
+    }
     if (sub === "merge") {
       // #786 T1: the guarded merge of one approved task; a person or the configured conductor asks, the daemon re-reads every gate.
       // #899: the decision prints for a person; `--json` is the same view as a document. The presentation flags are read before the
@@ -3192,7 +3207,7 @@ async function runConductorCommand(): Promise<void> {
   }
   let op: string;
   let input: Record<string, unknown>;
-  if (cmd === "sdlc") return commands.sdlc!(); // #786: `sdlc merge` is the one conductor-class sdlc subcommand; the daemon checks the role.
+  if (cmd === "sdlc") return commands.sdlc!(); // SDLC operational subcommands are role-checked by the daemon.
   if (cmd === "task") {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
     const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);
