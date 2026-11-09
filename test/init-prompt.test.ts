@@ -115,7 +115,7 @@ test("unknown input asks again and never guesses; three bad answers refuse the p
   expect(refused).toMatchObject({ ok: false, reason: "refused" });
   expect(refused.ok === false && refused.message).toContain('no valid answer for "Design specs and their freshness checks" after 3 tries, so nothing was written; run ahub init again, or pass the setting as a flag');
   // an unknown agent is refused with the allowed ones by the table's own parser, then the next answer is read
-  const total = initQuestions({ shadowAvailable: false }).length;
+  const total = initQuestions({ shadowAvailable: false }).filter(q => q.id !== "sdlc.required_checks").length;
   const badAgent = scripted(["", "nonexistent-agent", "claude", ...blank(total - 2), "y"]);
   const accepted = await runInitPrompt(badAgent.ports, { shadowAvailable: false }, () => []);
   expect(accepted.ok && accepted.answers.request.values).toEqual({ "start.agents": ["claude"] });

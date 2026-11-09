@@ -168,7 +168,7 @@ function scopeRig(mode: "off" | "advise" | "enforce", gh?: SdlcGh, checks: Pick<
   const cwd = mkdtempSync(join(tmpdir(), "ahub-cost-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const notices: string[] = [];
   const roles: Record<string, string[]> = { claude: ["planner"], codex: ["implementer"] }, privacy = { active: false }, policy = { mode };
-  const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles, privateTurn: () => privacy.active, routing: () => loadRouting(cwd), notify: text => notices.push(text), repository: "o/r", ...checks, sdlc: { config: () => sdlcConfig({ mode: policy.mode }), ...(gh ? { gh } : {}) } });
+  const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles, privateTurn: () => privacy.active, routing: () => loadRouting(cwd), notify: text => notices.push(text), repository: "o/r", ...checks, sdlc: { config: () => sdlcConfig({ mode: policy.mode, required_checks: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"] }), ...(gh ? { gh } : {}) } });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   return { tasks, board, bus, roles, privacy, notices, policy };
 }
@@ -226,7 +226,7 @@ function admissionRig(mode: "off" | "advise" | "enforce", ready = true, answered
       issue: { number: Number(issueArg.split("=")[1]), labels: { nodes: [], pageInfo: { hasNextPage: false } } },
     } } } : reply) };
   };
-  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), privateTurn: () => hooks.privateTurn === true, notify: text => notices.push(text), sdlc: { config: () => sdlcConfig({ mode }), gh } });
+  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), privateTurn: () => hooks.privateTurn === true, notify: text => notices.push(text), sdlc: { config: () => sdlcConfig({ mode, required_checks: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"] }), gh } });
   const task = board.propose("user", { title: "finished implementation", class: "implement" });
   board.update(task.id, "user", "accepted", { owner: "codex", reviewer: "user", state: "in_progress", refs: { commit: head }, sdlc: { stage: "build", repo: "o/r", issue: 1, pr: 1, head, localHead: head, localResult: "passed" } });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });

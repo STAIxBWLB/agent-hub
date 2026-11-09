@@ -345,7 +345,7 @@ test("the table is the extension point: each row names its flag, file, key path 
     expect(row.path.length).toBeGreaterThan(0);
     expect(row.allowed.length).toBeGreaterThan(0);
   }
-  expect(INIT_SETTINGS.map(row => row.id)).toEqual(["start.agents", "sdlc.mode", "coordination", "memory.enabled", "snapshots.enabled", "specs.enabled", "specs.review", "pi.enabled"]);
+  expect(INIT_SETTINGS.map(row => row.id)).toEqual(["start.agents", "sdlc.mode", "sdlc.required_checks", "coordination", "memory.enabled", "snapshots.enabled", "specs.enabled", "specs.review", "pi.enabled"]);
 });
 
 test("planInit and initSettingRows agree, and neither writes (#1065 AC1)", () => {
