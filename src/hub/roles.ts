@@ -14,6 +14,16 @@ export interface CatalogRole {
   body: string; review: string; layer: "shipped" | "project"; hash: string;
 }
 export interface RoleCatalog { roles: Map<string, CatalogRole>; errors: { id: string; reason: string }[] }
+export interface RoleSectionSpan {
+  readonly name: typeof ROLE_SECTIONS[number];
+  readonly startUtf16: number; readonly endUtf16: number; readonly contentStartUtf16: number;
+  readonly headingRaw: string; readonly contentRaw: string; readonly raw: string;
+}
+export interface RoleDocument {
+  readonly role: Readonly<CatalogRole>;
+  readonly rawHeader: string; readonly bodyPrefix: string;
+  readonly sections: readonly RoleSectionSpan[];
+}
 /** Flat headers are data, never YAML execution or authority configuration. */
 export function parseRole(text: string, stem: string, layer: CatalogRole["layer"]): CatalogRole {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem)) throw new Error("invalid role size, encoding or file id");
@@ -47,6 +57,22 @@ export function parseRole(text: string, stem: string, layer: CatalogRole["layer"
   const reviewStart = sections[4]!.index! + sections[4]![0].length;
   const review = body.slice(reviewStart, sections[5]!.index).trim();
   return { id: stem, name: header.name!, group: header.group!, summary: header.summary!, source: header.source!, base: list("base", BASES), classes: list("classes", CLASSES), body, review, layer, hash: createHash("sha256").update(text).digest("hex") };
+}
+/** Validate with the existing parser, then retain exact source slices without trim or normalization. */
+export function parseRoleDocument(text: string, stem: string, layer: CatalogRole["layer"]): RoleDocument {
+  const role = parseRole(text, stem, layer);
+  const rawHeader = /^---\n[\s\S]*?\n---\n/.exec(text)![0];
+  const body = text.slice(rawHeader.length), headings = [...body.matchAll(/^## (.+)$/gm)];
+  const sections = headings.map((heading, index): RoleSectionSpan => {
+    const startUtf16 = rawHeader.length + heading.index!;
+    const endUtf16 = rawHeader.length + (headings[index + 1]?.index ?? body.length);
+    let contentStartUtf16 = startUtf16 + heading[0].length;
+    if (text[contentStartUtf16] === "\n") contentStartUtf16++;
+    return Object.freeze({ name: ROLE_SECTIONS[index]!, startUtf16, endUtf16, contentStartUtf16,
+      headingRaw: text.slice(startUtf16, contentStartUtf16), contentRaw: text.slice(contentStartUtf16, endUtf16), raw: text.slice(startUtf16, endUtf16) });
+  });
+  Object.freeze(role.base); Object.freeze(role.classes); Object.freeze(role);
+  return Object.freeze({ role, rawHeader, bodyPrefix: body.slice(0, headings[0]!.index), sections: Object.freeze(sections) });
 }
 function projectRole(file: string): string {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
