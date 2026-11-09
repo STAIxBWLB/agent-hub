@@ -48,3 +48,9 @@ No installable companion exists in C0; no marketplace entry or channel plugin de
 # C1 amended implementation
 
 The owner amendment of 2026-11-09 permits a separate read-only mod against declared types and a fake host, with native terminal proof as a person-run NOT RUN leg. The [companion README](README.md) and [support matrix](support-matrix.json) describe that fixture_only implementation. This supersedes the C0 statement that no companion exists and its requirement for native proof before building C1; it does not change any of the seven C0 capability verdicts or grant native support. Declared 2.1.319 types are pinned by SHA-256 in JSON and checked outside the Bun type universe, not committed. The actual process.run API accepts timeoutMs but no custom byte cap; the adapter rejects truncated or oversized responses before parsing, with the host buffering bound reported separately.
+
+# C1 read-set revision 2
+
+The AC1 amendment of 2026-11-09T12:57:02Z supersedes the C0 candidate read set and initial C1 orchestration. C1 now makes exactly one project-scoped `status --json` read per refresh and copies version, peers and task-state counts only. `board` and `projects` are forbidden; task/role lists are unavailable. The canonical session root and stable daemon projectId bind every response, with root checks around the read and projectId pinned across `/clear`. Registry existence/uniqueness is NOT VERIFIED; a bounded registration read requires a separate task.
+
+At main `7a76dff0`, the reviewer measured board JSON at 850 rows / 4,009,483 bytes and project JSON at 223,424 bytes, previously read three times per refresh. Those reviewer observations are not new implementation-session probes. The JSON contract records their provenance and the separate approved one-refresh source-CLI numeric measurement. No raw packet is retained, and no source-CLI measurement qualifies a native host API or UI surface.

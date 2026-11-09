@@ -3,15 +3,14 @@ export const LIMITS = { timeoutMs: 5000, maxOutputBytes: 262144, maxRows: 256, m
 export type Binding = { root: string; projectId: string };
 export type State = "running" | "stale" | "partial" | "offline" | "unavailable_version" | "unknown" | "binding" | "missing_cli" | "timeout" | "nonzero" | "oversized" | "unrecognized";
 export type Peer = { id: string; state: string; queued?: number; attached?: boolean; needsReview?: number };
-export type Task = { id: number; publicTitle?: string; state?: string };
-export type Reading = { state: State; fetchedAt?: number; version?: string; peers?: Peer[]; tasks?: { state: string; count: number }[]; board?: Task[]; missing?: string[] };
+export type Reading = { state: State; fetchedAt?: number; version?: string; peers?: Peer[]; tasks?: { state: string; count: number }[]; missing?: string[] };
 export const SENTENCES: Record<State, string> = {
   running: "Hub reading is current.", stale: "Hub reading is older than 60 seconds. Run /hub refresh.",
   partial: "Some public fields are unavailable; unknown values are not zero.",
   offline: "No hub is running for this project. Run ahub up yourself in a terminal.",
   unavailable_version: "This hub version cannot supply the companion's public fields.",
   unknown: "Hub status is unknown. Run /hub refresh.",
-  binding: "The session project does not have exactly one matching hub registration. Nothing further was read.",
+  binding: "The hub identity does not match the session project binding. Check the selected project and start a new session.",
   missing_cli: "The ahub executable is unavailable.", timeout: "The ahub read timed out.",
   nonzero: "The ahub read failed.", oversized: "The ahub output exceeded the byte limit and was discarded.",
   unrecognized: "The ahub output was not recognized and was discarded.",
@@ -25,15 +24,13 @@ export function parse(raw: string): unknown {
   if (new TextEncoder().encode(raw).length > LIMITS.maxOutputBytes) throw new CompanionError("oversized");
   try { return JSON.parse(raw); } catch { throw new CompanionError("unrecognized"); }
 }
-export function parseRegistration(raw: unknown, root: string, expectedId?: string): Binding {
-  if (!root.startsWith("/") || !Array.isArray(raw) || raw.length > LIMITS.maxRows) throw new CompanionError("binding");
-  const rows = raw.filter(row => object(row) && row.root === root);
-  const row = rows[0];
-  if (rows.length !== 1 || !object(row) || !scalar(row.id) || expectedId !== undefined && row.id !== expectedId
-    || raw.some(other => object(other) && other !== row && other.id === row.id)) throw new CompanionError("binding");
-  return { root, projectId: row.id };
+/** ponytail: daemon identity only; registry existence/uniqueness needs a separate bounded registration-read task. */
+export function bindStatus(raw: unknown, root: string, expectedProjectId?: string): Binding {
+  if (!root.startsWith("/") || !object(raw) || raw.cwd !== root || !scalar(raw.projectId)
+    || expectedProjectId !== undefined && raw.projectId !== expectedProjectId) throw new CompanionError("binding");
+  return { root, projectId: raw.projectId };
 }
-export function projectReading(raw: unknown, board: unknown, binding: Binding, fetchedAt: number): Reading {
+export function projectReading(raw: unknown, binding: Binding, fetchedAt: number): Reading {
   if (!object(raw)) throw new CompanionError("unrecognized");
   if (raw.cwd !== binding.root || raw.projectId !== binding.projectId) throw new CompanionError("binding");
   const missing: string[] = [];
@@ -57,15 +54,8 @@ export function projectReading(raw: unknown, board: unknown, binding: Binding, f
       return { state, count: total };
     });
   } else missing.push("tasks");
-  if (!Array.isArray(board) || board.length > LIMITS.maxRows) throw new CompanionError("unrecognized");
-  result.board = board.map(row => {
-    if (!object(row) || !Number.isSafeInteger(row.id) || Number(row.id) <= 0 || !scalar(row.title)) throw new CompanionError("unrecognized");
-    if (row.title.includes("[pii]")) return { id: Number(row.id) };
-    if (!states.includes(String(row.state))) throw new CompanionError("unrecognized");
-    return { id: Number(row.id), publicTitle: row.title, state: String(row.state) };
-  });
-  // C0 did not establish public budget, permission or held-delivery detail fields.
-  missing.push("budget", "permissions", "held delivery detail", "role assignment");
+  // Only status counts are admitted. No board or global project inventory is requested.
+  missing.push("budget", "permissions", "held delivery detail", "task list", "role-specific task list", "registration inventory");
   result.state = !result.version && !result.peers && !result.tasks ? "unavailable_version" : missing.length ? "partial" : "running";
   return result;
 }
@@ -80,6 +70,5 @@ export function lines(reading: Reading, now: number): string[] {
   return [`agent-hub: ${view.state}`, SENTENCES[view.state], ...(view.version ? [`Version: ${view.version}`] : []),
     ...(view.peers ?? []).map(p => `${p.id}: ${p.state}; queue ${p.queued ?? "unknown"}; attached ${p.attached ?? "unknown"}; held ${p.needsReview ?? "unknown"}`),
     ...(view.tasks ?? []).map(t => `${t.state}: ${t.count}`),
-    ...(view.board ?? []).map(t => `#${t.id}${t.publicTitle ? ` ${t.publicTitle} (${t.state})` : ""}`),
     ...(view.missing?.length ? [`Unavailable: ${[...new Set(view.missing)].join(", ")}`] : [])];
 }

@@ -1,5 +1,5 @@
-import { CompanionError, LIMITS, consoleCommand, object, parse, parseRegistration, projectReading, type Binding, type Reading } from "./status.ts";
-export type ReadCall = { executable: string; argv: readonly string[]; cwd: string; timeoutMs: number; maxOutputBytes: number };
+import { CompanionError, LIMITS, consoleCommand, bindStatus, parse, projectReading, type Binding, type Reading } from "./status.ts";
+export type ReadCall = { executable: "ahub"; argv: readonly ["--project", string, "status", "--json"]; cwd: string; timeoutMs: number; maxOutputBytes: number };
 export type Response = { stdout: string; stderr?: string; exitCode: number | null; durationMs?: number };
 export interface Ports {
   /** Canonical session root, supplied by the host, never process.cwd or a fallback. */
@@ -48,28 +48,21 @@ export class CompanionController {
         const root = await this.ports.realRoot();
         if (!current()) return;
         if (this.binding && this.binding.root !== root) throw new CompanionError("binding");
-        const readBound = async (kind: "projects" | "status" | "board") => {
-          if (!current() || await this.ports.realRoot() !== root) throw new CompanionError("binding");
-          const result = await this.ports.run({ executable: "ahub", argv: ["--project", root, kind, "--json"], cwd: root, ...LIMITS });
-          if (!current() || await this.ports.realRoot() !== root) throw new CompanionError("binding");
-          if ((result.durationMs ?? 0) > LIMITS.timeoutMs) throw new CompanionError("timeout");
-          if (new TextEncoder().encode(result.stdout + (result.stderr ?? "")).length > LIMITS.maxOutputBytes) throw new CompanionError("oversized");
-          if (result.exitCode !== 0) throw new CompanionError(result.exitCode === 1 && (result.stderr ?? "").startsWith("ahub: no hub running for ") ? "offline" : "nonzero");
-          return parse(result.stdout);
-        };
-        const binding = parseRegistration(await readBound("projects"), root, this.binding?.projectId);
+        if (await this.ports.realRoot() !== root) throw new CompanionError("binding");
+        if (!current()) return;
+        const result = await this.ports.run({ executable: "ahub", argv: ["--project", root, "status", "--json"], cwd: root, ...LIMITS });
+        if (!current()) return;
+        if (await this.ports.realRoot() !== root) throw new CompanionError("binding");
+        if (!current()) return;
+        if ((result.durationMs ?? 0) > LIMITS.timeoutMs) throw new CompanionError("timeout");
+        if (new TextEncoder().encode(result.stdout + (result.stderr ?? "")).length > LIMITS.maxOutputBytes) throw new CompanionError("oversized");
+        if (result.exitCode !== 0) throw new CompanionError(result.exitCode === 1 && (result.stderr ?? "").startsWith("ahub: no hub running for ") ? "offline" : "nonzero");
+        const status = parse(result.stdout);
+        const binding = bindStatus(status, root, this.binding?.projectId);
+        const projection = projectReading(status, binding, this.ports.now());
+        if (await this.ports.realRoot() !== root) throw new CompanionError("binding");
         if (!current()) return;
         this.binding = binding;
-        const status = await readBound("status");
-        if (!object(status)) throw new CompanionError("unrecognized");
-        if (status.cwd !== root || status.projectId !== binding.projectId) throw new CompanionError("binding");
-        // A registration is rechecked before every public data read.
-        parseRegistration(await readBound("projects"), root, binding.projectId);
-        const board = await readBound("board");
-        // Board rows have no binding header: verify their owner after the awaited read.
-        parseRegistration(await readBound("projects"), root, binding.projectId);
-        const projection = projectReading(status, board, binding, this.ports.now());
-        if (await this.ports.realRoot() !== root) throw new CompanionError("binding");
         if (current()) await this.ports.publish(projection);
       } catch (error) {
         if (current()) await this.ports.publish({ state: error instanceof CompanionError ? error.state : "unknown" });

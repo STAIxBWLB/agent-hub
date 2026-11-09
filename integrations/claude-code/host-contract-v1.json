@@ -228,6 +228,55 @@
       "hub ui",
       "attention band"
     ],
-    "c0Matrix": "Unchanged. Declared types and fake host do not prove native APIs."
+    "c0Matrix": "Unchanged. Declared types and fake host do not prove native APIs.",
+    "readSet": {
+      "revision": 2,
+      "contractAmendedAt": "2026-11-09T12:57:02Z",
+      "supersedes": "C0 fixture read candidates and first C1 board/projects orchestration; historical C0 verdicts stay unchanged",
+      "argv": [
+        "ahub",
+        "--project",
+        "<canonical session root>",
+        "status",
+        "--json"
+      ],
+      "cliSpawnsPerRefresh": 1,
+      "forbiddenCommands": [
+        "board",
+        "projects"
+      ],
+      "projection": [
+        "version",
+        "peers[].id/state/queued/optional attached/optional needsReview",
+        "tasks state/count only"
+      ],
+      "gaps": [
+        "task list",
+        "role-specific task list",
+        "registration inventory",
+        "budget",
+        "permissions",
+        "held delivery detail"
+      ],
+      "binding": {
+        "proof": "Canonical session root before/after each read; returned cwd equal to it; first valid daemon projectId pinned and later responses compared, including after clear",
+        "registryExistence": "NOT VERIFIED",
+        "registryUniqueness": "NOT VERIFIED",
+        "upgrade": "Separate task for a bounded registration read; no new API or global inventory is introduced"
+      },
+      "reviewerBaseline": {
+        "source": "reviewer measurement, not implementation-session probe",
+        "sourceHeadPrefix": "7a76dff0",
+        "boardRows": 850,
+        "boardStdoutBytes": 4009483,
+        "projectsStdoutBytes": 223424,
+        "oldProjectsReadsPerRefresh": 3,
+        "oldCliSpawnsPerRefresh": 5
+      },
+      "measurement": {
+        "state": "NOT RUN",
+        "scope": "One approved sourceCLI status refresh; adapter subprocess count, not all OS descendants; no raw packet retained; not native mod/UI proof"
+      }
+    }
   }
 }

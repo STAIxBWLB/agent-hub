@@ -5,7 +5,6 @@ export type AgentHubCompanionReading = {
   version?: string;
   peers?: { id: string; state: string; queued?: number; attached?: boolean; needsReview?: number }[];
   tasks?: { state: string; count: number }[];
-  board?: { id: number; publicTitle?: string; state?: string }[];
   missing?: string[];
 };
 declare module "claude-code" {
