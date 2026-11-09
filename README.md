@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.34.1, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.35.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Quick start
@@ -172,7 +172,7 @@ show an unverified writer's cause and the person-run next step.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-11-07-0.34.0.md) and the
+[release verification report](docs/verification/2026-11-09-0.35.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

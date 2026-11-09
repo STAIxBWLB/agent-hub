@@ -164,6 +164,8 @@ The package-owned scripts/check-docs.mjs accepts --json with the same normal/--r
 
 The release reader additionally requests --committed: manifest, README and package metadata come from the captured HEAD, and dirty documentation/evidence files block freshness. A working-tree restamp cannot certify a commit that still contains stale stamps. The ordinary checker continues to support working-tree review before those stamps are committed.
 
+The manifest must list `README.md`, every agent note and every page directly under `docs/` and `docs/addons/` except the dated records `docs/smoke.md` and `docs/gsd-collaboration-analysis.md`; a missing entry is an error. CI's `decision` job reports stale stamps as warnings on every PR, even when the gate is reused; only the release PR restamps (#1268).
+
 # Guarded merge (#786)
 
 `.agenthub/sdlc.toml` takes `auto_merge = "off" | "dry-run" | "on"` (default `off`) and optional `[repos."owner/name"]` tables with `required_checks` and `auto_merge`. A table's mode overrides the top-level one for that repository; its `required_checks` come first, then the top-level list, so a repository without branch protection is gated by what this file names (an empty set refuses: `required checks unknown`). Unknown keys are refused with a field path. The file is read once at start.
