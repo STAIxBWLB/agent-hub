@@ -47,6 +47,7 @@ export interface RestartSnapshot {
     boardDigest: string;
     budgetDigest: string;
     modelOverrides?: { count: number; digest: string };
+    guidanceVariants?: { experiments: number; variants: number; digest: string };
     executionReferences?: { count: number; digest: string };
     /** Whole captured binding set; portable identities are covered alongside queue/board integrity. */
     externalBindingsDigest?: string;
@@ -114,6 +115,12 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     const value = s.integrity.modelOverrides;
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "count,digest"
       || !Number.isSafeInteger(value.count) || value.count < 0 || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "guidanceVariants")) {
+    const value = s.integrity.guidanceVariants;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "digest,experiments,variants"
+      || !Number.isSafeInteger(value.experiments) || value.experiments < 0 || !Number.isSafeInteger(value.variants) || value.variants < value.experiments
+      || typeof value.digest !== "string" || value.digest.length !== 64 || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (s.integrity && Object.hasOwn(s.integrity, "executionReferences")) {
     const value = s.integrity.executionReferences;

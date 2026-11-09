@@ -14,16 +14,19 @@ paths:
   - src/hub/guidance-variants.ts
   - test/guidance-variants.test.ts
   - test/fixtures/guidance-variant-v1.json
+  - test/guidance-variants-lifecycle.test.ts
+  - test/guidance-variants-privacy.test.ts
+  - test/guidance-variants-recovery.test.ts
 ---
 
 # Immutable guidance variants
 
-This is the T1 contract for [#1225](https://github.com/STAIxBWLB/agent-hub/issues/1225).
-It represents a proposed change to one task role as immutable local data. It does
-not create a role, rewrite a catalog, change a session, grant permission, persist
-an experiment or run a probe. Tasks admission and lifecycle are T2; public
-CLI/MCP/console views are T3; actual confined handoff and probe receipts belong to
-#1226. Parsing establishes shape and binding comparisons, not semantic safety,
+This is the T1/T2 contract for [#1225](https://github.com/STAIxBWLB/agent-hub/issues/1225).
+T1 represents a proposed change to one task role as immutable local data. Its
+pure APIs do not persist an experiment. T2 adds Tasks admission and private
+lifecycle storage. Neither slice creates a live role, rewrites a catalog, changes
+a session, grants permission or runs a probe. Public CLI/MCP/console dispatch is
+T3; actual confined handoff and probe receipts belong to #1226. Parsing establishes shape and binding comparisons, not semantic safety,
 authority, testing, model consumption or improvement.
 
 ## Closed V1 record
@@ -173,5 +176,147 @@ standard-library SHA-256 and compact UTF-8 JSON, without the target validator.
 The companion test also constructs expected keys with Node crypto independently
 of the validator, covers protected-byte differences,
 opaque references, host drift, UTF-8/UTF-16 boundaries, aggregate JSON size and
-inert/frozen containers. These tests do not claim semantic safety, lifecycle,
-public-view admission, native consumption or measured runtime improvement.
+inert/frozen containers. These conformance vectors do not claim semantic safety, native consumption or
+measured runtime improvement. The T2 fixtures separately exercise the lifecycle
+and privacy admission described below.
+
+
+## Tasks lifecycle and private persistence (T2)
+
+Only `Tasks.guidanceVariantCreate`, `guidanceVariantRead` and
+`guidanceVariantWithdraw` admit lifecycle operations. `guidanceVariantApplicable`
+is a fresh read predicate for a later confined probe boundary, not handoff,
+activation or model-consumption evidence. T2 adds no CLI, MCP, console dispatch,
+model route, probe runner, role assignment or effective configuration change.
+
+Creation accepts a complete closed V1 record. Its first successful transaction
+freezes the experiment's baseline in `guidance_experiments`; immutable canonical
+variant bytes and their digest live in `guidance_variants`. Both tables are
+private local hub state, separate from `Task`, refs, plan, history, public task
+views, bus notices and memory. The experiment key is the host project key, task
+id, task creation epoch and experiment id. The variant key adds its content id.
+No read interprets an opaque address as a locator, URL or path to resolve.
+
+Write authority follows task-role admission: the person or the task's current
+rostered owner with the configured base for its class. An agent cannot write
+under review; every actor is refused on an approved or cancelled task. A
+conductor designation alone grants no write. Creation additionally requires the
+current task role and class-compatible current catalog identity to match the
+record and frozen experiment. A changed baseline requires a new experiment;
+neither a retry nor a catalog reload silently rebases an existing one.
+
+Task epoch, flow revision, owner, state, task role, catalog identity, repository,
+current task privacy and authenticated request/session authority are checked
+before reads and again after configured local privacy screening, immediately before
+the synchronous transaction. Known input/admission refusals are pre-effect only;
+unknown storage, wrapped write or readback failures remain ordinary fixed safe
+errors, including a transaction that rolled back. They never authorize an
+adapter to assume safe automatic retry. Existing configured local privacy screening may
+inspect new proposal text; unknown or failed screening refuses. There is no new
+generation or model route. A present-but-unknown native session-generation port
+refuses. The request also fences replacement peer objects, native session and
+current delivered-input identity. These are current-operation fences, not
+persisted session attestations or permanent authority on the immutable record.
+The future probe boundary must capture and revalidate its own runtime/turn facts.
+
+Private turns, review-observer input and PII task state refuse all actors before
+experiment identifiers, counts or bodies are read. Reads use the existing task
+visibility boundary, including its staged-task restriction. Missing, denied,
+corrupt and unsupported ordinary reads share `{state: "unavailable"}`. Public
+task views never gain snapshot fields.
+
+The lifecycle read result is a closed metadata projection, not the private stored
+record. It contains experiment/variant identity, task epoch/revision, author,
+role id/layer, baseline/candidate SHA-256, changed editable section names,
+baseline/candidate/record byte counts, declaration/withdrawal status, current
+applicability, and canonical evidence digests with declaration availability.
+Neither raw role snapshot, attribution header, body, evidence address nor private
+creation/withdrawal actor/time metadata is returned. An unrelated deny policy
+cannot make a valid shipped role disappear because its protected attribution
+contains a path.
+
+Only the two rationale texts and caller-opaque experiment id are field-screened
+on this read path, using existing pure
+nameable/secret/lexical policy behavior. A field that does not clear is the
+literal `withheld`; it does not hide the variant or change applicability. Under
+active path policy, path-shaped rationale without alias proof is withheld as a
+field. Reads do not invoke `publicMetadataText`'s filesystem discovery, a model or
+an address resolver to manufacture that proof. Other closed enum/id/hash metadata does not pass
+through the opaque-address/path heuristic. The experiment id remains its exact
+immutable private identity, not a hash or a renamed key. Its public field is the
+raw id when clear and literal `withheld` otherwise; this does not hide the
+variant or change applicability. The same field projection applies to creation
+and withdrawal receipt echoes, so narrowing privacy never sends an old private
+id back merely because a write succeeded. Raw snapshots remain private local
+state and never become public merely because a field is withheld.
+
+Admission precedes duplicate lookup. An unchanged duplicate returns the original
+record and original attribution without writing only while current create
+admission still holds. A stale original create refuses; authorized historical
+readback is separate and can return `applicable: false`. Concurrent identical
+creates converge on one row. Sixteen historical variant ids include withdrawn
+ones; there is no experiment-count cap. No task-list scan is introduced in T2;
+T3 owns bounded experiment-list pagination.
+
+Withdrawal accepts a current task epoch/flow wrapper and an exact stored
+experiment/variant id. It records one terminal withdrawal actor/time without
+changing the payload or deleting history. Historical baseline drift does not
+prevent this narrowing operation. An unchanged repeat preserves the first
+withdrawal. Creation replay never clears it, and it always makes the variant
+inapplicable. Closed tasks remain immutable. Withdrawal introduces no free text
+and has no awaited screen between its final authority checks and atomic write.
+It does not re-screen stored raw prose or a newly withheld rationale: it narrows
+intent and returns only the closed receipt. Current task/turn privacy and exact
+scope/revision/authority checks still apply.
+
+The immutable declaration and host creation/withdrawal metadata remain in the
+private store; public metadata applicability is evaluated separately against
+current task/catalog context. After source-port reads, the task revision/role
+binding, selected immutable and withdrawal metadata, and task privacy are read
+again. A changed snapshot is unavailable. Current applicability and rationale
+field projection are recomputed only after those fences.
+
+Source references are declarations only. Their public keys are the existing
+`executionReferenceDigest`, SHA-256 of the canonical reference, never
+`executionReferenceKey`'s raw canonical JSON or an opaque producer address. An
+exact currently visible local source can be labelled `declared`; missing,
+denied, external and unsupported sources are all `unavailable`. Neither label
+asserts testing, runner provenance, actual handoff, model attention, result
+quality or improvement. Read and applicability paths invoke no model, network
+or external resolver.
+
+## Storage and controlled recovery bounds
+
+Each normal read uses one indexed experiment key and at most seventeen variant
+rows. The seventeenth is an overflow sentinel: it refuses corrupt storage rather
+than returning a truncated complete experiment. SQL checks raw JSON byte lengths
+before hydration, then validates canonical payload hashes, experiment bindings,
+host attribution and paired withdrawal fields. First experiment plus variant,
+and a withdrawal plus its status revision, commit atomically; refusals and
+replays change no row, task history or status revision. Restart retains exact
+immutable and terminal metadata.
+
+The additive tables do not advance the database schema marker. Retained rows
+require the `guidance_variants` recovery feature. A conditional digest covers
+both tables, including withdrawn history; absent tables' data leave legacy
+empty-state recovery integrity unchanged. Startup verifies canonical retained
+state and a supplied recovery digest before accepting it as current. An unknown
+compatibility or integrity read refuses instead of certifying an empty store.
+
+Recovery alone streams ordered experiment keys, followed by each exact-key
+variant page of at most seventeen rows, with bounded per-row/page memory. Its
+total work is O(historical experiments), including the corresponding bounded
+variant pages and orphan detection. This follows the existing full-stream
+integrity convention. If measured recovery time warrants a change, the upgrade
+is keyset pages with a verification budget; a partial scan must never certify
+complete integrity. T2 adds no experiment-count cap, new recovery budget or
+partial-scan success/refusal mode.
+
+`test/guidance-variants-lifecycle.test.ts`,
+`test/guidance-variants-privacy.test.ts` and
+`test/guidance-variants-recovery.test.ts` use only scratch state and fake peers.
+Their source assertions cover idempotent creation, atomic rollback, restart,
+withdrawal, currentness/privacy narrowing, malformed stored rows, bounded SQL
+hydration and conditional recovery metadata. These are fixture contracts, not a
+native/live trial or a measured read-cost receipt; T3 and #1226 retain those
+separate obligations.
