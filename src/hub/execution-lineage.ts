@@ -133,3 +133,32 @@ export function readExecutionLineage(source: ExecutionLineageSource, query: Line
     return page(n, e);
   } catch { return unavailable("corrupt"); }
 }
+
+/** Refuse unsupported reply shapes instead of presenting an incomplete page as a successful graph. */
+export function parseLineageResult(value: unknown): LineageResult {
+  const bad = (): never => { throw new Error("lineage reply has an unsupported shape; upgrade and restart the hub, then retry"); };
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, "state") || Buffer.byteLength(JSON.stringify(value)) > LINEAGE_LIMITS.bytes) return bad();
+    const row = value as Record<string, any>;
+    if (row.state === "unavailable") {
+      if (Object.keys(row).some(key => !["state", "reason"].includes(key)) || row.reason !== undefined && !["missing", "corrupt", "unsupported", "withheld", "cursor_invalid", "invalid"].includes(row.reason)) return bad();
+      return value as LineageResult;
+    }
+    if (row.state !== "available" || !["nodes", "edges", "truncated"].every(key => Object.hasOwn(row, key)) || Object.keys(row).some(key => !["state", "nodes", "edges", "truncated", "cursor"].includes(key)) ||
+        !Array.isArray(row.nodes) || row.nodes.length > LINEAGE_LIMITS.nodes || !Array.isArray(row.edges) || row.edges.length > LINEAGE_LIMITS.edges || typeof row.truncated !== "boolean" ||
+        row.cursor !== undefined && (typeof row.cursor !== "string" || row.cursor.length > LINEAGE_LIMITS.cursor || !/^[A-Za-z0-9_-]+$/.test(row.cursor)) || row.truncated && row.cursor === undefined || !row.truncated && Object.hasOwn(row, "cursor")) return bad();
+    for (const node of row.nodes) {
+      if (!node || typeof node !== "object" || Array.isArray(node) || !["ref", "state", "strength"].every(key => Object.hasOwn(node, key)) || Object.keys(node).some(key => !["ref", "state", "strength"].includes(key)) ||
+          typeof node.state !== "string" || node.state.length > LINEAGE_LIMITS.state || !/^[a-z][a-z0-9_-]*$/.test(node.state) || !STRENGTHS.includes(node.strength)) return bad();
+      parseExecutionReference(node.ref);
+      if (node.ref.tool !== "ahub" && node.strength !== "declared") return bad();
+    }
+    for (const edge of row.edges) {
+      if (!edge || typeof edge !== "object" || Array.isArray(edge) || !["from", "to", "relation", "strength"].every(key => Object.hasOwn(edge, key)) || Object.keys(edge).some(key => !["from", "to", "relation", "strength"].includes(key)) ||
+          !RELATIONS.includes(edge.relation) || !STRENGTHS.includes(edge.strength) || edge.relation === "declared-external" && edge.strength !== "declared") return bad();
+      parseExecutionReference(edge.from); parseExecutionReference(edge.to);
+      if (edge.from.tool !== "ahub" || edge.to.tool !== "ahub" && (edge.relation !== "declared-external" || edge.strength !== "declared")) return bad();
+    }
+    return value as LineageResult;
+  } catch { return bad(); }
+}

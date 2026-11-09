@@ -1722,6 +1722,8 @@
   "src/hub/manager.ts:safeError:inline:error.message.slice=300#0": "safety floor",
   "src/hub/manager.ts:startManager:inline:options.orphanWatchMs ?? 10_000=10_000#0": "test seam",
   "src/hub/manager.ts:stopManager:inline:Bun.sleep=25#0": "operational",
+  "src/hub/manager.ts:timeoutMs:inline:options.forwardTimeoutMs=10_000#1": "operational",
+  "src/hub/manager.ts:timeoutMs:inline:options.forwardTimeoutMs?.(lineage_show, 10_000) ?? 10_000=10_000#0": "operational",
   "src/hub/memory-candidates.ts:[field]:inline:[field]=1#0": "safety floor",
   "src/hub/memory-candidates.ts:correctionInput:inline:bytes(JSON.stringify(result)) > 8192=8192#0": "safety floor",
   "src/hub/memory-candidates.ts:visibleId:inline:bytes(input) < 6=6#0": "safety floor",

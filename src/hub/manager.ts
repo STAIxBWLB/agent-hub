@@ -215,7 +215,30 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch { return { ok: false, unconfirmed: true as const, text: "Review result is unconfirmed. Refresh and check the task before retrying.", error: "Review result is unconfirmed. Refresh and check the task before retrying." }; }
     finally { client?.close(); }
   };
-  return { list, act, answer, receipt, consoleControl };
+  // #1220 T3: the acon provider's execution-lineage read. A port of its own like `answer`, never an `act` action: the
+  // dashboard's action list does not grow, so nothing here can link, probe, replay or execute. It sends the control
+  // message the console role already owns, answered in-stack by the same Tasks projection the CLI and MCP read.
+  const lineageQueryKeys = ["taskId", "attemptId", "root", "task", "cursor", "nodes", "edges", "bytes"] as const;
+  const lineage = async (target: { projectId: unknown; instanceId: unknown }, query: Record<string, unknown>) => {
+    if (options.stopping?.()) return { ok: false, error: "manager is stopping" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project) return { ok: false, error: "unknown project" };
+    if (typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "expected daemon instance is required" };
+    // The hub parses a closed query: an unknown field would refuse every read, so name it here instead.
+    if (!query || typeof query !== "object" || Array.isArray(query) || Object.keys(query).some(key => !(lineageQueryKeys as readonly string[]).includes(key))) return { ok: false, error: "invalid lineage query" };
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      const timeoutMs = options.forwardTimeoutMs?.("lineage_show", 10_000) ?? 10_000;
+      const result = await client.request({ t: "lineage_show", ...query }, timeoutMs);
+      // A read has no effect to confirm: a missed deadline is a read that did not happen.
+      if (result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) return { ok: false, error: "the hub did not answer the lineage read in time; refresh and retry" };
+      const { rid: _transportId, ...reply } = result;
+      return reply;
+    } catch (error) { return { ok: false, error: safeError(error) }; }
+    finally { client?.close(); }
+  };
+  return { list, act, answer, receipt, consoleControl, lineage };
 }
 
 export async function startManager(options: ManagerOptions = {}): Promise<ManagerHandle> {

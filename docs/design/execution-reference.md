@@ -20,8 +20,11 @@ paths:
   - test/execution-lineage-owner.test.ts
   - test/execution-lineage-control.test.ts
   - test/execution-lineage-cli.test.ts
+  - test/execution-lineage-console.test.ts
+  - test/execution-lineage-performance.test.ts
   - test/execution-reference.test.ts
   - test/execution-lineage.test.ts
+  - src/ui/lineage-view.ts
   - test/fixtures/execution-reference-v1.json
 ---
 
@@ -159,8 +162,8 @@ returned on a complete page.
 parsing. `test/execution-lineage.test.ts` pins explicit traversal, missing edges,
 independent states, evidence ceilings, privacy, unavailable equivalence, bounded
 pages and source/scope/root invalidation. Fixtures run without a daemon, native
-agent or account. CLI/MCP equivalence, admission, review currency and native
-coverage remain T2/T3 work; these fixtures do not claim those acceptance legs.
+agent or account. CLI/MCP and console equivalence, admission and review currency
+are pinned by the T2/T3 tests below; native coverage remains unverified.
 
 
 ## Tasks admission and owner-scoped reads (T2)
@@ -248,3 +251,54 @@ The ordinary CLI/MCP surfaces share the same Tasks projection. Configured
 read-only MCP sessions keep their existing publication list, and isolated
 reviewers keep exactly their existing two tools. The new metadata-link operation
 never becomes a read-only tool.
+
+## Console surface and measured reads (T3)
+
+The acon console reads lineage through a provider port, not a panel id and not a
+dashboard action. `projectConsole(...).lineage` in `src/hub/manager.ts` sends the
+console role's existing `lineage_show` control message, which the hub answers
+in-stack from the same `Tasks` projection the CLI and MCP read. No protocol
+message, panel id or action id is added: `manifest.panels` stays exactly
+`DASHBOARD_VIEWS`, the advertised action list is unchanged, and an older console
+that never asks for the view keeps working. Equivalent admitted views are
+therefore a property of one read path, not a comparison of two.
+
+`src/ui/plugin.ts` answers `snapshot({panel: "lineage", ...})` with
+`{ok: true, panel: "lineage", lineage, lines}`. The lines come from
+`executionLineageLines` in `src/ui/lineage-view.ts`, the same pure view
+`ahub lineage show` renders, so one admitted page has one presentation. The CLI is
+a terminal and applies `terminalText` at its own boundary; the console passes the
+view's strings as data, and neither surface re-derives a page.
+
+The query is the closed owner selector list (`taskId`, `attemptId`, `root`,
+`task`, `cursor`, `nodes`, `edges`, `bytes`). A field outside it is dropped before
+forwarding, and the manager refuses one that reaches it, because the hub's owner
+parser refuses the whole read on an unknown field. The control message carries no
+project, instance, panel or page-supplied field. Reading never becomes a
+`ui_action`, and nothing on this path can link, probe, fetch, replay, spawn a
+process or write memory: `lineage_link` is not reachable from the console.
+
+An unavailable source is not an empty successful graph. The console returns the
+unavailable page with its refusal line and never a node, edge or `Page complete.`
+line. A reply that fails the closed shape check (`parseLineageResult`, shared with
+the CLI) is refused as `{ok: false, panel: "lineage", error}` naming the
+unsupported shape, so a page from a newer hub or a corrupted one is never rendered
+as a complete graph.
+
+`test/execution-lineage-console.test.ts` pins the equivalence (the console's lines
+equal `renderExecutionLineage` of the same page), the exact control message, the
+absence of any action and of any widened panel or action list, the drop of an
+unnamed selector, and the refusals above. `test/execution-lineage-performance.test.ts`
+is the AC6 receipt on a synthetic board: 200 samples per point at 0, 200 and 2000
+filler tasks, a p95 under 250 ms, the same page and byte size at every board size
+(the read projects one root's neighborhood, so the board around it adds nothing),
+the 64-link per-task ceiling (65 nodes, 64 edges, within 262144 bytes), a 5-node
+page truncating with an opaque source-bound cursor that a different node bound
+refuses, and a 4096-byte page staying inside its budget. The recorded numbers and
+the recipe that reproduces them live in `docs/dogfood.md`. Those figures describe
+one host: a number measured elsewhere may differ, and a missing measurement is
+unknown rather than zero.
+
+Native coverage stays unverified. No running native agent produced these pages, so
+the console and performance receipts are host and fixture evidence, not a native
+lineage receipt.
