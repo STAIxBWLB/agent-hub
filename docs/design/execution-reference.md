@@ -213,3 +213,7 @@ retain an explicit recorded-head node even when no deliverable was submitted;
 a head string alone is declared source metadata, not a Git observation. Review
 state tokens retain the original verdict with a stale or unknown suffix when
 its binding is no longer current or cannot be established.
+
+T2 exposes diagnostic reasons only to the authenticated console person. Agents,
+including the conductor, receive the neutral unavailable shape for denied, hidden,
+invalid and absent reads; a global role never grants access to staged backlog ids.

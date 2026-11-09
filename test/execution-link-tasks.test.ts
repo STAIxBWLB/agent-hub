@@ -136,7 +136,7 @@ test("reads use pure metadata screening and cached repository scopes without pat
   f.board.update(f.task.id, USER, "note", { refs });
   expect(f.tasks.executionLineage("codex", { taskId: f.task.id })).toEqual({ state: "unavailable" }); expect(probes).toBe(0);
   f.tasks.publicMetadataText = fullScreen; ports.repositories.git = git; ports.projectPath = projectPath;
-  f.tasks.accept("codex", f.task.id, undefined, refs);
+  f.tasks.accept("codex", f.task.id); // normal acceptance warms the already stored refs; it does not rewrite file intent
   f.tasks.publicMetadataText = trap; ports.repositories.git = trap; ports.projectPath = trap;
   expect(f.tasks.executionLineage("codex", { taskId: f.task.id }).state).toBe("available"); expect(probes).toBe(0);
 });
@@ -148,4 +148,19 @@ test("configured PII paths conservatively withhold ambiguous task paths and meta
   const sensitive = await fixture({ piiPaths: ["private/**"] });
   sensitive.tasks.accept("codex", sensitive.task.id, { paths: ["ordinary.txt"] });
   expect(sensitive.tasks.executionLineage("codex", { taskId: sensitive.task.id })).toEqual({ state: "unavailable" });
+});
+
+
+test("a conductor cannot distinguish staged backlog or private task existence from an absent root", async () => {
+  const f = await fixture();
+  f.roles.kimi = ["conductor"];
+  const backlog = f.board.propose(USER, { title: "PRIVATE_BACKLOG_CANARY", class: "implement", backlog: true });
+  const privateTask = f.board.propose(USER, { title: "PRIVATE_TASK_CANARY", class: "implement", signals: ["pii"] });
+  const absent = { state: "unavailable" };
+  for (const taskId of [backlog.id, privateTask.id, 999999]) {
+    expect(f.tasks.executionLineage("kimi", { taskId })).toEqual(absent);
+    expect(f.tasks.executionLineage("kimi", { taskId, nodes: 0 })).toEqual(absent);
+  }
+  // Restricting diagnostics does not revoke ordinary authorized reads of a public task.
+  expect(f.tasks.executionLineage("kimi", { taskId: f.task.id }).state).toBe("available");
 });

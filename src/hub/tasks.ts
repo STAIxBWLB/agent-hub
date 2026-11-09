@@ -1,4 +1,4 @@
-import { conductorPeer, taskShowAllowed } from "./conductor.ts";
+import { taskShowAllowed } from "./conductor.ts";
 import { executionOwnerSnapshot, parseOwnerLineageQuery, type ExecutionLineageOwnerPorts } from "./execution-lineage-owner.ts";
 import { readExecutionLineage, type LineageResult } from "./execution-lineage.ts";
 import { parseExecutionLinkInput, taskExecutionReference, executionLinkActor, type ExecutionLinkInput } from "./execution-links.ts";
@@ -4900,8 +4900,8 @@ export class Tasks {
   private lineagePorts(by: PeerId): ExecutionLineageOwnerPorts | undefined {
     const binding = this.d.executionLineage;
     if (!binding) return undefined;
-    let diagnostics = by === USER;
-    try { diagnostics ||= conductorPeer(this.d.roles) === by; } catch { /* malformed authority stays neutral */ }
+    // Agent-wide roles do not grant diagnostic authority over a hidden or staged source.
+    const diagnostics = by === USER;
     return { project: this.d.project, projectKey: binding.projectKey, cursorKey: binding.cursorKey,
       scope: createHash("sha256").update(by).digest("hex"), diagnostics,
       task: id => this.d.board.get(id), visible: task => this.lineageVisible(by, task), metadata: text => this.lineageMetadata(text),
