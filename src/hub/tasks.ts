@@ -4345,7 +4345,7 @@ export class Tasks {
           else {
             if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${entry}`); // #601, before the stall write
             this.holdReady(current, "build entry", entry);
-            return current;
+            return this.d.board.get(current.id) ?? current;
           }
         }
       }

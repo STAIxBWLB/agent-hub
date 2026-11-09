@@ -47,6 +47,8 @@ test("proposal holds on existing plan gate without inventing peer ineligibility;
   const expected = "spec issue not recorded (owner/planner: hub_sdlc_record)";
   expect(r.tasks.namedOwnerNote(task, "codex", "user")).toContain(expected);
   expect(r.tasks.explain(task.id)).toContain(`build entry: ${expected}`);
+  expect(task.history.at(-1)?.event).toBe("ready held");
+  expect(task.history.length).toBe(r.board.get(task.id)!.history.length);
   expect(r.board.stalls().some(stall => stall.task === task.id)).toBe(false);
   expect(r.notices.join("\n")).not.toContain("no-eligible-peer");
   const states = { codex: "idle" as const }, policy = loadRouting(r.cwd);
