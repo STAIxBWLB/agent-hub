@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "verdict": "fixture_only",
+  "declaredVersion": "2.1.319",
+  "minimumSupportedVersion": null,
+  "nativeSupportedVersions": [],
+  "surfaces": [
+    {
+      "name": "terminal",
+      "status": "NOT RUN",
+      "receipt": "receipts/terminal.md"
+    },
+    {
+      "name": "desktop",
+      "status": "NOT RUN",
+      "receipt": "receipts/desktop.md"
+    },
+    {
+      "name": "vscode",
+      "status": "NOT RUN",
+      "receipt": "receipts/vscode.md"
+    },
+    {
+      "name": "mobile",
+      "status": "NOT RUN",
+      "receipt": "receipts/mobile.md"
+    }
+  ],
+  "included": [
+    "read-only pane",
+    "/hub",
+    "/hub refresh",
+    "/hub console (prints only)"
+  ],
+  "excluded": [
+    "status line",
+    "attention band",
+    "channel rows",
+    "session.receive",
+    "delivery refresh",
+    "/hub ui",
+    "board reads",
+    "global projects reads",
+    "task list",
+    "role-specific task list",
+    "registry existence/uniqueness proof"
+  ],
+  "evidence": {
+    "source": "test/claude-code-companion-status.test.ts with fake host and C0 fake CLI",
+    "native": "NOT RUN",
+    "hostedCI": "PR-specific; never inferred from fixtures",
+    "staticValidation": "Claude Code2.1.319 plugin validate --json on isolated allowlisted copy: exit0, no manifest/hook errors; author/icon warnings; no plugin load/model/native UI",
+    "sourceCliMeasurement": {
+      "codeHead": "97d9d67db6a0cd6cafe108472d36b4ae63cdf665",
+      "cliSpawnCount": 1,
+      "stdoutBytes": 19030,
+      "stderrBytes": 0,
+      "wallMs": 744.856,
+      "nativeUI": "NOT RUN",
+      "ceiling": "One sourceCLI observation; first-id pin, not independent registry/cross-refresh attestation; no raw packet retained"
+    }
+  },
+  "readSetRevision": 2,
+  "readCommands": [
+    "status --json only"
+  ]
+}
