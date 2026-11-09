@@ -11,6 +11,7 @@ covers: [task-board]
 tags: [agent-hub, dogfood]
 paths:
   - src/hub/tasks.ts
+  - src/hub/sdlc.ts
   - src/hub/build-entry.ts
   - src/hub/sdlc-metrics.ts
   - src/hub/board.ts
@@ -101,6 +102,14 @@ Completion binds the submitted full head and any verified deliverable records. I
 Review independence and declared scope are different controls. Selection excludes conflicts using current implementation history; a `code` reviewer supplies code findings, while full test/CI proof belongs to the merger's gate. Evidence-only inability to run tests is not a code defect. This keeps valuable sandboxed review without inventing CI evidence or accepting self-review ([#744](https://github.com/STAIxBWLB/agent-hub/issues/744), [#852](https://github.com/STAIxBWLB/agent-hub/issues/852)).
 
 Task text and private-turn words can reach owners, reviewers, overlap notices and memory. Public views use the host's current privacy projection; PII tasks remain stubs for unauthorized observers, and private turns cannot write ordinary shared task text. The projection belongs at the shared boundary because filtering individual callers would leave another observer exposed ([#198](https://github.com/STAIxBWLB/agent-hub/issues/198), [#230](https://github.com/STAIxBWLB/agent-hub/issues/230)).
+
+## Spec acceptance carry-over (#1328 T4)
+
+`Tasks` may reuse an original person's stored acceptance at existing build-entry gates, using one host `readSpecEdit` observation for carry and the ordinary verdict. Gates return only a virtual receipt and an opaque host proof without a write. `Tasks.acceptSpec` remains USER-only; tools and lifecycle receipt fields cannot create acceptance. `assign()` remains pure and its offer/gate order is unchanged.
+
+The source must be an older cancelled local task whose entire `supersededBy` equals `task #N`, `#N` or `N` for the destination. Both stored identities and cached effective repository scopes must agree, and the host-read `lastEditedAt` must equal the source consent (explicit null is valid; missing metadata is unknown). Caller-provided identity changes cannot authorize a carry before the destination identity is recorded. Private/withheld sources, private destinations or caller turns, ambiguous/foreign references, reverse links, changed source cancellation revision/consent metadata, destination flow/identity, roles/policy or unknown host observations cannot grant consent. Source history is not read, so unrelated historical notes are not a carry-currentness input.
+
+`Board.specAcceptanceCandidates` reads only bounded source metadata: up to 32 rows plus a truncation sentinel, at most 64 KiB per raw JSON field and 256 KiB total. It never hydrates source tasks or scans their text, plans or history. An incomplete or malformed projection fails closed to manual acceptance. `Tasks` rechecks the projection and destination/caller fences after the host read and revalidates the final outer patch's effective issue/repository/refs scope. Only an admitted outer write consumes the opaque proof with the host Symbol capability: `Board.updateWithSpecAcceptance` uses the existing atomic transaction and deferred observers to publish the original acceptance fields, a HUB `spec acceptance carried` history note naming source/original acceptance time/cancellation revision, and the existing outer event together. A failed admission or second write leaves task, history, status revision and observers unchanged. No plan review, PR/head, local gate or review evidence is cloned; virtual admission snapshots retain the stored flow until atomic publication.
 
 ## Merged PR adoption (#1328 T3)
 

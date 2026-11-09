@@ -5634,7 +5634,6 @@ export async function startDaemon(opts: DaemonOptions) {
         return [result, specReport, extra].filter(Boolean).join("\n");
       }
       case "hub_sdlc_record":
-        await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(await tasks.recordSdlc(by, a.id, a.receipt));
       case "hub_review": {
         const reviewed = await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings);

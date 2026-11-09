@@ -87,6 +87,7 @@ defaults. The
   with `ahub task handoff` (agents: `hub_task_handoff`), and its state changes come
   back as task messages.
   For a PR already merged outside the hub, [merged PR adoption](docs/sdlc.md#adopting-a-pr-merged-outside-the-hub-1328-t3) verifies its recorded head and releases dependents: `ahub sdlc adopt-merge <task> --pr <n>`.
+  An explicitly superseding task may [carry existing spec consent](docs/sdlc.md#spec-acceptance-481-s1) for the same repository and issue when the host verifies an unchanged body.
   Fresh Kimi reviews run periodic isolation checks off the hub event loop;
   verdict and task-tool authority still require the complete synchronous fence
   ([measurements and limits](docs/verification/2026-11-07-kimi-review-watch-1284.md)).

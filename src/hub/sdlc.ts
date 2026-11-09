@@ -350,6 +350,30 @@ export function parsePrEvidence(value: unknown): PrEvidence {
 /** Issue identity and edit times only; no body is fetched or stored. `lastEditedAt` moves on a body edit, not on comments. */
 export interface SpecEdit { lastEditedAt: string | null; updatedAt: string }
 export interface SpecAcceptance extends SpecEdit { repo: string; issue: number; acceptedAt: number }
+/** Consent references are complete local task tokens, never numbers extracted from prose. */
+export function localSupersedingTask(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^(?:task #|#)?([1-9][0-9]*)$/.exec(value);
+  const task = match?.[0] === value ? Number(match[1]) : NaN;
+  return Number.isSafeInteger(task) ? task : undefined;
+}
+
+/** Validate host-stored consent without importing any other source receipt fields. */
+export function storedSpecAcceptance(value: unknown): SpecAcceptance | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const stamp = (v: unknown): v is string => typeof v === "string" && v.length <= 40 && !Number.isNaN(Date.parse(v));
+  if (!repo(record.repo) || !id(record.issue) || !stamp(record.updatedAt) || record.lastEditedAt !== null && !stamp(record.lastEditedAt)
+    || typeof record.acceptedAt !== "number" || !Number.isFinite(record.acceptedAt)) return undefined;
+  return { repo: record.repo, issue: record.issue, updatedAt: record.updatedAt, lastEditedAt: record.lastEditedAt as string | null, acceptedAt: record.acceptedAt };
+}
+
+/** Only a host observation of the same issue/body permits copying existing person consent. */
+export function carriedSpecAcceptance(source: SpecAcceptance, destination: { repo: string; issue: number }, edit: SpecEdit | undefined): SpecAcceptance | undefined {
+  if (!edit || source.repo.toLowerCase() !== destination.repo.toLowerCase() || source.issue !== destination.issue || source.lastEditedAt !== edit.lastEditedAt) return undefined;
+  return { repo: destination.repo, issue: destination.issue, lastEditedAt: source.lastEditedAt, updatedAt: source.updatedAt, acceptedAt: source.acceptedAt };
+}
+
 export type SpecState = "missing" | "current" | "changed" | "unknown";
 /** Whether the receipt's spec issue is accepted at its current body. `edit` undefined means the readback failed. */
 export function specState(receipt: SdlcReceipt | undefined, edit: SpecEdit | undefined): SpecState {
