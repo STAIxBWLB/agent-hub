@@ -111,7 +111,27 @@ probes each passed the unchanged original case and a metadata-only instrumented
 copy, with transport failures and the expected cooldown. The original test and
 product routing code remained unchanged. A closed-port reuse path is a candidate,
 not a confirmed cause; a passing focused retry is not full-suite evidence.
-The final canonical run remains required.
+A completed canonical correction run is recorded below.
+
+## Completed canonical evidence
+
+The full run at `978880761507c5e3b2f85e513cf9a79a1055ee9e` completed with
+13,289 pass, 102 skip and four failures across 1,025 files. Three failures were
+source-sliced startup functions receiving a new implicit binding dependency;
+registration was moved to the four verified real factory callers without changing
+permission/admission/bus commit order. The fourth was the static native-branch
+guard following a new generic local alias into unrelated file-wide aliases; a
+Record-specific peer-id name removes that false connection. The original tests,
+ratchet table, resolution depth and assertions remain unchanged.
+
+At `35e1bdfa22bb99c278d6b6b5bde3c486b7bd3334`, strict typecheck, inventory and
+92 targeted tests across six files passed, including the original startup/proxy
+and native-branch tests. Then `scripts/check.sh --changed 978880761507c5e3b2f85e513cf9a79a1055ee9e`
+passed with 3,435 pass, 30 skip and zero failures across 296 files, ending
+`check: OK (changed)` (1,212 seconds including setup). Its typecheck, pinned bundle
+freshness, tarball, facts and daemon-leak checks passed. This is a completed full
+attempt plus a passing verification of its corrected delta, not a claim of a
+new zero-failure full run. Final-head hosted full CI remains a merge gate.
 
 ## Synthetic byte measurements
 
@@ -132,8 +152,6 @@ and verifies conservative fallback after the registry is cleared.
 
 ## Remaining gates
 
-- Final inventory check of the new keys under the call-site ruling.
-- Final pinned bundle freshness and canonical changed-scope check.
 - Final-head hosted CI and review.
 - Native/provider-backed Record generation and real-home/coordinated-upgrade
   behavior remain unrun; fixture success does not claim those observations.
