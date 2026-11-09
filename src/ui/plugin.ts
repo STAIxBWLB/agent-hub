@@ -15,6 +15,8 @@ import { Registry } from "../hub/registry.ts";
 import { projectConsole, type Lifecycle, type ManagerOptions } from "../hub/manager.ts";
 // lifecycle.ts reaches the whole daemon; it is imported only when a project is inspected, started or stopped.
 import { DASHBOARD_VIEWS, renderDashboard } from "../hub/ui.ts";
+import { parseLineageResult } from "../hub/execution-lineage.ts";
+import { executionLineageLines } from "./lineage-view.ts";
 import { officeModel, type OfficeScene } from "./office-model.ts";
 import { personEvidence, questionItem, QUESTION_ITEM, type InboxAnswers, type QuestionRowView } from "./plugin-questions.ts";
 import { canPublishResults, receiptEvidence, resultItem, RESULT_ACTIONS, RESULT_ITEM, type ResultAction, type ResultRowView } from "./plugin-results.ts";
@@ -151,6 +153,8 @@ ${body}
 }
 
 interface ProjectRow { id: string; root: string; state: string; instanceId: string | null }
+/** #1220 T3: the closed lineage selectors a page may send; the manager refuses anything else, and `after` is the shell's own field. */
+const LINEAGE_QUERY = ["taskId", "attemptId", "root", "task", "cursor", "nodes", "edges", "bytes"] as const;
 /** #727: the inbox reply is bounded; `more` counts what was left out. Most urgent first: a decision waits on the person, then a review, a result, a candidate, an alert. */
 const INBOX_MAX_ITEMS = 50;
 const INBOX_GROUP_RANK: Record<InboxItem["group"], number> = { decision: 0, review: 1, result: 2, candidate: 3, alert: 4 };
@@ -171,7 +175,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
-  const { list, act, answer, receipt, consoleControl } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
+  const { list, act, answer, receipt, consoleControl, lineage } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
   const assets = panelAssets();
   const seen = new Map<string, string>(); // inbox item id -> first-seen ISO time, so `at` stays stable
 
@@ -415,6 +419,16 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
       }
       if (input.panel === "inbox") return { ...await inboxSnapshot() };
       if (input.panel === "space") return { scene: await space() };
+      // #1220 T3: the execution-lineage read (AC5). A provider port, not a panel id: the shell's own panels are
+      // DASHBOARD_VIEWS and neither that list nor the dashboard's action list grows. Reading executes nothing, and
+      // an unavailable or unsupported source stays a refusal here rather than an empty successful graph.
+      if (input.panel === "lineage") {
+        const query = Object.fromEntries(LINEAGE_QUERY.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
+        const reply = await lineage({ projectId: input.projectId, instanceId: input.instanceId }, query);
+        if (reply.ok === false) return { ok: false, panel: "lineage", error: String(reply.error ?? "lineage read failed") };
+        try { const page = parseLineageResult(reply.lineage); return { ok: true, panel: "lineage", lineage: page, lines: executionLineageLines(page) }; }
+        catch (error) { return { ok: false, panel: "lineage", error: (error as Error).message }; }
+      }
       const view = (DASHBOARD_VIEWS as readonly string[]).includes(String(input.view)) ? input.view : (DASHBOARD_VIEWS as readonly string[]).includes(input.panel) ? input.panel : undefined;
       if (typeof input.projectId !== "string" || typeof input.instanceId !== "string") {
         // A bare panel poll (the shell's own, and conformance) gets the listing; the dashboard polls with a project.
