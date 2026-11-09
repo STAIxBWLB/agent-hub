@@ -7996,7 +7996,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (isFixedBuiltinDefinition(adapter)) modelAcpOwners.set(jcode, jcode);
       jcodeLaunches.set(peer, jcode);
       recoveryTaskPreface(peer); await ensurePreface(peer); startCurrent?.();
-      try { startCurrent?.(); await jcode.start(); startCurrent?.(); registerModelOwner(jcode); await reconcileNativeStart(peer, jcode, startCurrent); }
+      try { startCurrent?.(); await jcode.start(); startCurrent?.(); registerModelOwner(jcode); bindRecordOwner(jcode, executionCwd, () => jcode.nativeSession); await reconcileNativeStart(peer, jcode, startCurrent); }
       catch { await jcode.stop().catch(() => {}); if (jcodeLaunches.get(peer) === jcode) jcodeLaunches.delete(peer); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
       return { ok: true, policy: "unmanaged" };
     }
@@ -8051,6 +8051,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await ensurePreface(peer); startCurrent?.();
       try {
         startCurrent?.(); await kimi.start(); startCurrent?.(); registerModelOwner(kimi);
+        bindRecordOwner(kimi, executionCwd, () => kimi.nativeSession);
         await reconcileNativeStart(peer, kimi, startCurrent);
       } catch (error) { await kimi.stop().catch(stop => log(`kimi stop after a failed start: ${(stop as Error).message}`)); throw error; }
       return { ok: true };
@@ -8118,6 +8119,7 @@ export async function startDaemon(opts: DaemonOptions) {
           writeExternalInstanceRecord(opts.stateDir, externalBinding, receipt.sessionId);
         }
         registerModelOwner(owner);
+        bindRecordOwner(owner, executionCwd, () => owner.nativeSession);
         await reconcileNativeStart(peer, owner, startCurrent);
       }
       catch (error) {
@@ -8214,6 +8216,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await ensurePreface(peer); startCurrent?.();
       try {
         startCurrent?.(); await codex.start(); startCurrent?.();
+        bindRecordOwner(codex, executionCwd, () => codex.nativeSession);
         await reconcileNativeStart(peer, codex, startCurrent);
       } catch (error) { await codex.stop().catch(stop => log(`codex stop after a failed start: ${(stop as Error).message}`)); throw error; }
       const proxy = frontendProxyState(peer, codex);
@@ -10502,7 +10505,6 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       // The bus may immediately drain at add(): do not expose an idle adapter until its current choice is applied.
       startCurrent?.();
-      bindRecordOwner(owner, executionRoots.get(peer) ?? opts.cwd, () => owner.nativeSession);
       executionOwners.set(peer, { owner, cwd: executionRoots.get(peer) ?? opts.cwd });
       bus.add(owner);
       // start() finished before the bus installed its state hook: replay the current state to drain queued work and record it.
