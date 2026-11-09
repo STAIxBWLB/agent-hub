@@ -1379,6 +1379,8 @@ class BasePeer {
   id;
   watchdogMs;
   onMessage;
+  recordInstruction;
+  onFinalAnswer;
   onState;
   onFailed;
   onDelivery;
@@ -1392,6 +1394,22 @@ class BasePeer {
   }
   get state() {
     return this._state;
+  }
+  turnRecordPrompt(base) {
+    let instruction;
+    try {
+      instruction = this.recordInstruction?.();
+    } catch {
+      return base;
+    }
+    if (!instruction || base.includes(instruction))
+      return base;
+    return base ? `${base}
+
+${instruction}` : instruction;
+  }
+  finalAnswer(text, opts, complete = true) {
+    return this.onFinalAnswer ? this.onFinalAnswer(text, opts, complete) : this.onMessage?.(text, opts);
   }
   configureWatchdog(ms) {
     if (!Number.isFinite(ms) || ms <= 0 || ms > 2147483647)
@@ -4171,9 +4189,10 @@ var init_acp = __esm(() => {
         if (this.modelTurn?.turn === turn)
           this.modelTurn.sent = true;
       }
-      const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}
+      const fixedPreamble = this.turnRecordPrompt(this.primed ? "" : this.opts.preamble ?? "");
+      const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: fixedPreamble ? `${fixedPreamble}
 
-${renderDigest(envs, false)}` }] });
+${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
       const reported = () => {
         if (this.cancelWait?.turn === turn)
           this.cancelWait.reported = true;
@@ -4197,7 +4216,7 @@ ${renderDigest(envs, false)}` }] });
         const body = this.chunks.join("").trim();
         const answering = this.turnEnvs.length ? this.turnEnvs : envs;
         if (body)
-          this.onMessage?.(body, { inReplyTo: replyParent(answering), to: replyAudience(answering) });
+          this.finalAnswer(body, { inReplyTo: replyParent(answering), to: replyAudience(answering) }, result?.stopReason === "end_turn");
         if (result?.stopReason !== "end_turn")
           this.reportTurnFailure(envs, `ACP prompt ended without normal completion (${String(result?.stopReason ?? "unknown")})`);
         if (deliveryId && this.activeDeliveryId === deliveryId) {
@@ -4771,7 +4790,6 @@ var init_codex_appserver = __esm(() => {
           this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not injectable` });
         return Promise.reject(new Error(`${this.id} is not injectable`));
       }
-      const text = this.render(envs);
       const id = this.nextId--, epoch = this.deliveryEpoch, session = this.contextEpoch;
       this.setState("busy");
       return new Promise((resolve, reject) => {
@@ -4857,13 +4875,16 @@ var init_codex_appserver = __esm(() => {
           pending?.reject(new Error(`${this.id} is not injectable`));
           return;
         }
+        const text = this.render(envs, true);
         link.up.send(JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }], ...selection?.model === undefined ? {} : { model: selection.model } }, id) }));
       });
     }
-    render(envs) {
-      return this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}
+    render(envs, record = false) {
+      const base = this.primed ? "" : this.opts.preamble ?? "";
+      const preamble = record ? this.turnRecordPrompt(base) : base;
+      return preamble ? `${preamble}
 
-${renderDigest(envs, false)}`;
+${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
     }
     steer(envs, deliveryId) {
       const link = this.link;
@@ -5616,7 +5637,7 @@ ${renderDigest(envs, false)}`;
         this.answering = [];
         this.deltas.clear();
         if (this.lastAnswer)
-          this.onMessage?.(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {});
+          this.finalAnswer(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {}, params.turn?.status === "completed");
         this.lastAnswer = "";
         this.setState("idle");
       }
@@ -8975,7 +8996,8 @@ var init_pi = __esm(() => {
         attempted = true;
         if (deliveryId)
           this.activeDeliveryIds.add(deliveryId);
-        const message = [envs.some((env) => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join(`
+        const recordPrompt = this.opts.mode === "tui" ? "" : this.turnRecordPrompt("");
+        const message = [recordPrompt, envs.some((env) => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join(`
 `);
         if (this.opts.mode === "tui") {
           const pending = this.sendTui({ type: "prompt", message });
@@ -9291,7 +9313,7 @@ var init_pi = __esm(() => {
         else if (error)
           this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling);
         else if (text)
-          this.onMessage?.(text, reply);
+          this.finalAnswer(text, reply);
         for (const id of this.activeDeliveryIds)
           this.delivery({ id, state: approvalStopReason ? "completed" : error || cancelled ? "needs_review" : "completed", ...error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {} });
         this.activeDeliveryIds.clear();
@@ -11061,7 +11083,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.23.0"
+      "@staix/agent-mem": "0.23.1"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -15621,7 +15643,7 @@ var init_local_worker = __esm(() => {
         this.delivery({ id: deliveryId, state: "accepted" });
       const msgs = [{ role: "user", content: [envs.some((env) => env.private || remoteEnvelope(env)) ? undefined : this.opts.titlePreface?.(), renderDigest(envs, true)].filter(Boolean).join(`
 `) }];
-      const progress = { sideEffects: 0, last: "" };
+      const progress = { sideEffects: 0, last: "", answerComplete: false };
       const requestedPolicy = this.opts.turnPolicy?.(envs);
       const policy = envs.some((env) => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
       const remoteTurn = envs.some(remoteEnvelope);
@@ -15636,7 +15658,7 @@ var init_local_worker = __esm(() => {
         if (preserveHistory && !reviewScope.excluded)
           this.commit(msgs);
         if (answer)
-          this.onMessage?.(answer, reply);
+          this.finalAnswer(answer, reply, progress.answerComplete);
         if (deliveryId && this.activeDeliveryId === deliveryId)
           this.delivery({ id: deliveryId, state: "completed" });
         completed = true;
@@ -15712,26 +15734,30 @@ var init_local_worker = __esm(() => {
       this.routeEnvs = envs;
       this.routePii = !!policy?.pii;
       this.routeReviewScope = reviewScope;
+      if (turn !== this.turn || turnSignal.aborted)
+        return "";
+      const fixedPrompt = this.turnRecordPrompt(system(this.opts.cwd, this.opts.preamble));
       const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
       let usedTools = false;
       let captureInvocation = 0;
       for (let step = 0;step < maxSteps; step++) {
         this.elide(msgs);
-        const res = await this.call(msgs, policy, envs, selection);
+        const res = await this.call(msgs, policy, envs, selection, fixedPrompt);
         if (turn !== this.turn)
           return "";
         this.touch();
         msgs.push(res.message);
         progress.last = res.message.content?.trim() || progress.last;
         if (!res.message.tool_calls?.length) {
-          const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal, res.routeDecision, selection);
+          const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal, res.routeDecision, selection, fixedPrompt);
           if (turn !== this.turn)
             return "";
           if (concluded === undefined)
             continue;
           if (usedTools && !reviewScope.excluded)
-            capture?.summarize(concluded);
-          return concluded;
+            capture?.summarize(concluded.answer);
+          progress.answerComplete = concluded.complete;
+          return concluded.answer;
         }
         if (res.message.tool_calls.some((call) => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments)))
           reviewScope.excluded = true;
@@ -15893,7 +15919,7 @@ var init_local_worker = __esm(() => {
       for (const tool_call_id of missing)
         msgs.push({ role: "tool", tool_call_id, content: result });
     }
-    async call(turnMsgs, policy, envs, selection) {
+    async call(turnMsgs, policy, envs, selection, fixedPrompt = system(this.opts.cwd, this.opts.preamble)) {
       const { omni } = this.opts;
       const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined;
       if (route && !route.startsWith("hub/") && !this.warnedLegacyRoutes.has(route)) {
@@ -15904,7 +15930,7 @@ var init_local_worker = __esm(() => {
       const task = policy?.task === undefined ? undefined : Number(policy.task);
       const tools = [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].concat(SESSION_TITLE_TOOL).map(asFunction) : []];
       const signal = this.abort.signal;
-      const messages = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
+      const messages = [{ role: "system", content: fixedPrompt }, ...this.history, ...turnMsgs];
       const routed = await this.hubCall(route, messages, policy, signal);
       if (routed) {
         selection?.applied();
@@ -15968,18 +15994,18 @@ var init_local_worker = __esm(() => {
         return;
       }
     }
-    async conclude(msgs, policy, turn, step, maxSteps, answer, signal, decisionId, selection) {
+    async conclude(msgs, policy, turn, step, maxSteps, answer, signal, decisionId, selection, fixedPrompt = system(this.opts.cwd, this.opts.preamble)) {
       const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined, config = this.hubConfig(route);
       if (!route || !config)
-        return answer;
-      const messages = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...msgs];
+        return { answer, complete: true };
+      const messages = [{ role: "system", content: fixedPrompt }, ...this.history, ...msgs];
       const feedback = await this.routes.review(route, config, messages, this.routeScope(!!policy?.pii, turn), !!policy?.pii, signal, decisionId);
       if (turn !== this.turn || !feedback)
-        return answer;
+        return { answer, complete: true };
       msgs.push({ role: "user", content: feedback });
       if (step + 1 >= maxSteps)
         this.opts.onLimit?.("steps");
-      return step + 1 < maxSteps ? undefined : `(review requested changes; step limit reached) ${answer}`;
+      return step + 1 < maxSteps ? undefined : { answer: `(review requested changes; step limit reached) ${answer}`, complete: false };
     }
     observeTool(call, output, policy, nativeTurn) {
       if (policy?.pii || call.function.name === "doc_read" || call.function.name === "web_fetch")
@@ -27267,6 +27293,10 @@ init_review_brief();
 init_review_comments();
 init_research_runner();
 init_queue_backpressure();
+
+// src/memory/record-provenance.ts
+init_src();
+var GENERATED_NOTE_LIMITS = Object.freeze({ notes: 1024, anchors: 64, anchorBytes: 512, queryAnchors: 1024, matches: 32 });
 
 // src/hub/memory-symbols.ts
 init_deny();

@@ -19,7 +19,8 @@ missing configuration enables, and malformed configuration throws. The boolean
 revision binds only this flag; fresh package and hub screens still guard current
 privacy independently. The fixture override is host-only, not a project setting.
 New disposable production-path cases cover both false-inheritance directions,
-malformed machine/repository config and late revocation; their final run is pending.
+malformed machine/repository config and late revocation. These cases passed in
+the production-source run below.
 
 ## Verified source boundary
 
@@ -43,6 +44,13 @@ malformed machine/repository config and late revocation; their final run is pend
   unproved note content; no new persistence or amem schema is introduced.
 
 ## Checks
+
+At `00cc1bdeb14b54eea2edaab23a5edc82976f5a7b`, the published 0.23.1 package
+passed strict typecheck, inventory and 141 tests across twelve files in the
+disposable Linux runner. The generated lock changes only the exact amem pin
+and SRI; the value matches npm metadata above. Bun 1.4.2 rebuilt the bundles
+after dependency installation. Committed-artifact freshness and the canonical
+changed-scope gate are the next checks; this run is not a full-suite result.
 
 At `1ac11d3a2ad6d2d889329f959880596e712e8c05`, the committed source passed strict
 typechecking, inventory and 117 tests across ten files in a disposable Linux runner using
@@ -90,8 +98,6 @@ and verifies conservative fallback after the registry is cleared.
 
 ## Remaining gates
 
-- Generated lock verification and committed-head 0.23.1 production-path tests,
-  including actual machine/repository `records: false` inheritance.
 - Final inventory check of the new keys under the call-site ruling.
 - Final pinned bundle freshness and canonical changed-scope check.
 - Final-head hosted CI and review.
