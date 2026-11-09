@@ -43,7 +43,7 @@ test("lineage metadata display preserves separate states/strengths, opaque pagin
     { state: "unavailable", hiddenCount: 1 }, { state: "unavailable", reason: "private payload" }, { state: "available", nodes: [], edges: [] },
     { ...page, nodes: [{ state: "failed", strength: "declared" }] }]) expect(() => validateLineageReply(reply)).toThrow("unsupported shape");
   expect(() => validateLineageReply({ state: "available", nodes: [], edges: [{ from: task, to: external, relation: "declared-external", strength: "declared" }], truncated: false })).not.toThrow();
-  const link = { id: "link-id", taskId: 7, reference: external, strength: "declared", already: false };
+  const link = { id: "link-id", taskId: 7, reference: external, strength: "declared" as const, already: false };
   expect(validateLineageLink(link, { taskId: 7, reference: external })).toBe(link);
   for (const bad of [{ ...link, strength: "runner-attested" }, { ...link, taskId: 8 }, { ...link, reference: task }, { reference: external }])
     expect(() => validateLineageLink(bad, { taskId: 7, reference: external })).toThrow("unconfirmed");
@@ -63,7 +63,7 @@ async function fixture(run: (f: { requests: Record<string, any>[]; hellos: Recor
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-lineage-cli-"))), home = join(root, "home"), state = join(root, ".agenthub/state");
   mkdirSync(home); mkdirSync(state, { recursive: true }); writeFileSync(join(root, ".agenthub/config.json"), "{}");
   const requests: Record<string, any>[] = [], hellos: Record<string, any>[] = []; let reply: unknown = page, supports = true;
-  const link = { id: "link-id", taskId: 7, reference: external, strength: "declared", already: false };
+  const link = { id: "link-id", taskId: 7, reference: external, strength: "declared" as const, already: false };
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { return server.upgrade(req) ? undefined : new Response("fixture"); }, websocket: { message(ws, raw) {
     const row = JSON.parse(String(raw));
     if (row.t === "hello") { hellos.push(row); ws.send(JSON.stringify({ t: "welcome", rid: row.rid, ok: true, cwd: root, protocol: PROTOCOL, projectId: "fixture", instanceId: "fixture", features: supports ? ["execution_lineage"] : [] })); }
@@ -97,7 +97,7 @@ test("actual lineage links preserve the tools hello and optional parent ref; liv
   await fixture(async f => {
     const args = ["lineage", "link", "--task", "7", "--task-created", "100", "--revision", "3", "--ref", JSON.stringify(external), "--from", JSON.stringify(attempt)];
     const linked = await f.cli([...args, "--json"], true); expect(linked.code, linked.stderr).toBe(0);
-    expect(JSON.parse(linked.stdout)).toEqual({ id: "link-id", taskId: 7, reference: external, strength: "declared", already: false });
+    expect(JSON.parse(linked.stdout)).toEqual({ id: "link-id", taskId: 7, reference: external, strength: "declared" as const, already: false });
     expect(f.requests[0]).toMatchObject({ t: "lineage_link", taskId: 7, taskCreated: 100, flowRevision: 3, reference: external, from: attempt });
     expect(f.hellos[0]).toMatchObject({ role: "tools", peer: "codex" });
     const before = f.hellos.length, refused = await f.cli(["--live-test", ...args], true); expect(refused.code).toBe(1); expect(refused.stderr).toContain("live-test cannot register execution links"); expect(f.hellos).toHaveLength(before); expect(f.requests).toHaveLength(1);

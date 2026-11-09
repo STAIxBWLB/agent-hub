@@ -11,7 +11,7 @@ import { newEnvelope } from "../src/hub/envelope.ts";
 const projectKey = "ahub-fixture", hash = "a".repeat(64), head = "b".repeat(40);
 const ref = (kind: string, id: string, extra: Partial<ExecutionReferenceV1> = {}): ExecutionReferenceV1 => ({ v: 1, tool: "ahub", projectKey, kind, id, ...extra });
 function fixture() {
-  const task: Task = { id: 7, created: 10, updated: 10, title: "PRIVATE_TASK_TITLE", detail: "PRIVATE_TASK_BODY", class: "implement", owner: "codex", reviewer: "claude", state: "in_progress", refs: { commit: head }, signals: [], history: [] };
+  const task: Task = { id: 7, created: 10, updated: 10, title: "PRIVATE_TASK_TITLE", detail: "PRIVATE_TASK_BODY", class: "implement", owner: "codex", reviewer: "claude", state: "in_progress", refs: { commit: head }, signals: [], history: [], rejections: 0 };
   const attempt: ExperimentAttemptRecord = { attemptId: "ra-0123456789ab", project: "fixture", attempt: { taskId: task.id, protocolHash: hash, phase: "final", idempotencyKey: "fixture" }, bodyHash: hash, by: "codex", at: 10, private: false };
   const output: ExperimentEventRecord = { attemptId: attempt.attemptId, idempotencyKey: "output", bodyHash: hash, by: "codex", private: false,
     event: { kind: "output", body: { id: "d-0123456789ab", sha256: hash }, seq: 1, at: 10, provenance: "declared" }, observations: [] };

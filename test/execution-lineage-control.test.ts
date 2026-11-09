@@ -41,17 +41,17 @@ async function fixture() {
 test("CLI control and MCP expose equivalent bounded declared metadata, idempotent links and restart-stable project scope", async () => {
   const f = await fixture(); expect(f.person.features).toContain("execution_lineage");
   const first = await f.person.request({ t: "lineage_show", taskId: f.task.id });
-  expect(first.ok, first.error).toBe(true); expect(first.lineage.state).toBe("available");
+  expect<boolean>(first.ok, first.error).toBe(true); expect(first.lineage.state).toBe("available");
   const key = first.lineage.nodes[0].ref.projectKey;
   expect(key).toMatch(/^ahub-[a-f0-9]{64}$/); expect(key).not.toContain(f.root);
   const saved = await f.person.request({ t: "lineage_link", ...f.link });
-  expect(saved.ok, saved.error).toBe(true); expect(saved.link).toMatchObject({ taskId: f.task.id, reference: f.reference, strength: "declared", already: false });
+  expect<boolean>(saved.ok, saved.error).toBe(true); expect(saved.link).toMatchObject({ taskId: f.task.id, reference: f.reference, strength: "declared", already: false });
   const duplicate = await f.person.request({ t: "task", op: "hub_lineage_link", args: f.link });
-  expect(duplicate.ok, duplicate.error).toBe(true); expect(JSON.parse(duplicate.text).link).toMatchObject({ id: saved.link.id, already: true });
+  expect<boolean>(duplicate.ok, duplicate.error).toBe(true); expect(JSON.parse(duplicate.text).link).toMatchObject({ id: saved.link.id, already: true });
   const before = f.board.executionReferencesIntegrity();
   const cli = await f.person.request({ t: "lineage_show", taskId: f.task.id });
   const mcp = await f.person.request({ t: "task", op: "hub_lineage_show", args: { taskId: f.task.id } });
-  expect(mcp.ok, mcp.error).toBe(true); expect(JSON.parse(mcp.text)).toEqual({ ok: true, lineage: cli.lineage });
+  expect<boolean>(mcp.ok, mcp.error).toBe(true); expect(JSON.parse(mcp.text)).toEqual({ ok: true, lineage: cli.lineage });
   expect(cli.lineage.nodes.some((node: any) => node.ref.tool === "ares" && node.strength === "declared")).toBe(true);
   expect(f.board.executionReferencesIntegrity()).toEqual(before);
   const page = await f.person.request({ t: "lineage_show", taskId: f.task.id, nodes: 1 });
@@ -81,12 +81,12 @@ test("unauthorized reads hide both missing and denied roots; malformed/stale lin
 test("retained declarations require execution_lineage target support and appear in recovery integrity", async () => {
   const f = await fixture(), targetFeatures = DAEMON_FEATURES.filter(feature => feature !== "execution_lineage");
   const empty = await f.person.request({ t: "recovery", op: "inspect", expectedInstanceId: f.instance(), targetFeatures });
-  expect(empty.ok, empty.error).toBe(true);
+  expect<boolean>(empty.ok, empty.error).toBe(true);
   expect((await f.person.request({ t: "lineage_link", ...f.link })).ok).toBe(true);
   const blocked = await f.person.request({ t: "recovery", op: "inspect", expectedInstanceId: f.instance(), targetFeatures });
   expect(blocked.ok).toBe(false); expect(blocked.error).toContain("target lacks execution_lineage");
   const supported = await f.person.request({ t: "recovery", op: "inspect", expectedInstanceId: f.instance(), targetFeatures: DAEMON_FEATURES });
-  expect(supported.ok, supported.error).toBe(true); expect(supported.recovery.integrity.current.executionReferences).toEqual(f.board.executionReferencesIntegrity());
+  expect<boolean>(supported.ok, supported.error).toBe(true); expect(supported.recovery.integrity.current.executionReferences).toEqual(f.board.executionReferencesIntegrity());
 }, 20_000);
 
 test("restart reader validates optional execution-reference integrity without widening legacy empty state", () => {

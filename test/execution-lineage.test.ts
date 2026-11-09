@@ -127,7 +127,7 @@ test("host-admitted foreign producer references remain opaque declared target no
   if (result.state !== "available") throw Error("host-admitted fixture unavailable");
   expect(result.nodes.map(value => value.ref)).toEqual([ref("task"), ...targets]);
   expect(result.nodes.slice(1).every(value => value.strength === "declared")).toBe(true);
-  expect(result.edges).toEqual(source.edges);
+  expect(result.edges).toEqual([...source.edges]);
   expect(result.edges.every(value => value.relation === "declared-external" && value.strength === "declared")).toBe(true);
 });
 
