@@ -102,7 +102,18 @@ export function validateLineageLink(value: unknown, command: { taskId: number; r
 }
 const address = (ref: ExecutionReferenceV1): string => terminalText(`${ref.tool}:${ref.kind} ${ref.id} (project ${ref.projectKey}${ref.revision === undefined ? "" : `, revision ${ref.revision}`}${ref.sha256 === undefined ? "" : `, sha256 ${ref.sha256}`})`).replace(/[\r\n]+/g, " ");
 export function renderExecutionLineage(result: LineageResult): string[] {
-  if (result.state === "unavailable") return [`Lineage unavailable${result.reason ? ` (${result.reason})` : ""}; check the root reference and your source-read access, then retry ahub lineage show.`];
+  if (result.state === "unavailable") {
+    if (result.reason === undefined) return ["Lineage unavailable; check the root reference and your source-read access, then retry ahub lineage show."];
+    const repair = {
+      corrupt: "trusted source state could not be read; inspect ahub recovery status and the trusted source state before retrying ahub lineage show",
+      cursor_invalid: "the cursor is stale or does not match this source snapshot; refresh the same root and bounds without --cursor",
+      invalid: "the execution reference or page bounds are invalid; run ahub help lineage, correct the reference or bounds and retry",
+      withheld: "source metadata is withheld by policy; ask an authorized person to check the policy and select a public task scope before retrying ahub lineage show",
+      missing: "the root is not recorded in this admitted source; check the task or attempt identity and task scope, then retry ahub lineage show",
+      unsupported: "this source cannot project the requested root or scope within its supported bounds; select a supported root or smaller task scope, or upgrade the source before retrying ahub lineage show",
+    }[result.reason];
+    return [`Lineage unavailable (${result.reason}): ${repair}.`];
+  }
   return ["Execution lineage (metadata only)", ...result.nodes.map(node => `${address(node.ref)}: ${node.state}, ${node.strength}`),
     ...result.edges.map(edge => `${address(edge.from)} -> ${address(edge.to)}: ${edge.relation}, ${edge.strength}`),
     ...(result.truncated ? [`Page truncated; retry the same root and bounds with --cursor ${result.cursor}.`] : ["Page complete."])];

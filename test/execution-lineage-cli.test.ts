@@ -59,6 +59,26 @@ test("lineage shell forms retain task actor authority and action-only audit labe
   expect(liveTestRefusal("lineage", ["link"])).toBe(true); expect(liveTestRefusal("lineage", ["show"])).toBe(false);
 });
 
+test("authorized lineage diagnostics name the source cause and its matching repair without changing the JSON result", () => {
+  for (const [reason, guidance] of [
+    ["corrupt", ["trusted source state", "ahub recovery status"]],
+    ["cursor_invalid", ["same root and bounds", "without --cursor"]],
+    ["invalid", ["reference or page bounds", "ahub help lineage"]],
+    ["withheld", ["policy", "authorized person", "public task scope"]],
+    ["missing", ["not recorded", "task or attempt identity", "task scope"]],
+    ["unsupported", ["supported bounds", "supported root", "upgrade the source"]],
+  ] as const) {
+    const result = { state: "unavailable" as const, reason };
+    expect(validateLineageReply(result)).toBe(result);
+    const text = renderExecutionLineage(result).join("\n");
+    expect(text, reason).toContain(reason);
+    for (const step of guidance) expect(text, reason).toContain(step);
+    expect(text, reason).not.toContain("Page complete");
+  }
+  const corrupt = renderExecutionLineage({ state: "unavailable", reason: "corrupt" }).join("\n");
+  expect(corrupt).not.toContain("check the root reference and your source-read access");
+});
+
 async function fixture(run: (f: { requests: Record<string, any>[]; hellos: Record<string, any>[]; cli: (args: string[], agent?: boolean) => Promise<{ code: number; stdout: string; stderr: string }>; reply: (value: unknown) => void; support: (value: boolean) => void }) => Promise<void>) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-lineage-cli-"))), home = join(root, "home"), state = join(root, ".agenthub/state");
   mkdirSync(home); mkdirSync(state, { recursive: true }); writeFileSync(join(root, ".agenthub/config.json"), "{}");
