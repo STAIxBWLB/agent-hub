@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { compactHubToolRow, compactId, compactIds, MAX_COMPACT_IDS, toggledCompactIds } from "../integrations/claude-code/hooks/compact.tsx";
+// Keep the host-only TSX module outside the Bun project compiler's non-JSX universe.
+const compactModule = new URL("../integrations/claude-code/hooks/compact.tsx", import.meta.url).href;
+const { compactHubToolRow, compactId, compactIds, MAX_COMPACT_IDS, toggledCompactIds } = await import(compactModule);
 
 type Node = { type: unknown; props: Record<string, any>; children: unknown[] };
 type Handler = (host: any, event: any, next: (event: any) => Promise<any>) => any;
