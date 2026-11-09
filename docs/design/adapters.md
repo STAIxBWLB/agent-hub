@@ -49,6 +49,59 @@ Optional ports have explicit meaning: absent keeps the generic path, while prese
 
 Adapters translate different interaction surfaces without changing the peer's task identity. Claude's plugin channel connects through MCP and the hub control service; Codex is proxied through app-server; ACP peers share an ACP transport; Pi uses its extension bridge. Kimi defaults to a pull-only TUI, with headless ACP as a separate selected form under the same peer id. The TUI does not inherit headless push, session, or recovery behavior. Keeping forms distinct lets the hub preserve the native user interaction model while enforcing one role and delivery policy ([#316](https://github.com/STAIxBWLB/agent-hub/issues/316), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625)).
 
+## Qwen deny input fence (#888)
+
+A successfully appended `allowed: false` has a known delivery disposition, but
+no native completion ACK. The delivery remains `completed` without an answer;
+the adapter stays non-ready with a host-persisted `denyPending: true` latch in
+its existing state file. Persistence must succeed before the append. No BasePeer
+settlement policy or other adapter's readiness behavior changes.
+
+The denied turn's assistant/Stop, orphan Stop, result, approval response and
+elapsed silence cannot release the latch. Release requires either a newly
+observed same-session personal USER followed by that personal turn's normal
+`end_turn` assistant and `message_stop`, with uninterrupted generation and verified
+owner identity, or a verified fresh launch generation with native session/version
+and a new verified owner. The event-file byte watermark uses raw newline offsets
+to exclude pre-deny frames. A recovery USER must begin wholly at or after the
+deny/adoption EOF boundary; finishing an older partial line never qualifies.
+Malformed, invalid UTF8, oversized or unsupported
+evidence invalidates unfinished proof; control/tool frames cannot preserve a
+candidate final assistant for a later orphan Stop. A failed persisted clear
+restores the latch and goes offline before advisory callbacks, with a storage
+and permissions cause that remains until a successful clear, even if a logger
+or notice throws.
+For a fenced fresh launch, a host process-table baseline must positively show
+no existing process naming the exact input path before any rotation, truncation
+or launch preparation. An unknown table or unverified existing root leaves
+those files unchanged and produces no launcher; a missing saved owner is never
+evidence of absence. Ordinary trusted-owner adoption retains its prior behavior.
+The fenced path also requires a positively verified empty event file before
+input truncation or launch preparation. Failed event rotation or empty-file
+verification leaves input unchanged and produces no launcher; old session_start
+bytes cannot bind a later owner as fresh generation proof.
+Detach, changed file/session/owner and adoption invalidate an unfinished personal
+proof; restored buffered frames cannot supply a new personal USER. Same-generation
+readability and replayed session_start never supply fresh launch proof.
+
+`QWEN_DENY_QUIESCENCE_MS` is a 30 s operational wait. Expiry reports offline,
+keeps the latch and queued messages unsubmitted, and directs the person to their
+terminal or `ahub qwen --mode tui`. Passive recovery remains possible after expiry.
+General adoption of an unknown running turn outside this latch retains its prior
+ceiling. These source/fake controls do not qualify a new native completion signal.
+
+Every append writes one complete UTF8 Buffer once and checks its byte count.
+A short count or writer exception retains the delivery as `needs_review` and
+goes offline without retrying a remainder. Errors after the writer call,
+including close failure after a full byte count, retain the same uncertainty.
+A non-newline input tail, checked
+before append and attachment/readback, likewise fences input. Personal completion
+cannot reopen this file: a verified fresh generation must start with fresh input.
+The live ambiguous-write latch is RAM-only; after a crash the actual tail is the
+guard. A torn prefix that happens to end with newline remains undetected. The
+upgrade path if that failure is observed is a durable per-write intent record,
+not a synthetic native ACK or an automatic remainder write.
+
 ## Channel attachment evidence (#1171)
 
 The Claude plugin's inherited launcher marker is insufficient to enable push. In the inspected Claude Code 2.1.318 client path, MCP initialization advertises no usable channel opt-in; the plugin's server capability is not client evidence. The fallback checks the direct parent's bounded process row for the existing launcher's exact leading development-channel flag and supported target. Unknown, malformed, truncated or changed-parent evidence, print/background forms and repeated flags keep the plugin tools-only, with messages waiting for `hub_inbox`. The check does not walk ancestors or treat the marker as an authorization token.

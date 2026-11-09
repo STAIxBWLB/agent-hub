@@ -554,6 +554,7 @@
   "src/adapters/pi.ts:stopSurvivingOwner:inline:Bun.sleep=50#1": "operational",
   "src/adapters/pi.ts:timer:inline:setTimeout=30_000#0": "operational",
   "src/adapters/pi.ts:timer:inline:setTimeout=30_000#1": "operational",
+  "src/adapters/qwen-dual.ts:QWEN_DENY_QUIESCENCE_MS:constant:QWEN_DENY_QUIESCENCE_MS=30000#0": "operational",
   "src/adapters/qwen-dual.ts:cut:inline:full.length > 600=600#0": "safety floor",
   "src/adapters/qwen-dual.ts:timer:inline:setTimeout=10_000#0": "operational",
   "src/adapters/qwen-dual.ts:title:inline:full.slice=600#0": "safety floor",

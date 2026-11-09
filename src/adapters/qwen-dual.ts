@@ -15,7 +15,7 @@ import type { PermissionRequest } from "./acp.ts";
  * `submit` and `confirmation_response` lines to the input file and tails the event file.
  *
  * Two limits, by design (spec: "Qwen dual-output TUI amendment"):
- *  1. A hub deny cancels Qwen's whole turn and Qwen emits nothing for it: after sending `allowed: false` this adapter ends the turn itself.
+ *  1. A hub deny has a known disposition but supplies no native completion signal: keep later inputs fenced until a new personal turn completes or a verified fresh generation starts.
  *  2. The input protocol cannot stop a turn and SIGINT does not either: the watchdog never cancels. It marks the turn stalled, and the
  *     person presses Esc in the Qwen terminal. The hub never types into the terminal and never signals the process to stop a turn.
  */
@@ -37,6 +37,10 @@ export interface QwenDualOptions {
   pollMs?: number;
   /** How often the owner process is checked (ms). */
   ownerMs?: number;
+  /** Absolute wait after a deny, never an idle inference. Expiry retains the durable input fence. */
+  denyQuiescenceMs?: number;
+  /** Host-only fault seam. Never supplied by native event data or configuration. */
+  writeInput?: (fd: number, bytes: Buffer) => number;
   preamble?: string;
   /** The hub's own tools by exact `mcp__<server>__<tool>` name, never by prefix. */
   autoApprove?: (toolName: string) => boolean;
@@ -58,15 +62,22 @@ export interface QwenDualOptions {
 const SUBMIT_CAP = 256 * 1024;
 const READ_CAP = 1024 * 1024;
 const ANSWERED_CAP = 256;
+export const QWEN_DENY_QUIESCENCE_MS = 30_000;
+export const QWEN_DENY_QUIESCENCE_NOTE = "Qwen gave no signal that the denied turn ended; queued messages remain unsubmitted. Type a new prompt or press Esc in the Qwen terminal, then complete a personal turn; or end that terminal and run ahub qwen --mode tui";
+export const QWEN_DENY_STORAGE_NOTE = "the hub could not persist Qwen's input fence state; queued messages remain unsubmitted. Check the Qwen state directory's storage and permissions before completing a new personal turn or restarting Qwen with ahub qwen --mode tui";
+export const QWEN_INPUT_UNCERTAIN_NOTE = "Qwen's input file has an incomplete or unconfirmed record; queued messages remain unsubmitted. Inspect and end Qwen in its terminal, then run ahub qwen --mode tui to start a verified fresh generation";
 /** What the console, status and dashboard say while a turn is stalled. */
 export const QWEN_STALLED_NOTE = "stalled: Qwen has said nothing for a while; the hub cannot stop a Qwen turn, press Esc in the Qwen terminal";
 /** Shown while the hub cannot read the event file: the Qwen TUI itself keeps working, so this is never idle. */
 export const QWEN_DETACHED_NOTE = "detached: the hub cannot read Qwen's event file; Qwen keeps working in its terminal and the hub reattaches when the file is readable again";
 const DIR = "qwen-dual";
 
-type StateFile = { v: 1; sessionId?: string; offset: number; generation: number; ownerPid?: number; ownerSignature?: string };
+type StateFile = { v: 1; sessionId?: string; offset: number; generation: number; ownerPid?: number; ownerSignature?: string; denyPending?: true };
 interface Turn { envs: Envelope[]; deliveryId?: string; text: string; started: boolean; accepted: boolean }
 type Json = Record<string, any>;
+class QwenInputUncertain extends Error {
+  constructor() { super(QWEN_INPUT_UNCERTAIN_NOTE); }
+}
 
 /** Whether a Qwen tool request names the hub's state dir: the input file is a prompt channel, so a write or command that reaches it is refused. */
 export function qwenDualNamesStateDir(input: unknown, stateDir: string): boolean {
@@ -135,6 +146,18 @@ export class QwenDualPeer extends BasePeer {
   private pollFailures = 0;
   /** Inside an event line longer than READ_CAP: its rest is dropped through the next newline. */
   private discarding = false;
+  private denyTimer?: ReturnType<typeof setTimeout>;
+  private denyCursor = 0;
+  private eventCursor = 0;
+  private eventStart = 0;
+  private freshFenceOwner?: string;
+  private personalProof?: { generation: number; session: string; owner: string; assistant: boolean };
+  private fenceFile?: string;
+  private denyStorageFailure = false;
+  private inputBlocked = false;
+  private freshInputPending = false;
+  private freshBaselineAbsent = false;
+  private freshEventReady = false;
 
   constructor(id: PeerId, private readonly opts: QwenDualOptions) {
     super(id, opts.watchdogMs);
@@ -149,7 +172,9 @@ export class QwenDualPeer extends BasePeer {
   get adopted(): boolean { return this.adopting; }
   private adopting = false;
   get stalled(): boolean { return this.stalled_; }
-  get statusNotice(): { code: "qwen-stalled" | "qwen-detached"; message: string } | undefined {
+  get statusNotice(): { code: "qwen-stalled" | "qwen-detached" | "qwen-deny-quiescence"; message: string } | undefined {
+    if (this.inputBlocked || this.freshInputPending) return { code: "qwen-deny-quiescence", message: QWEN_INPUT_UNCERTAIN_NOTE };
+    if (this.state_.denyPending) return { code: "qwen-deny-quiescence", message: this.denyStorageFailure ? QWEN_DENY_STORAGE_NOTE : QWEN_DENY_QUIESCENCE_NOTE };
     if (this.detached) return { code: "qwen-detached", message: QWEN_DETACHED_NOTE };
     return this.stalled_ ? { code: "qwen-stalled", message: QWEN_STALLED_NOTE } : undefined;
   }
@@ -185,18 +210,22 @@ export class QwenDualPeer extends BasePeer {
       if (!info.isFile() || info.size > 4096) return;
       const buffer = Buffer.alloc(info.size); readSync(fd, buffer, 0, info.size, 0);
       const raw = JSON.parse(buffer.toString("utf8")) as Partial<StateFile>;
+      if (Object.hasOwn(raw, "denyPending")) this.state_.denyPending = true;
       if (raw.v !== 1 || !Number.isSafeInteger(raw.offset) || raw.offset! < 0 || !Number.isSafeInteger(raw.generation)) return;
       this.state_ = { v: 1, offset: raw.offset!, generation: raw.generation!,
         ...(qwenSessionId(raw.sessionId) ? { sessionId: raw.sessionId } : {}),
-        ...(Number.isSafeInteger(raw.ownerPid) && typeof raw.ownerSignature === "string" ? { ownerPid: raw.ownerPid, ownerSignature: raw.ownerSignature } : {}) };
+        ...(Number.isSafeInteger(raw.ownerPid) && typeof raw.ownerSignature === "string" ? { ownerPid: raw.ownerPid, ownerSignature: raw.ownerSignature } : {}),
+        // Unknown/malformed fence metadata never grants readiness. Only the literal true is written by this host.
+        ...(Object.hasOwn(raw, "denyPending") ? { denyPending: true as const } : {}) };
     } catch { /* no usable record: a fresh launch */ }
     finally { if (fd !== undefined) try { closeSync(fd); } catch { /* nothing to close */ } }
   }
 
-  private saveState(): void {
+  private saveState(): boolean {
     const temp = `${this.stateFile}.${process.pid}.tmp`;
-    try { writeFileSync(temp, `${JSON.stringify(this.state_)}\n`, { mode: 0o600 }); renameSync(temp, this.stateFile); }
-    catch { this.opts.log?.(`[${this.id}] could not record its Qwen read position`); }
+    try { writeFileSync(temp, `${JSON.stringify(this.state_)}\n`, { mode: 0o600 }); renameSync(temp, this.stateFile); return true; }
+    catch { try { this.opts.log?.(`[${this.id}] could not record its Qwen read position`); } catch { /* advisory failure never changes the checked write result */ } }
+    return false;
   }
 
   private ownerAlive(): boolean {
@@ -211,6 +240,7 @@ export class QwenDualPeer extends BasePeer {
     if (!dir.isDirectory() || dir.isSymbolicLink() || (typeof process.getuid === "function" && dir.uid !== process.getuid()) || (dir.mode & 0o077) !== 0) throw new Error("Qwen dual-output directory is not private to the person running the hub");
     this.loadState();
     for (const path of [this.inputFile, this.eventFile]) this.ensureFile(path, true);
+    this.checkInputTail();
     this.stopping = false; this.exited = false;
     if (this.ownerAlive()) {
       // The hub restarted while the person's Qwen kept running: read on from the saved offset. No event is processed twice and no launch happens.
@@ -221,25 +251,69 @@ export class QwenDualPeer extends BasePeer {
       // ponytail: a Qwen turn that was running when the hub went away is not known here, so the adopted peer reads idle until the next event says otherwise.
       // Upgrade: record the open hub turn in state.json and settle it on adoption.
       this.sessionSeen = this.state_.sessionId !== undefined; this.primed = true;
+      if (this.state_.denyPending) { this.denyCursor = size; }
       this.saveState();
     } else {
       // A fresh or resumed launch. Qwen opens an existing event file without truncating or appending, so it would overwrite it from byte 0: start from empty files.
       this.adopting = false;
-      this.resume = this.opts.sessionId !== undefined || this.state_.sessionId !== undefined;
-      const resumeId = this.opts.sessionId ?? this.state_.sessionId;
-      const previous = lstatSync(this.eventFile);
-      if (previous.size > 0) { try { renameSync(this.eventFile, join(this.dir, "events.prev.jsonl")); } catch { /* a stale copy is only evidence */ } this.ensureFile(this.eventFile, true); }
-      closeSync(openSync(this.inputFile, constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_TRUNC));   // Qwen starts reading at the file's current end, so earlier submits are never replayed; empty is the clearest record
-      this.state_ = { v: 1, offset: 0, generation: this.state_.generation + 1, ...(resumeId ? { sessionId: resumeId } : {}) };
-      this.sessionSeen = false;
-      this.saveState();
-      this.writeLaunch(resumeId);
+      const fenced = this.state_.denyPending || this.inputBlocked;
+      if (fenced) {
+        const rows = (this.opts.table ?? processTable)();
+        const flag = `--input-file ${this.inputFile}`;
+        this.freshBaselineAbsent = rows !== undefined && !rows.some(row => row.pid !== process.pid && row.command.includes(flag));
+      }
+      if (fenced && !this.freshBaselineAbsent) {
+        // No file rotation/truncation or launcher may overlap an unverified existing native owner.
+        this.sessionSeen = this.state_.sessionId !== undefined; this.primed = true;
+        this.denyCursor = lstatSync(this.eventFile).size;
+        this.setState("offline");
+        try { this.opts.onNotice?.(`${this.id}: the hub could not verify that the old Qwen terminal is absent; inspect and end that terminal before running ahub qwen --mode tui again`); } catch { /* already offline */ }
+      } else {
+        this.resume = this.opts.sessionId !== undefined || this.state_.sessionId !== undefined;
+        const resumeId = this.opts.sessionId ?? this.state_.sessionId;
+        const denyPending = this.state_.denyPending;
+        if (denyPending || this.inputBlocked) this.freshFenceOwner = this.ownerIdentity();
+        this.freshInputPending = this.inputBlocked;
+        this.freshEventReady = this.prepareFreshEvents(!!fenced);
+        if (fenced && !this.freshEventReady) {
+          this.freshInputPending = true; this.denyCursor = this.state_.offset;
+          this.setState("offline");
+          try { this.opts.onNotice?.(`${this.id}: a fresh empty Qwen event file could not be prepared; inspect the Qwen state directory and events.prev.jsonl before running ahub qwen --mode tui again`); } catch { /* already offline */ }
+        } else {
+          closeSync(openSync(this.inputFile, constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_TRUNC));   // Qwen starts reading at the file's current end, so earlier submits are never replayed; empty is the clearest record
+          this.inputBlocked = false;
+          this.state_ = { v: 1, offset: 0, generation: this.state_.generation + 1, ...(resumeId ? { sessionId: resumeId } : {}), ...(denyPending ? { denyPending } : {}) };
+          this.sessionSeen = false;
+          this.saveState();
+          this.writeLaunch(resumeId);
+        }
+      }
     }
     this.poller = setInterval(() => this.poll(), this.opts.pollMs ?? 100); this.poller.unref?.();
     if (!this.monitor) { this.monitor = setInterval(() => this.checkOwner(), this.opts.ownerMs ?? 1_000); this.monitor.unref?.(); }
     this.poll();
-    if (this.adopting && !this.detached && this.sessionSeen) this.setState("idle");
+    if (this.adopting && !this.detached && this.sessionSeen && !this.state_.denyPending && !this.inputBlocked) this.setState("idle");
     // A TUI that has not announced itself yet is not attached: the hub treats the peer as offline until session_start.
+  }
+
+  private prepareFreshEvents(fenced: boolean): boolean {
+    if (!fenced) {
+      const previous = lstatSync(this.eventFile);
+      if (previous.size > 0) { try { renameSync(this.eventFile, join(this.dir, "events.prev.jsonl")); } catch { /* preserve the legacy nonfenced rotation ceiling */ } this.ensureFile(this.eventFile, true); }
+      return true;
+    }
+    let fd: number | undefined;
+    let ready = false;
+    try {
+      const previous = lstatSync(this.eventFile);
+      if (previous.size > 0) renameSync(this.eventFile, join(this.dir, "events.prev.jsonl"));
+      this.ensureFile(this.eventFile, true);
+      fd = openSync(this.eventFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const info = fstatSync(fd);
+      ready = info.isFile() && info.size === 0;
+    } catch { /* no verified empty source */ }
+    finally { if (fd !== undefined) try { closeSync(fd); } catch { ready = false; } }
+    return ready;
   }
 
   private writeLaunch(resumeId: string | undefined): void {
@@ -274,12 +348,21 @@ export class QwenDualPeer extends BasePeer {
 
   private checkOwner(): void {
     if (this.stopping || this.exited) return;
-    if (this.state_.ownerPid === undefined) { if (this.sessionSeen) this.discoverOwner(); return; }
-    if (this.ownerAlive()) return;
+    if (this.state_.ownerPid === undefined) {
+      if (this.sessionSeen) this.discoverOwner();
+      this.verifyFreshInput();
+      if (this.state_.denyPending && this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && this.sessionSeen && this.ownerAlive() && this.ownerIdentity() !== this.freshFenceOwner) this.clearDenyFence();
+      return;
+    }
+    if (this.ownerAlive()) {
+      this.verifyFreshInput();
+      if (this.state_.denyPending && this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && this.ownerIdentity() !== this.freshFenceOwner) this.clearDenyFence();
+      return;
+    }
     if (this.state === "offline" && !this.sessionSeen) return;
     this.exited = true;
     this.opts.log?.(`[${this.id}] the Qwen TUI exited`);
-    this.failTurn("the Qwen terminal ended before the turn settled; inspect it before retrying");
+    this.failTurn("the Qwen terminal ended before the turn settled; inspect it before retrying", true);
     this.abortApprovals();
     delete this.state_.ownerPid; delete this.state_.ownerSignature; this.saveState();
     this.setState("offline");
@@ -288,19 +371,58 @@ export class QwenDualPeer extends BasePeer {
 
   // ---- delivery ----------------------------------------------------------------------------------------------------
 
+  private inputHasCompleteTail(fd: number): boolean {
+    const info = fstatSync(fd);
+    if (!info.isFile()) return false;
+    if (info.size === 0) return true;
+    const last = Buffer.alloc(1);
+    return readSync(fd, last, 0, last.length, info.size - last.length) === last.length && last[0] === 10;
+  }
+
+  private verifyFreshInput(): void {
+    if (!this.freshInputPending || !this.freshEventReady || !this.freshBaselineAbsent || !this.sessionSeen || !this.ownerAlive() || this.ownerIdentity() === this.freshFenceOwner) return;
+    this.freshInputPending = false;
+    if (!this.state_.denyPending && !this.inputBlocked && !this.stopping && !this.detached && !this.exited) this.setState("idle");
+  }
+
+  private checkInputTail(): void {
+    let fd: number | undefined;
+    try {
+      fd = openSync(this.inputFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      if (!this.inputHasCompleteTail(fd)) this.blockInput();
+    } catch { this.blockInput(); }
+    finally { if (fd !== undefined) try { closeSync(fd); } catch { this.blockInput(); } }
+  }
+
+  private blockInput(): void {
+    const newlyBlocked = !this.inputBlocked;
+    this.inputBlocked = true; this.personalProof = undefined;
+    this.failTurn(QWEN_INPUT_UNCERTAIN_NOTE, true);
+    this.setState("offline");
+    if (newlyBlocked) try { this.opts.onNotice?.(`${this.id}: ${QWEN_INPUT_UNCERTAIN_NOTE}`); } catch { /* already fenced */ }
+  }
+
   private appendInput(record: Json): void {
-    const line = `${JSON.stringify(record)}\n`;
-    if (Buffer.byteLength(line) > SUBMIT_CAP) throw new Error("Qwen submit exceeds its size bound");
-    const fd = openSync(this.inputFile, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+    const bytes = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
+    if (bytes.length > SUBMIT_CAP) throw new Error("Qwen submit exceeds its size bound");
+    if (this.inputBlocked || this.freshInputPending) throw new QwenInputUncertain();
+    const fd = openSync(this.inputFile, constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let writerAttempted = false;
     try {
       const info = fstatSync(fd);
       if (!info.isFile() || (info.mode & 0o077) !== 0 || (typeof process.getuid === "function" && info.uid !== process.getuid())) throw new Error("Qwen input file is not private");
-      writeSync(fd, line);
-    } finally { closeSync(fd); }
+      if (!this.inputHasCompleteTail(fd)) throw new QwenInputUncertain();
+      // ponytail: a torn prefix ending in newline is not detected by this tail guard. If observed, add a durable write-intent record before every input write.
+      writerAttempted = true;
+      try { if ((this.opts.writeInput ?? writeSync)(fd, bytes) !== bytes.length) throw new QwenInputUncertain(); }
+      catch { throw new QwenInputUncertain(); } // no retry or remainder: the writer may already have appended a prefix
+    } finally {
+      try { closeSync(fd); } catch (error) { if (writerAttempted) throw new QwenInputUncertain(); throw error; }
+    }
   }
 
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
-    if (this.state !== "idle" || this.stopping || this.detached) {
+    if (this.state !== "idle" || this.stopping || this.detached || this.state_.denyPending || this.inputBlocked) {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
       throw new Error(`${this.id} is ${this.state}`);
     }
@@ -312,6 +434,7 @@ export class QwenDualPeer extends BasePeer {
     this.setState("busy"); // synchronously: the bus must not drain the next envelope into this turn
     try { this.appendInput({ type: "submit", text }); }
     catch (error) {
+      if (error instanceof QwenInputUncertain) { this.blockInput(); throw error; }
       this.turn = undefined;
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "Qwen input file could not be written" });
       this.setState("idle");
@@ -323,7 +446,7 @@ export class QwenDualPeer extends BasePeer {
   // ---- watchdog: report, never cancel -----------------------------------------------------------------------------------
 
   protected override onWatchdog(): void {
-    if (this.state !== "busy" || this.stalled_) return;
+    if (this.state !== "busy" || this.stalled_ || this.state_.denyPending) return;
     if (this.pending.size > 0) { this.touch(); return; } // a person deciding is not Qwen going silent
     this.stalled_ = true;
     this.opts.log?.(`[${this.id}] turn stalled; the hub cannot stop it (press Esc in the Qwen terminal)`);
@@ -343,21 +466,28 @@ export class QwenDualPeer extends BasePeer {
     if (this.detached) return;
     this.detached = true;
     this.opts.log?.(`[${this.id}] event file ${reason}: detached`);
-    this.failTurn("the Qwen event file became unreadable before the turn settled; inspect the Qwen terminal before retrying");
+    this.personalProof = undefined;
+    this.failTurn("the Qwen event file became unreadable before the turn settled; inspect the Qwen terminal before retrying", true);
     this.abortApprovals();
     if (this.state !== "offline") this.setState("offline"); // detached is never idle: nothing can be delivered to a TUI nobody can read
   }
 
   private poll(): void {
     if (this.stopping) return;
+    this.checkInputTail();
     let fd: number | undefined;
     try {
       fd = openSync(this.eventFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const info = fstatSync(fd);
       if (!info.isFile()) throw new Error("not a regular file");
-      if (this.detached) { this.detached = false; this.pollFailures = 0; this.opts.log?.(`[${this.id}] event file readable again: reattached`); if (this.sessionSeen && this.state === "offline" && !this.exited) this.setState("idle"); }
+      if (this.state_.denyPending) {
+        const identity = `${info.dev}:${info.ino}`;
+        if (this.fenceFile !== undefined && identity !== this.fenceFile) { this.personalProof = undefined; this.denyCursor = info.size; }
+        this.fenceFile = identity;
+      }
+      if (this.detached) { this.detached = false; this.pollFailures = 0; this.opts.log?.(`[${this.id}] event file readable again: reattached`); if (this.sessionSeen && this.state === "offline" && !this.exited && !this.state_.denyPending && !this.inputBlocked && !this.freshInputPending) this.setState("idle"); }
       let offset = this.state_.offset;
-      if (info.size < offset) { offset = 0; this.discarding = false; this.state_.generation++; this.opts.log?.(`[${this.id}] event file was replaced; reading from its start`); }
+      if (info.size < offset) { offset = 0; this.discarding = false; this.state_.generation++; this.personalProof = undefined; this.denyCursor = info.size; this.opts.log?.(`[${this.id}] event file was replaced; reading from its start`); }
       while (offset < info.size) {
         const want = Math.min(info.size - offset, READ_CAP), buffer = Buffer.alloc(want);
         const got = readSync(fd, buffer, 0, want, offset);
@@ -373,12 +503,23 @@ export class QwenDualPeer extends BasePeer {
         const end = buffer.subarray(0, got).lastIndexOf(10) + 1;
         if (end === 0) {
           if (got < READ_CAP) break;   // a partial line waits for its newline
+          this.personalProof = undefined;
           this.opts.log?.(`[${this.id}] dropped an event line over ${READ_CAP} bytes`);
           this.discarding = true; offset += got; this.state_.offset = offset; continue;
         }
+        const start = offset;
         offset += end;
         this.state_.offset = offset;
-        for (const line of buffer.subarray(0, end).toString("utf8").split("\n")) if (line.trim()) this.parse(line);
+        for (let cursor = 0; cursor < end;) {
+          const newline = buffer.indexOf(10, cursor);
+          const rawLine = buffer.subarray(cursor, newline);
+          const line = rawLine.toString("utf8");
+          this.eventStart = start + cursor;
+          cursor = newline + 1;
+          this.eventCursor = start + cursor;
+          if (!Buffer.from(line).equals(rawLine)) { this.personalProof = undefined; continue; }
+          if (line.trim()) this.parse(line);
+        }
         if (this.stopping) break;
       }
       this.saveState();
@@ -390,12 +531,16 @@ export class QwenDualPeer extends BasePeer {
 
   private parse(line: string): void {
     let event: Json;
-    try { event = JSON.parse(line) as Json; } catch { this.opts.log?.(`[${this.id}] skipped an unreadable event line`); return; }
-    if (!event || typeof event !== "object" || typeof event.type !== "string") return;
-    try { this.handle(event); } catch (error) { this.opts.log?.(`[${this.id}] event handling failed: ${sanitize((error as Error).message)}`); }
+    try { event = JSON.parse(line) as Json; } catch { this.personalProof = undefined; this.opts.log?.(`[${this.id}] skipped an unreadable event line`); return; }
+    if (!event || typeof event !== "object" || typeof event.type !== "string") { this.personalProof = undefined; return; }
+    try { this.handle(event); } catch (error) { this.personalProof = undefined; this.opts.log?.(`[${this.id}] event handling failed: ${sanitize((error as Error).message)}`); }
   }
 
   private handle(event: Json): void {
+    if (this.inputBlocked) return;
+    if (this.freshInputPending && event.type !== "system") return;
+    if (this.state_.denyPending && this.eventStart < this.denyCursor) { this.personalProof = undefined; return; }
+    if (this.state_.denyPending && event.type !== "system") { this.observeDenied(event); return; }
     this.alive();
     switch (event.type) {
       case "system": return this.onSystem(event);
@@ -410,6 +555,7 @@ export class QwenDualPeer extends BasePeer {
   }
 
   private onSystem(event: Json): void {
+    if (this.state_.denyPending) this.personalProof = undefined;
     if (event.subtype !== "session_start") return;
     const data = event.data ?? {};
     const id = event.session_id ?? data.session_id;
@@ -422,10 +568,13 @@ export class QwenDualPeer extends BasePeer {
       try { this.opts.onNotice?.(`${this.id}: this Qwen's dual-output contract is not verified (${verdict.ok ? "protocol or event set" : verdict.reason}); the hub did not attach it`); } catch { /* notice only */ }
       return;
     }
+    if (this.state_.denyPending && this.freshFenceOwner === undefined && id !== this.state_.sessionId) { this.personalProof = undefined; return; }
     this.state_.sessionId = id; this.sessionSeen = true; this.saveState();
     // Bind the owner now, not on the next tick: a hub that stops in between would record no owner and relaunch over a Qwen that is still running.
     this.discoverOwner();
-    if (!this.stopping && !this.detached && this.state === "offline") this.setState("idle");
+    this.verifyFreshInput();
+    if (this.state_.denyPending && this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && this.ownerAlive() && this.ownerIdentity() !== this.freshFenceOwner) this.clearDenyFence();
+    if (!this.stopping && !this.detached && this.state === "offline" && !this.state_.denyPending && !this.freshInputPending) this.setState("idle");
   }
 
   /**
@@ -516,6 +665,66 @@ export class QwenDualPeer extends BasePeer {
 
   // ---- approvals ------------------------------------------------------------------------------------------------------------
 
+  private ownerIdentity(): string { return `${this.state_.ownerPid}:${this.state_.ownerSignature}`; }
+
+  /** A deny has no completion ACK. Only a subsequent personal turn, or a verified new launch, can reopen input. */
+  private observeDenied(event: Json): void {
+    if (this.stopping || this.exited || this.detached || this.eventCursor <= this.denyCursor) return;
+    const session = this.state_.sessionId;
+    if (!session || event.session_id !== session || !this.ownerAlive()) { this.personalProof = undefined; return; }
+    if (event.type === "user") {
+      if (this.isNotificationEvent(event) || this.promptText(event) === undefined) { this.personalProof = undefined; return; }
+      this.personalProof = { generation: this.state_.generation, session, owner: this.ownerIdentity(), assistant: false };
+      return;
+    }
+    const proof = this.personalProof;
+    if (!proof || proof.generation !== this.state_.generation || proof.session !== session || proof.owner !== this.ownerIdentity()) return;
+    if (event.type === "assistant") {
+      const message = event.message;
+      proof.assistant = message?.stop_reason === "end_turn" && Array.isArray(message.content) && !message.content.some((block: Json) => block?.type === "tool_use");
+    } else if (event.type === "stream_event" && event.event?.type === "message_stop") {
+      if (proof.assistant) this.clearDenyFence();
+      else proof.assistant = false;
+    } else proof.assistant = false;
+  }
+
+  private clearDenyFence(): void {
+    if (this.inputBlocked || this.freshInputPending) return;
+    // A refusal before the deny append leaves an unsettled original turn. Recovery is not evidence of its outcome.
+    if (this.turn) this.failTurn("the approval outcome was not confirmed before Qwen recovered; inspect the terminal and held delivery before retrying", true);
+    delete this.state_.denyPending;
+    if (!this.saveState()) {
+      this.state_.denyPending = true; this.personalProof = undefined; this.denyStorageFailure = true;
+      this.setState("offline");
+      try { this.opts.onNotice?.(`${this.id}: ${QWEN_DENY_STORAGE_NOTE}`); } catch { /* advisory only, the fence is already restored */ }
+      return;
+    }
+    if (this.denyTimer) clearTimeout(this.denyTimer);
+    this.denyTimer = undefined; this.personalProof = undefined; this.freshFenceOwner = undefined;
+    this.denyStorageFailure = false; this.stalled_ = false; this.lastAssistant = undefined;
+    this.opts.onStalled?.(false);
+    if (!this.stopping && !this.detached && !this.exited) this.setState("idle");
+  }
+
+  private fenceDeny(): boolean {
+    let fd: number | undefined;
+    try {
+      fd = openSync(this.eventFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const info = fstatSync(fd);
+      if (!info.isFile()) throw new Error("not a regular file");
+      this.denyCursor = info.size; this.fenceFile = `${info.dev}:${info.ino}`;
+      this.state_.denyPending = true;
+      if (!this.saveState()) throw new Error("could not persist fence");
+      this.personalProof = undefined; this.lastAssistant = undefined;
+      return true;
+    } catch {
+      // No deny is appended without its restart fence. Keep any saved marker conservative as well.
+      this.state_.denyPending = true; this.denyStorageFailure = true; this.setState("offline");
+      try { this.opts.onNotice?.(`${this.id}: the hub could not persist the deny input fence; answer the pending prompt in the Qwen terminal and inspect its state before restarting the hub`); } catch { /* notice only */ }
+      return false;
+    } finally { if (fd !== undefined) closeSync(fd); }
+  }
+
   private abortApprovals(): void {
     for (const { controller } of this.pending.values()) controller.abort();
     this.pending.clear();
@@ -556,20 +765,31 @@ export class QwenDualPeer extends BasePeer {
   }
 
   private answer(requestId: string, allowed: boolean, turn: Turn, why?: string): void {
+    if (this.turn !== turn || this.stopping || this.state_.denyPending || this.answered.has(requestId)) return;
+    if (!allowed && !this.fenceDeny()) return;
     try { this.appendInput({ type: "confirmation_response", request_id: requestId, allowed }); }
-    catch {
+    catch (error) {
+      if (error instanceof QwenInputUncertain) { this.blockInput(); return; }
       // Qwen never received it: it is still blocked on the approval. Settling the turn (a deny) or reporting it answered would be a claim the hub cannot back, so the turn stays busy
       // (the watchdog reports it if nothing moves) and the person is told to answer in the Qwen terminal, where the prompt is still open.
-      this.opts.log?.(`[${this.id}] could not write an approval answer`);
+      if (!allowed) { delete this.state_.denyPending; if (!this.saveState()) { this.state_.denyPending = true; this.denyStorageFailure = true; this.setState("offline"); } }
+      try { this.opts.log?.(`[${this.id}] could not write an approval answer`); } catch { /* advisory only */ }
       try { this.opts.onNotice?.(`${this.id}: the hub could not write its approval answer (the input file is unwritable); answer the prompt in the Qwen terminal`); } catch { /* notice only */ }
       return;
     }
     this.answered.add(requestId); while (this.answered.size > ANSWERED_CAP) this.answered.delete(this.answered.values().next().value as string);
     if (allowed || this.turn !== turn) return;
-    // Limit 1: a deny cancels Qwen's whole turn and Qwen emits nothing for it. The turn ends here, with no answer shared.
+    // Known delivery disposition is independent of native readiness. Never expose an idle gap to Bus.onState.
     this.owner = undefined;
     this.abortApprovals();
-    this.failTurn(why ?? "a hub deny cancelled the Qwen turn (Qwen emits nothing for it); the turn ended without an answer", false, true);
+    this.failTurn(why ?? "a hub deny cancelled the Qwen turn without an answer; input remains fenced until a personal turn completes or a new Qwen generation starts", true, true);
+    this.clearWatchdog();
+    this.denyTimer = setTimeout(() => {
+      if (!this.state_.denyPending || this.stopping) return;
+      this.setState("offline");
+      try { this.opts.onNotice?.(`${this.id}: ${this.denyStorageFailure ? QWEN_DENY_STORAGE_NOTE : QWEN_DENY_QUIESCENCE_NOTE}`); } catch { /* notice only */ }
+    }, this.opts.denyQuiescenceMs ?? QWEN_DENY_QUIESCENCE_MS);
+    this.denyTimer.unref?.();
   }
 
   private onControlResponse(event: Json): void {
@@ -590,6 +810,8 @@ export class QwenDualPeer extends BasePeer {
   async stop(reason?: string): Promise<void> {
     if (reason !== undefined) this.requestedStopReason = reason;
     this.stopping = true;
+    if (this.denyTimer) clearTimeout(this.denyTimer); this.denyTimer = undefined;
+    this.personalProof = undefined;
     if (this.poller) clearInterval(this.poller); this.poller = undefined;
     if (this.monitor) clearInterval(this.monitor); this.monitor = undefined;
     this.abortApprovals();
