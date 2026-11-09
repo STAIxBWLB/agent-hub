@@ -6403,7 +6403,7 @@ export class Tasks {
     const result = await this.readSpecAcceptance(by, task, task.sdlc, !prospectiveRefs || this.specAcceptanceScope(prospectiveRefs) === this.specAcceptanceScope(task.refs));
     if (this.specMoved(task)) return;
     this.specVerdict(result.task, result.task.sdlc?.issue ? specState(result.task.sdlc, result.edit) : "missing");
-    return result;
+    return result.carry ? result : undefined;
   }
 
   /** #481 S1: a build stage change by an agent re-reads the body edit time first, as accept does. */
@@ -6421,7 +6421,7 @@ export class Tasks {
     if (this.specMoved(task)) return;
     if (result.carry) next.acceptance = result.task.sdlc!.acceptance;
     this.specVerdict(result.task, next.issue ? specState(next, result.edit) : "missing");
-    return result;
+    return result.carry ? result : undefined;
   }
 
   /**
