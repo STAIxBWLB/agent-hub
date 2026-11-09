@@ -5,10 +5,12 @@
 //   bun scripts/decision-eval.ts [--project <dir>] [--db <hub.db>] [--limit 50] [--decider route|systemone]
 //     [--adec http://127.0.0.1:8740] [--policy-id ahub.triage] [--effort default] [--model <name>]
 //     [--timeout 8000] [--out <file>]
-import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board, CLASSES, type TaskClass } from "../src/hub/board.ts";
+import { openHubDatabase } from "../src/hub/db-schema.ts";
 import { loadConfig } from "../src/hub/daemon.ts";
 import { DEFAULT_INFERENCE, Inference } from "../src/hub/inference.ts";
 import { projectContext } from "../src/hub/project.ts";
@@ -24,6 +26,15 @@ export const TITLE_CAP = 500;
 export const DETAIL_CAP = 2000;
 export const DEFAULT_TIMEOUT_MS = 8000;
 export const DEFAULT_ADEC = "http://127.0.0.1:8740";
+
+/**
+ * A fresh namespace for each run. adec keeps in-memory pins for the turn ids it has answered, and keeps them across a
+ * rerun of this script and across projects whose task ids overlap, so an id naming only the sample can be answered with
+ * an earlier run's pin instead of a fresh classification: both the accuracy and the latency would then describe that pin.
+ */
+export const runName = (uuid: () => string = randomUUID) => `run-${uuid().replaceAll("-", "")}`;
+/** Stable within one run, distinct across runs; fits the adec turn-id charset `[A-Za-z0-9._:-]{1,128}`. */
+export const evalTurnId = (run: string, id: number) => `ahub:eval:${run}:${id}`;
 
 /** The board row fields the sample reads; a `Task` is one. */
 export interface BoardRow {
@@ -144,14 +155,14 @@ export function isSystemOneEndpoint(value: unknown): value is string {
 const base = (url: string) => url.replace(/\/$/, "");
 
 /** `POST /v1/route` with the seven classes as the policy's aliases: the chosen alias is the triage answer. */
-function routeColumn(endpoint: string, policyId: string, effort: string, timeoutMs: number): Column {
+function routeColumn(endpoint: string, policyId: string, effort: string, timeoutMs: number, run: string): Column {
   const pairs: AdecPair[] = CLASSES.map((name) => ({ alias: name, effort }));
   return {
     name: `adec /v1/route (policy ${policyId}, ${effort})`,
     decide: async (sample) => {
       const result = await requestAdecRoute(endpoint, {
         policyId,
-        turnId: `ahub:eval:${sample.id}`,
+        turnId: evalTurnId(run, sample.id),
         evidence: JSON.stringify({ title: sample.title, detail: sample.detail }),
         constraints: { contextTokens: 0, pii: false, private: false },
         candidates: [...CLASSES],
@@ -205,13 +216,24 @@ function triageColumn(project: string): Column {
   };
 }
 
-/** The board is copied out of the project first: this run never opens, locks or writes the live `hub.db`. */
-function readBoardCopy(file: string): BoardRow[] {
+/**
+ * One consistent image of the board. Copying `hub.db` and its `-wal`/`-shm` as separate files can mix generations: a
+ * live writer that checkpoints and then reuses the WAL leaves the copied pair disagreeing about which frames are
+ * committed, so a row could arrive with an older text or an older class. SQLite's own serialization reads the database
+ * through one connection, so the image carries the committed WAL frames and needs no sidecar. The source handle is
+ * read-only, and a live WAL read takes SHM read locks at most (`assertHubDbCompatible`, `src/hub/db-schema.ts`).
+ */
+export function boardSnapshot(file: string): Buffer {
+  const source = openHubDatabase(file, { readonly: true });
+  try { return source.serialize(); } finally { source.close(); }
+}
+
+/** The board is snapshotted out of the project first: this run never opens the live `hub.db` for writing. */
+export function readBoardSnapshot(file: string): BoardRow[] {
   const dir = mkdtempSync(join(tmpdir(), "ahub-decision-eval-"));
   try {
     const copy = join(dir, "hub.db");
-    copyFileSync(file, copy);
-    for (const suffix of ["-wal", "-shm"]) if (existsSync(`${file}${suffix}`)) copyFileSync(`${file}${suffix}`, `${copy}${suffix}`);
+    writeFileSync(copy, boardSnapshot(file));
     const board = new Board(copy);
     try { return board.list(); } finally { board.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -244,9 +266,10 @@ if (import.meta.main) {
   if (decider === "systemone" && !isSystemOneEndpoint(systemOneEndpoint)) throw new Error(`--adec must be a loopback base such as ${DEFAULT_ADEC}, making ${systemOneEndpoint} a /v1/systemone endpoint`);
   if (decider !== "route" && decider !== "systemone") throw new Error(`--decider must be route or systemone, not ${JSON.stringify(decider)}`);
 
-  const { samples, excluded } = snapshot(readBoardCopy(db), limit);
+  const run = runName();
+  const { samples, excluded } = snapshot(readBoardSnapshot(db), limit);
   const deciderColumn = decider === "route"
-    ? routeColumn(routeEndpoint, policyId, effort, timeoutMs)
+    ? routeColumn(routeEndpoint, policyId, effort, timeoutMs, run)
     : systemOneColumn(systemOneEndpoint, arg("--model"), timeoutMs);
   const columns = [triageColumn(project), deciderColumn];
   const results = await evaluate(samples, columns);
@@ -257,7 +280,8 @@ if (import.meta.main) {
   const report = [
     `# Offline triage evaluation (#554 AC5, evidence for D5), ${new Date().toISOString().slice(0, 10)}`,
     "",
-    `- Board: \`${db}\` (copied to a temporary directory; the live hub.db is never opened or written)`,
+    `- Board: \`${db}\` (snapshotted to a temporary directory; the live hub.db is never opened for writing)`,
+    `- Run: \`${run}\` (each run has its own adec turn-id namespace, so no earlier pin is reused)`,
     `- Sample: ${samples.length} planner-classified non-PII tasks, newest first, limit ${limit}`,
     `- Excluded rows: ${counts(excluded)}`,
     `- Sampled classes: ${counts(classes)}`,

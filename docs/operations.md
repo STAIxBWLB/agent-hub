@@ -4777,11 +4777,21 @@ row carrying a `pii` or `pii_path` signal, which is dropped before its text is
 read. Kept rows are read as a public view returns them, and each report lists the
 excluded counts and the sampled classes so the sample can be judged.
 
-The script copies `hub.db` (with `-wal`/`-shm`) into a temporary directory and
-opens the copy, so a run never opens, locks or writes the live board. Accuracy
-counts only rows a column labelled, a miss lowers coverage rather than accuracy,
-and the report adds p50/p95/max latency, the two columns' confusion and misses,
-and how often they agreed where both labelled a row.
+The script takes one consistent snapshot of `hub.db` into a temporary directory
+and opens the copy, so a run never opens the live board for writing. The snapshot
+is SQLite's own serialization of a read-only connection, not a copy of the
+database file and its `-wal`/`-shm` sidecars: a live writer that checkpoints and
+then reuses the WAL would leave separately copied files disagreeing about which
+frames are committed. Accuracy counts only rows a column labelled, a miss lowers
+coverage rather than accuracy, and the report adds p50/p95/max latency, the two
+columns' confusion and misses, and how often they agreed where both labelled a
+row.
+
+Each run gets a fresh run id in its report and in every adec turn id, because
+adec keeps in-memory pins for the turn ids it has answered: without it, a second
+run over the same board, or over another project whose task ids overlap, can be
+answered from an earlier pin instead of a fresh classification, and both the
+accuracy and the latency would then describe that pin.
 
 A gain here is evidence for the decider question (D5) only: nothing in this
 script reaches `Tasks.triage`, `assign()` or the PII screen, and no board row,

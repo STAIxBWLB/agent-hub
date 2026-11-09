@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board, type TaskClass } from "../src/hub/board.ts";
@@ -11,8 +12,9 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "ahub-decision-eval-"));
   roots.push(root);
-  const board = new Board(join(root, "hub.db"));
-  return { board, done: () => board.close() };
+  const file = join(root, "hub.db");
+  const board = new Board(file);
+  return { board, file, done: () => board.close() };
 }
 
 test("AC5 sample: planner-classified non-PII rows only, newest first, bounded, public text", async () => {
@@ -106,4 +108,32 @@ test("AC5 endpoint guard: the decider may only be a literal loopback adec addres
   for (const bad of ["https://127.0.0.1:8740/v1/systemone", "http://localhost:8740/v1/systemone", "http://10.0.0.5:8740/v1/systemone",
     "http://127.0.0.1:8740/v1/route", "http://127.0.0.1:8740/v1/systemone?x=1", "http://user:pw@127.0.0.1:8740/v1/systemone",
     "http://127.0.0.1:99999/v1/systemone", "/v1/systemone", 8740, undefined]) expect(isSystemOneEndpoint(bad)).toBe(false);
+});
+
+test("AC5 board read and turn ids: one consistent snapshot of a live board, a fresh namespace per run", async () => {
+  const { boardSnapshot, readBoardSnapshot, runName, evalTurnId } = await import("../scripts/decision-eval.ts");
+  const { board, file, done } = fixture();
+  try {
+    const task = board.propose("claude", { title: "keep the WAL frames", class: "implement" });
+    // The live hub holds its connection open, so its newest rows still sit in the WAL. Neither an image of `hub.db`
+    // alone nor a db/-wal pair copied in two steps is a board snapshot; this reads the row back through one image.
+    expect(readBoardSnapshot(file).find((row) => row.id === task.id)).toMatchObject({ title: "keep the WAL frames", class: "implement" });
+    // The image stands alone: read its bytes with no `-wal` or `-shm` beside them.
+    const dir = mkdtempSync(join(tmpdir(), "ahub-decision-eval-image-"));
+    roots.push(dir);
+    writeFileSync(join(dir, "hub.db"), boardSnapshot(file));
+    const lone = new Database(join(dir, "hub.db"), { create: true, readwrite: true });
+    try { expect(lone.query("SELECT count(*) AS n FROM tasks WHERE id = ?").get(task.id)).toMatchObject({ n: 1 }); }
+    finally { lone.close(); }
+  } finally { done(); }
+
+  // adec pins the turn ids it has answered, so the same sample in a later run must not carry the earlier identity.
+  const first = runName(), second = runName();
+  expect(first).not.toBe(second);
+  expect(evalTurnId(first, 7)).toBe(evalTurnId(first, 7)); // stable within its run
+  expect(evalTurnId(first, 7)).not.toBe(evalTurnId(second, 7));
+  // The adec turn-id contract: /^[A-Za-z0-9._:-]{1,128}$/ (src/models/route/adec.ts), whatever the id lengths are.
+  for (const id of [evalTurnId(first, 7), evalTurnId(second, 123456)]) expect(id).toMatch(/^[A-Za-z0-9._:-]{1,128}$/);
+  expect(evalTurnId(first, 7)).toMatch(/^ahub:eval:run-/);
+  expect(runName(() => "0f0e0d0c-0b0a-4090-8070-605040302010")).toBe("run-0f0e0d0c0b0a40908070605040302010");
 });
