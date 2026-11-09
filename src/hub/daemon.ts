@@ -242,7 +242,7 @@ import { isHubWritePath, grantablePath, instructionProtection, isPermissionMode,
 import { ContextWindows, DEFAULT_CONTEXT, readNativeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
-import { CaptureStore, configuredPolicy, looksSecret, DEFAULT_LEASE_MS, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
+import { CaptureStore, configuredPolicy, recordsEnabled, looksSecret, DEFAULT_LEASE_MS, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
 import { memoryProjectKey } from "@staix/agent-mem";
 import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory, createIntentBriefSource, createStandalonePolicy } from "@staix/agent-mem";
@@ -716,7 +716,7 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 }
 
 export interface DaemonOptions {
-  /** Host-only staging seam. Missing/unreadable policy disables Records until the public package policy API is available. */
+  /** Host-only fixture override; production reads the active memory home's and execution repository's public Record policy. */
   effectiveRecordPolicy?: (cwd: string) => { enabled: boolean; version: string } | undefined;
   /** Host-only numeric startup reader observation; never read from config or control input. Observer failure changes no replay state. */
   startupSeedObserved?: (observation: { readPasses: number; readBytes: number }) => void;
@@ -3328,7 +3328,18 @@ export async function startDaemon(opts: DaemonOptions) {
   const recordInputs = new Map<PeerId, { owner: PeerAdapter | undefined; originals: readonly Envelope[]; tainted?: true }>();
   const recordFrames = new Map<PeerId, { owner: PeerAdapter; turn: NonNullable<ReturnType<typeof turns.get>>; capture: RecordCapture }>();
   function recordPolicy(cwd: string): { enabled: boolean; version: string } | undefined {
-    try { const policy = opts.effectiveRecordPolicy?.(cwd); return policy && typeof policy.enabled === "boolean" && typeof policy.version === "string" && policy.version ? { enabled: policy.enabled, version: policy.version } : undefined; }
+    try {
+      if (opts.effectiveRecordPolicy) {
+        const policy = opts.effectiveRecordPolicy(cwd);
+        return policy && typeof policy.enabled === "boolean" && typeof policy.version === "string" && policy.version ? { enabled: policy.enabled, version: policy.version } : undefined;
+      }
+      const binding = captureBinding;
+      if (!binding || memoryProblem) return;
+      binding.assertCurrent();
+      const enabled = recordsEnabled(binding.home, cwd);
+      // This revision binds only the public flag; fresh configuredPolicy screens below bind current privacy policy.
+      return { enabled, version: enabled ? "records:true" : "records:false" };
+    }
     catch { return; }
   }
   function recordPublic(text: string): boolean { return !looksSecret(text) && boundedSafe(text) && tasks.publicMetadataText(text); }

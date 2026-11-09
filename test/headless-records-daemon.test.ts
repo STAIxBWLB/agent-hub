@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { matchesPolicy } from "../src/hub/path-policy.ts";
 import { runInNewContext } from "node:vm";
-import { CaptureStore, configuredPolicy, RECORD_INSTRUCTION } from "@staix/agent-mem";
+import { CaptureStore, configuredPolicy, recordsEnabled, RECORD_INSTRUCTION } from "@staix/agent-mem";
 import { preferRecordItems, type RecordBriefSnapshot } from "../src/memory/brief.ts";
 import { GeneratedNoteRegistry } from "../src/memory/record-provenance.ts";
 import { recallFor } from "../src/memory/recall.ts";
@@ -27,7 +27,7 @@ class Headless extends BasePeer {
 const record = "amem: fix | src/main.ts#run | synthetic failure -> synthetic repair";
 
 /** Execute the actual daemon binding block with fixed host ports, real RecordCapture and a disposable library store. */
-function fixture(policy: "enabled" | "disabled" | "missing" | "throw" = "enabled", worktree = false) {
+function fixture(policy: "enabled" | "disabled" | "production" | "throw" = "enabled", worktree = false) {
   const root = mkdtempSync(join(tmpdir(), "ahub-records-daemon-")), cwd = join(root, "project"), memoryDir = join(root, "memory"); mkdirSync(cwd);
   const executionCwd = worktree ? join(root, "worktree") : cwd; if (worktree) mkdirSync(executionCwd);
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -40,13 +40,13 @@ function fixture(policy: "enabled" | "disabled" | "missing" | "throw" = "enabled
   const generatedRecordNotes = new GeneratedNoteRegistry();
   const binding = { home: memoryDir, assertCurrent() {} };
   const state = { config: { memory: { enabled: true }, local: { deny: [] }, pii: { paths: [] as string[] } }, stopping: false, configRevision: 0,
-    opts: { cwd, effectiveRecordPolicy: policy === "missing" ? undefined : () => { reads++; if (policy === "throw") throw Error("closed fixture policy failure"); return { enabled: policy === "enabled", version }; } },
+    opts: { cwd, ...(policy === "production" ? {} : { effectiveRecordPolicy: () => { reads++; if (policy === "throw") throw Error("closed fixture policy failure"); return { enabled: policy === "enabled", version }; } }) },
     bus, turns, captureBinding: binding, memoryProblem: undefined, memoryProject: "synthetic-project", memoryProjectFor: () => "synthetic-project",
     memorySyncPolicyVersion: () => profile, recoveryActive: () => recovery, membershipAllowed: () => true, frontendProxyState: () => attached ? { present: true, port: { attached: true } } : { present: false },
     reviewOnlyPeer: () => false, definitionOf: () => ({}), contextPii: () => privateTurn, reviewInputHeld: () => review, reviewObserverInput: () => review,
     isReviewObserverExcluded: () => false, isInvocationKind, remoteEnvelope, boundedSafe: (text: string) => !text.includes("PRIVATE_CANARY"),
     tasks: { publicMetadataText: (text: string) => !text.includes("PRIVATE_CANARY") }, looksSecret: (text: string) => text.includes("SECRET_CANARY"),
-    isDenied: (path: string) => path.startsWith("private/"), matchesPolicy: (_cwd: string, _path: string, _paths: string[], _includeParents = false) => false, log: (text: string) => logs.push(text), RecordCapture, CaptureStore, configuredPolicy, generatedRecordNotes, preferRecordItems, Buffer, resolve, sanitize: (text: string) => text, corpusBriefAllowed: () => true,
+    isDenied: (path: string) => path.startsWith("private/"), matchesPolicy: (_cwd: string, _path: string, _paths: string[], _includeParents = false) => false, log: (text: string) => logs.push(text), RecordCapture, CaptureStore, configuredPolicy, recordsEnabled, generatedRecordNotes, preferRecordItems, Buffer, resolve, sanitize: (text: string) => text, corpusBriefAllowed: () => true,
   };
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8"), start = source.indexOf("  const recordOwners ="), end = source.indexOf("  // Hoisted for the Tasks ports above", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
@@ -80,10 +80,59 @@ test("daemon host binding captures valid public final Records with immutable hos
   expect(f.logs.join("\n")).not.toContain("synthetic-native-session"); expect(f.logs.join("\n")).not.toContain("src/main.ts"); expect(f.logs.join("\n")).not.toContain("synthetic failure");
 });
 
-test("daemon default/false/unreadable record policy remains disabled", () => {
-  for (const mode of ["missing", "disabled", "throw"] as const) {
+test("daemon false or unreadable host Record policy override remains disabled", () => {
+  for (const mode of ["disabled", "throw"] as const) {
     const f = fixture(mode); expect(f.owner.recordInstruction?.()).toBeUndefined(); f.finish(record);
     expect(f.rows()).toEqual([]); expect(f.logs).toEqual([]);
+  }
+});
+
+test("production Record policy defaults enabled through the active disposable memory binding without a host override", () => {
+  const f = fixture("production");
+  expect(Object.hasOwn(f.state.opts, "effectiveRecordPolicy")).toBe(false);
+  expect(f.owner.recordInstruction?.()).toBe(RECORD_INSTRUCTION); f.finish(record);
+  expect(f.rows()).toHaveLength(1); expect(f.reads()).toBe(0);
+});
+
+test("production machine or execution-repository records false narrows an opposing true flag", () => {
+  for (const disabled of ["machine", "repository"] as const) {
+    const f = fixture("production", true);
+    mkdirSync(f.memoryDir); mkdirSync(join(f.executionCwd, ".git")); mkdirSync(join(f.executionCwd, ".amem"));
+    writeFileSync(join(f.memoryDir, "amem.config.json"), JSON.stringify({ records: disabled !== "machine" }));
+    writeFileSync(join(f.executionCwd, ".amem/config"), JSON.stringify({ records: disabled !== "repository" }));
+    expect(Object.hasOwn(f.state.opts, "effectiveRecordPolicy")).toBe(false);
+    expect(f.executionCwd).not.toBe(f.cwd);
+    expect(f.owner.recordInstruction?.()).toBeUndefined(); f.finish(record);
+    expect(existsSync(join(f.memoryDir, "projects"))).toBe(false); expect(f.ports.read({ owner: "codex", title: "Synthetic task", refs: {} })).toBeUndefined();
+    expect(f.logs).toEqual([]);
+  }
+});
+
+test("production malformed machine or execution-repository Record configuration refuses without a host override", () => {
+  for (const location of ["machine", "repository"] as const) for (const malformed of ["not JSON", JSON.stringify({ records: "false" })]) {
+    const f = fixture("production", true);
+    mkdirSync(f.memoryDir); mkdirSync(join(f.executionCwd, ".git")); mkdirSync(join(f.executionCwd, ".amem"));
+    writeFileSync(location === "machine" ? join(f.memoryDir, "amem.config.json") : join(f.executionCwd, ".amem/config"), malformed);
+    expect(f.owner.recordInstruction?.()).toBeUndefined(); f.finish(record);
+    expect(existsSync(join(f.memoryDir, "projects"))).toBe(false); expect(f.ports.read({ owner: "codex", title: "Synthetic task", refs: {} })).toBeUndefined();
+    expect(f.logs).toEqual([]);
+  }
+});
+
+test("production late machine or execution-repository flag drift revokes capture and existing read projections", () => {
+  for (const location of ["machine", "repository"] as const) {
+    const f = fixture("production", true);
+    mkdirSync(f.memoryDir); mkdirSync(join(f.executionCwd, ".git")); mkdirSync(join(f.executionCwd, ".amem"));
+    expect(f.owner.recordInstruction?.()).toBe(RECORD_INSTRUCTION); f.finish(record);
+    const snapshot = f.ports.read({ owner: "codex", title: "Synthetic task", refs: { paths: ["src/main.ts"] } });
+    const original = `# [amem] recent curated context\n\n### Curated short-term notes\nmem:${"f".repeat(32)} contract: Unrelated public contract.`;
+    const projection = f.ports.project("codex", original, 10_000);
+    expect(snapshot?.current?.()).toBe(true); expect(projection?.current?.()).toBe(true);
+    const logs = [...f.logs];
+    writeFileSync(location === "machine" ? join(f.memoryDir, "amem.config.json") : join(f.executionCwd, ".amem/config"), JSON.stringify({ records: false }));
+    expect(f.owner.recordInstruction?.()).toBeUndefined(); f.finish(record.replace("synthetic failure", "synthetic late failure"));
+    expect(f.rows()).toHaveLength(1); expect(snapshot?.current?.()).toBe(false); expect(projection?.current?.()).toBe(false);
+    expect(f.ports.read({ owner: "codex", title: "Synthetic task", refs: {} })).toBeUndefined(); expect(f.logs).toEqual(logs);
   }
 });
 

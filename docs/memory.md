@@ -209,7 +209,7 @@ Write screening examines both the JSON representation and literal structured key
 
 ## Agent-authored records (#1320)
 
-Managed headless Codex, Kimi, Qwen, Jcode, Pi and local turns receive the package-owned Record instruction once per owned turn. Claude sessions keep their own amem hook path; isolated reviewers and person-owned TUI prompts receive no new instruction. The effective amem machine/repository `records: false` setting disables instruction, capture and Record preference. An unavailable policy disables this optional path.
+Managed headless Codex, Kimi, Qwen, Jcode, Pi and local turns receive the package-owned Record instruction once per owned turn. Claude sessions keep their own amem hook path; isolated reviewers and person-owned TUI prompts receive no new instruction. The public `recordsEnabled` accessor from exact-pinned amem 0.23.1 applies the effective machine/repository `records: false` setting to instruction, capture and Record preference. An unavailable policy disables this optional path.
 
 The hub imports the instruction and parser from agent-mem. Valid final-answer records become `Record` capture rows with project and peer attribution, not curated notes or approved evidence. Complete text and anchors clear current secret, PII, private-path and deny policy before storage. Private, PII, review-scoped, remote, unbound and incomplete turns are excluded. Owner, turn, session, profile and policy must remain current; unsafe steering excludes the rest of that turn. No model or network call is added.
 

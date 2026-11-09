@@ -1,9 +1,25 @@
 # Headless Record integration (#1320)
 
-This is a source and disposable-fixture receipt. Production activation is held
-until agent-mem 0.23.1 is published, exact-pinned and its effective Record policy
-export is wired. The host seam currently defaults off. No real memory home,
+This is a source and disposable-fixture receipt, with no live rollout. Agent-mem
+0.23.1 is published and the hub source now imports its public `recordsEnabled`
+accessor. The production path uses the active memory home and execution repository;
+malformed, unavailable or unbound policy disables Records. No real memory home,
 native account, model, provider or person profile was used.
+
+## Published API boundary
+
+Npm metadata identifies exact 0.23.1 at gitHead
+`6b26a529989098aa9f8d5f0b6fa6625cd76e3662`, with integrity
+`sha512-IJdymWpy5kVJgIpqCJyjCWBIFjdfXGS4cXGbdo6IojntvQIIlxspUxmFzARhe7rwDrOpSaDx4yMdnckSfEzBag==`.
+The [public barrel](https://github.com/STAIxBWLB/agent-mem/blob/6b26a529989098aa9f8d5f0b6fa6625cd76e3662/src/index.ts)
+exports `recordsEnabled(base, cwd?)`; its
+[implementation](https://github.com/STAIxBWLB/agent-mem/blob/6b26a529989098aa9f8d5f0b6fa6625cd76e3662/src/memory/config.ts)
+uses the same machine/repository narrowing as native hooks. Either false disables,
+missing configuration enables, and malformed configuration throws. The boolean
+revision binds only this flag; fresh package and hub screens still guard current
+privacy independently. The fixture override is host-only, not a project setting.
+New disposable production-path cases cover both false-inheritance directions,
+malformed machine/repository config and late revocation; their final run is pending.
 
 ## Verified source boundary
 
@@ -74,8 +90,8 @@ and verifies conservative fallback after the registry is cleared.
 
 ## Remaining gates
 
-- Published 0.23.1 pin and real effective-policy export, including machine/repo
-  `records: false` inheritance; no copied parser or private import is used.
+- Generated lock verification and committed-head 0.23.1 production-path tests,
+  including actual machine/repository `records: false` inheritance.
 - Final inventory check of the new keys under the call-site ruling.
 - Final pinned bundle freshness and canonical changed-scope check.
 - Final-head hosted CI and review.
