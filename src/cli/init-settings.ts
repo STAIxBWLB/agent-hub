@@ -55,6 +55,7 @@ export const INIT_SETTINGS: readonly InitSettingDef[] = [
   } },
   { id: "coordination", flags: [{ flag: "--coordination" }], file: "config.json", path: ["coordination"], allowed: COORDINATION_MODES.join("|"), describe: "coordination mode", parse: choice("coordination", "--coordination", COORDINATION_MODES) },
   { id: "memory.enabled", flags: [{ flag: "--memory", value: true }, { flag: "--no-memory", value: false }], file: "config.json", path: ["memory", "enabled"], allowed: "on|off", describe: "shared memory", parse: () => { throw new Error("unreachable"); } },
+  { id: "research.enabled", flags: [{ flag: "--research", value: true }, { flag: "--no-research", value: false }], file: "config.local.json", path: ["research", "enabled"], allowed: "on|off", describe: "research records", parse: () => { throw new Error("unreachable"); } },
   { id: "snapshots.enabled", flags: [{ flag: "--snapshots", value: true }, { flag: "--no-snapshots", value: false }], file: "config.json", path: ["snapshots", "enabled"], allowed: "on|off", describe: "per-turn snapshots", parse: () => { throw new Error("unreachable"); } },
   // #1064 T3: the design-specs feature. `--no-specs` also removes the AGENT_HUB_SPECS block from AGENTS.md and `--specs` restores it (init.ts reads the planned `specs.enabled`); the key is shared, so a team commits the choice.
   { id: "specs.enabled", flags: [{ flag: "--specs", value: true }, { flag: "--no-specs", value: false }], file: "config.json", path: ["specs", "enabled"], allowed: "on|off", describe: "design specs and their freshness checks", parse: () => { throw new Error("unreachable"); } },
@@ -75,7 +76,7 @@ export interface InitSettingsRequest {
 }
 
 /** The usage line `ahub init` prints for a bad argument; help.ts shows the same flags. */
-export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--required-checks <a,b,...>] [--coordination advisory|turn-free] [--memory|--no-memory] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
+export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--required-checks <a,b,...>] [--coordination advisory|turn-free] [--memory|--no-memory] [--research|--no-research] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
 
 /** Every flag the table and the two non-key choices own, for the caller's own argument loop and for help. */
 export const INIT_SETTING_FLAGS: readonly string[] = [...INIT_SETTINGS.flatMap(row => row.flags.map(flag => flag.flag)), "--autonomy"];

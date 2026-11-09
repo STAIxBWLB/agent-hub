@@ -14,7 +14,7 @@ import { AGY_PLUGIN_FILES } from "./agy-mcp.ts";
 import { loadConfig } from "../hub/daemon.ts";
 import { requiredChecksFor } from "../hub/sdlc-merge.ts";
 import { githubOriginRepository } from "../hub/task-repository.ts";
-import { sdlcConfig } from "../hub/sdlc.ts";
+import { loadSdlc, sdlcConfig } from "../hub/sdlc.ts";
 import { VERSION } from "../version.ts";
 import { planInitSettings, type InitSettingFile, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
 
@@ -251,7 +251,7 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
     for (const name of Object.keys(result.next) as InitSettingFile[]) {
       const path = files[name], text = result.next[name]!;
       const row = changed.find(entry => entry.path === path);
-      const reason = `set ${result.rows.filter(entry => entry.file === name).map(entry => entry.key).join(", ")} from the init flags`;
+      const reason = `set ${result.rows.filter(entry => entry.file === name).map(entry => entry.key).join(", ")} from the init settings`;
       if (row) { row.next = text; row.reason = `${row.reason}; ${reason}`; }
       else changed.push({ action: existsSync(path) ? "modify" : "create", path, next: text, reason, ...(name === "config.local.json" ? { privateFile: true as const } : {}) });
     }
@@ -300,6 +300,37 @@ export function planInit(cwd: string, profile?: string, shadow = false, releaseG
 /** #1065 T1: what the settings flags change, key by key (`ahub init --dry-run --json` shows it as `settings`). Read-only. */
 export function initSettingRows(cwd: string, profile?: string, shadow = false, releaseGuard = false, settings?: InitSettingsRequest): InitSettingRow[] {
   return changes(cwd, profile, shadow, releaseGuard, settings).settingRows;
+}
+/** A pre-existing local project choice wins; missing or unreadable machine defaults are off. Validation still runs before any write. */
+export function initResearchDefault(cwd: string, machineValue: boolean | undefined): boolean {
+  const local = join(cwd, ".agenthub", "config.local.json");
+  try {
+    if (existsSync(local)) {
+      const value = JSON.parse(readFileSync(local, "utf8"))?.research?.enabled;
+      if (typeof value === "boolean") return value;
+    }
+  } catch { /* the init candidate validation reports malformed local files before writes */ }
+  return machineValue === true;
+}
+/** Add only a new project's effective on default to the normal plan. Off is the shipped default; explicit flags always win. Never writes machine defaults. */
+export function withInitResearch(cwd: string, request: InitSettingsRequest, machineValue: boolean | undefined): InitSettingsRequest {
+  if (existsSync(join(cwd, ".agenthub", "config.json")) || Object.hasOwn(request.values, "research.enabled") || !initResearchDefault(cwd, machineValue)) return request;
+  return { ...request, values: { ...request.values, "research.enabled": true } };
+}
+/** Prepare person guidance before writes; the CLI prints it only after successful apply. Creates no lifecycle evidence or acceptance. */
+export function initNextSteps(cwd: string, settings?: InitSettingsRequest): string[] {
+  const lines = [
+    "Next steps:",
+    "- Review and commit AGENTS.md, .agenthub/config.json and other shared init changes; keep config.local.json untracked.",
+    "- Start with ahub up or ahub claude; sessions started otherwise miss hub pushes.",
+  ];
+  const mode = settings?.values["sdlc.mode"] ?? loadSdlc(cwd, VERSION).mode;
+  if (mode !== "off") lines.push(
+    `- SDLC ${mode}: accept the planner-recorded spec with ahub sdlc accept <task> --issue <n>.`,
+    "- When a plan departure needs your consent: ahub sdlc accept-departure <task> <head> <reason...>.",
+    "- After hub_task_done on the open PR, reviewer approval and green exact-head CI, use guarded merge: ahub sdlc merge <task>.",
+  );
+  return lines;
 }
 /** Returns the paths it changed, applying the same plan as the preview. */
 export function init(cwd: string, profile?: string, shadow = false, releaseGuard = false, settings?: InitSettingsRequest): string[] {

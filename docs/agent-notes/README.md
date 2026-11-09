@@ -102,3 +102,8 @@ revision. A roster-only reload then discarded a held public recall response, so
 the existing #315 preface test lost its preface even though the independent
 off-roster attach guard remained correct. The memory/privacy-specific read
 revision preserves both behaviors; capture still uses its stricter turn fence.
+
+
+## Changes
+
+- 2026-11-09: #1328 T6 extended the closed machine-default schema for an explicit setup research choice, reusing guarded publication and preserving the existing autonomy and start choices.
