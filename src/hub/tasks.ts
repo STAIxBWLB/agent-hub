@@ -4343,7 +4343,7 @@ export class Tasks {
         if (mode === "enforce") {
           if (opts.claim && opts.namedOwner === by) stagedClaimGap = gap;
           else {
-            if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${entry}`); // #601, before the stall write
+            if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${entry}`); // #601, before hold bookkeeping
             this.holdReady(current, "build entry", entry);
             return this.d.board.get(current.id) ?? current;
           }
@@ -4857,7 +4857,7 @@ export class Tasks {
     return buildEntryDiagnostic(task, planGap);
   }
 
-  /** Why a proposal's named owner (a self-claim included) did not get it, from the stall its proposal recorded (#601); undefined when it did. */
+  /** Proposal entry guidance first; otherwise explain an unassigned named owner from its recorded peer stall (#601). */
   namedOwnerNote(task: Task, named: PeerId | undefined, by: PeerId): string | undefined {
     requireLocalTaskPeer(by);
     if (task.state !== "proposed") return undefined;

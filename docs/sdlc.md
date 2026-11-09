@@ -482,5 +482,6 @@ pure and receives snapshot guidance as data. Candidate choice and the existing
 plan-only offer gate remain unchanged: an owner offer may precede person spec
 acceptance. Acceptance still runs live spec checks before live plan checks, with
 its existing authority and currentness fences. Snapshot guidance never certifies
-that an accepted spec or reviewed issue is still current. Private task projections
+that an accepted spec or reviewed issue is still current. Unavailable, private or
+closed plan evidence retains its original diagnostic lead and planner action. Private task projections
 withhold these issue-specific diagnostics.

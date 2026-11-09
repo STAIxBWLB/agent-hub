@@ -72,3 +72,10 @@ test("ordinary peer eligibility and private projections stay separate from entry
   expect(r.tasks.explain(secret.id).join("\n")).not.toContain("PRIVATE-CANARY");
   expect(r.tasks.explain(secret.id).some(line => line.startsWith("build entry:"))).toBe(false);
 });
+
+for (const gap of ["plan review issue metadata unavailable", "private issue plan review evidence unavailable", "plan review issue is closed"]) test(`plan uncertainty retains its original lead: ${gap} (#1328)`, () => {
+  const reviewed = { id: 7, sdlc: { stage: "build", repo: "owner/repo", issue: 7,
+    acceptance: { repo: "owner/repo", issue: 7, lastEditedAt: null, updatedAt: date, acceptedAt: 1 },
+    planReview: { planner: "claude", planningRevision: 0, recordedAt: 1 } } };
+  expect(buildEntryDiagnostic(reviewed, gap)).toBe(`${gap} (planner: hub_plan_review)`);
+});
