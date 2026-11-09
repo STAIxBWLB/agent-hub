@@ -3161,7 +3161,7 @@ async function runConductorCommand(): Promise<void> {
   }
   let op: string;
   let input: Record<string, unknown>;
-  if (cmd === "sdlc") return commands.sdlc!(); // #786: `sdlc merge` is the one conductor-class sdlc subcommand; the daemon checks the role.
+  if (cmd === "sdlc") return commands.sdlc!(); // SDLC operational subcommands are role-checked by the daemon.
   if (cmd === "task") {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
     const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);

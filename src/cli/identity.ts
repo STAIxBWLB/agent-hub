@@ -154,7 +154,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (conductorOperation(command,args)) return "conductor";
   if (command === "stop") return "console";
   if (command === "sdlc" && ["release-guard", "release-guard-hook"].includes(args[0] ?? "")) return "allowed";
-  // #786, #1063: guarded merge and recording explicitly instructed release consent admit the person or unique configured conductor; the daemon checks the role.
+  // #786, #1063, #1328: guarded merge, merge adoption and explicitly instructed release consent admit the person or unique configured conductor; the daemon checks the role.
   if (command === "sdlc" && ["merge", "authorize-release", "adopt-merge"].includes(args[0] ?? "")) return "conductor";
   if (command === "role") return ["list", "show"].includes(args[0] ?? "") ? "allowed" : "console";
   if (command === "task") {
