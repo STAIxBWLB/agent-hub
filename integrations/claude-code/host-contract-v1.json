@@ -274,8 +274,27 @@
         "oldCliSpawnsPerRefresh": 5
       },
       "measurement": {
-        "state": "NOT RUN",
-        "scope": "One approved sourceCLI status refresh; adapter subprocess count, not all OS descendants; no raw packet retained; not native mod/UI proof"
+        "state": "OBSERVED",
+        "measuredAt": "2026-11-09T13:18:42.876Z",
+        "sourceHead": "97d9d67db6a0cd6cafe108472d36b4ae63cdf665",
+        "sourceVersion": "0.35.0",
+        "reportedHubVersion": "0.35.0",
+        "sourceCli": "src/cli/main.ts",
+        "cliSpawnCount": 1,
+        "spawnScope": "adapter sourceCLI subprocesses only; wrapper and OS descendants excluded",
+        "stdoutBytes": 19030,
+        "stderrBytes": 0,
+        "wallMs": 744.856,
+        "exitCode": 0,
+        "rootMatched": true,
+        "firstProjectIdPinned": true,
+        "projectIdMatchedFirstPin": true,
+        "identityCeiling": "first-read pin only; no independent registration or cross-refresh attestation",
+        "projectionState": "partial",
+        "nativeUI": "NOT RUN",
+        "rawPacketRetained": false,
+        "authorization": "One source-CLI status refresh on this project; inherited agent markers preserved; no board/projects probe, raw packet file, Claude profile/settings load/change or model turn",
+        "recording": "Numeric record added in a later documentation commit; sourceHead identifies the measured code"
       }
     }
   }
