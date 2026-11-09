@@ -9,12 +9,15 @@
     "hub": "0.35.0",
     "sourceBase": "34773d2e40e935a6c05444ae352ec2363be72673",
     "bun": "1.4.4 macOS arm64",
-    "credentialsCopied": false,
     "modelTurns": 0,
     "realSettingsSha256Before": "1935b1c8fb7fa8cc7530f25f472cad87d269b0b6e5e3803aecf41a2b799e1f70",
     "realSettingsSha256After": "1935b1c8fb7fa8cc7530f25f472cad87d269b0b6e5e3803aecf41a2b799e1f70",
     "receipt": "receipts/c0-cli.md",
-    "isolation": "Dedicated HOME, CLAUDE_CONFIG_DIR, AGENTHUB_HOME and AMEM_HOME beneath mktemp outside any Git repository. Only scratch registry and daemon used; no native peers or models started."
+    "isolation": "Dedicated HOME, CLAUDE_CONFIG_DIR, AGENTHUB_HOME and AMEM_HOME beneath mktemp outside any Git repository. Only scratch registry and daemon used; no native peers or models started.",
+    "claudeCredentialsCopied": false,
+    "initialInheritedCredentialEnvironment": true,
+    "finalProbeExplicitEnvironment": true,
+    "environmentCorrection": "The initial scratch environment snapshot retained an unrelated inherited credential variable. Both snapshots were deleted; version, host-kit and scratch CLI reads were repeated with an explicit noncredential environment allowlist. No value was printed, tracked or used for a model turn."
   },
   "capabilities": [
     {

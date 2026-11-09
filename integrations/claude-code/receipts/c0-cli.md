@@ -1,10 +1,10 @@
 # Claude Code C0 isolated CLI evidence
 
-Recorded 2026-11-09. Claude Code 2.1.319; hub 0.35.0 at source base `34773d2e40e935a6c05444ae352ec2363be72673`; Bun 1.4.4 macOS arm64.
+Recorded 2026-11-09; final explicit-environment repetition succeeded with the same read outcomes. Claude Code 2.1.319; hub 0.35.0 at source base `34773d2e40e935a6c05444ae352ec2363be72673`; Bun 1.4.4 macOS arm64.
 This receipt proves CLI availability and a scratch daemon's read boundary. It does not prove a mod's `$.process`, channel delivery, a drawing surface, command origin, or an interactive journey.
 
-- Created `$SCRATCH` with `mktemp -d` outside Git, with separate `home`, `config` and `project2` directories.
-- Every Claude invocation set `HOME=$SCRATCH/home`, `CLAUDE_CONFIG_DIR=$SCRATCH/config`, `AGENTHUB_HOME=$SCRATCH/home/hub`, `AMEM_HOME=$SCRATCH/home/amem`. No credentials copied and no model turn requested. Inherited provider and agent markers were removed from the fixture environment. Child read probes explicitly set only `CLAUDECODE=1`, `CLAUDE_CODE_SESSION_ID=c0-isolated-session`, `AGENTHUB_PEER_ID=claude`.
+- Created `$SCRATCH` with `mktemp -d` outside Git, with separate `home`, `config` and `project2` directories; the final clean repetition used a fresh `project3`.
+- Every Claude invocation set `HOME=$SCRATCH/home`, `CLAUDE_CONFIG_DIR=$SCRATCH/config`, `AGENTHUB_HOME=$SCRATCH/home/hub`, `AMEM_HOME=$SCRATCH/home/amem`. No Claude credentials were copied and no model turn was requested. The initial scratch environment snapshot retained an unrelated inherited credential variable. Both environment snapshots were deleted, and version, host-kit and all scratch reads were repeated with an explicit allowlist: PATH, TMPDIR, LANG, TERM, HOME, CLAUDE_CONFIG_DIR, AGENTHUB_HOME, AMEM_HOME and GIT_CONFIG_GLOBAL. No credential value was printed, tracked or used for a model turn. Child read probes explicitly set only `CLAUDECODE=1`, `CLAUDE_CODE_SESSION_ID=c0-isolated-session`, `AGENTHUB_PEER_ID=claude`.
 - `claude --version`: exit 0, `2.1.319 (Claude Code)`.
 - `claude plugin --help`, `plugin init --help`, `plugin test --help`, `plugin validate --help`: exit 0. Help for test says it runs tests in an environment like mod hooks; that is not a live UI session.
 - `claude plugin init c0-probe --with hooks --author fixture --author-email fixture@example.invalid`: exit 0; writes only the isolated config's `skills/c0-probe` and bookkeeping. No plugin installed into a real profile.

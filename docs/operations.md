@@ -6962,7 +6962,7 @@ Count-only `records capture`, `records forwarded`, `records brief` and `records 
 
 ## Claude Code companion contract (#1338 C0)
 
-The [versioned host contract](../integrations/claude-code/host-contract-v1.md) freezes the seven C0 questions and two counted baseline procedures. Claude Code 2.1.319 and a scratch agent-hub 0.35.0 were probed with isolated HOME and CLAUDE_CONFIG_DIR, outside Git, with no credentials copied or model turns. Real settings.json hashes stayed identical.
+The [versioned host contract](../integrations/claude-code/host-contract-v1.md) freezes the seven C0 questions and two counted baseline procedures. Claude Code 2.1.319 and a scratch agent-hub 0.35.0 were probed with isolated HOME and CLAUDE_CONFIG_DIR, outside Git, with no Claude credentials copied or model turns. The final probes used an explicit noncredential environment allowlist after the initial inherited environment was corrected (receipt records the distinction). Real settings.json hashes stayed identical.
 
 Agent-marked direct CLI status, board and project reads succeeded; calling them from a live mod's `$.process` remains unproven. Channel delivery origins, gesture origins, panes/bands, statusLine coexistence and minimum mod version remain unproven. The status-line and channel-delivery surfaces are dropped pending proof; `ahub tail` is excluded (person-only refusal and free text). No surface is supported by C0, and every native surface receipt remains NOT RUN. No native UX improvement is claimed by passing fixture tests.
 
