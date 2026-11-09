@@ -1772,7 +1772,7 @@
     {
       "id": "planning-actual-approval",
       "file": "src/hub/planning.ts",
-      "search": "doneAt: adopted ?? approved ?? reviewerlessDone",
+      "search": "doneAt: approved ?? reviewerlessDone",
       "replacement": "doneAt: first([\"done\"])",
       "testFile": "test/planning.test.ts",
       "testName": "actual task dates use execution review and approval evidence rather than typed plans or notes (#263)"

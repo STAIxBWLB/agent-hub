@@ -137,16 +137,18 @@ test("adoption cannot revive a withdrawn historical reviewer approval binding", 
   const now = f.board.get(f.id)!;
   expect(now.history.filter(entry => entry.event === "approved")).toHaveLength(1);
   expect(approvalBinding(now)).toBeUndefined();
-  expect(actualTaskDates(now).doneAt).toBe(now.history.at(-1)!.at);
 });
 
-test("adoption completion time is distinct from an earlier reviewer verdict", () => {
-  const history = [
-    { at: 1, by: "codex", event: "accepted" }, { at: 10, by: "kimi", event: "approved" },
-    { at: 20, by: "kimi", event: "changes_requested" }, { at: 30, by: USER, event: "merged outside the hub" },
-  ];
-  expect(actualTaskDates({ history, state: "approved", reviewer: "kimi" })).toEqual({ startedAt: 1, reviewAt: null, doneAt: 30 });
-  expect(history.filter(entry => entry.event === "approved")).toHaveLength(1);
+test("historical completion time is the first approval or adoption, without inventing review evidence", () => {
+  const accepted = { at: 1, by: "codex", event: "accepted" }, approved = { at: 10, by: "kimi", event: "approved" };
+  const adopted = { at: 30, by: USER, event: "merged outside the hub" };
+  for (const [history, doneAt] of [
+    [[accepted, adopted], 30],
+    [[accepted, approved, { at: 20, by: "kimi", event: "changes_requested" }, adopted], 10],
+    [[accepted, adopted, { at: 40, by: "kimi", event: "approved" }], 30],
+  ] as const) {
+    expect(actualTaskDates({ history: [...history], state: "approved", reviewer: "kimi" })).toEqual({ startedAt: 1, reviewAt: null, doneAt });
+  }
 });
 test("adoption's uncollected file evidence stays unknown", async () => {
   const f = fixture(), evidence = await readAdoptMergeEvidence({ repo: "owner/repo", pr: 7, stage: "build" }, f.gh);
