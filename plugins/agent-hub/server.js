@@ -27307,6 +27307,7 @@ init_hub_tools();
 init_envelope();
 
 // src/hub/execution-lineage-owner.ts
+init_deliverables();
 init_memory_policy();
 init_envelope();
 init_execution_links();
