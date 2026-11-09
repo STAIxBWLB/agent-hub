@@ -41,7 +41,7 @@ export function planStageSwitch(policy: StaySwitchPolicy | undefined, pin: Stage
     if (!host.fits(other)) throw new Error("no stage backend fits the model input");
     proposal = other; reason = "context_fit";
   }
-  trace.staySwitch = actual.stay_switch; trace.plan = pin === proposal ? "stay" : "switch"; trace.reason = reason;
+  trace.staySwitch = actual.stay_switch; trace.plan = !pin || pin === proposal ? "stay" : "switch"; trace.reason = reason;
   const tier = actual.stay_switch === "enforce" ? proposal : fallback.tier;
   return { tier, pin: tier, trace };
 }

@@ -36,7 +36,8 @@ test("off and shadow preserve fallback while enforce holds arbitrary tool-loop l
 });
 test("host fit, prefill, compaction and recovery keep closed event reasons", () => {
   const policy = { stay_switch: "enforce" as const, max_switch_prefill_tokens: 100 };
-  expect(planStageSwitch(policy, undefined, choice("efficient"), "user", fits).trace.reason).toBe("new_pin");
+  expect(planStageSwitch(policy, undefined, choice("efficient"), "user", fits).trace).toMatchObject({ reason: "new_pin", plan: "stay" });
+  expect(planStageSwitch(undefined, undefined, choice("efficient"), "user", { fits: () => true }).trace).toEqual({ turnType: "user", staySwitch: "shadow", plan: "stay", reason: "new_pin" });
   expect(planStageSwitch(policy, "efficient", choice("capable", "override"), "tool_result", fits).trace.reason).toBe("override");
   expect(planStageSwitch(policy, "capable", choice("efficient"), "user", fits).trace.reason).toBe("prefill_bound");
   expect(planStageSwitch(policy, "capable", choice("efficient"), "user", { fits: () => true }).trace).not.toHaveProperty("prefillTokens");

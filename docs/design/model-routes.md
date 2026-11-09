@@ -314,6 +314,8 @@ recovery/tool-loop/user-boundary rules. Fit remains the host's predicate; a fit
 constraint can prevent an otherwise proposed tier. Unknown input does not gain a
 new legacy trace turn category merely because the stage packet permits `other`.
 
+The initial `new_pin` establishes the current tier and records `plan: "stay"`,
+including sensitive routes; it is not a switch from an earlier tier.
 The owned relay/runtime assertions pin initial `new_pin`, recovery `override`,
 compaction, tool-loop stay, prefill-bound stay and user-turn switch. The event
 contract additionally retains `same_tier` and `context_fit`; this audit does not
