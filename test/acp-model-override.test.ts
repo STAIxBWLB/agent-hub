@@ -64,14 +64,17 @@ else if(m.id!==undefined)answer({});});`);
   // A fake-only RPC shares the actual receive lane and runs after the held setter handler has returned.
   // Filesystem notifications are observation hints, not an acknowledgement/release protocol.
   const transport = peer as unknown as { request(method: string, params: unknown): Promise<unknown> };
+  const barrier = async () => { expect(await transport.request("fixture/barrier", {})).toEqual({ ready: true }); };
   const observed = async (kind: "rows" | "prompts", count: number) => {
     expect(await transport.request("fixture/observe", { kind, count })).toEqual({ observed: kind, count });
+    // Drain control updates emitted after the record in that handler before testing prompt admission.
+    await barrier();
   };
   const rows = () => readFileSync(records, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method: string; model: string });
   const idle = () => peer.state === "idle" ? Promise.resolve() : new Promise<void>(resolve => { const old = peer.onState; peer.onState = state => { old?.(state); if (state === "idle") { peer.onState = old; resolve(); } }; });
   return { root, trust, peer, rows, applied, rejected, choose: (model: string | undefined) => { desired = model; }, release: async () => { expect(await transport.request("fixture/release", {})).toEqual({ released: true }); }, idle,
     waitPrompts: (count: number) => observed("prompts", count), waitRows: (count: number) => observed("rows", count),
-    barrier: async () => { expect(await transport.request("fixture/barrier", {})).toEqual({ ready: true }); } };
+    barrier };
 }
 
 test("fake ACP checkpoints wait before a record and remain available after it without filesystem notifications", async () => {
