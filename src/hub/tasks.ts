@@ -5798,6 +5798,7 @@ export class Tasks {
       return now;
     };
     current();
+    if (task.draft) throw new PreEffectToolRefusal("an intake draft cannot be approved by merge adoption; approve the intake through ahub intake approve before retrying ahub sdlc adopt-merge");
     if (isClosedTaskState(task.state) || task.state === "backlog") throw new PreEffectToolRefusal("merge adoption needs an open active task; inspect ahub task show before choosing the task to adopt");
     if (!head || !/^[a-f0-9]{40}$/.test(head)) throw new PreEffectToolRefusal("the task has no recorded full head; record its full commit SHA before retrying ahub sdlc adopt-merge");
     const scope = this.repositories.scope(task.refs), repo = task.sdlc?.repo ?? (scope.key.startsWith("repo:") ? scope.key.slice("repo:".length) : undefined);

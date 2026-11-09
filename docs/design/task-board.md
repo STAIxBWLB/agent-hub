@@ -122,7 +122,8 @@ The state becomes `approved` through Tasks, with the actual actor and the
 the saved approval. Adoption creates no reviewer verdict, review metric,
 reviewed-head receipt, guarded-merge result, GitHub mutation or branch cleanup.
 A prior withdrawn reviewer approval remains historical and cannot become a
-current reviewer binding through adoption.
+current reviewer binding through adoption. Completion time is the adoption
+event time, separately from reviewer verdict metrics.
 Private tasks and private turns refuse before any GitHub read for every actor,
 including the person. The person's local review authority does not authorize
 sending private task metadata to an external observer. Delegated `--live-test`

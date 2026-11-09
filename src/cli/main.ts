@@ -1868,7 +1868,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       const hub = await connect();
       try {
         const reply = await hub.request({ t: "sdlc", op: "adopt-merge", id, pr }, 60_000);
-        if (!reply.ok) fail(reply.error);
+        if (!reply.ok) {
+          const reason = typeof reply.error === "string" ? reply.error : "merge adoption failed without a reason; inspect the hub log and retry ahub sdlc adopt-merge";
+          if (/unknown SDLC operation|does not know/.test(reason)) fail(`${reason}; the running hub does not support adopt-merge; upgrade agent-hub and run ahub restart before retrying ahub sdlc adopt-merge`);
+          fail(reason);
+        }
         console.log(`task #${id}: merged outside the hub; approved`);
       } finally { hub.close(); }
       return;

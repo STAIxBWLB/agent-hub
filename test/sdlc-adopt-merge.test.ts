@@ -8,7 +8,9 @@ import { Registry } from "../src/hub/registry.ts";
 import { realPath } from "../src/hub/project.ts";
 import { USER, HUB } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
+import { readAdoptMergeEvidence } from "../src/hub/sdlc-merge.ts";
 import { sdlcConfig, type SdlcGh } from "../src/hub/sdlc.ts";
+import { actualTaskDates } from "../src/hub/planning.ts";
 import { approvalBinding } from "../src/hub/task-approval.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { classifyPeerCommand, liveTestRefusal } from "../src/cli/identity.ts";
@@ -45,7 +47,7 @@ function fixture() {
   const task = board.propose(USER, { title: "PRIVATE_TITLE", class: "implement" });
   board.update(task.id, USER, "accepted", { state: "in_progress", owner: "codex", reviewer: "kimi", refs: { commit: HEAD }, sdlc: { repo: "owner/repo", pr: 7, stage: "build" } });
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(root, { recursive: true, force: true }); });
-  return { root, board, bus, roster, tasks, roles, calls, world, notices, id: task.id,
+  return { root, board, bus, roster, tasks, roles, calls, gh, world, notices, id: task.id,
     setRead: (fn: typeof onRead) => { onRead = fn; }, setPrivate: () => { privateTurn = true; }, revokeSession: () => { sessionCurrent = false; },
     hold: () => { hold = true; }, config: (value: Record<string, unknown>) => { config = sdlcConfig(value); } };
 }
@@ -67,6 +69,7 @@ test("AC4: observed merge approves and releases dependents without a reviewer ve
   expect(result).toEqual({ task: f.id, state: "approved" });
   const now = f.board.get(f.id)!;
   expect(now.state).toBe("approved");
+  expect(actualTaskDates(now).doneAt).toBe(now.history.at(-1)!.at);
   expect(now.history.at(-1)).toMatchObject({ by: USER, event: "merged outside the hub", note: `PR #7 merged outside the hub at ${HEAD}` });
   expect(now.history.some(entry => entry.event === "approved")).toBe(false);
   expect(now.sdlc?.reviewedHead).toBeUndefined(); expect(now.sdlc?.merge).toBeUndefined();
@@ -134,6 +137,20 @@ test("adoption cannot revive a withdrawn historical reviewer approval binding", 
   const now = f.board.get(f.id)!;
   expect(now.history.filter(entry => entry.event === "approved")).toHaveLength(1);
   expect(approvalBinding(now)).toBeUndefined();
+  expect(actualTaskDates(now).doneAt).toBe(now.history.at(-1)!.at);
+});
+
+test("adoption completion time is distinct from an earlier reviewer verdict", () => {
+  const history = [
+    { at: 1, by: "codex", event: "accepted" }, { at: 10, by: "kimi", event: "approved" },
+    { at: 20, by: "kimi", event: "changes_requested" }, { at: 30, by: USER, event: "merged outside the hub" },
+  ];
+  expect(actualTaskDates({ history, state: "approved", reviewer: "kimi" })).toEqual({ startedAt: 1, reviewAt: null, doneAt: 30 });
+  expect(history.filter(entry => entry.event === "approved")).toHaveLength(1);
+});
+test("adoption's uncollected file evidence stays unknown", async () => {
+  const f = fixture(), evidence = await readAdoptMergeEvidence({ repo: "owner/repo", pr: 7, stage: "build" }, f.gh);
+  expect(evidence?.pathsComplete).toBe(false); expect(evidence?.typesComplete).toBe(false);
 });
 
 test("AC4: PR not merged refuses", async () => { const f = fixture(); f.world.state = "OPEN"; await refused(f, "PR is not merged"); });
@@ -172,7 +189,8 @@ test("every awaited gh read fences task flow, repository, head, findings, privac
     ["head", f => { f.board.update(f.id, USER, "new head", { refs: { commit: OTHER } }); }],
     ["findings", important], ["privacy", f => { f.board.update(f.id, USER, "private", { signals: ["pii"] }); }],
     ["policy", f => { f.config({ mode: "enforce", required_checks: ["new-gate"] }); }],
-    ["conductor", f => { f.roles.claude = []; }], ["session", f => { f.revokeSession(); }],
+    ["conductor", f => { f.roles.claude = []; }], ["roster", f => { f.roster.claude = false; }],
+    ["storage", f => { f.bus.storageError = "fixture storage hold"; }], ["session", f => { f.revokeSession(); }],
     ["private turn", f => { f.setPrivate(); }], ["hold", f => { f.hold(); }],
   ];
   for (const at of [1]) for (const [name, flip] of flips) {
@@ -183,6 +201,17 @@ test("every awaited gh read fences task flow, repository, head, findings, privac
     expect(f.calls.length).toBe(at);
   }
 });
+test("an intake draft and closed or parked work refuse before GitHub reads", async () => {
+  const draft = fixture(), card = draft.board.propose(USER, { title: "draft", class: "implement", draft: true, backlog: true });
+  await expect(draft.tasks.adoptMerge(USER, card.id, 7)).rejects.toThrow("approve the intake");
+  expect(draft.calls).toHaveLength(0);
+  const closed = fixture(); closed.board.update(closed.id, USER, "cancelled", { state: "cancelled" });
+  await refused(closed, "open active task"); expect(closed.calls).toHaveLength(0);
+  const parked = fixture(), pending = parked.board.propose(USER, { title: "parked", class: "implement", backlog: true });
+  await expect(parked.tasks.adoptMerge(USER, pending.id, 7)).rejects.toThrow("open active task");
+  expect(parked.calls).toHaveLength(0);
+});
+
 test("daemon-supplied currentness fence is rechecked after each read", async () => {
   const f = fixture(); let current = true;
   f.setRead(index => { if (index === 1) current = false; });
@@ -213,13 +242,14 @@ test("adopt-merge control requests always reply to invalid arguments, missing ta
 test("CLI sends the exact task/PR request, prints approval and refuses invalid or delegated forms before adoption", async () => {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-adopt-cli-"))), stateDir = join(root, ".agenthub", "state"), calls: Record<string, unknown>[] = [];
   mkdirSync(stateDir, { recursive: true }); writeFileSync(join(root, ".agenthub", "config.json"), "{}");
+  let unsupported = false;
   const registry = new Registry(join(root, "home", "registry.db")), project = registry.register(root, stateDir); registry.close();
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     fetch(req, srv) { if (srv.upgrade(req)) return; return new Response("unexpected"); },
     websocket: { message(sock, raw) {
       const message = JSON.parse(String(raw));
       if (message.t === "hello") sock.send(JSON.stringify({ t: "welcome", rid: message.rid, ok: true, cwd: root, projectId: project.id, instanceId: "fixture" }));
-      else { calls.push(message); sock.send(JSON.stringify({ rid: message.rid, ok: true, task: 1, state: "approved" })); }
+      else { calls.push(message); sock.send(JSON.stringify(unsupported ? { rid: message.rid, ok: false, error: "unknown SDLC operation" } : { rid: message.rid, ok: true, task: 1, state: "approved" })); }
     } } });
   writeFileSync(join(stateDir, "control-token"), "fixture-token");
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, pid: process.pid, projectId: project.id, instanceId: "fixture" }));
@@ -239,5 +269,10 @@ test("CLI sends the exact task/PR request, prints approval and refuses invalid o
     expect(invalid.code).toBe(1); expect(invalid.stderr).toContain("usage:"); expect(calls).toHaveLength(1);
     const delegated = await run(["--live-test", "sdlc", "adopt-merge", "1", "--pr", "7"], true);
     expect(delegated.code).toBe(1); expect(delegated.stderr).toContain("live-test"); expect(calls).toHaveLength(1);
+    unsupported = true;
+    const old = await run(["sdlc", "adopt-merge", "1", "--pr", "7"]);
+    expect(old.code).toBe(1); expect(old.stderr).toContain("unknown SDLC operation");
+    expect(old.stderr).toContain("upgrade agent-hub"); expect(old.stderr).toContain("ahub restart");
+
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 });
