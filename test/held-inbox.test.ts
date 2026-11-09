@@ -277,3 +277,89 @@ test("observed held review remains excluded when older held rows move it outside
     expect(journal.snapshot().reviewInputProvenance).toEqual(before.reviewInputProvenance);
   } finally { caller?.close(); await restarted?.stop(); await f.close(); }
 });
+
+import { isReviewObserverExcluded } from "../src/hub/memory-policy.ts";
+
+for (const kind of ["chat", "status"] as const) test(`host-stamped held ${kind} response stays excluded before any inbox re-read after restart`, async () => {
+  const f = await daemonRig(), source = new Bus({ batchMs: 0 });
+  let restarted: Awaited<ReturnType<typeof startDaemon>> | undefined, caller: ControlClient | undefined;
+  class ResponseSource extends BasePeer {
+    readonly pullOnly = true;
+    async start() { this.setState("idle"); }
+    async stop() { this.setState("offline"); }
+    async deliver() {}
+  }
+  try {
+    const sender = new ResponseSource("codex"); source.add(sender); await sender.start();
+    const parent = newEnvelope("hub", "source review input", { kind: "review", to: [sender.id], refs: { reviewPackage: "review-response-source" } });
+    source.publish(parent);
+    expect(source.pull(sender.id)?.map(env => env.id)).toEqual([parent.id]);
+    const candidate = newEnvelope(sender.id, `HELD_${kind}_RESPONSE_BODY`, { kind, to: ["claude"] });
+    expect(candidate.refs?.reviewResponse).toBeUndefined();
+    const response = source.reviewResponse(candidate, parent.id);
+    expect(response.refs?.reviewResponse).toBe("review-response-source");
+    expect(isReviewObserverExcluded(response)).toBe(true);
+    f.journal.createDelivery({ id: "held-response", peer: "claude", state: "needs_review", createdAt: response.ts, originals: [response], out: [response] });
+    const before = f.journal.snapshot();
+    expect(before.reviewInputProvenance?.holds.filter(row => row.peer === "claude")).toEqual([]);
+    expect(before.reviewInputProvenance?.incompletePeers).not.toContain("claude");
+    expect((await f.peer.request({ t: "inbox" })).heldRead.rows[0].messages[0].body).toBe(response.body);
+    expect(f.journal.snapshot()).toEqual(before);
+    f.peer.close(); await f.daemon.stop();
+    restarted = await startDaemon({ cwd: f.dir, stateDir: f.dir, projectId: "held-inbox-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+    caller = await ControlClient.connect(f.dir, { role: "peer", peer: "claude", channel: false });
+    const journal = (restarted.bus as unknown as { journal: DeliveryJournal }).journal, snapshot = journal.snapshot();
+    // No inbox read after restart: the retained metadata alone must protect this native history.
+    const canary = `RESTART_${kind}_RESPONSE_CAPTURE_CANARY`;
+    restarted.bus.peers.get("claude")!.onMessage?.(canary, { to: ["user"] });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(readFileSync(join(f.dir, "hub.log"), "utf8") + readFileSync(join(f.dir, "events.jsonl"), "utf8")).not.toContain(canary);
+    const note = await caller.request({ t: "task", op: "hub_remember", args: { text: "retained response must stay excluded", kind: "finding" } });
+    expect(note.ok).toBe(false); expect(note.error).toContain("review");
+    expect(journal.snapshot().deliveries).toEqual(snapshot.deliveries);
+    expect(journal.snapshot().reviewInputProvenance).toEqual(snapshot.reviewInputProvenance);
+  } finally { source.closeJournal(); caller?.close(); await restarted?.stop(); await f.close(); }
+});
+
+test("held metadata projection uses shared trusted-package and response semantics without widening queued input", () => {
+  const f = journalRig();
+  try {
+    const cases = [
+      { from: "hub", kind: "review" as const, refs: { reviewPackage: "review-valid" }, state: "needs_review" as const, expected: true },
+      { from: "codex", kind: "chat" as const, refs: { reviewResponse: "review-valid" }, state: "needs_review" as const, expected: true },
+      { from: "codex", kind: "status" as const, refs: { reviewResponse: "review-valid" }, state: "needs_review" as const, expected: true },
+      { from: "user", kind: "chat" as const, refs: { reviewResponse: "review-valid" }, state: "needs_review" as const, expected: false },
+      { from: "hub", kind: "chat" as const, refs: { reviewResponse: "review-valid" }, state: "needs_review" as const, expected: false },
+      { from: "codex", kind: "task" as const, refs: { reviewResponse: "review-valid" }, state: "needs_review" as const, expected: false },
+      { from: "codex", kind: "chat" as const, refs: { reviewResponse: "not a valid marker" }, state: "needs_review" as const, expected: false },
+      { from: "codex", kind: "chat" as const, refs: { reviewResponse: "review-valid" }, state: "queued" as const, expected: false },
+    ];
+    for (const [i, entry] of cases.entries()) {
+      const env = newEnvelope(entry.from, "metadata only", { kind: entry.kind, refs: entry.refs });
+      f.journal.createDelivery({ id: `case-${i}`, peer: `recipient-${i}`, state: entry.state, createdAt: env.ts, originals: [env], out: [env] });
+      const before = f.journal.revision();
+      expect(f.journal.hasHeldReviewScope(`recipient-${i}`, false, PULL_BUDGET_BYTES)).toBe(entry.expected);
+      expect(f.journal.revision()).toBe(before);
+    }
+  } finally { f.close(); }
+});
+
+test("held metadata treats corrupt non-array originals as unknown and only a real empty array as clean", () => {
+  const f = journalRig();
+  try {
+    const env = newEnvelope("user", "shape fixture");
+    f.journal.createDelivery({ id: "shape", peer: "claude", state: "needs_review", createdAt: env.ts, originals: [env], out: [env] });
+    const db = (f.journal as unknown as { db: Database }).db;
+    for (const raw of ["null", "1", '"scalar"', "{}", "[null]"]) {
+      db.query("UPDATE deliveries SET originals=? WHERE project_id='p' AND id='shape'").run(raw);
+      const before = f.journal.revision();
+      expect(f.journal.hasHeldReviewScope("claude", false, PULL_BUDGET_BYTES)).toBe(true);
+      expect(f.journal.revision()).toBe(before);
+    }
+    db.query("UPDATE deliveries SET originals='[]' WHERE project_id='p' AND id='shape'").run();
+    const before = f.journal.revision();
+    expect(f.journal.hasHeldReviewScope("claude", false, PULL_BUDGET_BYTES)).toBe(false);
+    expect(f.journal.revision()).toBe(before);
+  } finally { f.close(); }
+});

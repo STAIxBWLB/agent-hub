@@ -60,7 +60,7 @@ export function promotionScreen(
 
 
 /** Host-only review capsules retain bodies for recipients, never observer sinks or capture. */
-export function isTrustedReviewPackage(env: Envelope): boolean {
+export function isTrustedReviewPackage(env: Pick<Envelope, "from" | "kind" | "refs">): boolean {
   return env.from === HUB && env.kind === "review" && typeof env.refs?.reviewPackage === "string"
     && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(env.refs.reviewPackage);
 }
@@ -80,7 +80,7 @@ export function reviewCaptureExcluded(tool: string, args: string): boolean {
 
 
 /** reviewResponse is stamped by Bus from delivered-parent provenance, never peer refs. */
-export function isReviewObserverExcluded(env: Envelope): boolean {
+export function isReviewObserverExcluded(env: Pick<Envelope, "from" | "kind" | "refs">): boolean {
   return isTrustedReviewPackage(env) || env.from !== HUB && env.from !== "user" && (env.kind === "chat" || env.kind === "status")
     && typeof env.refs?.reviewResponse === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(env.refs.reviewResponse);
 }

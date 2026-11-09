@@ -8,6 +8,7 @@ import type { BusSnapshot } from "./bus.ts";
 import type { QueuePressure } from "./queue-backpressure.ts";
 import { HUB, KINDS, USER, isInvocationKind, type Envelope, type Kind } from "./envelope.ts";
 import { HELD_DELIVERY_PAGE, heldDeliveryHints } from "./delivery-hints.ts";
+import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { parseRemotePeerId } from "../rooms/application.ts";
 import { validateDeferredHub } from "./deferred-hub.ts";
@@ -1509,12 +1510,23 @@ export class DeliveryJournal {
   hasHeldReviewScope(peer: string, includeAccepted: boolean, byteBudget: number): boolean {
     this.ensureOpen();
     const states = includeAccepted ? "('needs_review','accepted')" : "('needs_review')";
+    const revision = this.revision();
     const window = this.db.query(`SELECT length(CAST(originals AS BLOB)) AS bytes FROM deliveries WHERE project_id=? AND peer=? AND state IN ${states} ORDER BY created_at,id LIMIT ?`).all(this.projectId, peer, HELD_DELIVERY_PAGE + 1) as { bytes: number }[];
     // No durable view receipt exists. A bounded-away row may have been read before
     // the window shifted, so overflow is unknown/excluded, never proof of absence.
     let remaining = byteBudget;
     if (window.length > HELD_DELIVERY_PAGE || window.some(row => { if (row.bytes > remaining) return true; remaining -= row.bytes; return false; })) return true;
-    return !!this.db.query(`WITH candidates AS MATERIALIZED (SELECT originals FROM deliveries WHERE project_id=? AND peer=? AND state IN ${states} ORDER BY created_at,id LIMIT ?) SELECT 1 FROM candidates d, json_each(CASE WHEN length(CAST(d.originals AS BLOB)) <= ? THEN d.originals ELSE '[]' END) e WHERE json_extract(e.value,'$.from')='hub' AND json_extract(e.value,'$.kind')='review' AND json_type(e.value,'$.refs.reviewPackage')='text' LIMIT 1`).get(this.projectId, peer, HELD_DELIVERY_PAGE, byteBudget);
+    const metadata = this.db.query(`WITH candidates AS MATERIALIZED (SELECT originals FROM deliveries WHERE project_id=? AND peer=? AND state IN ${states} ORDER BY created_at,id LIMIT ?) SELECT CASE WHEN json_type(d.originals)='array' AND length(CAST(d.originals AS BLOB)) <= ? THEN 1 ELSE 0 END AS readable,e.key AS envelope_key,json_extract(e.value,'$.from') AS sender,json_extract(e.value,'$.kind') AS kind,json_extract(e.value,'$.refs.reviewPackage') AS review_package,json_extract(e.value,'$.refs.reviewResponse') AS review_response FROM candidates d LEFT JOIN json_each(CASE WHEN json_type(d.originals)='array' AND length(CAST(d.originals AS BLOB)) <= ? THEN d.originals ELSE '[]' END) e`).all(this.projectId, peer, HELD_DELIVERY_PAGE, byteBudget, byteBudget) as { readable: number; envelope_key: unknown; sender: unknown; kind: unknown; review_package: unknown; review_response: unknown }[];
+    const excluded = metadata.some(row => {
+      if (row.readable !== 1) return true;
+      if (row.envelope_key === null) return false; // A readable empty original list carries no review input.
+      if (typeof row.sender !== "string" || !KINDS.includes(row.kind as Kind)) return true;
+      return isReviewObserverExcluded({ from: row.sender, kind: row.kind as Kind, refs: {
+        ...(typeof row.review_package === "string" ? { reviewPackage: row.review_package } : {}),
+        ...(typeof row.review_response === "string" ? { reviewResponse: row.review_response } : {}),
+      } });
+    });
+    return excluded || this.revision() !== revision;
   }
 
   /** Hot roster reads never materialize completed envelope history. */

@@ -37341,13 +37341,11 @@ async function callTool(req, signal) {
       out.push(notice);
     if (heldHint)
       out.push(heldHint);
-    if (heldBodies)
-      out.push(heldBodies);
     if (metadataWarning)
       out.push(metadataWarning);
     let body = out.length ? out.join(`
 
-`) : `(no queued hub messages)
+`) : heldBodies ? "(no queued hub messages)" : `(no queued hub messages)
 Nothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.`;
     if (out.length === 1 && out[0] === heldHint && heldHint && heldMetadataNeedsReviewOnly(heldMetadata)) {
       body = `(no queued hub messages)
@@ -37356,6 +37354,8 @@ ${body}`;
     }
     const result = text5(polling ? `${body}
 ${polling}` : body);
+    if (heldBodies)
+      result.content.push({ type: "text", text: heldBodies });
     if (counted)
       Object.defineProperty(result, QUEUED_COUNTED, { value: true });
     if (heldHint || heldBodies || metadataWarning)

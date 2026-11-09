@@ -297,3 +297,20 @@ test("malformed additive held bodies preserve committed normal inbox, local fall
     expect(f.requests.filter(row => ["delivery_complete", "delivery_receipt"].includes(row.t))).toEqual([]);
   } finally { await f.close(); }
 });
+
+test("held inspection has its own MCP text block while the normal empty queue block keeps its prefix (#1328)", async () => {
+  const f = await client("plain");
+  try {
+    const env = newEnvelope("user", "HELD_SECOND_BLOCK_CANARY");
+    const row = { id: "held-block", revision: 1, state: "needs_review", createdAt: Date.now(), senders: ["user"], kinds: ["chat"] };
+    f.inbox({ ok: true, envs: [], waiting: 0, waitingImportant: 0, held: { count: 1, rows: [row], truncated: false },
+      heldRead: { count: 1, rows: [{ id: row.id, revision: row.revision, state: row.state, messages: [{ id: env.id, from: env.from, kind: env.kind, priority: env.priority, body: env.body }] }], truncated: false } });
+    const result = await f.call("hub_inbox");
+    expect(result.content[0].text).toStartWith("(no queued hub messages)");
+    expect(result.content[0].text).not.toContain(env.body);
+    expect(result.content[1].text).toContain("Read-only held message inspection");
+    expect(result.content[1].text).toContain(env.body);
+    expect(output(result)).toContain(env.body);
+    expect(f.requests.filter(request => ["delivery_receipt", "delivery_complete"].includes(request.t))).toEqual([]);
+  } finally { await f.close(); }
+});
