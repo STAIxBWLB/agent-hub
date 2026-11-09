@@ -130,3 +130,18 @@ test("CI and literal workflow jobs apply the 32-check schema to distinct names (
   expect(workflowCheckNames(workflow(false))).toEqual(["unit"]);
   expect(workflowCheckNames(workflow(true))).toBeUndefined();
 });
+
+for (const [kind, declaration] of [
+  ["anchored", "  build: &build\n    runs-on: linux\n"],
+  ["single-quoted", "  'build':\n    runs-on: linux\n"],
+  ["double-quoted", '  "build":\n    runs-on: linux\n'],
+  ["flow-style", "  build: { runs-on: linux }\n"],
+] as const) for (const placement of ["before", "after"] as const) test(`unsupported ${kind} job ${placement} a literal job refuses the whole workflow (#1328)`, () => {
+  const supported = "  lint:\n    runs-on: linux\n";
+  const jobs = placement === "before" ? declaration + supported : supported + declaration;
+  expect(workflowCheckNames(`jobs:\n${jobs}`)).toBeUndefined();
+});
+
+test("blank and comment lines before and between literal jobs remain ignorable (#1328)", () => {
+  expect(workflowCheckNames("jobs:\n\n  # first job\n  build:\n    runs-on: linux\n  \n  # next job\n  lint:\n    runs-on: linux\n")).toEqual(["build", "lint"]);
+});

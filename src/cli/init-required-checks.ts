@@ -27,7 +27,9 @@ export function workflowCheckNames(text: string): string[] | undefined {
     if (/^[^\s#]/.test(line)) break;
     const job = /^  ([A-Za-z_][A-Za-z0-9_-]*):\s*(?:#.*)?$/.exec(line);
     if (job) { finish(); id = job[1]!; name = undefined; continue; }
-    if (!id || !line.trim() || /^\s*#/.test(line)) continue;
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    if (/^  \S/.test(line)) { dynamic = true; continue; }
+    if (!id) continue;
     if (/^    (?:strategy|uses):/.test(line) || /^    <<:/.test(line)) dynamic = true;
     const named = /^    name:\s*(.*?)\s*$/.exec(line);
     if (named) {
@@ -45,7 +47,6 @@ export function workflowCheckNames(text: string): string[] | undefined {
         } else name = raw.replace(/\s+#.*$/, "");
       } catch { dynamic = true; }
     }
-    if (/^  \S/.test(line) && !job) dynamic = true;
   }
   finish();
   const unique = [...new Set(names)];
