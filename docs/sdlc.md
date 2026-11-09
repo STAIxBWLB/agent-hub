@@ -195,6 +195,13 @@ failed or unknown checks refuse with their names and
 a next step. A missing artifact, missing full head, changed task or policy,
 stale actor/session or a held hub also refuses without changing the task.
 
+Eligible task states are exactly `in_progress`, `in_review` and
+`changes_requested`, with all Important findings dispositioned. `proposed` and
+`backlog` tasks must be assigned and accepted first. `approved` and `cancelled`
+are already closed. Each refusal names the state and the next step. The Board
+transition is host-only and requires the current flow revision; the generic
+state transition table is unchanged.
+
 A successful adoption records `merged outside the hub` as the actual person's
 or conductor's action, moves the task to `approved`, and releases dependents as
 an ordinary approval does. It does not invent a reviewer verdict or reviewed

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import vm from "node:vm";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Board } from "../src/hub/board.ts";
+import { Board, HOST_MERGE_ADOPTION } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -79,8 +79,28 @@ test("AC4: observed merge approves and releases dependents without a reviewer ve
   expect(f.calls).toHaveLength(1);
   expect(f.notices.join("\n")).not.toContain("PRIVATE_TITLE");
   const count = f.calls.length;
-  await expect(f.tasks.adoptMerge(USER, f.id, 7)).rejects.toThrow("open active task");
+  await expect(f.tasks.adoptMerge(USER, f.id, 7)).rejects.toThrow("already closed");
   expect(f.calls).toHaveLength(count);
+});
+
+test("in-review and changes-requested tasks with dispositioned findings can adopt", async () => {
+  const review = fixture(); review.board.update(review.id, USER, "done", { state: "in_review" });
+  await review.tasks.adoptMerge(USER, review.id, 7); expect(review.board.get(review.id)!.state).toBe("approved");
+  const revised = fixture(); important(revised);
+  revised.board.update(revised.id, USER, "changes_requested", { state: "changes_requested" }, undefined,
+    { reviewFindings: { head: HEAD, items: [{ id: "safety", pass: "bugs", severity: "important", disposition: "fixed" }] } });
+  await revised.tasks.adoptMerge(USER, revised.id, 7); expect(revised.board.get(revised.id)!.state).toBe("approved");
+  expect(revised.board.get(revised.id)!.history.at(-1)!.event).toBe("merged outside the hub");
+});
+test("Board adoption is host-only, requires the exact flow revision and never widens generic MOVES", () => {
+  const f = fixture(), before = f.board.get(f.id)!, receipt = { repo: "owner/repo", pr: 7, stage: "merge" };
+  expect(() => f.board.update(f.id, USER, "merged outside the hub", { state: "approved" })).toThrow("host-only");
+  expect(() => f.board.adoptMerge(f.id, USER, receipt, HEAD, undefined as never, HOST_MERGE_ADOPTION)).toThrow("flow revision");
+  expect(() => f.board.adoptMerge(f.id, USER, receipt, HEAD, before.history.length, Symbol("not host") as never)).toThrow("host authority");
+  expect(() => f.board.adoptMerge(f.id, USER, receipt, HEAD, before.history.length - 1, HOST_MERGE_ADOPTION)).toThrow("flow revision changed");
+  expect(f.board.get(f.id)).toEqual(before);
+  important(f);
+  expect(() => f.board.update(f.id, USER, "approved", { state: "approved" })).toThrow("cannot move to approved");
 });
 
 test("explicit PR binds an unlinked merged artifact only in the established task repository", async () => {
@@ -209,10 +229,12 @@ test("an intake draft and closed or parked work refuse before GitHub reads", asy
   const draft = fixture(), card = draft.board.propose(USER, { title: "draft", class: "implement", draft: true, backlog: true });
   await expect(draft.tasks.adoptMerge(USER, card.id, 7)).rejects.toThrow("approve the intake");
   expect(draft.calls).toHaveLength(0);
+  const proposed = fixture(); proposed.board.update(proposed.id, USER, "declined", { state: "proposed", owner: null, reviewer: null });
+  await refused(proposed, "proposed; assign and accept it first"); expect(proposed.calls).toHaveLength(0);
   const closed = fixture(); closed.board.update(closed.id, USER, "cancelled", { state: "cancelled" });
-  await refused(closed, "open active task"); expect(closed.calls).toHaveLength(0);
+  await refused(closed, "cancelled"); expect(closed.calls).toHaveLength(0);
   const parked = fixture(), pending = parked.board.propose(USER, { title: "parked", class: "implement", backlog: true });
-  await expect(parked.tasks.adoptMerge(USER, pending.id, 7)).rejects.toThrow("open active task");
+  await expect(parked.tasks.adoptMerge(USER, pending.id, 7)).rejects.toThrow("backlog");
   expect(parked.calls).toHaveLength(0);
 });
 

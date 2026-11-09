@@ -117,6 +117,13 @@ flow and identity, current actor/session, privacy and SDLC policy are fenced
 before and after each awaited GitHub read and immediately before the write.
 Recovery, shutdown and storage holds refuse adoption.
 
+Eligible task states are exactly `in_progress`, `in_review` and
+`changes_requested`, with all Important findings dispositioned. `proposed` and
+`backlog` tasks must be assigned and accepted first. `approved` and `cancelled`
+are already closed. Each refusal names the state and the next step. The Board
+transition is host-only and requires the current flow revision; the generic
+state transition table is unchanged.
+
 The state becomes `approved` through Tasks, with the actual actor and the
 `merged outside the hub` history event. Ordinary dependent release runs after
 the saved approval. Adoption creates no reviewer verdict, review metric,
