@@ -6,6 +6,7 @@ status: draft
 parent: agent-hub-architecture
 paths:
   - src/models/route/**
+  - src/hub/progress.ts
 ---
 
 # Hub Model Routes
@@ -370,6 +371,33 @@ approximation, without dropping or modifying input. Record that difference in
 CHANGELOG. No unique absolute-count pin was found in the inspected owned caller
 assertions; their fit outcomes and relay/local equality still remain authority.
 A later discovered owned absolute pin must be preserved explicitly.
+
+## Native progress projection, separate from stage selection
+
+The nonported progress observer has a different public calibration from stage
+routing. Its newly authored `progressDimensions(observations)` accepts the
+observer's bounded native observations, not legacy ToolSignals or StageEvidence.
+It inspects at most the existing latest 28 observations and bounded name/result/
+native-turn fields; it does not inspect commands or tool arguments. It emits only
+`severity`, `spinning`, `exploring` and `production`.
+
+- An observed error has severity 0.7, including an AssertionError that stage
+  fallback treats as a reported failure. Stage scores do not recalibrate this
+  observer.
+- Recognized reads and mutations contribute their proportions among inspected
+  observations. A completed Codex `fileChange` is mutation/production evidence.
+- Spinning becomes 1 only after at least eight distinct known native turn IDs
+  with no observed mutation in the retained window; otherwise it is zero.
+  Missing IDs and repeated tool observations within one turn do not manufacture
+  separate attempts. Productive file changes do not become a spinning trigger.
+- The existing repeated-failure-across-native-turns predicate remains separate.
+  Current privacy, open-task/owner, in-flight generation, latest-frame,
+  attempted-turn deduplication and judge/latch fences remain unchanged. A progress
+  dimension grants no execution, reassignment or model-routing authority.
+
+This replacement removes the observer's dependency on the former stage helper.
+Generic decision evidence v1 and remaining legacy route signal/judge code are
+unchanged. The existing owned progress tests remain acceptance authority.
 
 ## Privacy, authority and events
 

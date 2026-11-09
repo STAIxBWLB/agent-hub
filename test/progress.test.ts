@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeClaudeObservation, normalizeCodexObservation, ProgressObserver } from "../src/hub/progress.ts";
+import { normalizeClaudeObservation, normalizeCodexObservation, progressDimensions, ProgressObserver } from "../src/hub/progress.ts";
 import type { Task } from "../src/hub/board.ts";
 import type { HubEvent } from "../src/hub/events.ts";
 import type { Conversation } from "../src/models/route/normalize.ts";
@@ -156,5 +156,27 @@ describe("ProgressObserver", () => {
     resolve(verdict);
     await new Promise((done) => setTimeout(done, 0));
     expect(events.some((event) => event.type === "stuck")).toBe(false);
+  });
+});
+
+describe("owned native progress projection contract", () => {
+  test("observer severity stays 0.7 and production is separate from stage routing", () => {
+    expect(progressDimensions([{ name: "exec_command", resultText: "AssertionError: synthetic check failed", isError: true, turn: "own-one" }])).toEqual({ severity: 0.7, spinning: 0, exploring: 0, production: 0 });
+    expect(progressDimensions(Array.from({ length: 10 }, (_, index) => ({ name: "fileChange", turn: `own-file-${index}` })))).toEqual({ severity: 0, spinning: 0, exploring: 0, production: 1 });
+  });
+  test("spinning requires eight distinct known native turns, not observations", () => {
+    const reads = (count: number) => Array.from({ length: count }, (_, index) => ({ name: "read_file", resultText: "synthetic fixture ready", turn: `own-read-${index}` }));
+    expect(progressDimensions(reads(7)).spinning).toBe(0);
+    expect(progressDimensions(reads(8)).spinning).toBe(1);
+    expect(progressDimensions(reads(12).map(row => ({ ...row, turn: "same-own-turn" }))).spinning).toBe(0);
+    expect(progressDimensions(reads(12).map(row => ({ ...row, turn: undefined }))).spinning).toBe(0);
+  });
+  test("only bounded observations enter dimensions and commands remain opaque", () => {
+    let commandReads = 0;
+    const observed = Object.defineProperty({ name: "read", resultText: "fixture ready", turn: "own-bounded" }, "command", { get() { commandReads++; throw new Error("opaque command"); } });
+    const rows = [{ name: "fileChange", turn: "outside-window" }, ...Array.from({ length: 28 }, () => observed)];
+    expect(progressDimensions(rows)).toEqual({ severity: 0, spinning: 0, exploring: 1, production: 0 });
+    expect(commandReads).toBe(0);
+    expect(progressDimensions([])).toEqual({ severity: 0, spinning: 0, exploring: 0, production: 0 });
   });
 });

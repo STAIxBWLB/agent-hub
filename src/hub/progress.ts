@@ -1,5 +1,5 @@
 import { EscalationState, type EscalationCategory, type EscalationVerdict } from "../models/route/escalation.ts";
-import { dimensionsFromSignal } from "../models/route/stage.ts";
+import { diagnoseStageResult } from "../models/route/stage-diagnostics.ts";
 import { extractToolSignalsFromObservations, fingerprint, type ToolObservation, type ToolSignals } from "../models/route/signals.ts";
 import type { Conversation } from "../models/route/normalize.ts";
 import type { HubEvent } from "./events.ts";
@@ -54,9 +54,27 @@ export interface ProgressDimensions {
   production: number;
 }
 
-export function progressDimensions(signals: ToolSignals): ProgressDimensions {
-  const dimensions = dimensionsFromSignal(signals);
-  return { severity: dimensions.severity, spinning: dimensions.spinning, exploring: dimensions.exploring, production: dimensions.productionIntensity };
+/** Observer calibration is independent of stage risk and never reads commands/arguments. */
+export function progressDimensions(observations: readonly NativeToolObservation[]): ProgressDimensions {
+  let severity = 0, reads = 0, mutations = 0, inspected = 0;
+  const turns = new Set<string>();
+  for (let index = Math.max(0, observations.length - MAX_OBSERVATIONS); index < observations.length; index++) {
+    const item = observations[index];
+    if (!item) continue;
+    inspected++;
+    const name = item.name.slice(0, 80).toLowerCase();
+    const read = /^(read|read_file|glob|grep|search|list|list_dir)$/.test(name);
+    const mutation = /^(filechange|write|write_file|edit|apply_patch|patch|delete|create|replace)$/.test(name);
+    if (read) reads++;
+    if (mutation) mutations++;
+    const diagnostic = diagnoseStageResult({ text: item.resultText?.slice(0, MAX_TEXT) ?? "", error: item.isError === true,
+      family: read ? "read" : mutation ? "mutation" : "other", associated: true });
+    if (diagnostic.fault !== "none") severity = 0.7;
+    const turn = validTurn(item.turn);
+    if (turn) turns.add(turn);
+  }
+  return { severity, spinning: turns.size >= 8 && mutations === 0 ? 1 : 0,
+    exploring: reads / Math.max(1, inspected), production: mutations / Math.max(1, inspected) };
 }
 
 export interface ProgressDeps {
@@ -89,8 +107,7 @@ export class ProgressObserver {
     state.observations.push(boundedObservation(observation));
     if (state.observations.length > MAX_OBSERVATIONS) state.observations.splice(0, state.observations.length - MAX_OBSERVATIONS);
     pruneAttemptedTurns(state);
-    const signals = signalsFor(state.observations);
-    this.safeEmit({ type: "progress", peer, task: taskId, ...progressDimensions(signals) });
+    this.safeEmit({ type: "progress", peer, task: taskId, ...progressDimensions(state.observations) });
     if (this.judgeEligible(state)) void this.evaluateState(peer, taskId, state);
   }
 
@@ -147,7 +164,7 @@ export class ProgressObserver {
     if (!latestNativeTurn(state.observations) || state.escalation.snapshot().latched) return false;
     const signals = signalsFor(state.observations);
     const repeatedAcrossTurns = signals.repeatedFailure && repeatedFailureAcrossTurns(state.observations);
-    return repeatedAcrossTurns || progressDimensions(signals).spinning > 0;
+    return repeatedAcrossTurns || progressDimensions(state.observations).spinning > 0;
   }
 
   private openTask(peer: string, id: number): Task | undefined {
