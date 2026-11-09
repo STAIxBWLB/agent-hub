@@ -40,6 +40,23 @@ contents, one-time links or task text in this file: ids and counts only.
 | 13 | `orca plugin dev unload integrations/orca` (or uninstall) | removed (yes / no); `orca plugin list` no longer shows it (yes / no) |
 | 14 | `orca plugin logs local.agent-hub-companion` before removal | the log holds only lines like `entry.open: ok` and no path, name, link or output (yes / no) |
 
+## Terminal focus recheck (O4, person-run leg)
+
+**Status: NOT RUN.** The 2026-11-09 read-only evidence recheck on Orca 1.4.254
+left focus unsupported; no focus action was added. No terminal was switched or
+driven and no plugin was loaded for that recheck. This is separate from the
+native open/disable procedure above and is not native UX acceptance.
+
+| Leg | Record |
+| --- | --- |
+| Exact plugin id to current same-host CLI handle mapping, workspace identity and runtime/incarnation freshness | NOT RUN; mapping unproven in installed declarations and CLI inventory |
+| Focus the verified existing console in an isolated profile, without creation/replacement; count actions separately | NOT RUN; blocked until a safe mapping and guarded focus implementation exist |
+| Stale, ambiguous and cross-host bindings retain the manual command and never switch another project's terminal | NOT RUN; no native focus implementation to exercise |
+
+Use only an isolated profile and throwaway project for any later person-run
+proof. Do not treat CLI inventory success as focus or UI proof. Record counts and
+closed verdicts only, never terminal contents, paths, tickets or live identifiers.
+
 ## Result
 
 - Who ran it and when: ___

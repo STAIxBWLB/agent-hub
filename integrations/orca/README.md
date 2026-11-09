@@ -41,7 +41,8 @@ There is no poller, no timer that reads status, and no transcript or terminal ou
 call re-verifies the exact workspace binding first, so a changed, missing, remote or re-pointed workspace is
 refused before `ahub` runs.
 
-**There is no terminal focus.** O0 found no documented mapping from a plugin terminal id to an
+**There is no terminal focus.** The [O4 recheck](host-contract-v1.md#terminal-focus-recheck-o4-2026-11-09)
+on installed Orca 1.4.254 still found no documented mapping from a plugin terminal id to an
 `orca terminal switch` handle, so this companion never calls `orca terminal switch`, never reads a terminal
 and never replaces one. The console buttons always create a new terminal; to reach an existing one, select its
 tab in Orca or run `ahub console` yourself. Verified focus stays unsupported until a mapping is proven.
@@ -148,7 +149,8 @@ not been run. No identity check is loosened for any combination.
   the outcome and the disable and standalone checks; until it is filled in, the action counts above are
   the procedure counts and the native result is unknown.
 - **Terminal focus.** There is no focus-existing-console action. O0 found no documented mapping from a
-  plugin terminal id to a `orca terminal switch` handle, so "Open console" always creates a terminal.
+  plugin terminal id to a `orca terminal switch` handle; O4 rechecked 1.4.254 with the same verdict.
+  "Open console" always creates a terminal.
 - **Remote, Windows, browser and mobile** are unqualified (O3). A browser client has no desktop external
   navigation, so there the dashboard button reports `ahub ui` to run instead of a link.
 - **Security.** Approved capabilities do not confine a trusted worker. Treat the plugin as code you run.
