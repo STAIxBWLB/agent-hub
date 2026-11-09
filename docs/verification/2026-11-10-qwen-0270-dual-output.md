@@ -20,7 +20,9 @@ The public manual producer is
 and relies on owned native/controller ports. Deterministic source controls in
 `test/compat-receipt-qwen-dual-q2.test.ts` use synthetic event files, no native
 process/account/model: normal held queue, tool-use stop remaining busy, and the
-old merged-assistant false-positive shape. They do not certify native Q2.
+old merged-assistant false-positive shape, ordinary provider user-count mismatch,
+and native-reader override refusal. Causal barriers and the exact second Bus
+envelope id are checked. They do not certify native Q2.
 No automation manifest or autoAdmit eligibility is changed.
 
 The [original 0.26.1 receipt](2026-10-25-qwen-dual-output-t0.md) used a real

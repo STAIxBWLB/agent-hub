@@ -87,11 +87,13 @@ function chronology(rows: RecordValue[]) {
 /** Exercises the real Bus and driver. Caller-owned native ports supply isolation and physical artifact proof. */
 export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts) {
   for (const value of Object.values(options.bounds)) requireProof(Number.isSafeInteger(value) && value > 0, "input-bound");
+  requireProof(ports.kind !== "native-pty" || options.host === undefined, "native-host-override");
   const bus = new Bus({ batchMs: 0 }), controller = new AbortController();
   const deadline = Date.now() + options.bounds.timeoutMs;
   const waiters = new Set<() => void>(), watchers: FSWatcher[] = [];
   let fault: string | undefined, checkpoint = "prepare", ownedStopConfirmed = false;
-  let heldSubmitCount = 0, heldQueued = false, outcome = { userCount: 0, firstStop: -1, secondUser: -1, secondStop: -1 };
+  const barriers: string[] = [];
+  let heldSubmitCount = 0, heldQueued = false, secondBusDelivered = false, outcome = { userCount: 0, firstStop: -1, secondUser: -1, secondStop: -1 };
   const wake = () => { for (const waiter of [...waiters]) waiter(); };
   const peer = new QwenDualPeer("qwen", { cwd: options.cwd, stateDir: options.stateDir, cmd: options.command,
     mcpServers: [], ...options.host,
@@ -129,9 +131,11 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
       requireProof(session.data?.version === options.version && session.data?.protocol_version === 2, "session-identity");
       return peer.state === "idle";
     }, "session-ready");
+    barriers.push("native-session-ready");
     bus.publish(newEnvelope("user", FIRST, { to: ["qwen"] }));
     checkpoint = "first-held";
     await bounded(ports.firstHeld(controller.signal), checkpoint);
+    barriers.push("provider-first-response-held");
     let heldBytes = 0;
     await observe(() => {
       const captured = records(events, options.bounds);
@@ -139,12 +143,15 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
       heldBytes = captured.bytes;
       return peer.offset >= heldBytes && peer.state === "busy";
     }, "first-stream-consumed");
+    barriers.push("first-stream-consumed-by-driver");
     const second = newEnvelope("user", SECOND, { to: ["qwen"] }); bus.publish(second);
     const heldInput = records(input, options.bounds).rows.filter(row => row.type === "submit");
     heldSubmitCount = heldInput.length; heldQueued = bus.queueIds("qwen").includes(second.id);
     requireProof(heldSubmitCount === 1 && heldQueued, "held-input-not-queued");
     requireProof(chronology(records(events, options.bounds).rows).firstStops.length === 0, "first-not-held");
+    barriers.push("second-envelope-queued-with-one-submit");
     checkpoint = "second-turn"; ports.releaseFirst();
+    barriers.push("first-provider-response-released");
     await observe(() => {
       const observed = chronology(records(events, options.bounds).rows);
       return observed.firstStops.length > 0 && observed.secondStops.length > 0 && peer.state === "idle";
@@ -156,10 +163,14 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
     requireProof(observed.users[0]!.index < observed.firstStops[0]! && observed.firstStops[0]! < observed.users[1]!.index
       && observed.users[1]!.index < observed.secondStops[0]!, "turn-order");
     requireProof(records(input, options.bounds).rows.filter(row => row.type === "submit").length === 2, "submit-count");
+    secondBusDelivered = !bus.queueIds("qwen").includes(second.id) && bus.lastDeliveredTo("qwen").some(row => row.id === second.id);
+    requireProof(secondBusDelivered, "second-envelope-not-delivered-by-bus");
+    barriers.push("distinct-native-turns-and-second-bus-delivery");
     const requests = ports.requests();
     requireProof(requests.length <= options.bounds.records && requests.every(row => row.marker !== "unknown"), "provider-classification");
     const ordinary = requests.filter(row => row.marker !== "background");
     requireProof(ordinary.length === 2 && ordinary[0]?.marker === "first" && ordinary[1]?.marker === "second"
+      && ordinary[0]?.userMessages === 1 && ordinary[1]?.userMessages === 2
       && ordinary.every(row => row.responseFormat === "absent" && !row.schemaHasTitle), "ordinary-provider-turns");
     outcome = { userCount: observed.users.length, firstStop: observed.firstStops[0]!, secondUser: observed.users[1]!.index, secondStop: observed.secondStops[0]! };
     checkpoint = "passed";
@@ -171,7 +182,7 @@ export async function runQwenDualBusQ2(options: Q2Options, ports: Q2NativePorts)
     try { ownedStopConfirmed = (await ports.stop()).ownedStopConfirmed; } catch { ownedStopConfirmed = false; }
   }
   return { schemaVersion: 1, manualOnly: true, autoAdmit: false, evidenceKind: ports.kind,
-    passed: checkpoint === "passed" && ownedStopConfirmed, checkpoint, heldSubmitCount, heldQueued, ...outcome,
+    passed: checkpoint === "passed" && ownedStopConfirmed, checkpoint, heldSubmitCount, heldQueued, secondBusDelivered, barriers, ...outcome,
     providerRequests: ports.requests().slice(0, options.bounds.records).map(row => ({ marker: row.marker,
       responseFormat: row.responseFormat, schemaHasTitle: row.schemaHasTitle, messageCount: row.messageCount,
       userMessages: row.userMessages })), ownedStopConfirmed };

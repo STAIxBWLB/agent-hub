@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runQwenDualBusQ2, type Q2NativePorts, type Q2Request } from "../scripts/compat-receipts/proofs/qwen-dual-bus-q2.ts";
 
 // These controls write synthetic event files. No Qwen executable, account, model, PTY or real HOME is used.
-function fixture(mode: "ordinary" | "tool-stop" | "merged") {
+function fixture(mode: "ordinary" | "tool-stop" | "merged" | "same-provider-user-count") {
   const root = mkdtempSync(join(tmpdir(), "qwen-dual-q2-control-"));
   let input = "", output = "", offset = 0, released = false, closed = false;
   let watcher: FSWatcher | undefined, fault: unknown;
@@ -31,7 +31,7 @@ function fixture(mode: "ordinary" | "tool-stop" | "merged") {
           held();
         } else if (offset === 1) {
           if (!released) throw Error("second input escaped while first was held");
-          requests.push({ marker: "second", responseFormat: "absent", schemaHasTitle: false, messageCount: 4, userMessages: 2 });
+          requests.push({ marker: "second", responseFormat: "absent", schemaHasTitle: false, messageCount: 4, userMessages: mode === "same-provider-user-count" ? 1 : 2 });
           write(user(row.text), assistant("Q2_SECOND_DONE"), stop);
         } else throw Error("too many synthetic submits");
       }
@@ -67,6 +67,9 @@ for (const mode of ["ordinary", "tool-stop"] as const) test(`manual Q2 actual Bu
     expect(f.fault()).toBeUndefined();
     expect(result.passed).toBe(true); expect(result.checkpoint).toBe("passed");
     expect(result.heldSubmitCount).toBe(1); expect(result.heldQueued).toBe(true);
+    expect(result.secondBusDelivered).toBe(true);
+    expect(result.barriers).toEqual(["native-session-ready", "provider-first-response-held", "first-stream-consumed-by-driver",
+      "second-envelope-queued-with-one-submit", "first-provider-response-released", "distinct-native-turns-and-second-bus-delivery"]);
     expect(f.submitsAtRelease).toEqual([1]);
     expect(result.userCount).toBe(2); expect(result.firstStop).toBeLessThan(result.secondUser); expect(result.secondUser).toBeLessThan(result.secondStop);
     expect(result.providerRequests.map(row => row.marker)).toEqual(["first", "second"]);
@@ -81,5 +84,22 @@ test("manual Q2 refuses the old one-assistant/both-markers false-positive shape"
       bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
     expect(result.passed).toBe(false); expect(result.checkpoint).toBe("merged-final-assistant");
     expect(result.autoAdmit).toBe(false); expect(result.ownedStopConfirmed).toBe(true);
+  } finally { f.close(); }
+});
+
+test("manual Q2 rejects two marker requests that do not represent the next ordinary user", async () => {
+  const f = fixture("same-provider-user-count");
+  try {
+    const result = await runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [], pollMs: 5 } }, f.ports);
+    expect(result.passed).toBe(false); expect(result.checkpoint).toBe("ordinary-provider-turns");
+  } finally { f.close(); }
+});
+
+test("native Q2 refuses synthetic OS reader overrides before starting any port", async () => {
+  const f = fixture("ordinary");
+  try {
+    await expect(runQwenDualBusQ2({ cwd: f.root, stateDir: join(f.root, "state"), command: ["synthetic-not-executed"], version: "0.26.1",
+      bounds: { bytes: 1024 * 1024, records: 256, timeoutMs: 4000 }, host: { table: () => [] } }, { ...f.ports, kind: "native-pty" })).rejects.toThrow("native-host-override");
   } finally { f.close(); }
 });
