@@ -177,6 +177,10 @@ returns the existing declaration; changed or stale admission never silently
 rewrites an old record. A reference is inert declared metadata, never a runner
 receipt or an external read instruction.
 
+Reads expand the bounded admitted local neighborhoods to a fixed point before
+emitting declared edges. A protocol or runner-receipt origin remains visible
+regardless of declaration id order; expansion follows only those explicit links.
+
 The table stores only admitted source/target reference metadata and its local task
 binding. Its uniqueness key includes the canonical source and target, so repeated
 admission preserves the original actor and timestamp without rewriting it. There is no derived relationship table, migration backfill or implicit

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Task } from "../src/hub/board.ts";
+import type { RunnerReceiptRecord, Task } from "../src/hub/board.ts";
 import type { JournalDelivery } from "../src/hub/delivery-journal.ts";
 import type { ExperimentAttemptRecord, ExperimentEventRecord } from "../src/hub/research-experiments.ts";
 import { taskExecutionReference, type ExecutionLinkRecord } from "../src/hub/execution-links.ts";
@@ -133,6 +133,30 @@ test("saved output-origin declarations resolve independently of preceding link o
   expect(reverse.edges).toContainEqual({ from: output, to: foreign, relation: "declared-external", strength: "declared" });
   expect(forward.nodes.map(node => JSON.stringify(node)).sort()).toEqual(reverse.nodes.map(node => JSON.stringify(node)).sort());
   expect(forward.edges.map(edge => JSON.stringify(edge)).sort()).toEqual(reverse.edges.map(edge => JSON.stringify(edge)).sort());
+});
+
+for (const kind of ["protocol", "runner-receipt"] as const) test(`saved ${kind} origins retain both declarations in either link order`, () => {
+  const f = fixture();
+  const receipt: RunnerReceiptRecord = { receipt: { receiptId: "receipt-1", runner: "fixture", projectId: "fixture", attemptId: f.attempt.attemptId, protocolHash: hash },
+    signature: "fixture-signature", publicKey: "fixture-public-key", keyHash: hash, bodyHash: hash, seq: 2, by: "codex", at: 10, private: false };
+  f.ports.receipts = () => [receipt];
+  const origin = kind === "protocol" ? ref(kind, hash) : ref(kind, receipt.receipt.receiptId, { sha256: hash });
+  const attempt = ref("attempt", f.attempt.attemptId), target = ref("claim", "linked-claim", { tool: "ares", projectKey: "foreign-project" });
+  const row = (id: string, from: ExecutionReferenceV1, reference: ExecutionReferenceV1): ExecutionLinkRecord => ({ id, projectKey, taskId: 7, taskCreated: 10, from, reference, strength: "declared", recordedBy: "codex", recordedAt: 10 });
+  const ownerLink = row("later-owner", f.taskRef, attempt), dependentLink = row("first-dependent", origin, target);
+  let previous: { nodes: string[]; edges: string[] } | undefined;
+  for (const links of [[dependentLink, ownerLink], [ownerLink, dependentLink]]) {
+    f.ports.links = () => links;
+    const page = readOwnerExecutionLineage(f.ports, { taskId: 7 });
+    if (page.state !== "available") throw new Error("fixture unavailable");
+    expect(page.truncated).toBe(false);
+    expect(page.edges).toContainEqual({ from: f.taskRef, to: attempt, relation: "declared-external", strength: "declared" });
+    expect(page.edges).toContainEqual({ from: origin, to: target, relation: "declared-external", strength: "declared" });
+    expect(page.nodes.find(node => node.ref.tool === "ares")?.strength).toBe("declared");
+    const graph = { nodes: page.nodes.map(node => JSON.stringify(node)).sort(), edges: page.edges.map(edge => JSON.stringify(edge)).sort() };
+    if (previous) expect(graph).toEqual(previous);
+    previous = graph;
+  }
 });
 
 

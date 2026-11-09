@@ -237,8 +237,15 @@ export function executionOwnerSnapshot(ports: ExecutionLineageOwnerPorts, input:
     // ponytail: task offers name envelope ids, not journal delivery ids; there is no indexed reverse lookup.
     // Only an explicit scoped dispatch or saved declaration can name a journal row; never scan the journal.
     if (root.kind === "attempt" || root.kind === "dispatch" || root.kind === "output") local(root);
-    for (const link of links) {
-      if (link.projectKey !== ports.projectKey || link.taskId !== task.id || link.taskCreated !== task.created || !ports.metadata(JSON.stringify([link.from, link.reference]))) continue;
+    const admitted = links.filter(link => link.projectKey === ports.projectKey && link.taskId === task.id && link.taskCreated === task.created && ports.metadata(JSON.stringify([link.from, link.reference])));
+    // Expand the bounded declared neighborhoods before emitting edges. A protocol/receipt origin
+    // can depend on a later attempt declaration; each productive pass adds nodes, never scans owners.
+    let beforeExpansion: number;
+    do {
+      beforeExpansion = nodes.size;
+      for (const link of admitted) if (local(link.from, true) && link.reference.tool === "ahub") local(link.reference, true);
+    } while (nodes.size > beforeExpansion);
+    for (const link of admitted) {
       if (!local(link.from, true)) continue;
       const target = link.reference;
       if (target.tool === "ahub") { if (!local(target, true)) continue; }
