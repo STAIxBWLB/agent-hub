@@ -137,7 +137,7 @@ test("advise notifies an owner's build stage change without a current acceptance
   r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
   await r.tasks.specStageGate("codex", r.id, { stage: "build" });
   expect(r.notices.join(" ")).toContain("SDLC build entry advice: ");
-  expect(r.notices.join(" ")).toContain("spec not accepted");
+  expect(r.notices.join(" ")).toContain("spec acceptance missing");
 });
 
 test("advise only notifies, off reads nothing, and non-build classes are not gated", async () => {
