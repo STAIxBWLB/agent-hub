@@ -1,4 +1,4 @@
-import { HELD_DELIVERY_ROWS } from "./delivery-hints.ts";
+import { MAX_HELD_HINT_ROWS } from "./delivery-hints.ts";
 import { BUS_PULL_BUDGET_BYTES_SETTING } from "./operational-settings.ts";
 import { KINDS, sanitize, type Envelope } from "./envelope.ts";
 
@@ -25,7 +25,7 @@ export function renderHeldInbox(value: unknown): string {
     const held = value as { count?: unknown; rows?: Array<{ id: string; revision: number; state: string; messages: ReturnType<typeof publicDeliveryBodies> }>; truncated?: unknown; unavailable?: unknown };
     if (!Array.isArray(held.rows)) return unavailable;
     const bound = BUS_PULL_BUDGET_BYTES_SETTING.max;
-    if (!Number.isSafeInteger(held.count) || Number(held.count) < held.rows.length || held.rows.length > HELD_DELIVERY_ROWS
+    if (!Number.isSafeInteger(held.count) || Number(held.count) < held.rows.length || held.rows.length > MAX_HELD_HINT_ROWS
       || typeof held.truncated !== "boolean" || held.unavailable !== undefined && typeof held.unavailable !== "boolean") return unavailable;
     // Reject control/format identities before placing any field beside a hub header.
     if (Buffer.byteLength(JSON.stringify(held), "utf8") > bound) return unavailable;

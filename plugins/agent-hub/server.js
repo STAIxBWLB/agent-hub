@@ -26742,7 +26742,7 @@ var require_dist = __commonJS(function(exports, module) {
 
 // src/hub/delivery-hints.ts
 init_envelope();
-var HELD_DELIVERY_ROWS = 32;
+var MAX_HELD_HINT_ROWS = 32;
 var DELIVERY_RETRY_WARNING = sanitize("Hub redelivery warning: An earlier attempt of this delivery is uncertain; check for its effects before acting.");
 function renderHeldHint(value, now = Date.now(), recipientRetry = true) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -26750,7 +26750,7 @@ function renderHeldHint(value, now = Date.now(), recipientRetry = true) {
   const held = value;
   const kinds = new Set(KINDS);
   try {
-    if (!Number.isSafeInteger(held.count) || held.count < 1 || !Array.isArray(held.rows) || held.rows.length > HELD_DELIVERY_ROWS || held.rows.length > held.count || typeof held.truncated !== "boolean" || Buffer.byteLength(JSON.stringify(held), "utf8") > 4096)
+    if (!Number.isSafeInteger(held.count) || held.count < 1 || !Array.isArray(held.rows) || held.rows.length > MAX_HELD_HINT_ROWS || held.rows.length > held.count || typeof held.truncated !== "boolean" || Buffer.byteLength(JSON.stringify(held), "utf8") > 4096)
       return "";
     if (held.rows.some((row) => !row || typeof row !== "object" || typeof row.id !== "string" || !row.id.length || row.id.length > 256 || !Number.isFinite(row.createdAt) || !Array.isArray(row.senders) || !Array.isArray(row.kinds) || row.senders.some((sender) => typeof sender !== "string" || sender.length > 256) || row.kinds.some((kind) => !kinds.has(kind))))
       return "";
@@ -27135,7 +27135,7 @@ function renderHeldInbox(value) {
     if (!Array.isArray(held.rows))
       return unavailable;
     const bound = BUS_PULL_BUDGET_BYTES_SETTING.max;
-    if (!Number.isSafeInteger(held.count) || Number(held.count) < held.rows.length || held.rows.length > HELD_DELIVERY_ROWS || typeof held.truncated !== "boolean" || held.unavailable !== undefined && typeof held.unavailable !== "boolean")
+    if (!Number.isSafeInteger(held.count) || Number(held.count) < held.rows.length || held.rows.length > MAX_HELD_HINT_ROWS || typeof held.truncated !== "boolean" || held.unavailable !== undefined && typeof held.unavailable !== "boolean")
       return unavailable;
     if (Buffer.byteLength(JSON.stringify(held), "utf8") > bound)
       return unavailable;
