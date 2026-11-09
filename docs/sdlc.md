@@ -460,3 +460,27 @@ A report, translation or slide deck has no commit, so the artifact identity is t
 - `hub_sdlc_record` with `deliverables` records them on a `lifecycle` entry, through the same hashing and the same owner, reviewer or console authority; a receipt without them is the old call.
 - Limit: a daemon from before this slice ignores `deliverables` on `hub_task_done` (the plugin is installed apart from the daemon), so restart the hub after an upgrade before relying on it; a done that names deliverables and shows no `Deliverables` block in its review request was recorded without them.
 - `ahub deliverables [--task <id>] [--approved] [--check]` lists them (#509 AC3). Not in this slice: a hash of a file the hub cannot read.
+
+## Named CI and build-entry diagnostics (#1328 T2)
+
+Exact-head review blockers name each required check and its state, for example
+`exact-head full CI is not green: missing seeded guards; pending check (macos-latest)`.
+Failed, duplicate and unknown checks are named too. Incomplete inventories remain
+unknown, and identical-tree reuse still requires its full proof and snapshot recheck.
+Complete cached and fresh review evidence use the same diagnostic formatter.
+
+Enforce build-entry guidance names the first missing snapshot step in this order:
+
+1. `spec issue not recorded (owner/planner: hub_sdlc_record)`
+2. `spec not accepted (person: ahub sdlc accept <task> --issue <n>)`
+3. `plan not reviewed (planner: hub_plan_review)`
+
+Proposal results and route explanations carry this guidance separately from peer
+eligibility. A plan-review hold is recorded as a ready hold, never as
+`no-eligible-peer`; that label remains a peer-eligibility outcome. Assignment stays
+pure and receives snapshot guidance as data. Candidate choice and the existing
+plan-only offer gate remain unchanged: an owner offer may precede person spec
+acceptance. Acceptance still runs live spec checks before live plan checks, with
+its existing authority and currentness fences. Snapshot guidance never certifies
+that an accepted spec or reviewed issue is still current. Private task projections
+withhold these issue-specific diagnostics.

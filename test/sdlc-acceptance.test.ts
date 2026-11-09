@@ -58,10 +58,10 @@ test("acceptance is the person's, stores identity and edit times only, and is dr
 
 test("enforce refuses build entry until the spec is accepted, and again after a body edit; comments do not count", async () => {
   const r = rig("enforce", "implement", { plannerReview: true, plannerScope: { review: { scope: "full", reviewers: 1 }, ci: "full" } });
-  await expect(r.accept()).rejects.toThrow("spec issue unknown");
+  await expect(r.accept()).rejects.toThrow("spec issue not recorded");
   r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
-  await expect(r.accept()).rejects.toThrow("spec acceptance missing");
-  expect(() => r.tasks.accept("codex", r.id)).toThrow("spec acceptance missing"); // the synchronous gate holds without specGate
+  await expect(r.accept()).rejects.toThrow("spec not accepted");
+  expect(() => r.tasks.accept("codex", r.id)).toThrow("spec not accepted"); // the synchronous gate holds without specGate
   expect(r.board.get(r.id)?.state).toBe("proposed");
   await r.acceptSpec();
   r.issue.updatedAt = LATER; // a comment moves updatedAt only
@@ -79,15 +79,15 @@ test("enforce refuses build entry until the spec is accepted, and again after a 
 test("enforce refuses a build stage change without acceptance from the owner, never from the person", () => {
   const r = rig("enforce");
   r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
-  expect(() => r.tasks.recordLifecycle("codex", r.id, { stage: "build" })).toThrow("spec acceptance missing");
-  expect(() => r.tasks.recordLifecycle("codex", r.id, { stage: "implement" })).toThrow("spec acceptance missing"); // the alias too
+  expect(() => r.tasks.recordLifecycle("codex", r.id, { stage: "build" })).toThrow("spec not accepted");
+  expect(() => r.tasks.recordLifecycle("codex", r.id, { stage: "implement" })).toThrow("spec not accepted"); // the alias too
   expect(r.tasks.recordLifecycle(USER, r.id, { stage: "build" }).sdlc?.stage).toBe("build");
 });
 
 test("an owner's build stage change re-reads the body edit time; other stages and the person are not gated", async () => {
   const r = rig("enforce");
   r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
-  await expect(r.tasks.specStageGate("codex", r.id, { stage: "build" })).rejects.toThrow("spec acceptance missing");
+  await expect(r.tasks.specStageGate("codex", r.id, { stage: "build" })).rejects.toThrow("spec not accepted");
   await r.acceptSpec();
   await r.tasks.specStageGate("codex", r.id, { stage: "build" });
   r.issue.lastEditedAt = LATER; // a body edit after acceptance: the synchronous gate alone sees only "unknown"
@@ -106,8 +106,8 @@ test("a self-claim and a done without accept start build work only from an accep
   const claimed = await r.tasks.propose("codex", { title: "claim it", class: "implement", owner: "codex" });
   expect(claimed).toMatchObject({ owner: "codex", state: "proposed" });
   expect(claimed.history.map(h => h.event)).not.toContain("accepted");
-  expect(r.notices.join(" ")).toContain("SDLC build entry blocked: spec issue unknown");
-  await expect(r.tasks.done("codex", r.id, "finished")).rejects.toThrow("spec issue unknown");
+  expect(r.notices.join(" ")).toContain("SDLC build entry blocked: spec issue not recorded");
+  await expect(r.tasks.done("codex", r.id, "finished")).rejects.toThrow("spec issue not recorded");
   expect(r.board.get(r.id)?.state).toBe("proposed");
   expect(r.board.get(r.id)?.history.map(h => h.event)).toEqual(["proposed", "assigned"]);
   const advise = rig("advise", "implement", { capacity: 2 });
@@ -137,7 +137,7 @@ test("advise notifies an owner's build stage change without a current acceptance
   r.tasks.recordLifecycle("codex", r.id, { repo: "owner/repo", issue: 7 });
   await r.tasks.specStageGate("codex", r.id, { stage: "build" });
   expect(r.notices.join(" ")).toContain("SDLC build entry advice: ");
-  expect(r.notices.join(" ")).toContain("spec acceptance missing");
+  expect(r.notices.join(" ")).toContain("spec not accepted");
 });
 
 test("advise only notifies, off reads nothing, and non-build classes are not gated", async () => {

@@ -19,7 +19,7 @@ class Reviewer extends BasePeer { received: Envelope[] = []; async start() { thi
 /** The readiness query's reply: every required check at `state`, and a bot thread that a person has (or has not) answered. */
 const reply = (state: string, answered = true) => ({ data: { repository: { pullRequest: {
   headRefOid: head, state: "OPEN", commits: { nodes: [{ commit: { oid: head, tree: { oid: "b".repeat(40) },
-    statusCheckRollup: { contexts: { nodes: NAMES.map(name => ({ name, status: "COMPLETED", conclusion: state })), pageInfo: { hasNextPage: false } } } } }] },
+    statusCheckRollup: { contexts: { nodes: NAMES.map(name => ({ name, status: ["PENDING", "IN_PROGRESS"].includes(state) ? "IN_PROGRESS" : "COMPLETED", conclusion: state })), pageInfo: { hasNextPage: false } } } } }] },
   reviewThreads: { nodes: [{ isResolved: false, comments: { nodes: [{ author: { __typename: "Bot" }, createdAt: "2026-10-18T01:00:00Z" }, ...(answered ? [{ author: { __typename: "User" }, createdAt: "2026-10-18T02:00:00Z" }] : [])], pageInfo: { hasNextPage: false } } }], pageInfo: { hasNextPage: false } },
 } } } });
 
@@ -74,7 +74,7 @@ test("AC1: an identical-tree run the hub reused is named in the block", async ()
 test("AC2: a not-ready admission in advise mode shows its blockers in the same block, and the request still goes out", async () => {
   const r = rig("advise", { ready: false });
   const body = await r.body();
-  expect(body).toContain(`Hub-verified at ${head}: not ready: exact-head full CI is not green.`);
+  expect(body).toContain(`Hub-verified at ${head}: not ready: exact-head full CI is not green: ${NAMES.map(name => `pending ${name}`).join("; ")}.`);
   expect(body).not.toContain("passed at this exact head");
   expect(body).toContain("Review task #");
   // Enforce never sends a premature request at all (unchanged).

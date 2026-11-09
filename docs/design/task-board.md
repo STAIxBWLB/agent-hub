@@ -224,3 +224,15 @@ refuses before writes. Read-only settings expose running and file SDLC values
 without adding writable settings or widening caller authority. See
 [SDLC required checks](../sdlc.md#required-checks-at-initialization) for bounds and
 unsupported workflow shapes.
+
+## Entry diagnostics (#1328 T2)
+
+Build-entry guidance is pure snapshot data, ordered as missing issue identity,
+person spec acceptance, then planner review, each with the actor and command.
+Routing/explain may display it but never read GitHub or change candidate eligibility
+because of it. Existing plan-review holds use the ready-held path, preserving the
+plan-only offer gate; live acceptance still checks spec then plan and rechecks its
+original authority/snapshot. Workflow holds are not peer-ineligibility stalls.
+Private projections withhold issue-specific guidance. Fresh and complete cached
+CI diagnostics share named missing/pending/failed/duplicate/unknown check states,
+without relaxing required checks, inventory completeness or identical-tree reuse.

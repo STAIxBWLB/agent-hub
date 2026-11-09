@@ -129,7 +129,7 @@ test("#601 an explicit assign of build work without a planner review says why be
   r.bus.add(peer); await peer.start();
   const task = await r.tasks.propose("user", { title: "new build scope", class: "implement", owner: "codex" });
   const before = r.board.get(task.id)!.history.length;
-  await expect(r.tasks.assignTo(task.id, "codex", "user", true)).rejects.toThrow(/cannot assign task #\d+ to codex: plan not reviewed since proposal; planner: call hub_planner_groom/);
+  await expect(r.tasks.assignTo(task.id, "codex", "user", true)).rejects.toThrow(/cannot assign task #\d+ to codex: spec issue not recorded \(owner\/planner: hub_sdlc_record\)/);
   expect(r.board.get(task.id)!.history.length).toBe(before);
   expect(r.board.get(task.id)!.owner).toBeNull();
 });
