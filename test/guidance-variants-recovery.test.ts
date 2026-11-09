@@ -43,7 +43,7 @@ async function startFixture(f: ReturnType<typeof fixture>, instanceId = "guidanc
     pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, specs: { ...DEFAULT_CONFIG.specs, enabled: false },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
     approvals: { ...DEFAULT_CONFIG.approvals, notify: false } };
-  return startDaemon({ cwd: f.root, stateDir: f.stateDir, instanceId, kimiHome: join(f.root, "kimi-home"), config,
+  return startDaemon({ cwd: f.root, stateDir: f.stateDir, projectId: "guidance-recovery-project", instanceId, kimiHome: join(f.root, "kimi-home"), config,
     controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, memorySyncTrigger: () => {} });
 }
 
@@ -149,6 +149,9 @@ test("controlled restart refuses changed retained guidance metadata instead of t
   const prepared = await person.request({ ...request, op: "prepare" }); expect<boolean>(prepared.ok, prepared.error).toBe(true);
   const committed = await person.request({ ...request, op: "commit" }); expect<boolean>(committed.ok, committed.error).toBe(true); expect(committed.committed).toBe(true);
   await daemon.stopped; person.close();
+  const retained = readRestartSnapshot(f.stateDir, { projectRoot: f.root, projectId: "guidance-recovery-project", operationId: "guidance-restart-operation" });
+  expect(retained).toBeDefined();
+  expect(retained!.integrity!.guidanceVariants).toEqual(f.board.guidanceVariantsIntegrity());
   f.sql.run("UPDATE guidance_variants SET created_at=created_at+1");
   const prior = process.env.AGENTHUB_RECOVERY_OPERATION; process.env.AGENTHUB_RECOVERY_OPERATION = "guidance-restart-operation";
   try { await expect(startFixture(f, "guidance-recovery-target")).rejects.toThrow("guidance variant state or recovery binding is unavailable"); }

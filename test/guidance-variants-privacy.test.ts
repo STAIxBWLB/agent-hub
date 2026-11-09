@@ -208,7 +208,8 @@ test("real shipped attribution paths and unrelated deny policy preserve safe dec
   expect(input.baseline.bytes).toBe(SHIPPED_ROLES["test-engineer"]!);
   const original = parseRoleDocument(input.baseline.bytes, input.baseline.roleId, input.baseline.layer);
   const candidate = parseRoleDocument(input.candidate.bytes, input.baseline.roleId, input.baseline.layer);
-  expect(original.role.source).toContain("agency-agents/");
+  expect(original.role.source).toContain("adapted from agency-agents ");
+  expect(original.role.source).toContain("testing/testing-test-automation-engineer.md");
   expect(candidate.rawHeader).toBe(original.rawHeader);
   expect(candidate.bodyPrefix).toBe(original.bodyPrefix);
   for (let index = 0; index < original.sections.length; index++) {
@@ -226,7 +227,7 @@ test("real shipped attribution paths and unrelated deny policy preserve safe dec
   const publicJson = JSON.stringify(read);
   for (const text of [input.baseline.bytes, input.candidate.bytes, original.rawHeader, original.role.body])
     expect(publicJson).not.toContain(JSON.stringify(text).slice(1, -1));
-  expect(publicJson).not.toContain(original.role.source); expect(publicJson).not.toContain("agency-agents/");
+  expect(publicJson).not.toContain(original.role.source); expect(publicJson).not.toContain("agency-agents");
   expect(publicJson).not.toContain(foreign.id); expect(publicJson).not.toContain(known.id);
   for (const field of ["variant", "baseline", "candidate", "createdBy", "createdAt", "withdrawn"])
     expect(Object.hasOwn(read.records[0]!, field)).toBe(false);
