@@ -92,6 +92,13 @@ The eight earlier author-added source keys use these same call-site rules:
 | Capture session digest prefix 16 | contract | stored opaque identity width |
 | Capture turn/status digest prefix 16 | contract | stored opaque identity width |
 
+At `865a017ba5f4601323abfab8159289d434edd68f`, typecheck, inventory and 169 tests
+across thirteen files passed, including the unchanged actual roster scenario.
+Record read revisions now track relevant memory/profile/privacy/flag state rather
+than unrelated configuration reloads. Current privacy screens, capture's stricter
+turn-generation fence and off-roster attachment admission remain independent.
+The frozen lock and generated bundles were stable on the second build.
+
 ## Synthetic byte measurements
 
 | Projection | Before UTF-8 bytes | After UTF-8 bytes |

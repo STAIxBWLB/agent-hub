@@ -90,3 +90,9 @@ Review of PR #1050 found that including accepted runner configuration and raw-ke
 Review of PR #1052 found that full-index trust sweeps and hashing every retained capture under the registry writer lock made ordinary startup refuse large repositories or starve other project writers. Per-start scoped trust and bounded quarantine transactions separate execution authority and deletion safety from maintenance cost.
 
 The ledger review of PR #1052 found that applying the startup admission wait to worker completion could strand the ledger in running state after contention or a crash. Signed process ownership, an atomic dead-owner replacement, a normal worker wait and read-only doctor paths keep deferred maintenance recoverable and visible.
+
+On 2026-11-09, the #1320 Record read projection used the global configuration
+revision. A roster-only reload then discarded a held public recall response, so
+the existing #315 preface test lost its preface even though the independent
+off-roster attach guard remained correct. The memory/privacy-specific read
+revision preserves both behaviors; capture still uses its stricter turn fence.
