@@ -278,6 +278,105 @@ ahub say "Each of you: reply with your name."      # broadcast
 ahub say @kimi "run the tests and report"          # one peer
 ```
 
+## A new project with SDLC advise or enforce
+
+This flow uses the default lifecycle in a new Git repository. `advise` reports
+lifecycle gaps; `enforce` blocks the corresponding transitions until their
+evidence is current. Ownership, privacy and WIP rules still apply in both modes.
+SDLC defaults to off, and guarded merge has its own opt-in policy.
+
+Run bare `ahub init` from the person's terminal in the new repository to get the
+guided prompt. Choose `advise` or `enforce` when asked. Init proposes required checks
+from this repository's latest completed default-branch CI run, falling back to
+literal workflow job names, and the person confirms or edits the names. For an
+unattended choice, `ahub init --sdlc enforce --yes` takes the discovered names.
+If discovery cannot determine them, give the exact names explicitly, for example
+with `--required-checks 'unit,lint'` after replacing `unit,lint` with this
+repository's required jobs. Enforce without known names refuses before writing.
+The mode and check names are written to `.agenthub/sdlc.toml`.
+See [required checks](sdlc.md#required-checks-at-initialization) for discovery
+limits and repository-specific configuration.
+
+Research recording is another init choice: `--research` or `--no-research` sets
+`research.enabled` in this project's untracked `.agenthub/config.local.json`. A new project otherwise uses the trusted
+machine choice saved by an explicit `ahub setup --research` or
+`ahub setup --no-research`, else off. Init reads that default, never writes it.
+Before saving a shared machine default, follow the
+[upgrade-all-hubs caveat](operations.md#research-records). Setting flags select
+values directly. `--yes` skips questions; `--dry-run` previews without questions or
+writes.
+
+Review `git status --short` and `git diff`, then commit `AGENTS.md`,
+`.agenthub/config.json`, `.agenthub/routing.toml`, `.agenthub/sdlc.toml` and other
+shared init changes such as `.gitignore` as applicable. Keep
+`.agenthub/config.local.json`, `.agenthub/routing.local.toml` and runtime state
+untracked. Start through `ahub up` or the dedicated launchers such as
+`ahub claude` and `ahub codex`, as in [First session](#first-session), so the
+managed session receives its hub integration. Pull-only surfaces use `hub_inbox`.
+
+Use actual task/issue ids and the full lowercase commit SHA for `<head>` below.
+The normal lifecycle is:
+
+1. **Planner:** propose the work with `hub_task_propose`, including the intended
+   plan and repository. Proposal/route guidance identifies the snapshot's next
+   missing step; live admission rechecks currentness.
+2. **Owner or task planner:** record the spec issue with `hub_sdlc_record`.
+   The planner's stage-identity record contains only `stage`, `repo` and `issue`
+   in its receipt, with a planner or owner/planner stage (`spec` in the default
+   lifecycle). See [lifecycle commands](sdlc.md#initial-commands).
+3. **Person:** read the linked issue, then run
+   `ahub sdlc accept <task> --issue <n>` (add `--repo owner/repo` if needed).
+   This is a person-only command, not an agent-shell or live-test delegation.
+   An eligible replacement may reuse existing consent as described below.
+4. **Planner:** read `hub_planner_groom`, then record `hub_plan_review` with the
+   `revision` equal to the current `planningRevision`, a reason and appropriate
+   review/CI scopes. The [plan-review contract](sdlc.md#planner-plan-review-481-s9)
+   defines currentness
+   and planner independence.
+5. **Owner:** accept with `hub_task_accept` and the reviewed plan, then implement
+   and run the project's required local checks. Acceptance re-reads spec and
+   plan evidence; an offer alone is not acceptance.
+6. **Owner:** commit and push, open the PR, record its identity with
+   `hub_sdlc_record` (`receipt.pr`), and obtain the configured required checks
+   green on that exact head. `ahub sdlc explain <task>` names missing, pending and failed checks.
+7. **Owner:** call `hub_task_done` while the PR is still open, with its full
+   commit in `refs.commit`, the summary and check evidence. Follow any queued
+   check or readiness result before asking for a verdict.
+8. **Assigned reviewer:** review that head and record the verdict with
+   `hub_review`. The person's equivalent is
+   `ahub review <task> approved --head <head>` or a changes-requested verdict.
+9. **Person or current configured conductor:** preview with
+   `ahub sdlc merge <task> --dry-run`. Actual guarded merge requires an explicit
+   `auto_merge = "on"` policy for the repository (default off). After applying
+   that file change with a hub restart, use `ahub sdlc merge <task>`. If the policy
+   was already enabled when the reviewer approved, the automatic path can merge
+   after that verdict. See
+   [guarded merge](sdlc.md#guarded-merge-786) for every evidence gate.
+
+The [entry-gate order and exact diagnostics](sdlc.md#named-ci-and-build-entry-diagnostics-1328-t2)
+identify who repairs a missing prerequisite. A plan-review hold is separate from
+peer eligibility, and an owner offer can precede person spec acceptance.
+
+Recovery uses the existing evidence boundaries:
+
+- **PR already merged:** the person or current configured conductor uses
+  `ahub sdlc adopt-merge <task> --pr <n>`. It needs the task's recorded full head,
+  matching merged PR and green required checks, with clean finding/review
+  coverage. Eligible states are `in_progress`, `in_review` and
+  `changes_requested`; see [merge adoption](sdlc.md#adopting-a-pr-merged-outside-the-hub-1328-t3).
+- **Known plan departure:** amend the plan through the owner/planner flow, or
+  the person can run `ahub sdlc accept-departure <task> <head> <reason...>` for a
+  currently known, complete departure on that head. Repair unknown coverage before
+  departure consent; see [plan conformance](sdlc.md#plan-conformance-481-s2).
+- **Obsolete work:** create the newer replacement and record the same repository
+  and issue first. The person can then cancel the old task with an explicit local
+  reference, for example `ahub task cancel 12 --reason "superseded work" --superseded-by "#13"`
+  when task 13 replaces task 12. At the replacement's build admission, the host
+  may carry the original consent only for an unchanged issue body and current
+  public source/destination context. Carry does not copy plan review or head/CI
+  evidence. Cancellation is not approval and releases no dependent tasks; see
+  [spec acceptance](sdlc.md#spec-acceptance-481-s1).
+
 ## The local worker
 
 `local` needs an OpenAI-compatible gateway. Put yours in `.agenthub/config.local.json`
