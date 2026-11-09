@@ -1380,6 +1380,33 @@ callbacks. The instrumentation is intended to diagnose the next naturally
 occurring stall; it has not been run against the live daemon by that task.
 
 
+## Execution lineage (#1220 T2)
+
+`ahub lineage show --task <id>` reads a bounded, public metadata neighborhood.
+`--attempt <ra-id>` selects an existing research attempt. To name a dispatch,
+deliverable or output explicitly, use `--root '<ExecutionReferenceV1 JSON>'`
+with `--task-scope <id> --task-created <epoch-ms>`; the hub verifies exact
+membership in that task. A missing owner scope is unavailable, not a board scan.
+Use `--json` for the wire document; `--cursor` continues the same source snapshot.
+A changed source or restart invalidates the cursor, so refresh the root.
+
+`ahub lineage link --task <id> --task-created <epoch-ms> --revision <flow-revision>
+--ref '<ExecutionReferenceV1 JSON>' [--from '<local source reference JSON>']` admits inert, deduplicated declared metadata
+through Tasks. Read `ahub task show <id> --json` first to obtain the task's current
+creation identity and history revision. A stale revision or changed actor,
+project or privacy scope refuses without writing. A reference never fetches the
+producer or attests to a runner outcome. Foreign project keys remain opaque in
+their producer namespace. The equivalent agent tools are `hub_lineage_show` and
+`hub_lineage_link`; isolated reviewers retain their existing two-tool surface.
+
+Reads expose no titles, prompts, paths, session ids or review bodies. Unsupported,
+missing and denied reads have the same unavailable shape for ordinary callers;
+only an authorized diagnostic operator sees a reason. Pages are at most 100 nodes,
+200 edges and 256 KiB, with explicit truncation. Historical reviews retain their
+old head/hash binding; a changed output or head does not inherit that currency.
+The console panel and large-board performance receipt belong to T3; native causal
+coverage remains unverified. See [the address contract](design/execution-reference.md).
+
 ## A two-agent task and review
 
 Choose an owner explicitly, then inspect the reviewer selected by the project

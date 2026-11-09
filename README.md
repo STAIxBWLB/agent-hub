@@ -8,6 +8,10 @@ connected through its own native interface.
 Status: 0.34.1, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
+Inspect bounded task and attempt metadata with `ahub lineage show`; admit external
+references through the current task role with `ahub lineage link`. References remain
+declared and never cause an external fetch. See [execution lineage](docs/operations.md#execution-lineage-1220-t2).
+
 ## Quick start
 
 You need [Bun](https://bun.sh) <!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor --> or later on PATH.

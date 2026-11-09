@@ -111,3 +111,80 @@ test("response byte ceiling includes cursor and metadata; no ids or prose outsid
   expect(page.state === "available" && page.nodes.length).toBeLessThanOrEqual(100);
   expect(page.state === "available" && page.edges.length).toBeLessThanOrEqual(200);
 });
+
+const external = (tool: "ares" | "amem" | "vmem", projectKey = "foreign-project"): ExecutionReferenceV1 => ({ v: 1, tool, projectKey, kind: "record", id: `${tool}-target`, revision: "saved-revision", sha256: "a".repeat(64) });
+function admittedFixture(targets: readonly ExecutionReferenceV1[] = [external("ares")]): ExecutionLineageSource {
+  return { ...fixture(), admittedExternalTargets: targets,
+    nodes: [node("task", "approved"), ...targets.map(ref => ({ ref, state: "declared", strength: "declared" as const }))],
+    edges: targets.map(to => ({ from: ref("task"), to, relation: "declared-external" as const, strength: "declared" as const })) };
+}
+
+test("host-admitted foreign producer references remain opaque declared target nodes", () => {
+  const targets = [external("ares"), external("amem"), { ...external("vmem"), id: "https://opaque.invalid/not-a-fetch?value=stored-reference" }];
+  const source = admittedFixture(targets);
+  const result = readExecutionLineage(source, { root: ref("task") });
+  expect(result.state).toBe("available");
+  if (result.state !== "available") throw Error("host-admitted fixture unavailable");
+  expect(result.nodes.map(value => value.ref)).toEqual([ref("task"), ...targets]);
+  expect(result.nodes.slice(1).every(value => value.strength === "declared")).toBe(true);
+  expect(result.edges).toEqual(source.edges);
+  expect(result.edges.every(value => value.relation === "declared-external" && value.strength === "declared")).toBe(true);
+});
+
+test("a producer edge is never its own admission and exact revision/hash identity is required", () => {
+  const target = external("ares"), admitted = admittedFixture([target]);
+  for (const source of [
+    { ...admitted, admittedExternalTargets: undefined },
+    { ...admitted, admittedExternalTargets: [] },
+    { ...admitted, admittedExternalTargets: [{ ...target, revision: "different" }] },
+    { ...admitted, admittedExternalTargets: [{ ...target, sha256: "b".repeat(64) }] },
+    { ...admitted, admittedExternalTargets: [{ ...target, projectKey: "different" }] },
+  ]) expect(readExecutionLineage(source, { root: ref("task") })).toEqual({ state: "unavailable" });
+});
+
+test("foreign roots/outgoing edges and nondeclared foreign node/edge strengths fail closed", () => {
+  const target = external("amem"), source = admittedFixture([target]);
+  expect(readExecutionLineage(source, { root: target })).toEqual({ state: "unavailable" });
+  const sameProject = external("vmem", source.projectKey);
+  expect(readExecutionLineage(admittedFixture([sameProject]), { root: sameProject })).toEqual({ state: "unavailable" });
+  expect(readExecutionLineage({ ...source, edges: [] }, { root: ref("task") })).toEqual({ state: "unavailable" });
+  expect(readExecutionLineage({ ...source, edges: [...source.edges, { from: target, to: ref("task"), relation: "declared-external", strength: "declared" }] }, { root: ref("task") })).toEqual({ state: "unavailable" });
+  for (const strength of ["host-observed", "runner-attested", "unknown"] as const) {
+    expect(readExecutionLineage({ ...source, nodes: source.nodes.map(value => value.ref.tool === "ahub" ? value : { ...value, strength }) }, { root: ref("task") })).toEqual({ state: "unavailable" });
+    expect(readExecutionLineage({ ...source, edges: source.edges.map(value => ({ ...value, strength })) }, { root: ref("task") })).toEqual({ state: "unavailable" });
+  }
+  expect(readExecutionLineage({ ...source, edges: source.edges.map(value => ({ ...value, relation: "produced" as const })) }, { root: ref("task") })).toEqual({ state: "unavailable" });
+});
+
+test("ahub references always retain the source project boundary", () => {
+  const other = { ...ref("task"), projectKey: "project-b" };
+  expect(readExecutionLineage(fixture(), { root: other })).toEqual({ state: "unavailable" });
+  const source = { ...fixture(), nodes: [...fixture().nodes, { ref: other, state: "declared", strength: "declared" as const }],
+    edges: [...fixture().edges, { from: ref("task"), to: other, relation: "declared-external" as const, strength: "declared" as const }] };
+  expect(readExecutionLineage(source, { root: ref("task") })).toEqual({ state: "unavailable" });
+  expect(readExecutionLineage({ ...source, admittedExternalTargets: [other] }, { root: ref("task") })).toEqual({ state: "unavailable" });
+});
+
+test("host external admission is bounded, validated and cursor-bound independently of graph edges", () => {
+  const a = external("ares"), b = external("amem"), source = admittedFixture([a, b]);
+  const query = { root: ref("task"), nodes: 1, edges: 1 };
+  const first = readExecutionLineage(source, query);
+  expect(first.state === "available" && first.truncated).toBe(true);
+  if (first.state !== "available" || !first.cursor) throw Error("expected paginated fixture");
+  // Same visible graph, a different exact host-admission list/order: the continuation must not transfer.
+  expect(readExecutionLineage({ ...source, admittedExternalTargets: [b, a] }, { ...query, cursor: first.cursor })).toEqual({ state: "unavailable" });
+  expect(readExecutionLineage({ ...source, admittedExternalTargets: [a, a] }, query)).toEqual({ state: "unavailable" });
+  expect(readExecutionLineage({ ...source, admittedExternalTargets: Array.from({ length: LINEAGE_LIMITS.sourceNodes + 1 }, () => a) }, query)).toEqual({ state: "unavailable" });
+  const denied = { ...source, authorized: false, get admittedExternalTargets(): never { throw Error("admission must not be read before authority"); } };
+  expect(readExecutionLineage(denied, query)).toEqual({ state: "unavailable" });
+});
+
+test("source byte ceiling includes the complete explicit external-admission metadata", () => {
+  const targets: ExecutionReferenceV1[] = Array.from({ length: 1800 }, (_, index) => ({ v: 1, tool: "ares", projectKey: "foreign-" + "p".repeat(240),
+    kind: "r".repeat(64), id: `${index}-` + "i".repeat(240), revision: "v".repeat(128), sha256: "a".repeat(64) }));
+  const source = admittedFixture(targets);
+  const projectedBytes = [...source.nodes, ...source.edges].reduce((sum, value) => sum + Buffer.byteLength(JSON.stringify(value)), 0);
+  expect(projectedBytes).toBeLessThan(LINEAGE_LIMITS.sourceBytes);
+  expect(projectedBytes + Buffer.byteLength(JSON.stringify(targets))).toBeGreaterThan(LINEAGE_LIMITS.sourceBytes);
+  expect(readExecutionLineage({ ...source, diagnostics: true }, { root: ref("task") })).toEqual({ state: "unavailable", reason: "unsupported" });
+});

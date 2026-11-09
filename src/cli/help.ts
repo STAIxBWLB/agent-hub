@@ -138,6 +138,8 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub budget execution configure <config.json> | disable <id> [--json] [--color=auto|always|never]", "opt-in limits on model calls, tool calls, time and tokens for pi and local"],
   ]],
   ["History and reports", [
+    ["ahub lineage show (--task N | --attempt ra-id | --root JSON [--task-scope N --task-created MS]) [--cursor TOKEN] [--nodes N --edges N --bytes N] [--json]", "bounded execution metadata and explicit evidence strengths; unavailable stays unknown, with no probes or replay"],
+    ["ahub lineage link --task N --task-created MS --revision N --ref JSON [--from JSON] [--json]", "register a declared metadata link through the task's current authority and revision; no producer attestation"],
     ["ahub turns [peer] [--limit N] [--json] [--color=auto|always|never]", "recent turns and the files each changed (a git work tree only)"],
     ["ahub undo <turn> [--yes] [--context]", "put back the files a turn changed; refuses files changed since. Without --yes it only lists them; --context also drops a Codex turn from its conversation"],
     ["ahub report [--since 7d|<iso>] [--by task] [--json] [--color=auto|always|never]", "turns, tokens, messages, overlaps and task events per period"],

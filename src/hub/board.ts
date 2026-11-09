@@ -1,3 +1,5 @@
+import { ExecutionLinkError, EXECUTION_LINK_LIMITS, executionLinkActor, executionLinkInteger, executionLinkId, executionLinkReferences, executionReferenceDigest, parseExecutionLinkInput, parseExecutionLinkRecord, type ExecutionLinkInput, type ExecutionLinkRecord, type ExecutionLinkFence } from "./execution-links.ts";
+import { executionReferenceKey } from "./execution-reference.ts";
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt, type AttemptReceiptV1 } from "./research-runner.ts";
 import { canonicalJson } from "./packs.ts";
 import { parseEvidenceLink, evidenceLinkCanonical, MAX_EVIDENCE_RECORD_BYTES, type EvidenceLinkV1 } from "./research-evidence.ts";
@@ -93,6 +95,17 @@ function researchCampaignFromRow(row: ResearchCampaignRow): ResearchCampaignReco
       ...(row.closed_by !== null ? { closedBy: row.closed_by } : {}), ...(row.closed_at !== null ? { closedAt: row.closed_at } : {}), ...(row.closed_reason !== null ? { closedReason: row.closed_reason } : {}) });
   } catch { throw researchFailure(); }
 }
+
+const EXECUTION_REFERENCE_SELECT = `SELECT
+  CASE WHEN length(CAST(id AS BLOB))=64 THEN id END AS id,
+  CASE WHEN length(CAST(project_id AS BLOB)) BETWEEN 1 AND 256 THEN project_id END AS project_id,
+  task_id,task_created,
+  CASE WHEN length(CAST(from_json AS BLOB))<=${EXECUTION_LINK_LIMITS.referenceBytes} THEN from_json END AS from_json,
+  CASE WHEN length(CAST(from_sha256 AS BLOB))=64 THEN from_sha256 END AS from_sha256,
+  CASE WHEN length(CAST(reference_json AS BLOB))<=${EXECUTION_LINK_LIMITS.referenceBytes} THEN reference_json END AS reference_json,
+  CASE WHEN length(CAST(reference_sha256 AS BLOB))=64 THEN reference_sha256 END AS reference_sha256,
+  CASE WHEN length(CAST(recorded_by AS BLOB)) BETWEEN 1 AND ${EXECUTION_LINK_LIMITS.actor} THEN recorded_by END AS recorded_by,
+  recorded_at FROM execution_reference_links`;
 
 export interface ExperimentComparisonPlanRecord {
   hash: string;
@@ -559,6 +572,12 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS research_evidence_links (
       project TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, task_id INTEGER NOT NULL,
       body TEXT NOT NULL, body_sha256 TEXT NOT NULL, PRIMARY KEY(project,id,revision))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS execution_reference_links (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_id INTEGER NOT NULL, task_created INTEGER NOT NULL,
+      from_json TEXT NOT NULL, from_sha256 TEXT NOT NULL, reference_json TEXT NOT NULL, reference_sha256 TEXT NOT NULL,
+      recorded_by TEXT NOT NULL, recorded_at INTEGER NOT NULL,
+      UNIQUE(project_id,task_id,task_created,from_sha256,reference_sha256))`);
+    this.db.run("CREATE INDEX IF NOT EXISTS execution_reference_task_scope ON execution_reference_links(project_id,task_id,task_created,id)");
     this.db.run(`CREATE TABLE IF NOT EXISTS review_comments (
       task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,lifecycle TEXT NOT NULL,revision INTEGER NOT NULL,
       PRIMARY KEY(task_id,task_created,id))`);
@@ -1030,6 +1049,81 @@ export class Board {
         .run(project, link.id, link.revision, link.taskId, canonical, createHash("sha256").update(canonical).digest("hex")));
       return this.evidenceLink(project, link.id, link.revision)!;
     });
+  }
+
+  private executionReferenceRow(row: Record<string, unknown>): ExecutionLinkRecord {
+    try {
+      if (typeof row.from_json !== "string" || typeof row.reference_json !== "string") throw new Error();
+      const record = parseExecutionLinkRecord({ id: row.id, projectKey: row.project_id, taskId: row.task_id, taskCreated: row.task_created,
+        from: JSON.parse(row.from_json), reference: JSON.parse(row.reference_json), strength: "declared", recordedBy: row.recorded_by, recordedAt: row.recorded_at });
+      if (executionReferenceKey(record.from) !== row.from_json || executionReferenceKey(record.reference) !== row.reference_json
+        || executionReferenceDigest(record.from) !== row.from_sha256 || executionReferenceDigest(record.reference) !== row.reference_sha256) throw new Error();
+      return record;
+    } catch { throw new ExecutionLinkError("corrupt"); }
+  }
+  /** Tasks is the only writer; it additionally fences current private/observer/read-only context and exact from membership. */
+  recordExecutionReference(projectKey: string, value: ExecutionLinkInput, fence: ExecutionLinkFence): { record: ExecutionLinkRecord; already: boolean } {
+    const input = parseExecutionLinkInput(value), refs = executionLinkReferences(projectKey, input), id = executionLinkId(projectKey, input);
+    if (!executionLinkActor(fence.by) || !executionLinkInteger(fence.at)) throw new ExecutionLinkError("invalid");
+    try {
+      return this.atomic(() => {
+        const task = this.get(input.taskId);
+        if (!task || task.created !== input.taskCreated || task.history.length !== input.flowRevision
+          || fence.by !== USER && task.owner !== fence.by && task.reviewer !== fence.by
+          || task.signals.includes("pii") || task.signals.includes("pii_path")) throw new ExecutionLinkError("changed");
+        // Fence precedes dedup: a private, stale or removed actor cannot replay an old authorization.
+        const known = this.db.query(`${EXECUTION_REFERENCE_SELECT} WHERE id=?`).get(id) as Record<string, unknown> | null;
+        if (known) {
+          const record = this.executionReferenceRow(known);
+          if (record.projectKey !== projectKey || record.taskId !== input.taskId || record.taskCreated !== input.taskCreated
+            || executionReferenceKey(record.from) !== executionReferenceKey(refs.from) || executionReferenceKey(record.reference) !== executionReferenceKey(refs.reference)) throw new ExecutionLinkError("corrupt");
+          return { record, already: true };
+        }
+        const count = this.db.query("SELECT COUNT(*) AS n FROM (SELECT 1 FROM execution_reference_links WHERE project_id=? AND task_id=? AND task_created=? LIMIT ?)")
+          .get(projectKey, input.taskId, input.taskCreated, EXECUTION_LINK_LIMITS.read) as { n: number };
+        if (count.n >= EXECUTION_LINK_LIMITS.perTask) throw new ExecutionLinkError("limit");
+        this.taskWrite(() => this.db.query(`INSERT INTO execution_reference_links
+          (id,project_id,task_id,task_created,from_json,from_sha256,reference_json,reference_sha256,recorded_by,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+          .run(id, projectKey, input.taskId, input.taskCreated, executionReferenceKey(refs.from), executionReferenceDigest(refs.from),
+            executionReferenceKey(refs.reference), executionReferenceDigest(refs.reference), fence.by, fence.at));
+        return { record: parseExecutionLinkRecord({ id, projectKey, taskId: input.taskId, taskCreated: input.taskCreated,
+          ...refs, strength: "declared", recordedBy: fence.by, recordedAt: fence.at }), already: false };
+      });
+    } catch (error) { if (error instanceof ExecutionLinkError) throw error; throw new ExecutionLinkError("corrupt"); }
+  }
+  /** Metadata only, after Tasks source authorization. 65 is an overflow sentinel, never a truncated complete neighborhood. */
+  executionReferences(projectKey: string, taskId: number, taskCreated: number, limit: number = EXECUTION_LINK_LIMITS.read): ExecutionLinkRecord[] {
+    // Reuse the address boundary without looking up any source, task body or foreign producer.
+    executionLinkReferences(projectKey, { taskId, taskCreated, flowRevision: 0, reference: { v: 1, tool: "ahub", projectKey, kind: "task", id: `${taskId}:${taskCreated}` } });
+    if (!executionLinkInteger(limit, 1) || limit > EXECUTION_LINK_LIMITS.read) throw new ExecutionLinkError("invalid");
+    try {
+      return (this.db.query(`${EXECUTION_REFERENCE_SELECT} WHERE project_id=? AND task_id=? AND task_created=? ORDER BY id LIMIT ?`)
+        .all(projectKey, taskId, taskCreated, limit) as Record<string, unknown>[]).map(row => this.executionReferenceRow(row));
+    } catch { throw new ExecutionLinkError("corrupt"); }
+  }
+  hasExecutionReferences(): boolean {
+    try { return (this.db.query("SELECT EXISTS(SELECT 1 FROM execution_reference_links) AS present").get() as { present: number }).present === 1; }
+    catch { throw new ExecutionLinkError("corrupt"); }
+  }
+  /** Every persisted field, streamed without retaining all rows; reads never resolve references or mutate state. */
+  executionReferencesIntegrity(): { count: number; digest: string } {
+    try {
+      return this.db.transaction(() => {
+        const statement = this.db.prepare(`${EXECUTION_REFERENCE_SELECT} ORDER BY project_id,task_id,task_created,id`);
+        const digest = createHash("sha256").update("agent-hub.execution-reference-links/v1\n");
+        let count = 0, perTask = 0, priorScope: string | undefined;
+        try {
+          for (const row of statement.iterate() as Iterable<Record<string, unknown>>) {
+            const record = this.executionReferenceRow(row), scope = JSON.stringify([record.projectKey, record.taskId, record.taskCreated]);
+            if (scope !== priorScope) { priorScope = scope; perTask = 0; }
+            if (++perTask > EXECUTION_LINK_LIMITS.perTask) throw new ExecutionLinkError("corrupt");
+            const canonical = JSON.stringify(record);
+            digest.update(String(Buffer.byteLength(canonical))).update(":").update(canonical).update("\n"); count++;
+          }
+        } finally { statement.finalize(); }
+        return { count, digest: digest.digest("hex") };
+      })();
+    } catch { throw new ExecutionLinkError("corrupt"); }
   }
 
   hasResearchEvidenceState(): boolean {

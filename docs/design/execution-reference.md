@@ -12,6 +12,14 @@ tags: [agent-hub]
 paths:
   - src/hub/execution-reference.ts
   - src/hub/execution-lineage.ts
+  - src/hub/execution-lineage-owner.ts
+  - src/hub/execution-links.ts
+  - src/cli/lineage.ts
+  - test/execution-lineage-admission.test.ts
+  - test/execution-link-tasks.test.ts
+  - test/execution-lineage-owner.test.ts
+  - test/execution-lineage-control.test.ts
+  - test/execution-lineage-cli.test.ts
   - test/execution-reference.test.ts
   - test/execution-lineage.test.ts
   - test/fixtures/execution-reference-v1.json
@@ -20,9 +28,10 @@ paths:
 # ExecutionReferenceV1
 
 Source-owner contract for [#1220](https://github.com/STAIxBWLB/agent-hub/issues/1220).
-T1 supplies an address validator, neutral vectors and a pure reader. T2 owns
+T1 supplies an address validator, neutral vectors and a pure reader. T2 adds
 Tasks admission and CLI/MCP wiring; T3 owns the console and measured performance.
-There is no new persistence, automatic resolver or runtime polling in T1.
+The only new persistence is admitted, deduplicated external-reference metadata.
+There is no automatic resolver, backfill or runtime polling.
 
 ## Address contract
 
@@ -51,19 +60,27 @@ shared runtime dependency. Neutral valid/invalid JSON vectors live in
 A path-like or URL-like id is still opaque data. Never open, execute, fetch,
 route to another node or interpret credentials from any address field. A resolver
 must separately select a known source owner and its authorized project; no
-implicit node or project fallback is allowed.
+implicit node or project fallback is allowed. Every `ahub` node has the source
+hub project key. A foreign producer key is allowed only on an admitted
+`declared-external` target node, with declared strength. It stays verbatim and is
+never compared with the hub namespace, resolved, fetched or used for routing.
+The live hub derives its stable opaque source key once at startup from its existing
+project identity; it does not emit a raw directory or use the per-start instance id.
+Foreign roots and outgoing foreign edges are unsupported. The host supplies the
+explicit admitted-target projection; a producer-supplied edge alone proves no admission.
 
 ## Pure source boundary
 
 `readExecutionLineage(source, query)` receives a host-owned snapshot of an explicit
 root neighborhood and returns values only. It does not construct a Board,
 DeliveryJournal or CompletionStore (their constructors can write), read files,
-call a model, spawn a process, probe, replay, fetch or write memory. T2 must reuse
-already-open owner readers and indexed relationships to assemble the snapshot;
-it must not scan the entire board on every inbox poll.
+call a model, spawn a process, probe, replay, fetch or write memory. The host reuses
+already-open owner readers and explicit relationships to assemble the snapshot;
+it must not scan the entire board on a read.
 
 The host pins `id`, `revision`, `projectKey` and caller `scope`, source `health`,
-source-read `authorized` authority and diagnostic authority. These are never
+source-read `authorized` authority, diagnostic authority and the explicit
+`admittedExternalTargets` projection from saved public declarations. These are never
 accepted from a producer or query. A snapshot contains metadata nodes and explicit
 edges, already privacy-projected by the source owner. Each node carries its own
 source reference, state token and evidence strength; no title, note, path,
@@ -82,11 +99,11 @@ trace ids, current roles or matching hashes alone.
 
 | Existing relationship | Valid projection | Ceiling |
 | --- | --- | --- |
-| Task `offer.envelopeId` and matching journal `originals[].id` / `refs.task` | Task to dispatch | Dispatch/handout observation, not model consumption |
+| Task `offer.envelopeId` and matching journal `originals[].id` / `refs.task` | Task to explicitly scoped journal dispatch | Offer envelope ids are not journal row ids; no reverse discovery or invented dispatch state |
 | `ExperimentAttemptRecord.attempt.taskId` | Task to research attempt | Does not identify the dispatch that caused it |
 | Attempt id on output event and host observations | Attempt to output | Event is declared unless its stored owner observation proves more |
 | Verified runner receipt `attemptId`, `protocolHash`, output name/hash | Attempt/output evidence | Preserve verified runner provenance; a runner output name is not a hub deliverable id |
-| Review history `deliverables[].id/sha256`, `reviewedHead` | Output to review | Historical exact-hash/head binding, not current approval of edited bytes |
+| Review history `deliverables[].id/sha256`, `reviewedHead` | Output or recorded head to review | Historical exact-hash/head binding, not current approval of edited bytes |
 | Journal `previousId` | Exact predecessor metadata | `attempt` is a retry ordinal, not a research attempt id |
 
 There is currently no persisted dispatch-to-research-attempt relationship.
@@ -144,3 +161,55 @@ independent states, evidence ceilings, privacy, unavailable equivalence, bounded
 pages and source/scope/root invalidation. Fixtures run without a daemon, native
 agent or account. CLI/MCP equivalence, admission, review currency and native
 coverage remain T2/T3 work; these fixtures do not claim those acceptance legs.
+
+
+## Tasks admission and owner-scoped reads (T2)
+
+`Tasks.linkExecutionReference` is the only external-reference write boundary.
+The input binds the task id, its creation identity and current flow revision,
+and one closed ExecutionReferenceV1 target. An optional `from` names an exact
+local source node already in that task's bounded neighborhood; without it, the
+source is the task reference. The current actor must retain the task role
+and local project scope. PII tasks and private turns refuse before capture or
+persistence. Current authority, task revision and privacy are checked again after
+screening and immediately before the atomic write. Identical admitted metadata
+returns the existing declaration; changed or stale admission never silently
+rewrites an old record. A reference is inert declared metadata, never a runner
+receipt or an external read instruction.
+
+The table stores only admitted source/target reference metadata and its local task
+binding. Its uniqueness key includes the canonical source and target, so repeated
+admission preserves the original actor and timestamp without rewriting it. There is no derived relationship table, migration backfill or implicit
+reverse-discovery index. Task roots resolve forward from their own task row,
+current offer and recorded deliverables/reviews. Attempt roots resolve from their
+own attempt row and its explicit task id, protocol, events and receipts. Dispatch,
+deliverable and output roots require an explicit owning-task scope (id and
+creation identity) and exact recorded membership in that task's row. Without it,
+the result is unavailable, with `unsupported` visible only to diagnostic operators.
+This is the historical-coverage ceiling for AC5, not a claim of missing records.
+Owner-maintained derived indexes are the future upgrade path.
+
+The read path uses only repository identities warmed at startup or by normal
+Tasks mutations. An unknown refs identity is unavailable rather than causing a
+Git or path probe. Its metadata screen is pure: when a private-path or deny policy
+is configured, path-shaped fields and stored paths without cached alias proof are
+withheld. A task with path/section selectors under a private-path policy is also
+withheld. This conservative ceiling prevents a read from resolving symlinks or
+probing a producer address; a future owner-maintained public metadata projection
+can recover those slices without weakening privacy.
+
+No read infers an edge from a title, time, shared path or matching hash. The
+missing dispatch-to-attempt observation remains missing unless a separately
+admitted declaration explicitly names it; declared metadata never upgrades the
+strength of surrounding evidence. Read operations never spawn, probe, fetch,
+replay, write memory or admit a reference.
+
+Historical review metadata stays visible only through its public source view.
+Review currency binds the exact reviewed output hash and submitted head; a later
+recorded output or head invalidates current currency while retaining the old evidence
+as historical. This is currency against recorded source metadata, not a live file or
+Git freshness probe; unrecorded changes remain unknown. A declared external reference cannot make a review current. Code-only reviews
+retain an explicit recorded-head node even when no deliverable was submitted;
+a head string alone is declared source metadata, not a Git observation. Review
+state tokens retain the original verdict with a stale or unknown suffix when
+its binding is no longer current or cannot be established.

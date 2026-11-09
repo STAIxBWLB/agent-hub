@@ -8,7 +8,7 @@ import { NOTE_KINDS } from "./envelope.ts";
 
 /** Restricted to the fixed current-child tools server, never an ordinary peer tool. */
 /** The fixed MCP surface of a current owned implementer child; independent of broader project roles. */
-export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record"]);
+export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_lineage_show", "hub_lineage_link"]);
 
 export const IMPLEMENTER_PERMISSION_TOOL = {
   name: "hub_permission_request",
@@ -130,11 +130,21 @@ export const EVIDENCE_RECORD_TOOL = tool("hub_evidence_record", "Record a proven
 }, ["taskId", "claimId", "claimRevision", "sourceId", "rawSha256", "projectionSha256", "projectionVersion", "locator", "relation"]);
 /** #604: a handoff's arguments cross to another project, so neither tool's arguments nor result are captured to memory. */
 export const HANDOFF_TOOLS = new Set(["hub_task_handoff", "hub_task_handoffs"]);
+/** Lineage is metadata only: never capture its arguments/results or count it as owner task progress. */
+export const LINEAGE_TOOL_NAMES: ReadonlySet<string> = new Set(["hub_lineage_show", "hub_lineage_link"]);
+const executionReference = { type: "object", properties: { v: { type: "integer", enum: [1] }, tool: { type: "string", enum: ["ahub", "ares", "amem", "vmem"] },
+  projectKey: { type: "string", minLength: 1, maxLength: 256 }, kind: { type: "string", minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9._-]*$" },
+  id: { type: "string", minLength: 1, maxLength: 256 }, revision: { type: "string", minLength: 1, maxLength: 128 }, sha256: { type: "string", pattern: "^[a-f0-9]{64}$" } }, required: ["v", "tool", "projectKey", "kind", "id"], additionalProperties: false };
+const lineageShow = { taskId: id, attemptId: str, root: executionReference, task: { type: "object", properties: { id, created: { type: "integer", minimum: 0 } }, required: ["id", "created"], additionalProperties: false },
+  cursor: { type: "string", minLength: 1, maxLength: 512 }, nodes: { type: "integer", minimum: 1, maximum: 100 }, edges: { type: "integer", minimum: 1, maximum: 200 }, bytes: { type: "integer", minimum: 4096, maximum: 262144 } };
+
 export const BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
 /** #445 C1: what a peer lists and publishes. Their text is another agent's words, so neither call is captured to memory. */
 export const CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
 
 export const TASK_TOOLS: HubTool[] = [
+  tool("hub_lineage_show", "Read bounded execution lineage from exactly one taskId, attemptId or root with optional owning task identity. Explicit recorded relationships only; missing native observations remain unknown. Hidden and absent roots share unavailable. Never probes, fetches, executes or writes memory. Keep cursor and limits bound to the same query.", lineageShow),
+  tool("hub_lineage_link", "Attach one declared external execution reference through your current task role. Bind taskId, taskCreated and flowRevision copied from the current task view; optional from must already belong to the same admitted neighborhood. Duplicate declarations are idempotent. This inert metadata is not runner attestation, review approval or task progress. Private/review-observer context and recovery refuse.", { taskId: id, taskCreated: { type: "integer", minimum: 0 }, flowRevision: { type: "integer", minimum: 0 }, reference: executionReference, from: executionReference }, ["taskId", "taskCreated", "flowRevision", "reference"]),
   tool("hub_task_spec", "Read complete assigned GitHub issue contracts through the bounded hub boundary. Owner/reviewer only; no repository or URL input. Refuses withheld or oversized specs.", { id }, ["id"]),
   tool("hub_check_start", "Run an exact-head isolated Linux check for your in-progress task. Trusted opt-in runner only; no host shell or credentials. Tests require one to 32 test/*.test.ts paths. Receipt is Linux evidence.", { id, check: { type: "string", enum: ["test", "typecheck"] }, files: { type: "array", minItems: 1, maxItems: 32, items: str } }, ["id", "check"]),
   tool("hub_check_result", "Read your current task-bound isolated check receipt. Stale ownership/generation refuses; output is policy screened.", { run: str }, ["run"]),
@@ -273,7 +283,7 @@ export function configuredToolContext(status: unknown, peer: string): ProjectToo
   return { startPeers, readOnly: readOnlyPeers.includes(peer) };
 }
 
-const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_lineage_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 /** Publication restricts exposure only; server-side authority remains mandatory for every call. */
 export function projectToolList<T extends { name: string }>(tools: T[], readOnly = false): T[] {
   return readOnly ? tools.filter(tool => READ_ONLY_PROJECT_TOOLS.includes(tool.name)) : tools;

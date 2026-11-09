@@ -104,6 +104,11 @@ export class TaskRepositories {
     }
     return this.roots.get(root) ?? { key: `path:${root}`, root, aliases: [root] };
   }
+  /** Read-only consumers never resolve a cold scope or inspect a path. */
+  cachedScope(refs: TaskRefs): TaskRepository | undefined {
+    return this.scopes.get(JSON.stringify([refs.repo ?? null, (refs.paths ?? []).filter(isAbsolute)]));
+  }
+
   /** Resolve only once per refs identity. Default project-only tasks never invoke Git. Negative probes are cached too. */
   scope(refs: TaskRefs): TaskRepository {
     const absolute = (refs.paths ?? []).filter(isAbsolute);

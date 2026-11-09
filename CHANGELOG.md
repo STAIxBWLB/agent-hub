@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Bounded execution lineage reads and deduplicated declared external references are available through Tasks, CLI and MCP (#1220 T2). Admission rechecks current task role, revision, project and privacy; reads retain historical review bindings and explicit observation gaps without scanning the board or contacting producers.
+
 - adec shadow route metadata accepts an optional pinned `decider.version` (#554, agent-decide#6), while preserving unknown when absent and refusing moving `latest` aliases.
 - Optional hub `decision` routes consult a loopback agent-decide policy service (#554), default off and shadow-first. Shadow preserves the existing stage model/effort; proposed alias/effort appears only in route events. Enforcement is explicitly unavailable until the #554 follow-up. Evidence and events are bounded and privacy-screened, sensitive turns are campus-gated, and ordinary routes and explicit model selections are unchanged.
 
