@@ -750,3 +750,15 @@ test("instruction protection is a live person setting with preview, machine-loca
   expect((await ordinary.act({ action: "setting", key, value: false })).ok).toBe(false);
   expect((await marked.act({ action: "setting", key, value: false })).ok).toBe(true);
 });
+
+test("#1328 SDLC settings report running and file values without adding writable keys", async () => {
+  const rig = await hub();
+  writeFileSync(rig.file("sdlc.toml"), 'mode = "enforce"\nrequired_checks = ["project gate"]\n');
+  const view = await rig.client.request({ t: "settings_get" });
+  expect(view.sdlc).toEqual({ "sdlc.mode": { value: "off", fileValue: "enforce" }, "sdlc.required_checks": { value: [], fileValue: ["project gate"] } });
+  const tools = await ControlClient.connect(rig.stateDir, { role: "tools", peer: "codex" }); cleanup.push(() => tools.close());
+  expect((await tools.request({ t: "settings_get" })).sdlc).toEqual(view.sdlc);
+  expect((await rig.client.request({ t: "settings_set", key: "sdlc.mode", value: "off" })).ok).toBe(false);
+  writeFileSync(rig.file("sdlc.toml"), 'mode = [');
+  expect((await rig.client.request({ t: "settings_get" })).sdlc["sdlc.mode"]).toMatchObject({ value: "off", fileValue: null, problem: "file unavailable" });
+});

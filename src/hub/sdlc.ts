@@ -546,10 +546,16 @@ export async function readPlanIssueMetadata(repository: string, number: number, 
   } catch { return undefined; }
 }
 
+/** The native CI floor belongs only to this repository; other projects must name their own checks. */
+export function requiredCheckNames(repository: string | undefined, required: readonly string[]): string[] {
+  return required.length ? [...new Set(required)] : repository?.toLowerCase() === "staixbwlb/agent-hub" ? ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"] : [];
+}
+
 /** A complete resolved-thread snapshot already proves there is no pending unanswered bot thread. */
-export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, expected: string | undefined, required: readonly string[]): ReviewReadiness | undefined {
+export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, expected: string | undefined, required: readonly string[], repository?: string): ReviewReadiness | undefined {
   if (!evidence || evidence.unresolved !== 0) return undefined;
-  const checks = required.length ? [...required] : ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
+  const checks = requiredCheckNames(repository, required);
+  if (!checks.length) return { ready: false, blockers: ["required checks unknown: set required_checks in .agenthub/sdlc.toml"], checks };
   if (!checks.every(name => evidence.checks.some(check => check.name === name)) || evidence.checks.some(check => check.state === "unknown")) return undefined;
   const blockers: string[] = [];
   if (!expected || !sha(expected)) blockers.push("review head missing");
@@ -565,6 +571,8 @@ export interface ReviewReadiness { head?: string; ready: boolean; blockers: stri
 export async function readReviewReadiness(receipt: SdlcReceipt, expected: string | undefined, run: SdlcGh = sdlcGh, requiredChecks: readonly string[] = []): Promise<ReviewReadiness> {
   const unknown = (): ReviewReadiness => ({ ready: false, blockers: ["review readiness unavailable"] });
   if (!repo(receipt.repo) || !id(receipt.pr)) return unknown();
+  const full = requiredCheckNames(receipt.repo, requiredChecks);
+  if (!full.length) return { ready: false, blockers: ["required checks unknown: set required_checks in .agenthub/sdlc.toml"], checks: full };
   const [owner, name] = receipt.repo.split("/");
   const query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid state commits(last:1){nodes{commit{oid tree{oid} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}} reviewThreads(first:100){nodes{isResolved comments(first:100){nodes{author{__typename} createdAt} pageInfo{hasNextPage}}} pageInfo{hasNextPage}}}}}";
   try {
@@ -585,7 +593,6 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
     if (!commit || commit.oid !== pr.headRefOid) blockers.push("review head changed");
     const contexts = commit?.statusCheckRollup?.contexts;
     const nodes: unknown[] | undefined = contexts?.nodes;
-    const full = requiredChecks.length ? [...requiredChecks] : ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
     let reusedRun: number | undefined;
     if (contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(nodes) || nodes.length > 100
       || !full.every(name => {

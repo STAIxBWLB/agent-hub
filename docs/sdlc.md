@@ -1,5 +1,35 @@
 # Playbook lifecycle for agent-hub (#257, #481)
 
+## Required checks at initialization
+
+`ahub init --sdlc advise|enforce` proposes the repository's required check names.
+Discovery is one bounded operation: at most three capped GitHub reads (the default
+branch, the latest completed default-branch run with limit 1, then that run's jobs
+with a 100-job cap), with a 5-second bound per read and a 20-second overall deadline.
+A local `origin/HEAD` avoids the default-branch read. A missing tool, failed read,
+timeout or truncated job inventory falls back to `.github/workflows/*.yml`.
+Fallback accepts complete literal block-style job names (the job id when `name`
+is absent). Matrices, expressions, aliases and reusable workflows require an
+explicit `--required-checks <a,b,...>` override; the fallback does not guess expanded
+names. Workflow reads refuse links and bound files and bytes. Names follow the
+existing SDLC limit of 32 distinct checks, each at most 120 characters.
+
+The guided prompt shows the found names after choosing advise/enforce and lets
+the person confirm or edit them. `--yes` accepts discovery; `--required-checks`
+skips discovery. Existing configured names, including the matching `[repos]` table, are retained
+unless explicitly replaced. Enforce with no known names refuses before any initialization write.
+
+Only `STAIxBWLB/agent-hub` retains the native three-check fallback including
+`seeded guards`. Other repositories without configured checks report
+`required checks unknown: set required_checks in .agenthub/sdlc.toml`, including
+cached review admission; their CI watcher cannot report success from an empty set.
+Repository-specific `[repos]` checks are included in review admission and CI watches.
+
+`ahub settings get sdlc.mode` and `ahub settings get sdlc.required_checks` show the
+running and file values (`--json` exposes `value` and `fileValue`). A file that
+cannot load is unknown. These reads grant no settings write capability; edit the
+file through `ahub settings edit sdlc.toml` and restart to apply it.
+
 ## Authority and evidence
 
 The issue remains the specification, Tasks remains the sole task mutation boundary, and GitHub remains authoritative for PR heads, required checks, merge commits and releases. The hub stores artifact identities and bounded structured readbacks, never issue/PR bodies. Off is the default. Advise exposes blockers without changing task transitions. Enforce blocks only the review/approval transitions listed below; it never releases, edits GitHub or gives a peer additional capabilities. The one GitHub write is the guarded merge of an approved task (#786, below), off by default.
