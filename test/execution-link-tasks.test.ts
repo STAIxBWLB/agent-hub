@@ -156,7 +156,7 @@ test("a conductor cannot distinguish staged backlog or private task existence fr
   f.roles.kimi = ["conductor"];
   const backlog = f.board.propose(USER, { title: "PRIVATE_BACKLOG_CANARY", class: "implement", backlog: true });
   const privateTask = f.board.propose(USER, { title: "PRIVATE_TASK_CANARY", class: "implement", signals: ["pii"] });
-  const absent = { state: "unavailable" };
+  const absent = { state: "unavailable" as const };
   for (const taskId of [backlog.id, privateTask.id, 999999]) {
     expect(f.tasks.executionLineage("kimi", { taskId })).toEqual(absent);
     expect(f.tasks.executionLineage("kimi", { taskId, nodes: 0 })).toEqual(absent);
