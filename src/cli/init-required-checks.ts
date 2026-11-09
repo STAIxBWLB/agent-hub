@@ -50,7 +50,7 @@ function workflowChecks(cwd: string): InitCheckDiscovery {
     if (!files.length || files.length > WORKFLOW_FILES) return unknown;
     const names: string[] = [];
     for (const file of files) {
-      const fd = openSync(join(folder, file), constants.O_RDONLY | constants.O_NOFOLLOW);
+      const fd = openSync(join(folder, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {
         const stat = fstatSync(fd);
         if (!stat.isFile() || stat.nlink !== 1 || stat.size > WORKFLOW_BYTES) return unknown;

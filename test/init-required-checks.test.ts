@@ -65,3 +65,20 @@ test("non-native readiness and watcher never request the native floor without co
   expect(requiredCheckNames("STAIxBWLB/agent-hub", [])).toContain("seeded guards");
   expect(requiredChecksFor(sdlcConfig({ mode: "enforce", repos: { "other/project": { required_checks: ["custom"] } } }), "other/project")).toEqual(["custom"]);
 });
+
+test("local origin/HEAD saves one gh read; truncated and failed inventories fall back as a whole (#1328)", async () => {
+  const cwd = fixture();
+  expect(hubGitSync(["init", "-q"], { cwd }).status).toBe(0);
+  expect(hubGitSync(["config", "remote.origin.url", "https://github.com/example/project.git"], { cwd }).status).toBe(0);
+  expect(hubGitSync(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], { cwd }).status).toBe(0);
+  for (const fail of [false, true]) {
+    const calls: string[][] = [];
+    const found = await discoverInitChecks(cwd, async args => {
+      calls.push(args);
+      if (calls.length === 1) return { code: 0, stdout: JSON.stringify({ workflow_runs: [{ id: 9, status: "completed", head_branch: "main" }] }) };
+      if (fail) return { code: 1, stdout: "" };
+      return { code: 0, stdout: JSON.stringify({ total_count: 101, jobs: [{ name: "partial" }] }) };
+    });
+    expect(calls).toHaveLength(2); expect(found).toEqual({ source: "workflows", names });
+  }
+});
