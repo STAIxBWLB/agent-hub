@@ -74,3 +74,58 @@ test("invocation answer keeps its ownership path and strips records without capt
   expect(f.events.filter(e => e.t === "envelope" && e.env.from === "kimi")).toHaveLength(0);
   await f.worker.stop(); await f.recipient.stop(); f.bus.closeJournal();
 });
+
+test("final bridge preserves current message observers with one raw capture and one clean route", async () => {
+  const f = await rig(), observed: string[] = [], captured: string[] = [];
+  const original = f.worker.onMessage!;
+  f.worker.onMessage = (text, opts) => { observed.push(text); return original(text, opts); };
+  f.bus.onFinalAnswer = (_peer, raw) => { captured.push(raw); };
+  const raw = "Completed.\namem: decision | - | preserve observer", opts = { inReplyTo: f.prompt, to: [f.recipient.id] };
+  try {
+    f.worker.answer(raw, opts);
+    expect(observed).toEqual([raw]); expect(captured).toEqual([raw]);
+    const answers = f.events.filter((event): event is Extract<BusEvent, { t: "envelope" }> => event.t === "envelope" && event.env.from === f.worker.id);
+    expect(answers).toHaveLength(1); expect(answers[0]!.env.body).toBe("Completed.");
+    expect(answers[0]!.env.to).toEqual([f.recipient.id]);
+  } finally { await f.worker.stop(); await f.recipient.stop(); f.bus.closeJournal(); }
+});
+
+test("ordinary, incomplete and nested diagnostic messages do not inherit final capture authority", async () => {
+  const f = await rig(), captured: string[] = [], observed: string[] = [];
+  const original = f.worker.onMessage!, opts = { inReplyTo: f.prompt, to: [f.recipient.id] };
+  f.bus.onFinalAnswer = (_peer, raw) => { captured.push(raw); };
+  f.worker.onMessage = (text, options) => {
+    observed.push(text);
+    if (text.startsWith("Complete.")) original("nested diagnostic", options);
+    return original(text, options);
+  };
+  try {
+    f.worker.onMessage("ordinary message", opts);
+    f.worker.answer("Incomplete.\namem: invalid", opts, false);
+    const raw = "Complete.\namem: decision | - | one capture";
+    f.worker.answer(raw, opts);
+    expect(observed).toEqual(["ordinary message", "Incomplete.\namem: invalid", raw]);
+    expect(captured).toEqual([raw]);
+    const answers = f.events.filter((event): event is Extract<BusEvent, { t: "envelope" }> => event.t === "envelope" && event.env.from === f.worker.id);
+    expect(answers.map(event => event.env.body)).toEqual(["ordinary message", "Incomplete.", "nested diagnostic", "Complete."]);
+    // A throwing external observer must not leave a marker for a later ordinary message.
+    f.worker.onMessage = () => { throw new Error("synthetic observer failure"); };
+    expect(() => f.worker.answer(raw, opts)).toThrow("synthetic observer failure");
+    original(raw, opts);
+    expect(captured).toEqual([raw]);
+  } finally { await f.worker.stop(); await f.recipient.stop(); f.bus.closeJournal(); }
+});
+
+test("replaced peer finals cannot invoke current observers, capture or route under the new owner", async () => {
+  const f = await rig(), replacement = new Peer(f.worker.id);
+  let observed = 0, captured = 0;
+  const oldMessage = f.worker.onMessage!;
+  f.worker.onMessage = (text, opts) => { observed++; return oldMessage(text, opts); };
+  f.bus.onFinalAnswer = () => { captured++; };
+  f.bus.add(replacement);
+  try {
+    f.worker.answer("stale answer\namem: decision | - | stale", { inReplyTo: f.prompt, to: [f.recipient.id] });
+    expect(observed).toBe(0); expect(captured).toBe(0);
+    expect(f.events.filter(event => event.t === "envelope" && event.env.from === f.worker.id)).toHaveLength(0);
+  } finally { await f.worker.stop(); await replacement.stop(); await f.recipient.stop(); f.bus.closeJournal(); }
+});

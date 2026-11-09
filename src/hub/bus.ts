@@ -320,6 +320,9 @@ export class Bus {
     peer.onDelivery = (receipt) => { if (this.peers.get(peer.id) === peer) this.deliveryReceipt(peer.id, receipt); };
     peer.onDoing = (kind, text) => { if (kind === "reset") this.clearReviewProvenance(peer.id); if (!this.closed && this.peers.get(peer.id) === peer) this.opts.doing?.(peer.id, kind, text); };
     this.opts.doing?.(peer.id, "reset"); // a new adapter never shows what the one it replaces was doing
+    // A final still traverses the current onMessage observer exactly once. This one-shot
+    // marker is host-local, never a caller-supplied envelope or wire field.
+    let finalMessage: { body: string; options: EnvelopeOpts | undefined; complete: boolean } | undefined;
     const receive = (text: string, opts?: EnvelopeOpts, final = false, complete = true) => {
       if (!this.isRostered(peer.id)) return `off roster: ${peer.id}`;
       // #445 C2: an answer to an invocation is found by what the peer was handed, never by how the answer is addressed, so a headless agent whose final answer is
@@ -415,8 +418,19 @@ export class Bus {
       if (hushed.length) this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}`));
       return heldBack ? hushed[0]!.reason : published.dropped === "hop" ? published : undefined;
     };
-    peer.onMessage = (text, opts) => receive(text, opts);
-    peer.onFinalAnswer = (text, opts, complete = true) => receive(text, opts, true, complete);
+    peer.onMessage = (text, opts) => {
+      if (this.peers.get(peer.id) !== peer) return;
+      const marker = finalMessage?.body === text && finalMessage.options === opts ? finalMessage : undefined;
+      if (marker) finalMessage = undefined; // Consume before observers can emit nested diagnostics.
+      return receive(text, opts, marker !== undefined, marker?.complete ?? true);
+    };
+    peer.onFinalAnswer = (text, opts, complete = true) => {
+      if (this.closed || this.peers.get(peer.id) !== peer) return;
+      const previous = finalMessage;
+      finalMessage = { body: text, options: opts, complete };
+      try { return peer.onMessage?.(text, opts); }
+      finally { finalMessage = previous; }
+    };
     peer.onFailed = (envs, failure) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.
       const last = this.lastDelivery.get(peer.id);
