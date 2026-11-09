@@ -131,6 +131,13 @@ reviewed-head receipt, guarded-merge result, GitHub mutation or branch cleanup.
 A prior withdrawn reviewer approval remains historical and cannot become a
 current reviewer binding through adoption. Historical completion time is the first approval or adoption
 settlement time, separately from reviewer verdict metrics.
+Adoption updates only the GitHub-observed head; existing local and reviewed-head
+metadata remain historical and cannot establish a current reviewer binding.
+Origin follow-back, supervision's approved milestone, task research recording,
+and release/profile settlement timing consume the actual completion. Reviewer
+verdict metrics and reviewerless automatic-done counts remain separate. A later
+adoption never establishes approval before an earlier release.
+
 Private tasks and private turns refuse before any GitHub read for every actor,
 including the person. The person's local review authority does not authorize
 sending private task metadata to an external observer. Delegated `--live-test`

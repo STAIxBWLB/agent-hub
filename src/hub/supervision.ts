@@ -96,6 +96,8 @@ export class SupervisionFeed {
     else if (event === "approved") {
       this.milestone(task.id, "review", { ...fields, verdict: "approved" });
       this.milestone(task.id, "approved", fields);
+    } else if (event === "merged outside the hub" && task.state === "approved") {
+      this.milestone(task.id, "approved", { by: entry.by, owner: task.owner });
     } else if (event === "idle sweep" && entry.sweep) this.milestone(task.id, "sweep", { ...fields, sweep: entry.sweep.kind });
     else if (event === "reassigned") this.milestone(task.id, "moved", fields);
     else if (["assigned", "accepted", "declined", "escalated"].includes(event)) this.milestone(task.id, event as SupervisionMilestone, fields);

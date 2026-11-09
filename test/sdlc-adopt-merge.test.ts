@@ -28,7 +28,7 @@ function fixture() {
   const calls: string[][] = [], notices: string[] = [], roles: Record<string, "conductor"[]> = { claude: ["conductor"] };
   let config = sdlcConfig({ mode: "enforce", required_checks: ["gate"], auto_merge: "on" });
   let privateTurn = false, sessionCurrent = true, hold = false, onRead: ((index: number) => void) | undefined;
-  const world = { head: HEAD, state: "MERGED", checks: [{ name: "gate", conclusion: "SUCCESS" }], unavailable: false, review: "APPROVED" as string | null, requests: [] as unknown[] | undefined, threads: [] as { isResolved: boolean }[] | undefined, threadsComplete: true, requestsComplete: true, checksComplete: true, commitHead: undefined as string | undefined, errors: undefined as unknown[] | undefined };
+  const world = { head: HEAD, state: "MERGED", checks: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] as { name: string; status: string; conclusion: string | null }[], unavailable: false, review: "APPROVED" as string | null, requests: [] as unknown[] | undefined, threads: [] as { isResolved: boolean }[] | undefined, threadsComplete: true, requestsComplete: true, checksComplete: true, commitHead: undefined as string | undefined, errors: undefined as unknown[] | undefined };
   const gh: SdlcGh = async args => {
     calls.push(args);
     expect(args[0] === "api" && args[1] === "graphql").toBe(true);
@@ -103,6 +103,17 @@ test("Board adoption is host-only, requires the exact flow revision and never wi
   expect(() => f.board.update(f.id, USER, "approved", { state: "approved" })).toThrow("cannot move to approved");
 });
 
+test("adoption updates observed head while preserving old local and reviewed metadata without a current verdict", async () => {
+  const f = fixture(); f.board.update(f.id, USER, "older observation", { sdlc: { repo: "owner/repo", pr: 7, stage: "build", head: OTHER, localHead: OTHER, localResult: "passed", reviewedHead: OTHER } });
+  const before = f.board.get(f.id)!;
+  await f.tasks.adoptMerge(USER, f.id, 7);
+  const now = f.board.get(f.id)!;
+  expect(now.refs.commit).toBe(HEAD);
+  expect(now.sdlc).toMatchObject({ head: HEAD, localHead: OTHER, localResult: "passed", reviewedHead: OTHER });
+  expect(now.history.slice(0, before.history.length)).toEqual(before.history);
+  expect(now.history.at(-1)!.note).toContain(HEAD); expect(approvalBinding(now)).toBeUndefined();
+});
+
 test("explicit PR binds an unlinked merged artifact only in the established task repository", async () => {
   const f = fixture(); f.board.update(f.id, USER, "unlinked PR", { sdlc: { repo: "owner/repo", stage: "build" } });
   await f.tasks.adoptMerge(USER, f.id, 7);
@@ -145,7 +156,7 @@ test("partial check/request pages, GraphQL errors and a mismatched head commit n
 });
 
 test("one coherent snapshot catches a same-head check rerun or a head move during the read", async () => {
-  const rerun = fixture(); rerun.setRead(() => { rerun.world.checks = [{ name: "gate", conclusion: "IN_PROGRESS" }]; });
+  const rerun = fixture(); rerun.setRead(() => { rerun.world.checks = [{ name: "gate", status: "IN_PROGRESS", conclusion: null }]; });
   await refused(rerun, "required check gate: pending"); expect(rerun.calls).toHaveLength(1);
   const pushed = fixture(); pushed.setRead(() => { pushed.world.head = OTHER; }); await refused(pushed, "last recorded full head");
 });
@@ -180,7 +191,7 @@ test("adoption's uncollected file evidence stays unknown", async () => {
 test("AC4: PR not merged refuses", async () => { const f = fixture(); f.world.state = "OPEN"; await refused(f, "PR is not merged"); });
 test("AC4: head mismatch refuses", async () => { const f = fixture(); f.world.head = OTHER; await refused(f, "last recorded full head"); });
 test.each(["FAILURE", "IN_PROGRESS", "UNKNOWN", "MISSING"])("AC4: required check %s refuses with its name and a next step", async state => {
-  const f = fixture(); f.world.checks = state === "MISSING" ? [] : [{ name: "gate", conclusion: state }];
+  const f = fixture(); f.world.checks = state === "MISSING" ? [] : [{ name: "gate", status: state === "IN_PROGRESS" ? "IN_PROGRESS" : "COMPLETED", conclusion: state === "IN_PROGRESS" ? null : state }];
   await refused(f, "required check gate:");
 });
 test("AC4: no configured required checks refuses", async () => { const f = fixture(); f.config({ mode: "enforce" }); await refused(f, "required checks unknown"); });
@@ -272,6 +283,19 @@ test("daemon rechecks socket authority after a fresh external-root proof service
   expect(writes).toBe(0);
 });
 
+test("research onChange records adoption as settlement without adding a reviewer verdict", () => {
+  const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
+  const statements = source.split("\n").filter(line => line.includes("config.research.enabled") && line.includes("recordResearch(t.id)"));
+  expect(statements).toHaveLength(1);
+  const recorded: number[] = [], invoke = (enabled: boolean, state: string, event: string) => vm.runInNewContext(statements[0]!, {
+    config: { research: { enabled } }, t: { id: 7, state }, h: { event }, recordResearch: (id: number) => recorded.push(id),
+  });
+  invoke(true, "approved", "merged outside the hub"); expect(recorded).toEqual([7]);
+  invoke(false, "approved", "merged outside the hub"); invoke(true, "in_review", "merged outside the hub");
+  expect(recorded).toEqual([7]);
+  invoke(true, "approved", "approved"); invoke(true, "cancelled", "cancelled"); expect(recorded).toEqual([7, 7, 7]);
+});
+
 test("adopt-merge control requests always reply to invalid arguments, missing task and unauthorized callers", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-adopt-control-")), stateDir = join(root, "state");
   mkdirSync(stateDir); writeFileSync(join(root, "package.json"), JSON.stringify({ name: "adopt-fixture", version: "1.0.0" }));
@@ -291,14 +315,14 @@ test("adopt-merge control requests always reply to invalid arguments, missing ta
 test("CLI sends the exact task/PR request, prints approval and refuses invalid or delegated forms before adoption", async () => {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-adopt-cli-"))), stateDir = join(root, ".agenthub", "state"), calls: Record<string, unknown>[] = [];
   mkdirSync(stateDir, { recursive: true }); writeFileSync(join(root, ".agenthub", "config.json"), "{}");
-  let unsupported = false;
+  let unsupported: string | undefined;
   const registry = new Registry(join(root, "home", "registry.db")), project = registry.register(root, stateDir); registry.close();
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     fetch(req, srv) { if (srv.upgrade(req)) return; return new Response("unexpected"); },
     websocket: { message(sock, raw) {
       const message = JSON.parse(String(raw));
       if (message.t === "hello") sock.send(JSON.stringify({ t: "welcome", rid: message.rid, ok: true, cwd: root, projectId: project.id, instanceId: "fixture" }));
-      else { calls.push(message); sock.send(JSON.stringify(unsupported ? { rid: message.rid, ok: false, error: "unknown SDLC operation" } : { rid: message.rid, ok: true, task: 1, state: "approved" })); }
+      else { calls.push(message); sock.send(JSON.stringify(unsupported ? { rid: message.rid, ok: false, error: unsupported } : { rid: message.rid, ok: true, task: 1, state: "approved" })); }
     } } });
   writeFileSync(join(stateDir, "control-token"), "fixture-token");
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, pid: process.pid, projectId: project.id, instanceId: "fixture" }));
@@ -318,10 +342,12 @@ test("CLI sends the exact task/PR request, prints approval and refuses invalid o
     expect(invalid.code).toBe(1); expect(invalid.stderr).toContain("usage:"); expect(calls).toHaveLength(1);
     const delegated = await run(["--live-test", "sdlc", "adopt-merge", "1", "--pr", "7"], true);
     expect(delegated.code).toBe(1); expect(delegated.stderr).toContain("live-test"); expect(calls).toHaveLength(1);
-    unsupported = true;
-    const old = await run(["sdlc", "adopt-merge", "1", "--pr", "7"]);
-    expect(old.code).toBe(1); expect(old.stderr).toContain("unknown SDLC operation");
-    expect(old.stderr).toContain("upgrade agent-hub"); expect(old.stderr).toContain("ahub restart");
+    for (const reason of ["unknown SDLC operation", 'this hub does not know "sdlc"', "SDLC readback is console only; task owners record ids through hub_sdlc_record"]) {
+      unsupported = reason;
+      const old = await run(["sdlc", "adopt-merge", "1", "--pr", "7"]);
+      expect(old.code).toBe(1); expect(old.stderr).toContain(reason);
+      expect(old.stderr).toContain("upgrade agent-hub"); expect(old.stderr).toContain("ahub restart");
+    }
 
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 });

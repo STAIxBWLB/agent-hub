@@ -206,7 +206,14 @@ A successful adoption records `merged outside the hub` as the actual person's
 or conductor's action, moves the task to `approved`, and releases dependents as
 an ordinary approval does. It does not invent a reviewer verdict or reviewed
 head, run `gh pr merge`, post a review, or remove a branch or worktree. A task
-already approved or cancelled is not adopted again. Private tasks and private
+already approved or cancelled is not adopted again.
+Observed `sdlc.head` follows the proven PR head; older local/reviewed metadata
+remain unchanged and noncurrent. Normal settlement observers receive the
+approval (origin follow-back, supervision, research recording and release/profile
+timing), without adding a review verdict or automatic-done count. Release timing
+never counts an adoption that occurred after the release.
+
+Private tasks and private
 turns refuse for every actor before GitHub reads; use the person's local review
 workflow for private work. `--live-test` cannot delegate this approval as the
 person.
