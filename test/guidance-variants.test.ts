@@ -47,7 +47,7 @@ function context(value = record()): GuidanceVariantContext {
     variantIds: [],
   };
 }
-function refuses(run: () => unknown, code?: string) {
+function refuses(run: () => unknown, code?: GuidanceVariantError["code"]) {
   let caught: unknown;
   try { run(); } catch (error) { caught = error; }
   expect(caught).toBeInstanceOf(GuidanceVariantError);
@@ -404,7 +404,7 @@ test("published complete golden record has the independently generated literal V
   expect(id).toBe(vectors.golden.expectedId);
   expect(guidanceVariantKey(unsigned as unknown as GuidanceVariantPayloadV1)).toBe(vectors.golden.expectedId);
   const parsed = parseGuidanceVariantV1(golden);
-  expect(parsed).toEqual(golden);
+  expect<unknown>(parsed).toEqual(golden);
   expect(parsed.id).toBe(vectors.golden.expectedId);
   const role = parseRole(golden.candidate.bytes, golden.baseline.roleId, "project");
   expect(renderGuidanceVariantV1(golden)).toBe(taskRoleText(role));
