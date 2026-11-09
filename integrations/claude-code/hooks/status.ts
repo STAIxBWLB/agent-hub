@@ -2,8 +2,9 @@
 export const LIMITS = { timeoutMs: 5000, maxOutputBytes: 262144, maxRows: 256, maxText: 240 } as const;
 export type Binding = { root: string; projectId: string };
 export type State = "running" | "stale" | "partial" | "offline" | "unavailable_version" | "unknown" | "binding" | "missing_cli" | "timeout" | "nonzero" | "oversized" | "unrecognized";
-export type Peer = { id: string; state: string; queued?: number; attached?: boolean; needsReview?: number };
-export type Reading = { state: State; fetchedAt?: number; version?: string; peers?: Peer[]; tasks?: { state: string; count: number }[]; missing?: string[] };
+export type Peer = { id: string; state: string; queued?: number; attached?: boolean; needsReview?: number; budgetPaused?: true };
+export type PermissionAttention = { until: number; peer?: string };
+export type Reading = { state: State; fetchedAt?: number; version?: string; permission?: PermissionAttention; peers?: Peer[]; tasks?: { state: string; count: number }[]; missing?: string[] };
 export const SENTENCES: Record<State, string> = {
   running: "Hub reading is current.", stale: "Hub reading is older than 60 seconds. Run /hub refresh.",
   partial: "Some public fields are unavailable; unknown values are not zero.",
@@ -45,6 +46,9 @@ export function projectReading(raw: unknown, binding: Binding, fetchedAt: number
       if (count(peer.queued)) row.queued = peer.queued; else missing.push("peer.queued");
       if (typeof peer.attached === "boolean") row.attached = peer.attached; else missing.push("peer.attached");
       if (count(peer.needsReview)) row.needsReview = peer.needsReview; else missing.push("peer.needsReview");
+      // Producer pausedNote emits this exact prefix only for a retained budget record.
+      if (typeof peer.paused === "string" && peer.paused.startsWith("budget: ")) row.budgetPaused = true;
+      else if (peer.paused !== "manual") missing.push("peer budget pause");
       return row;
     });
   } else missing.push("peers");
@@ -54,8 +58,16 @@ export function projectReading(raw: unknown, binding: Binding, fetchedAt: number
       return { state, count: total };
     });
   } else missing.push("tasks");
+  // needs.first is one closed highest-priority item, never a permission inventory.
+  const first = object(raw.needs) && object(raw.needs.first) ? raw.needs.first : undefined;
+  if (first?.kind === "approval" && first.level === "act" && count(first.until) && first.until > fetchedAt
+    && (first.peer === undefined || scalar(first.peer))) {
+    result.permission = { until: first.until, ...(typeof first.peer === "string" ? { peer: first.peer } : {}) };
+  }
+  missing.push("offline assigned in_progress");
   // Only status counts are admitted. No board or global project inventory is requested.
-  missing.push("budget", "permissions", "held delivery detail", "task list", "role-specific task list", "registration inventory");
+  missing.push("budget reason/reset time", "full permission inventory", "held delivery detail", "task list", "role-specific task list", "registration inventory");
+  result.missing = [...new Set(missing)];
   result.state = !result.version && !result.peers && !result.tasks ? "unavailable_version" : missing.length ? "partial" : "running";
   return result;
 }

@@ -297,5 +297,95 @@
         "recording": "Numeric record added in a later documentation commit; sourceHead identifies the measured code"
       }
     }
+  },
+  "c2": {
+    "support": "fixture_only",
+    "nativeBandReceipt": "NOT RUN",
+    "declaredHostTypes": {
+      "version": "2.1.319",
+      "sha256": "4ac104a8b4390e4db51d64451cf7e5ad7fe01190e78c640288100aaf7731204e",
+      "workspaceAsset": "scratchpad/temp/agent-hub-846/claude-code-2.1.319/types/claude-code.d.ts",
+      "committed": false
+    },
+    "surfaces": {
+      "AbovePrompt": "declared terminal/desktop only; yield on survey, unknown site or no known attention",
+      "ToolUse": "four exact agent-hub MCP tool names only; native expanded view yields original"
+    },
+    "attention": {
+      "freshness": "finite fetchedAt/now, now>=fetchedAt, age<=60000ms, state running or partial only; other states suppress the band",
+      "partial": "each positive kind independently validated; unrelated gaps do not imply false/no waiting",
+      "knownFields": [
+        "peers[].needsReview positive count",
+        "peers[].paused exact budget: prefix -> boolean only",
+        "needs.first kind approval/level act/future until/optional public peer -> one permission only"
+      ],
+      "discarded": [
+        "budget reason",
+        "formatted reset time",
+        "permission body",
+        "permission ticket"
+      ],
+      "unsupported": [
+        "full permission inventory",
+        "offline peer with exact assigned in_progress proof"
+      ],
+      "handoff": "one literal consoleCommand(canonicalRoot) per known line; no resolve or lifecycle action"
+    },
+    "producerEvidence": [
+      {
+        "path": "src/hub/daemon.ts",
+        "symbols": [
+          "pausedNote",
+          "status attentionInput and needs summary"
+        ],
+        "scope": "source audit plus pausedNote execution with synthetic budget/manual/bus ports; no native daemon/account"
+      },
+      {
+        "path": "src/ui/needs.ts",
+        "symbols": [
+          "needs"
+        ],
+        "scope": "synthetic unexpired/expired approvals and broader offline-state controls"
+      },
+      {
+        "path": "src/hub/board.ts",
+        "symbols": [
+          "plannerWipBreakdown"
+        ],
+        "scope": "active includes proposed/changes_requested; never infer in_progress"
+      }
+    ],
+    "compact": {
+      "tools": [
+        "hub_review",
+        "hub_task_done",
+        "hub_send",
+        "hub_delivery_done"
+      ],
+      "outcomes": "native transport flags only; requested metadata labeled as requested; no inference of logical success from inputs/free text",
+      "original": "next(e) behind session-only toggle and always for isExpanded",
+      "maxStoredToolUseIds": 64,
+      "maxIdCharacters": 128,
+      "retained": "opaque tool-use IDs only; no input/output/tree",
+      "lifecycle": "clear/end increments UI epoch and clears owned IDs; held stale presses cannot write"
+    },
+    "modelInputProof": {
+      "kind": "fake host executing actual registered hooks",
+      "channels": [
+        "tool.call returned result",
+        "session.receive queued text",
+        "prompt.compose returned sections"
+      ],
+      "ui": "actual AbovePrompt/ToolUse render and toggle exercised; SDK UI state is separate from model channels",
+      "controls": "test-only mutations of each model-facing chain must be detected",
+      "native": "NOT RUN"
+    },
+    "excluded": [
+      "status line",
+      "channel rows",
+      "production prompt/receive interception",
+      "board/projects reads",
+      "store/settings/log/model calls"
+    ]
   }
 }

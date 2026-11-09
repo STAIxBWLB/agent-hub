@@ -1,9 +1,12 @@
 import type { EngineInterface, Register, RenderElement } from "claude-code";
+import { attentionLines } from "./attention.ts";
+import { compactHubToolRow, compactIds, toggledCompactIds } from "./compact.tsx";
 import { CompanionController, commandText } from "./controller.ts";
 import { CompanionError, LIMITS, lines, type Reading } from "./status.ts";
 
 const PANE = "agent-hub";
 const READING = { plugin: "agent-hub-companion", key: "reading" } as const;
+const COMPACT = { plugin: "agent-hub-companion", key: "compactRows" } as const;
 
 async function realRoot($: EngineInterface) {
   const spelling = await $.session.root();
@@ -44,6 +47,7 @@ function createController($: EngineInterface, selected: { root: string }): Compa
 export const register: Register = on => {
   let controller: CompanionController | undefined;
   const selected = { root: "" };
+  let uiEpoch = 0, uiActive = true;
   on("session.start", async ($, e, next) => {
     await $.command.register({ name: "hub", description: "Read-only hub pane: /hub, /hub refresh, /hub console" });
     await (controller ??= createController($, selected)).event("session.start");
@@ -68,10 +72,50 @@ export const register: Register = on => {
     }
     return result;
   });
-  on("session.end", ($, e, next) => {
+  on("session.end", async ($, e, next) => {
+    uiEpoch++;
     if (e.reason === "clear") controller?.clearSession();
-    else controller?.disable();
+    else { controller?.disable(); uiActive = false; }
+    try {
+      const held = await $.state.get(COMPACT);
+      if (compactIds(held.value?.expandedIds).length) await $.state.set(COMPACT, { expandedIds: [] });
+    } catch { /* UI cleanup cannot replace the session end. */ }
     return next(e);
+  });
+  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+    if (!uiActive || !["terminal", "desktop"].includes(e.surface) || e.props.hasSurvey !== false) return next(e);
+    const epoch = uiEpoch;
+    const { value } = await $.state.get(READING);
+    if (!uiActive || epoch !== uiEpoch) return next(e);
+    const rows = attentionLines(value ?? { state: "unknown" }, selected.root, Date.now());
+    if (!rows.length) return next(e);
+    const original = await next(e);
+    if (!uiActive || epoch !== uiEpoch) return original;
+    const { Box, Text } = $.ui.resolve(e);
+    return h(Box, { flexDirection: "column" }, original, ...rows.map((line, i) => h(Text, { key: `attention-${i}` }, line))) as RenderElement;
+  });
+  on("ui.render", { component: "ToolUse" }, async ($, e, next) => {
+    if (!uiActive || !["terminal", "desktop", "vscode", "mobile"].includes(e.surface) || e.props.isExpanded === true || e.requestId !== e.props.tool_use_id) return next(e);
+    const summary = compactHubToolRow(e.props);
+    const toolUseId = e.props.tool_use_id;
+    if (summary === undefined) return next(e);
+    const epoch = uiEpoch;
+    const { value } = await $.state.get(COMPACT);
+    if (!uiActive || epoch !== uiEpoch) return next(e);
+    const expanded = compactIds(value?.expandedIds).includes(toolUseId);
+    const original = expanded ? await next(e) : undefined;
+    if (!uiActive || epoch !== uiEpoch) return expanded ? original as RenderElement : next(e);
+    const { Box, Button, Text } = $.ui.resolve(e);
+    return h(Box, { flexDirection: "column" },
+      h(Box, {}, h(Text, {}, summary), h(Button, {
+        key: "toggle-original", label: expanded ? "Hide original" : "Show original",
+        onPress: async () => {
+          if (!uiActive || epoch !== uiEpoch) return;
+          const held = await $.state.get(COMPACT);
+          if (!uiActive || epoch !== uiEpoch) return;
+          await $.state.set(COMPACT, { expandedIds: toggledCompactIds(held.value?.expandedIds, toolUseId) }, { ifVersion: held.version });
+        },
+      })), ...(original === undefined ? [] : [original])) as RenderElement;
   });
   on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e);

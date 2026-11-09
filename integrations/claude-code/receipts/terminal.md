@@ -23,3 +23,7 @@ Use only an isolated profile. Stop if this surface needs the real home. Record e
 The amended C1 ships a read-only pane and /hub, /hub refresh, /hub console against declared 2.1.319 types and a fake host. Native installation, painting, genuine origins, process behavior and action counts remain NOT RUN. Attention band, channel rows, status-line coexistence and delivery refresh are excluded from C1 and remain separate future legs. Do not mark this receipt passed from source validation. Native support requires the person to record exact head, host version, scratch profile and project, root/daemon-projectId refusals, bounded reads, visible pane, read-only gestures and disable/remove independence.
 
 C1 read-set revision 2 has counts/peers/version only: no board or global project inventory is requested and no task/role list is displayed. Any recorded source-CLI byte/time/spawn measurement is separate from this NOT RUN native receipt.
+
+# C2 native leg
+
+Status: **NOT RUN**. A person must observe a genuine needs_review hold raise and clear the AbovePrompt band, verify a source-reading failure/staleness leaves no false waiting band, inspect the exact separate-terminal guidance, and open/close the original four ToolUse rows including verbose mode. Action counts, actual paint, genuine origins, disable/remove and on/off native model-input behavior remain unmeasured. Synthetic registered-hook equality and mutation controls do not satisfy this native leg. No status-line or channel-row receipt is claimed.
