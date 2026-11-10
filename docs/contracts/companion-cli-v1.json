@@ -20,8 +20,9 @@
     { "argv": ["--project", "<id|root>", "status", "--json"], "reads": "status" },
     { "argv": ["projects", "--json"], "reads": "projects" },
     { "argv": ["ui"] },
+    { "argv": ["--project", "<id|root>", "ui"] },
     { "argv": ["console"] },
-    { "argv": ["--project", "<root>", "console"] },
+    { "argv": ["--project", "<id|root>", "console"] },
     { "bin": "acon", "argv": ["ui"] }
   ],
   "noHub": { "exitCode": 1, "stderrPrefix": "ahub: no hub running for " },
