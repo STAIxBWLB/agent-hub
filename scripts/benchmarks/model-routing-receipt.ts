@@ -1,6 +1,6 @@
 import { canonicalJson, sha256 } from "./routing-corpus.ts";
-import { advisorJudgeRequest, escalationJudgeRequest, type JudgeRequest } from "../../src/models/route/judge.ts";
-import { normalizeConversation } from "../../src/models/route/normalize.ts";
+import { buildAdvisorRequest, buildEscalationRequest, type HostJudgeRequest as JudgeRequest } from "../../src/models/route/hub-prompts.ts";
+import { captureJudgeConversation } from "../../src/models/route/conversation-view.ts";
 import { modelRoutingSha, modelRoutingSummary, type Comparison, type JudgeCase, type ModelRoutingCorpus, type Split } from "./model-routing-corpus.ts";
 import type { Routing } from "../../src/hub/routing.ts";
 import { safeModelLabel } from "../../src/omniroute/usage.ts";
@@ -47,8 +47,9 @@ export function judgeRequestFor(routing: Routing, c: JudgeCase): { alias: string
   const config = routing.hub_routes?.[c.route];
   if (!config) return undefined;
   const alias = judgeAlias(routing, c)!;
-  const conversation = normalizeConversation(c.messages);
-  const request = c.judge === "advisor" ? advisorJudgeRequest(conversation, c.latest, config.transcript_max_chars) : escalationJudgeRequest(conversation, c.turn ?? 1);
+  const conversation = captureJudgeConversation(c.messages);
+  const request = c.judge === "advisor" ? buildAdvisorRequest(conversation, c.latest, config.transcript_max_chars) : buildEscalationRequest(conversation, c.turn ?? 1);
+  if (!request) return undefined;
   return { alias, request, digest: sha256(canonicalJson({ alias, systemPrompt: request.systemPrompt, messages: request.messages, maxOutputTokens: request.maxOutputTokens })) };
 }
 export function scoreLive(c: JudgeCase, outcome: LiveOutcome): boolean {

@@ -25,6 +25,7 @@ paths:
   - test/model-turn-state.test.ts
   - test/model-observation-signals.test.ts
   - test/model-judge-choice.test.ts
+  - test/model-route-event-parity.test.ts
   - test/model-route-public-api-scalars.test.ts
   - test/fixtures/model-route-public-api-scalars-v1.json
   - test/route-stage-classifier.test.ts
@@ -708,6 +709,8 @@ if an actual hang is observed. No LocalWorker or OmniRoute API edit is part of
 this approved choice. The separately owned `requestAdecRoute` observation is
 aborted and joined when fallback finishes. A normal window close is not a failed
 service memo or warning; actual failed transports keep bounded failure handling.
+Cleanup always aborts the fallback signal even when observer close propagates an
+authority or teardown error; preserving that error never skips the abort.
 
 Re-read current actor/privacy/observer facts after awaits and before owned service
 HTTP, metadata publication and feedback delivery. Changed/unavailable authority
@@ -772,6 +775,13 @@ cases, expected outputs, splits, guards or scoring. Integration proof must still
 show an actual judge-target event, off-mode absence and identical actual model,
 input, judge-call count and last executor observation; a fulfilled void readiness
 promise alone cannot satisfy it.
+The test and report name is normalized event parity. In controlled judge-choice
+off/shadow comparisons, executor events must be JSON-byte-identical after canonicalizing only `ms` and the opaque decision UUID
+through a validated one-to-one mapping, with identical presence, count and type.
+Every other field matches exactly. Actual execute model and input stay raw
+byte-identical; the execute API exposes no effort argument to normalize or invent.
+Judge observations are separate, one per admitted observation call and none when
+off. No clock or UUID generation seam is added.
 
 ### R2 observation and inspection record
 

@@ -2,7 +2,7 @@ import type { ModelBackend, ModelRelayOptions, RelayRequest } from "../relay.ts"
 import { captureStageInput } from "./stage-input.ts";
 import { buildStageEvidence } from "./stage-evidence.ts";
 import { selectFallbackStage, planStageSwitch, type FallbackStageState as StageState, type StageSwitchTrace as SwitchTrace, type StageTier as Tier } from "./stage-fallback.ts";
-import { SessionState } from "./state.ts";
+import { ScopeStore } from "./turn-state.ts";
 
 type RelaySelectorOptions = Pick<ModelRelayOptions, "mlx" | "selectBackend" | "routeSessionKey" | "allowedDGXmodels" | "staySwitch"> & { dgxMaxInputTokens: number };
 type RouteSource = "override" | "dimensions" | "hold" | "classifier" | "default" | "load" | "cooldown" | "pin";
@@ -18,7 +18,7 @@ export interface AutoChoice { backend: ModelBackend; route: RelayRouteEvent; mov
 
 /** Stage selection for the relay's virtual `hub/auto` model. */
 export class AutoRouteSelector {
-  private readonly states = new SessionState<AutoState>(512, 60 * 60_000);
+  private readonly states = new ScopeStore<AutoState>({ maxEntries: 512, ttlMs: 60 * 60_000 });
 
   constructor(
     private readonly options: RelaySelectorOptions,

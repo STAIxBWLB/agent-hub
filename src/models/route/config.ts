@@ -50,6 +50,8 @@ export function parseHubRoutes(input: unknown): Record<string, HubRoute> {
       out[id] = parseDecisionConfig(id, r);
     } else if (r.type === "stage") {
       out[id] = parseStageConfig(id, r);
+    } else if (SERVICE_FIELDS.some(field => r[field] !== undefined)) {
+      out[id] = parseDecisionConfig(id, r);
     } else out[id] = r as unknown as HubRoute;
   }
   return out;
@@ -63,29 +65,16 @@ function parseStageConfig(id: string, r: Record<string, unknown>): HubRoute {
   }
   const problem = (field: string, step: string): never => { throw new Error(`routing.toml: invalid ${id}.${field}; ${step}`); };
   if (r.classifier !== "decision") problem("classifier", 'use "decision"');
-  // ponytail: these four service validators repeat parseDecisionConfig because a stage route names two tiers instead of alias/effort pairs; fold both into one adec-service parser if a third route type needs it.
-  if (r.decision_backend !== "adec") problem("decision_backend", 'set decision_backend = "adec" for a loopback policy service');
-  if (r.decision_mode === "enforce") throw new Error("decision_mode enforce is not available yet; use shadow; tracked in #554");
-  if (r.decision_mode !== undefined && !["off", "shadow"].includes(String(r.decision_mode))) problem("decision_mode", 'use "off" or "shadow"');
-  if (typeof r.policy_id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,49}$/.test(r.policy_id)) problem("policy_id", "name a configured adec policy with 1 to 50 lowercase identifier characters");
-  const endpoint = r.adec_endpoint ?? "http://127.0.0.1:8740/v1/route";
-  if (!isAdecRouteEndpoint(endpoint)) problem("adec_endpoint", "use an HTTP numeric loopback /v1/route URL without credentials, query or fragment");
-  if (r.decision_timeout_ms !== undefined && (!Number.isSafeInteger(r.decision_timeout_ms) || Number(r.decision_timeout_ms) < 1 || Number(r.decision_timeout_ms) > 30_000)) problem("decision_timeout_ms", "use 1 to 30000 milliseconds");
+  const service = parseServiceConfig(id, r);
   for (const tier of ["efficient", "capable"] as const) if (typeof r[tier] !== "string" || !(r[tier] as string).trim()) problem(tier, 'name the model alias this tier executes when classifier = "decision"');
   const band = r.ambiguous_band ?? AMBIGUOUS_BAND_DEFAULT;
   if (typeof band !== "number" || !Number.isFinite(band) || band < 0 || band > AMBIGUOUS_BAND_MAX) problem("ambiguous_band", `use a number from 0 to ${AMBIGUOUS_BAND_MAX}`);
-  return { ...r, decision_backend: "adec", decision_mode: r.decision_mode ?? "off", adec_endpoint: endpoint, ambiguous_band: band } as unknown as HubRoute;
+  return { ...r, ...service, ambiguous_band: band } as unknown as HubRoute;
 }
 
 function parseDecisionConfig(id: string, r: Record<string, unknown>): HubRoute {
+  const service = parseServiceConfig(id, r);
   const problem = (field: string, step: string): never => { throw new Error(`routing.toml: invalid ${id}.${field}; ${step}`); };
-  if (r.decision_backend !== "adec") problem("decision_backend", 'set decision_backend = "adec" for a loopback policy service');
-  if (r.decision_mode === "enforce") throw new Error("decision_mode enforce is not available yet; use shadow; tracked in #554");
-  if (r.decision_mode !== undefined && !["off", "shadow"].includes(String(r.decision_mode))) problem("decision_mode", 'use "off" or "shadow"');
-  if (typeof r.policy_id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,49}$/.test(r.policy_id)) problem("policy_id", "name a configured adec policy with 1 to 50 lowercase identifier characters");
-  const endpoint = r.adec_endpoint ?? "http://127.0.0.1:8740/v1/route";
-  if (!isAdecRouteEndpoint(endpoint)) problem("adec_endpoint", "use an HTTP numeric loopback /v1/route URL without credentials, query or fragment");
-  if (r.decision_timeout_ms !== undefined && (!Number.isSafeInteger(r.decision_timeout_ms) || Number(r.decision_timeout_ms) < 1 || Number(r.decision_timeout_ms) > 30_000)) problem("decision_timeout_ms", "use 1 to 30000 milliseconds");
   if (!Array.isArray(r.candidates) || !r.candidates.length || r.candidates.length > 26) problem("candidates", "list 1 to 26 policy alias/effort pairs");
   const candidates: { alias: string; efforts: string[] }[] = [], seen = new Set<string>();
   let pairCount = 0;
@@ -98,5 +87,19 @@ function parseDecisionConfig(id: string, r: Record<string, unknown>): HubRoute {
     if (seen.has(alias) || new Set(efforts).size !== efforts.length || pairCount > 26) problem("candidates", "remove duplicate aliases/efforts and keep at most 26 pairs");
     seen.add(alias); candidates.push({ alias, efforts: [...efforts] });
   }
-  return { ...r, decision_backend: "adec", decision_mode: r.decision_mode ?? "off", adec_endpoint: endpoint, candidates } as unknown as HubRoute;
+  return { ...r, ...service, candidates } as unknown as HubRoute;
+}
+
+const SERVICE_FIELDS = ["decision_backend", "decision_mode", "policy_id", "adec_endpoint", "candidates", "decision_timeout_ms"] as const;
+/** One validator for service binding, independent of a route's stage/host semantics. */
+function parseServiceConfig(id: string, r: Record<string, unknown>): Pick<HubRoute, "decision_backend" | "decision_mode" | "adec_endpoint"> {
+  const problem = (field: string, step: string): never => { throw new Error(`routing.toml: invalid ${id}.${field}; ${step}`); };
+  if (r.decision_backend !== "adec") problem("decision_backend", 'set decision_backend = "adec" for a loopback policy service');
+  if (r.decision_mode === "enforce") throw new Error("decision_mode enforce is not available yet; use shadow; tracked in #554");
+  if (r.decision_mode !== undefined && !["off", "shadow"].includes(String(r.decision_mode))) problem("decision_mode", 'use "off" or "shadow"');
+  if (typeof r.policy_id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,49}$/.test(r.policy_id)) problem("policy_id", "name a configured adec policy with 1 to 50 lowercase identifier characters");
+  const endpoint = r.adec_endpoint ?? "http://127.0.0.1:8740/v1/route";
+  if (!isAdecRouteEndpoint(endpoint)) problem("adec_endpoint", "use an HTTP numeric loopback /v1/route URL without credentials, query or fragment");
+  if (r.decision_timeout_ms !== undefined && (!Number.isSafeInteger(r.decision_timeout_ms) || Number(r.decision_timeout_ms) < 1 || Number(r.decision_timeout_ms) > 30_000)) problem("decision_timeout_ms", "use 1 to 30000 milliseconds");
+  return { decision_backend: "adec", decision_mode: (r.decision_mode ?? "off") as "off" | "shadow", adec_endpoint: endpoint };
 }
