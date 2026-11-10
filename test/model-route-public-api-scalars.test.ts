@@ -17,12 +17,16 @@ function conversation(rounds = 1, answer = "Synthetic answer") {
   return captureJudgeConversation(messages);
 }
 
+function assertScalars(actual: readonly (boolean | number | undefined)[], expected: readonly (boolean | number)[]): void {
+  expect(actual).toEqual(expected);
+}
+
 // Newly authored inputs and scalar observations only. No legacy implementation is imported.
 for (const row of fixtures.cases) {
   if (row.kind === "advisor-eligible") test(`public scalar compatibility: ${row.id}`, () => {
     const gate = new AdvisorTrigger(row.config);
     const result = gate.eligible(conversation(row.rounds), { hasToolUse: false, visibleText: "Synthetic answer" }, "fixture");
-    expect([result]).toEqual(row.observed);
+    assertScalars([result], row.observed);
   });
   if (row.kind === "advisor-reserve") test(`public scalar compatibility: ${row.id}`, () => {
     const gate = new AdvisorTrigger(row.config), actual: boolean[] = [];
@@ -34,21 +38,21 @@ for (const row of fixtures.cases) {
       actual.push(eligible, reserved);
       if (reserved) gate.settle("fixture", row.outcome);
     }
-    expect(actual).toEqual(row.observed);
+    assertScalars(actual, row.observed);
   });
   if (row.kind === "advisor-output") test(`public scalar compatibility: ${row.id}`, () => {
-    expect([buildAdvisorRequest(conversation(), "Synthetic answer", row.cap)?.maxOutputTokens]).toEqual(row.observed);
+    assertScalars([buildAdvisorRequest(conversation(), "Synthetic answer", row.cap)?.maxOutputTokens], row.observed);
   });
   if (row.kind === "escalation-output") test(`public scalar compatibility: ${row.id}`, () => {
-    expect([buildEscalationRequest(conversation(), 2)?.maxOutputTokens]).toEqual(row.observed);
+    assertScalars([buildEscalationRequest(conversation(), 2)?.maxOutputTokens], row.observed);
   });
   if (row.kind === "advisor-reply") test(`public scalar compatibility: ${row.id}`, () => {
     const result = parseAdvisorReply(row.text);
-    expect([result !== undefined, result?.kind === "approve", result?.kind === "redo"]).toEqual(row.observed);
+    assertScalars([result !== undefined, result?.kind === "approve", result?.kind === "redo"], row.observed);
   });
   if (row.kind === "escalation-reply") test(`public scalar compatibility: ${row.id}`, () => {
     const result = parseEscalationReply(row.text);
-    expect([result !== undefined, result?.escalate === true, result?.newEvidence === true]).toEqual(row.observed);
+    assertScalars([result !== undefined, result?.escalate === true, result?.newEvidence === true], row.observed);
   });
   if (row.kind === "escalation-state") test(`public scalar compatibility: ${row.id}`, () => {
     const control = new EscalationControl();
@@ -59,6 +63,6 @@ for (const row of fixtures.cases) {
       }));
       return control.apply(result, 2).latched;
     });
-    expect(actual).toEqual(row.observed);
+    assertScalars(actual, row.observed);
   });
 }
