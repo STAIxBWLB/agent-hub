@@ -53,11 +53,16 @@ export function stableBunRuntime(options: { runtime?: string; pathRuntime?: stri
   return candidate && lexicalTarget(candidate) && samePath(candidate, runtime) ? candidate : runtime;
 }
 
+/** The package root of the `ahub` on PATH, when it is a proven CLI entry (#1385). */
+export function globalCliRoot(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const invocation = Bun.which("ahub", { PATH: env.PATH ?? "" });
+  return invocation ? pathPackageRoot(invocation) : undefined;
+}
+
 /** Advice only; a staged daemon upgrade does not update the person's global CLI installation. */
 export function globalCliUpdateStep(version?: string, options: InstallPathOptions = {}): string {
   const env = options.env ?? process.env;
-  const invocation = Bun.which("ahub", { PATH: env.PATH ?? "" });
-  const root = invocation ? pathPackageRoot(invocation) : undefined;
+  const root = globalCliRoot(env);
   const generic = `update the global CLI${version ? ` to ${version}` : ""} the way it was installed`;
   if (!root) return generic;
   const global = join(env.BUN_INSTALL || join(options.home ?? homedir(), ".bun"), "install/global/node_modules");

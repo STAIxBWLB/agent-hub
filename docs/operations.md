@@ -225,7 +225,7 @@ meter keeps a fixed column at the right edge. In Usage, LAST RESET is the column
 
 | Panel | Columns |
 |---|---|
-| Peers | PEER STATE MODE LINK Q ! WIP REVIEW PAUSE QUOTA MODEL DOING |
+| Peers | PEER STATE MODE LINK AHUB Q ! WIP REVIEW PAUSE QUOTA MODEL DOING |
 | Approvals | ID PEER LEFT TITLE |
 | Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE STAGE |
 | Tasks, backlog view (`b`) | ID PRI RESERVED DEPS CLASS AGE TITLE |
@@ -262,6 +262,24 @@ Peers' WIP column shows planner work in progress as `wip/limit` from `taskWip`,
 including `0/2`; a peer without an entry reads `-`. At or above the limit, the
 cell uses the attention tone. At narrow widths WIP gives way before PEER, STATE
 and QUOTA, whether or not MODE is present.
+
+Agent-hub versions (#1385). A line above the Peers table names the running
+daemon's version, this console's, the global `ahub` on PATH (read from its
+`package.json`, never run) and the installed Claude plugin (one bounded
+`claude plugin list --json` read when the console starts). One older than the
+daemon reads `(older)` in the attention tone, by the comparison `ahub doctor`
+prints; a value that cannot be read is `unknown` and is never flagged. AHUB is
+the agent-hub code each peer has loaded: `daemon` for an adapter that runs
+inside the daemon, the version a client's hello reported (the Claude plugin's
+MCP server), and `tools x` for the versions its open tools connections reported
+(the hub tools Codex, Kimi, agy or Jcode run). A client that reports none reads
+`unreported`, muted: an unknown version is never counted as a difference. A cell with any version other than the daemon's uses the attention
+tone, the versions line counts those peers, and the peer's detail (Enter) says
+to update the global CLI and run `ahub setup`, then restart that agent's session.
+The column appears only when some peer reports a version, so an older hub shows
+none; it gives way before LINK on a narrow terminal. The detail also shows
+`agent CLI` for a native CLI version the hub has not verified (the same
+`agentDrift` row `ahub status` prints). All of it is display only.
 
 DOING (#878) is what a peer is working on, from signals the hub already receives:
 a Claude session's title (its transcript's latest `ai-title` row) and the

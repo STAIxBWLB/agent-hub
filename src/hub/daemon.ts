@@ -220,7 +220,7 @@ import { MAX_HOP, isInvocationKind, newEnvelope, parseMarker, replyParent, sanit
 import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter, type PeerTakeoverClaim } from "./peers.ts";
 import { ClaudeTodoSource, DoingTracker, readAiTitle, DOING_STUB, SESSION_TITLE_HINT, sessionTitleText, sessionTitleBindings, unnamedSessionLabel, type DoingKind, type PeerDoing, type TitleCursor } from "./peer-doing.ts";
 import { MemoryClient } from "../memory/client.ts";
-import { VERSION } from "../version.ts";
+import { VERSION, displayVersion } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
 import { readEvidence } from "./research-record.ts";
 import { memoryFigures, onlyTaskMemory, UNKNOWN_MEMORY_FIGURES, type MemoryFigures } from "./research-memory.ts";
@@ -870,6 +870,8 @@ interface Client {
   channel?: boolean;
   channelEvidence?: "development-channel-launch" | "inherited-marker" | "launch-unverified" | "unknown" | "unreported";
   clientPid?: number;
+  /** #1385: the agent-hub version the client's hello reported, kept only when `displayVersion` accepts it. Display only. */
+  clientVersion?: string;
   cwd?: string;
   externalOwner?: { owner: PeerAdapter; launchId: string; generation?: string };
   toolsOwner?: { owner: PeerAdapter; launchId: string; generation: string; cwd: string };
@@ -1396,6 +1398,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         if (sock.data.session && sock.data.peer) sessionIds.delete(sock.data.peer);
         consoles.delete(sock);
+        toolsSockets.delete(sock);
         operationalLogSubscribers.delete(sock);
         sock.data.tail?.();
         sock.data.watch?.();
@@ -2273,6 +2276,26 @@ export async function startDaemon(opts: DaemonOptions) {
   const uiEvents: { seq: number; event: BusEvent }[] = [];
   let uiSequence = 0;
   const consoles = new Set<Sock>();
+  /** #1385: admitted `tools` connections (the MCP servers Codex, Kimi, agy and Jcode run), only so status can show the agent-hub version each one loaded. */
+  const toolsSockets = new Set<Sock>();
+  /** Per peer, the sorted distinct versions its open tools connections reported (`unreported` for a hello without one). One pass per status read. */
+  const toolsVersions = (): Map<string, string[]> => {
+    const byPeer = new Map<string, Set<string>>();
+    for (const sock of toolsSockets) {
+      const peer = sock.data.peer;
+      if (!peer || sock.data.closed) continue;
+      const seen = byPeer.get(peer) ?? new Set<string>();
+      seen.add(sock.data.clientVersion ?? "unreported");
+      byPeer.set(peer, seen);
+    }
+    return new Map([...byPeer].map(([peer, seen]) => [peer, [...seen].sort()]));
+  };
+  /** #1385: what agent-hub code a peer runs (status `peerVersions`): the daemon's own for an in-daemon adapter, else what its attached client reported. Absent while no client is attached. */
+  const ahubStatus = (p: PeerAdapter | undefined, tools: string[] | undefined) => {
+    const client = p?.hubClient;
+    const ahub = !p ? undefined : !client ? { runs: "daemon" as const, version: VERSION } : client.attached ? { runs: "client" as const, version: client.version ?? "unreported" } : undefined;
+    return { ...(ahub ? { ahub } : {}), ...(tools?.length ? { ahubTools: tools } : {}) };
+  };
   /** A line for the human: hub.log and every open `ahub tail`. */
   const notify = (line: string) => {
     log(line);
@@ -6983,6 +7006,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const queueBackpressure = tasks.queuePressureStatus(peerIds);
     const crashLines = crashView();
     const deliveryFailures = bus.failedDeliveryCounts();
+    const toolsByPeer = toolsVersions();
+    // #1385: separate metadata, like roleInfo (#295), so the legacy peer row keeps its shape.
+    const peerVersions = Object.fromEntries(peerIds.map(id => [id, ahubStatus(bus.peers.get(id), toolsByPeer.get(id))] as const).filter(([, row]) => Object.keys(row).length));
     const view = {
     ...(deliveryFailures ? { deliveryFailures } : {}),
     ...runtimeModelProjection(),
@@ -7034,6 +7060,7 @@ export async function startDaemon(opts: DaemonOptions) {
     peers: Object.fromEntries(
       peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const pressure = queueBackpressure?.peers[id]; const oldestQueuedAt = pressure ? pressure.oldestQueuedAt : summary.oldestQueuedAt; const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; const reviewObserverHoldNote = reviewObserverSessionIdentityHoldNote(id); return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(reviewObserverHoldNote ? { reviewObserverHoldNote } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(includeAttentionItems && p?.standbySessions?.length ? { standbySessions: p.standbySessions } : {}), ...(includeAttentionItems && p?.ownerAttachment ? { ownerAttachment: p.ownerAttachment } : {}), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: ownerIsolation[id] === true, ...(ownerIsolation[id] !== true ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(typeof oldestQueuedAt === "number" ? { oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) ? { ...(p.claiming ? { claiming: true } : {}), ...(definitionOf(id)?.transport === "claude-channel" && p.attached ? { attachMode: p.attachMode, attachEvidence: p.attachEvidence } : {}) } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
+    peerVersions,
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
     actionPolicyInfo: Object.fromEntries(peerIds.map(id => { const e = actionEnforcement(id); return [id, actionBudgets.status(id, e.enforced, e.reason)]; })),
@@ -10921,6 +10948,7 @@ export async function startDaemon(opts: DaemonOptions) {
       c.authed = true;
       c.protocol = selectedProtocol;
       c.role = msg.role;
+      c.clientVersion = displayVersion(msg.clientVersion);
       if (c.role === "console") consoles.add(sock);
       else if (c.role === "tools" && sessionHello(msg)) {
         // agent-hub#1036: a connection that names a peer id but is not that peer's current session gets an id of its own instead of becoming the peer. It can send and read; it holds none of the
@@ -10987,6 +11015,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (typeof msg.cwd === "string" && msg.cwd.length <= 4096) sock.data.cwd = msg.cwd;
         const clientPid = Number.isSafeInteger(msg.clientPid) && msg.clientPid > 0 && msg.clientPid <= 2_147_483_647 ? msg.clientPid as number : undefined;
         sock.data.clientPid = clientPid;
+        sock.data.clientVersion = c.clientVersion;
         const pushOverPullOnly = msg.channel !== false && ws.attached && ws.pullOnly && !ws.claiming;
         const hasLiveHolder = ws.attached || ws.claiming;
         if (c.retainStandby && hasLiveHolder && !pushOverPullOnly) {
@@ -11015,6 +11044,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       }
       // #604 PR B: one attach event per admitted peer or tools hello, with the same fields an envelope's `origin` carries. A refused hello returned above and writes none.
+      if (c.role === "tools" && !c.session) toolsSockets.add(sock);
       if (c.role === "peer" || c.role === "tools") event(attachEvent({ role: c.role, peer: c.peer, launchId: c.launchId, ...(c.session ? { session: true } : {}) }));
       return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: c.protocol, protocolMin: PROTOCOL_MIN, protocolMax: PROTOCOL, features: DAEMON_FEATURES,
         ...(c.session ? { session: c.peer } : {}), ...(c.standbyId ? { standby: true, standbyId: c.standbyId } : {}) });

@@ -53,6 +53,11 @@ export interface PeerAdapter {
   readonly standbySessions?: readonly PeerStandbySession[];
   /** The current owner's attachment facts, for display only; absent unless a socket is attached and no newer claim is arriving (#1310). */
   readonly ownerAttachment?: PeerOwnerAttachment;
+  /**
+   * #1385: the agent-hub client this peer runs in another process, for display only. Absent means the adapter runs inside the daemon, so it runs the daemon's own code; `attached` false
+   * means no client is attached now, and an attached client without `version` did not report one. Never admission, compatibility or authorization evidence.
+   */
+  readonly hubClient?: { attached: boolean; version?: string };
   /** Person-authorized takeover port. The host still performs its own admission and claim fences. */
   takeover?(standbyId: string | undefined, eligible: (socket: object) => boolean): PeerTakeoverClaim | undefined;
   /** Exact transport ownership check for guarding a selected standby through its asynchronous preface. */

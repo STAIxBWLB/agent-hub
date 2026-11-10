@@ -618,6 +618,9 @@
   "src/cli/console-symbols.ts:MAX_LINES:constant:MAX_LINES=40#0": "safety floor",
   "src/cli/console-symbols.ts:head:inline:task.codeSymbols.head.slice=8#0": "contract",
   "src/cli/console-usage.ts:resets:inline:lastResets=3#0": "safety floor",
+  "src/cli/console-versions.ts:MANIFEST_BYTES:constant:MANIFEST_BYTES=64 * 1024#0": "safety floor",
+  "src/cli/console-versions.ts:PLUGIN_PROBE_BYTES:constant:PLUGIN_PROBE_BYTES=256 * 1024#0": "safety floor",
+  "src/cli/console-versions.ts:PLUGIN_PROBE_MS:constant:PLUGIN_PROBE_MS=10000#0": "contract",
   "src/cli/console.ts:CONSOLE_POLL_MS:constant:CONSOLE_POLL_MS=4000#0": "operational",
   "src/cli/console.ts:capturedPollMs:inline:Math.max=2000#0": "operational",
   "src/cli/console.ts:draw:inline:lines.at=-1#0": "contract",
@@ -2746,5 +2749,6 @@
   "src/ui/plugin.ts:detail:inline:String(p.rule).slice=64#0": "safety floor",
   "src/ui/plugin.ts:title:inline:#${p.task}: ${String(p.action).slice(0, 32)}.slice=200#0": "safety floor",
   "src/ui/plugin.ts:title:inline:String(p.action).slice=32#0": "safety floor",
-  "src/ui/task-progress.ts:waiting:inline:waiting=0#0": "contract"
+  "src/ui/task-progress.ts:waiting:inline:waiting=0#0": "contract",
+  "src/version.ts:displayVersion:inline:value.length <= 64=64#0": "safety floor"
 }

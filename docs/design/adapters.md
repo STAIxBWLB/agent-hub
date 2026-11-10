@@ -161,6 +161,18 @@ takeover or permission evidence. It carries no environment, argv, cwd, credentia
 or text, adds no event, log or memory payload, and is withheld from `status.json` and every
 non-console reader. The field is additive and optional; no control protocol version changes.
 
+Status `peerVersions` says, per peer, which agent-hub code that peer has loaded (#1385). It sits
+beside `peers`, as `roleInfo` does, so the legacy peer row keeps its shape (#295). The optional
+`hubClient` port belongs to an adapter whose agent-hub code runs in another process (the Claude
+channel's `WsPeer`); an adapter without it runs inside the daemon and reports
+`ahub: { runs: "daemon", version }`. With the port, the entry reports `runs: "client"` and the version
+the attached socket's hello sent as `clientVersion`, `unreported` for a hello without one, and no
+`ahub` field while nothing is attached. `ahubTools` lists the sorted distinct versions the peer's
+open `tools` connections reported. The daemon keeps a reported version only when it is a plain
+semver of at most 64 characters (`displayVersion`, `src/version.ts`); anything else is unreported.
+The fields are display only, never compatibility, admission or protocol evidence, and are
+additive: an older daemon ignores `clientVersion`, and an older console ignores both fields.
+
 ## Accepted channel delivery settlement (#1172)
 
 Only an attached push channel opts into explicit disposition of its own accepted delivery. An `accepted` receipt acknowledges that the notification was accepted by the channel transport; it is not a native handling or task-completion signal. The host reads `bus.accepted_settle_ms` from accepted configuration on its existing maintenance sweep, defaulting to ten minutes. A row that remains unconfirmed becomes `needs_review` with no replay. `hub_inbox` returns bounded id/revision metadata for the channel's accepted and held rows, including when an accepted push prevents the pull itself. The plugin renders that metadata and avoids both an empty-inbox claim and polling advice while there is an actionable row. Important, task and review timeouts produce one durable status-kind, status-priority conductor message containing ids only when the existing `conductor.feed` policy is on; `feed: off` remains an opt-out. Pull-only sessions do not gain the explicit accepted-disposition port.

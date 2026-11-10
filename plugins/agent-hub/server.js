@@ -28264,6 +28264,7 @@ function negotiateProtocol(local, remote) {
 
 // src/hub/control-client.ts
 init_control_write_trace();
+init_version();
 var clientWriteTelemetry = new ControlWriteTelemetry({ emit: (line) => {
   if (process.env.AHUB_CONTROL_WRITE_TIMING === "1")
     console.error(`[agent-hub] ${line}`);
@@ -28421,7 +28422,7 @@ class ControlClient {
         client.pending.delete(msg.rid);
         done(msg);
       };
-      ws.onopen = () => void client.request({ t: "hello", token: control.token, ...hello, ...expected, v: selected, vMin: remote?.vMin === undefined ? selected : Math.max(local.vMin, remote.vMin) }, timeoutMs).then((reply) => {
+      ws.onopen = () => void client.request({ t: "hello", token: control.token, ...hello, ...expected, clientVersion: VERSION, v: selected, vMin: remote?.vMin === undefined ? selected : Math.max(local.vMin, remote.vMin) }, timeoutMs).then((reply) => {
         if (reply.t !== "welcome" || reply.ok === false)
           return refuse(new Error(reply.error ?? "hub refused handshake"));
         if (expected.projectId && reply.projectId !== expected.projectId || expected.instanceId && reply.instanceId !== expected.instanceId || expected.projectRoot && reply.cwd !== expected.projectRoot) {
