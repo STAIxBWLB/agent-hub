@@ -6,7 +6,6 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { renderStatus } from "../src/cli/output.ts";
 import { paint } from "../src/cli/console-state.ts";
-import { VERSION } from "../src/version.ts";
 
 test("slice1 status never claims adapter enforcement before its pre-tool gate is wired", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-action-status-")), stateDir = join(dir, "state");
@@ -19,7 +18,7 @@ test("slice1 status never claims adapter enforcement before its pre-tool gate is
     client = await ControlClient.connect(stateDir, { role: "console" });
     const { status } = await client.request({ t: "status" });
     expect(Object.keys(status.peers).length).toBeGreaterThan(0);
-    expect(status.peers.claude).toEqual({ state: "idle", ahub: { runs: "daemon", version: VERSION }, queued: 0 }); // #1385: an in-daemon adapter runs the daemon's version
+    expect(status.peers.claude).toEqual({ state: "idle", queued: 0 });
     expect(Object.keys(status.actionPolicyInfo)).toEqual(Object.keys(status.peers));
     for (const row of Object.values(status.actionPolicyInfo) as any[]) {
       expect(row).toMatchObject({ enabled: true, enforceable: false, sessionBound: false, limits: { publish: 1, destroy: 3, "external-write": 5, install: 2 } });

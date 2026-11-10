@@ -44,7 +44,12 @@ async function daemonFixture() {
     await until(() => messages.some(row => row.t === "welcome"), "welcome");
     return socket;
   };
-  const peers = async () => (await person.request({ t: "status" })).status.peers;
+  /** #1385: versions ride in `peerVersions`, beside the peer rows, which keep their legacy shape (#295). */
+  const peers = async () => {
+    const status = (await person.request({ t: "status" })).status;
+    for (const row of Object.values(status.peers) as any[]) expect(row.ahub ?? row.ahubTools).toBeUndefined();
+    return status.peerVersions;
+  };
   return { daemon, stateDir, connect, peers };
 }
 
@@ -54,7 +59,7 @@ test("a channel client's reported version is shown as what it runs; an older cli
   await until(() => f.daemon.bus.stateOf("claude") === "idle", "claude attached");
   expect((await f.peers()).claude.ahub).toEqual({ runs: "client", version: "unreported" });
   old.close();
-  await until(async () => (await f.peers()).claude.ahub === undefined, "detached client shows no version");
+  await until(async () => (await f.peers()).claude?.ahub === undefined, "detached client shows no version");
   await f.connect({ role: "peer", peer: "claude", clientVersion: "0.35.0" });
   await until(async () => (await f.peers()).claude.ahub?.version === "0.35.0", "reported version");
   expect((await f.peers()).claude.ahub).toEqual({ runs: "client", version: "0.35.0" });
@@ -72,7 +77,7 @@ test("a malformed or oversized version is dropped, never shown", async () => {
 test("an in-daemon adapter runs the daemon's own version, and tools connections report theirs until they close", async () => {
   const f = await daemonFixture();
   const codex = new InDaemon("codex"); f.daemon.bus.add(codex); await codex.start();
-  expect((await f.peers()).codex.ahub).toEqual({ runs: "daemon", version: VERSION });
+  expect((await f.peers()).codex).toEqual({ ahub: { runs: "daemon", version: VERSION } });
   const older = await f.connect({ role: "tools", peer: "codex", clientVersion: "0.34.0" });
   const real = await ControlClient.connect(f.stateDir, { role: "tools", peer: "codex" }); cleanup.push(() => real.close());
   await until(async () => (await f.peers()).codex.ahubTools?.length === 2, "two tools connections");

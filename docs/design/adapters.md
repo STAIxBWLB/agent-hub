@@ -161,10 +161,11 @@ takeover or permission evidence. It carries no environment, argv, cwd, credentia
 or text, adds no event, log or memory payload, and is withheld from `status.json` and every
 non-console reader. The field is additive and optional; no control protocol version changes.
 
-Every status peer row also says which agent-hub code that peer has loaded (#1385). The optional
+Status `peerVersions` says, per peer, which agent-hub code that peer has loaded (#1385). It sits
+beside `peers`, as `roleInfo` does, so the legacy peer row keeps its shape (#295). The optional
 `hubClient` port belongs to an adapter whose agent-hub code runs in another process (the Claude
 channel's `WsPeer`); an adapter without it runs inside the daemon and reports
-`ahub: { runs: "daemon", version }`. With the port, the row reports `runs: "client"` and the version
+`ahub: { runs: "daemon", version }`. With the port, the entry reports `runs: "client"` and the version
 the attached socket's hello sent as `clientVersion`, `unreported` for a hello without one, and no
 `ahub` field while nothing is attached. `ahubTools` lists the sorted distinct versions the peer's
 open `tools` connections reported. The daemon keeps a reported version only when it is a plain

@@ -262,7 +262,9 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       }
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer],
         ...(typeof status.status.ownerIsolation?.[peer] === "boolean" ? { ownerIsolation: status.status.ownerIsolation[peer] } : {}),
-        ...(typeof status.status.ownerIsolationNotes?.[peer] === "string" ? { ownerIsolationNote: status.status.ownerIsolationNotes[peer] } : {}) }]));
+        ...(typeof status.status.ownerIsolationNotes?.[peer] === "string" ? { ownerIsolationNote: status.status.ownerIsolationNotes[peer] } : {}),
+        ...(status.status.peerVersions?.[peer]?.ahub ? { ahub: status.status.peerVersions[peer].ahub } : {}),
+        ...(status.status.peerVersions?.[peer]?.ahubTools ? { ahubTools: status.status.peerVersions[peer].ahubTools } : {}) }]));
       if (status.status && status.ok !== false) {
         state.taskWip = status.status.taskWip ?? {};
         state.attentionFacts = attentionFacts(status.status.attentionItems);
