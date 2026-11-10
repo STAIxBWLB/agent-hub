@@ -21,8 +21,8 @@ function publicRecord(): GuidancePublicRecord {
     evidence: [{ key: "a".repeat(64), status: "declared" }],
   };
 }
-const page = (): GuidancePageResult => ({ state: "available", current: { ...current }, records: [publicRecord()], truncated: false });
-const diff = (): GuidanceDiffResult => ({
+const page = (): Extract<GuidancePageResult, { state: "available" }> => ({ state: "available", current: { ...current }, records: [publicRecord()], truncated: false });
+const diff = (): Extract<GuidanceDiffResult, { state: "available" }> => ({
   state: "available", current: { ...current }, record: publicRecord(),
   sections: [
     { section: "Scope", before: "Check behavior.", after: "Check observable behavior." },
@@ -89,7 +89,7 @@ test("shared public parsers retain the current wrapper separately from immutable
   expect(parseGuidanceDiffResult(diff())).toEqual(diff());
   expect(parseGuidancePageResult({ state: "unavailable" })).toEqual({ state: "unavailable" });
   expect(parseGuidanceDiffResult({ state: "unavailable" })).toEqual({ state: "unavailable" });
-  const historical = { state: "available", current: { ...current, flowRevision: 4 }, records: [{ ...publicRecord(), applicable: false }], truncated: false };
+  const historical: GuidancePageResult = { state: "available", current: { ...current, flowRevision: 4 }, records: [{ ...publicRecord(), applicable: false }], truncated: false };
   expect(parseGuidancePageResult(historical)).toEqual(historical);
   const withheld = { ...publicRecord(), experimentId: "withheld", rationale: { problemHypothesis: "withheld", expectedObservableDifference: "withheld" } };
   expect(parseGuidancePageResult({ ...value, state: "available", records: [withheld] })).toEqual({ ...value, state: "available", records: [withheld] });
@@ -145,7 +145,7 @@ test("page and diff reject malformed wrappers, protected bodies, incomplete sect
 
 test("page wire ceiling is thirty-two rows and a bounded signed-source cursor", () => {
   const records = Array.from({ length: 32 }, (_, index) => ({ ...publicRecord(), id: index.toString(16).padStart(64, "0") }));
-  const bounded = { state: "available", current, records, truncated: true, cursor: "A".repeat(512) };
+  const bounded: GuidancePageResult = { state: "available", current, records, truncated: true, cursor: "A".repeat(512) };
   expect(parseGuidancePageResult(bounded)).toEqual(bounded);
   expect(() => parseGuidancePageResult({ ...bounded, records: [...records, { ...publicRecord(), id: "f".repeat(64) }] })).toThrow();
   expect(() => parseGuidancePageResult({ ...bounded, cursor: "A".repeat(513) })).toThrow();
@@ -190,7 +190,7 @@ test("CLI and shared human views render the same admitted data without mutating 
   expect(rendered).toContain("Scope"); expect(rendered).toContain("Check observable behavior.");
   for (const privateText of [parsedOld.baseline.bytes, parsedOld.candidate.bytes, "Use hub_task_done for handoff.", "Review the evidence.", "source: Independent local conformance fixture."])
     expect(rendered).not.toContain(privateText);
-  expect(JSON.stringify(vectors.golden.record)).toBe(old); expect(parsedOld).toEqual(vectors.golden.record);
+  expect(JSON.stringify(vectors.golden.record)).toBe(old); expect<unknown>(parsedOld).toEqual(vectors.golden.record);
 });
 
 test("terminal renderer removes controls even from a violated upstream typed precondition", () => {

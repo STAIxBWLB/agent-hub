@@ -437,7 +437,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         const { panel: _panel, after: _after, projectId, instanceId, op, ...query } = input;
         if (op !== "list" && op !== "show") return { ok: false, panel: "guidance", error: "guidance console is read-only; select list/show and a current task scope" };
         const result = await guidance({ projectId, instanceId }, op, query);
-        if (!result.ok || !("guidance" in result)) return { ok: false, panel: "guidance", error: "error" in result ? result.error : "guidance read unavailable" };
+        if (!result.ok || !("guidance" in result) || !result.guidance) return { ok: false, panel: "guidance", error: "error" in result ? result.error : "guidance read unavailable" };
         return { ok: true, panel: "guidance", guidance: result.guidance, lines: guidanceLines(result.guidance) };
       }
       if (input.panel === "lineage") {

@@ -313,7 +313,7 @@ export function parseGuidancePublicRecord(value: unknown): GuidancePublicRecord 
   if (!executionLinkInteger(size.baseline, 1) || size.baseline > GUIDANCE_ROLE_MAX_BYTES || !executionLinkInteger(size.candidate, 1)
     || size.candidate > GUIDANCE_ROLE_MAX_BYTES || !executionLinkInteger(size.record, 1) || size.record > GUIDANCE_RECORD_MAX_BYTES) return invalid();
   const why = object(f.rationale, ["problemHypothesis", "expectedObservableDifference"]);
-  const evidence = array(f.evidence, GUIDANCE_EVIDENCE_MAX_REFS).map(item => {
+  const evidence = array(f.evidence, GUIDANCE_EVIDENCE_MAX_REFS).map((item): { key: string; status: "declared" | "unavailable" } => {
     const entry = object(item, ["key", "status"]);
     if (entry.status !== "declared" && entry.status !== "unavailable") return invalid();
     return { key: hash(entry.key), status: entry.status };
