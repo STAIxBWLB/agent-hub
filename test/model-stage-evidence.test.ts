@@ -1,7 +1,22 @@
 import { expect, test } from "bun:test";
 import { captureStageInput } from "../src/models/route/stage-input.ts";
 import { buildStageEvidence, sensitiveStageEvidence } from "../src/models/route/stage-evidence.ts";
+import { selectFallbackStage } from "../src/models/route/stage-fallback.ts";
 const evidence = (contents: string[]) => buildStageEvidence(captureStageInput(contents.map(content => ({ role: "tool", content })))!);
+for (const text of ["Segmentation fault (core dumped)", "out of memory"]) for (const flagged of [false, true]) {
+  test(`critical execution evidence without losing is_error=${flagged}: ${text}`, () => {
+    const input = captureStageInput([
+      { role: "assistant", tool_calls: [{ id: "critical-exec", function: { name: "exec_command" } }] },
+      { role: "tool", tool_call_id: "critical-exec", content: text, ...(flagged ? { is_error: true } : {}) },
+    ])!;
+    expect(input.results[0]!.error).toBe(flagged);
+    const packet = buildStageEvidence(input);
+    expect(packet.signals.fault).toBe("critical");
+    expect(packet.dimensions.severity).toBe(1);
+    expect(packet.scores.capable).toBe(1);
+    expect(selectFallbackStage(packet)).toMatchObject({ tier: "capable", source: "override" });
+  });
+}
 test("closed packet has bounded finite dimensions and no source fragments or tool metadata", () => {
   const packet = evidence(["sensitive fixture failed on /private/fixture", "sensitive fixture failed on /private/fixture"]);
   expect(packet.signals.repeatedFailures).toBe(2);

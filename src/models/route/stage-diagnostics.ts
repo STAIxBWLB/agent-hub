@@ -11,9 +11,10 @@ export function diagnoseStageResult(result: StageResultInput): StageDiagnostic {
   const zeroPass = /\b0\s+(?:tests?\s+)?(?:pass|passed)\b/.test(value);
   const affirmativePass = /^[ \t]*(?:all[ \t]+tests?[ \t]+pass(?:ed)?|tests?[ \t]+passed)[.!]?[ \t\r]*$/m.test(value);
   const passedTest = !failedTest && (positivePass || !zeroPass && affirmativePass);
-  const explicit = result.error || failedTest || (/\b(?:error|failed|failure|exception|fatal|panic|memoryerror)\b/.test(diagnosticText) || /\b\w*(?:exception|error):/.test(diagnosticText)) && result.family !== "read";
+  const critical = /\b(?:fatal|panic|segmentation fault|out of memory|memoryerror)\b/.test(value);
+  const explicit = result.error || failedTest || (critical || /\b(?:error|failed|failure|exception|fatal|panic|memoryerror)\b/.test(diagnosticText) || /\b\w*(?:exception|error):/.test(diagnosticText)) && result.family !== "read";
   if (!explicit) return { fault: "none", test: passedTest ? "pass" : zeroPass ? "unknown" : "none" };
-  const fault: FaultClass = /\b(?:fatal|panic|segmentation fault|out of memory|memoryerror)\b/.test(value) ? "critical"
+  const fault: FaultClass = critical ? "critical"
     : !/\bassertionerror:/.test(value) && /\b\w*(?:exception|error):/.test(value) ? "exception" : "reported";
   // Bounded source capture makes this local comparison bounded too; no fingerprint enters StageEvidence.
   const fingerprint = value.replace(/\b\d+\b/g, "#").replace(/\s+/g, " ").trim();

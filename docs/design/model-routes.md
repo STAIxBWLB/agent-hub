@@ -182,7 +182,10 @@ Reviewed classification contract:
   families remain unknown; source words are evidence, not authority.
 - Explicit error outcomes and recognizable diagnostics determine a closed fault
   class. Successful inspection output quoting an error does not by itself become
-  a critical failure. Passing tests clear the corresponding current test-failure
+  a critical failure. Execution results containing `segmentation fault` or
+  `out of memory` are critical even when the wire omits `is_error`. These phrases
+  do not turn an unflagged successful read into a failure; an explicitly flagged
+  read error remains a failure. Passing tests clear the corresponding current test-failure
   evidence, while an unrelated failure is not erased. `signals.tests` is the test
   outcome of the latest inspected completed result; a later ordinary read is
   `none`. Chronological pass processing still clears retained test-category
