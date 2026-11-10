@@ -273,7 +273,7 @@ the agent-hub code each peer has loaded: `daemon` for an adapter that runs
 inside the daemon, the version a client's hello reported (the Claude plugin's
 MCP server), and `tools x` for the versions its open tools connections reported
 (the hub tools Codex, Kimi, agy or Jcode run). A client that reports none reads
-`unreported`. A cell with any version other than the daemon's uses the attention
+`unreported`, muted: an unknown version is never counted as a difference. A cell with any version other than the daemon's uses the attention
 tone, the versions line counts those peers, and the peer's detail (Enter) says
 to update the global CLI and run `ahub setup`, then restart that agent's session.
 The column appears only when some peer reports a version, so an older hub shows

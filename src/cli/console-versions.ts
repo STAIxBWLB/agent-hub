@@ -83,14 +83,17 @@ export function consoleVersions(daemon: unknown, cli: string, global: string | u
 }
 
 /** What a peer's AHUB cell and detail say, from its status `ahub`/`ahubTools`; `differs` when any loaded version is not the daemon's. Older hubs send neither: `-`. */
-export function peerHubVersion(row: { ahub?: { runs?: unknown; version?: unknown }; ahubTools?: unknown }, daemon: string | undefined): { cell: string; differs: boolean; detail?: string } {
+export function peerHubVersion(row: { ahub?: { runs?: unknown; version?: unknown }; ahubTools?: unknown }, daemon: string | undefined): { cell: string; differs: boolean; unknown?: boolean; detail?: string } {
   const runs = row.ahub?.runs, own = displayVersion(row.ahub?.version);
   const tools = Array.isArray(row.ahubTools) ? row.ahubTools.filter((v): v is string => typeof v === "string" && (v === "unreported" || !!displayVersion(v))) : [];
   const parts = [runs === "daemon" ? "daemon" : runs === "client" ? own ?? "unreported" : undefined, ...(tools.length ? [`tools ${tools.join(",")}`] : [])].filter((p): p is string => !!p);
   if (!parts.length) return { cell: "-", differs: false };
-  const loaded = [...(runs === "client" ? [own ?? "unreported"] : []), ...tools];
+  // An unreported version is unknown, never a difference: only a version someone reported can differ from the daemon's.
+  const loaded = [...(runs === "client" && own ? [own] : []), ...tools.filter(v => v !== "unreported")];
+  const unknown = runs === "client" && !own || tools.includes("unreported");
   const differs = !!daemon && loaded.some(v => v !== daemon);
   const detail = `${runs === "daemon" ? `runs inside the daemon (${daemon ?? "unknown"})` : runs === "client" ? `client ${own ?? "unreported"}` : "no client attached"}${tools.length ? `; tools connections ${tools.join(", ")}` : ""}`
-    + (differs ? `; differs from the daemon ${daemon}: update the global CLI and run ahub setup, then restart that agent's session to load it` : "");
-  return { cell: parts.join(" "), differs, detail };
+    + (differs ? `; differs from the daemon ${daemon}: update the global CLI and run ahub setup, then restart that agent's session to load it` : "")
+    + (unknown ? "; an unreported version is unknown (a client older than #1385 sends none)" : "");
+  return { cell: parts.join(" "), differs, unknown, detail };
 }

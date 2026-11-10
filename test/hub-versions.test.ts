@@ -97,6 +97,15 @@ test("the console marks what is older than the daemon and the peers that load an
   expect(stale.cell).toBe("0.35.0 tools 0.36.0");
   expect(stale.differs).toBe(true);
   expect(stale.detail).toContain("restart that agent's session");
+  // An unreported version is unknown: never counted, named or told to update (review of 79fa8077).
+  for (const row of [{ ahub: { runs: "client" } }, { ahub: { runs: "client", version: "unreported" } }, { ahub: { runs: "daemon", version: "0.36.0" }, ahubTools: ["unreported"] }]) {
+    const hub = peerHubVersion(row, "0.36.0");
+    expect(hub.differs, JSON.stringify(row)).toBe(false);
+    expect(hub.unknown).toBe(true);
+    expect(hub.detail).toContain("unknown");
+    expect(hub.detail).not.toContain("ahub setup");
+  }
+  expect(peerHubVersion({ ahub: { runs: "client" }, ahubTools: ["0.35.0"] }, "0.36.0").differs).toBe(true); // a reported older version still counts
 
   const s = initialConsoleState(true);
   s.versions = v;
@@ -107,4 +116,8 @@ test("the console marks what is older than the daemon and the peers that load an
   expect(text).toMatch(/PEER +STATE +LINK +AHUB/);
   expect(text).toMatch(/claude +idle +attached +0\.35\.0/);
   expect(text).toMatch(/codex +idle +attached +daemon/);
+  s.peers.kimi = { state: "idle", ahub: { runs: "client", version: "unreported" } };
+  const withUnknown = renderConsoleLines(s, 160, 30, Date.now()).map(line => line.map(cell => cell.text).join("")).join("\n");
+  expect(withUnknown).toContain("1 peer on another version: claude");
+  expect(withUnknown).toMatch(/kimi +idle +attached +unreported/);
 });
