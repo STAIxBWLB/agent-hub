@@ -87,10 +87,10 @@ const inputLines = (r: Rig) => readFileSync(join(r.dir, "input.jsonl"), "utf8").
 const answered = (r: Rig, n: number, id = "allow") => { r.settle.get(String(n))!(id); };
 
 test("the dual-output exact versions stay separate from the headless ACP contract", () => {
-  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0"]);
+  expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1", "0.27.0", "0.27.1"]);
   expect("line" in COMPAT["qwen-dual"]).toBe(false);
-  for (const version of ["0.26.1", "0.27.0"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(true);
-  for (const version of ["0.25.0", "0.26.9", "0.27.1", "0.28.0"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(false);
+  for (const version of ["0.26.1", "0.27.0", "0.27.1"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(true);
+  for (const version of ["0.25.0", "0.26.9", "0.27.2", "0.28.0"]) expect(assessVersion("qwen-dual", version, []).ok).toBe(false);
   expect(assessVersion("qwen", "0.26.0", []).ok).toBe(true);
   expect(assessVersion("qwen", "0.26.9", []).ok).toBe(true);
   expect(assessVersion("qwen", "0.27.0", []).ok).toBe(true);
@@ -872,15 +872,15 @@ test("the hub never signals or types into Qwen: stop leaves the process running 
   expect(inputLines(r).filter(line => !["submit", "confirmation_response"].includes(line.type))).toHaveLength(0);
 });
 
-test("a receipt-qualified 0.27.0 native session attaches and delivers through the driver", async () => {
-  const r = await attached({ fakeArgs: ["--fake-version", "0.27.0"] });
-  await r.peer.deliver(env("qualified 0.27.0"), "d1");
+for (const version of ["0.27.0", "0.27.1"]) test(`a receipt-qualified ${version} native session attaches and delivers through the driver`, async () => {
+  const r = await attached({ fakeArgs: ["--fake-version", version] });
+  await r.peer.deliver(env(`qualified ${version}`), "d1");
   await until(() => r.answers.length === 1);
   expect(r.peer.state).toBe("idle");
   expect(inputLines(r).filter(line => line.type === "submit")).toHaveLength(1);
 });
 
-for (const version of ["0.27.1", "0.28.0"]) test(`an unqualified ${version} TUI is refused at native session identity`, async () => {
+for (const version of ["0.27.2", "0.28.0"]) test(`an unqualified ${version} TUI is refused at native session identity`, async () => {
   const r = rig({}, { fakeArgs: ["--fake-version", version] });
   await r.peer.start(); r.launch();
   await until(() => r.notices.some(text => text.includes("not verified")));
