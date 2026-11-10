@@ -17,6 +17,13 @@ paths:
   - test/guidance-variants-lifecycle.test.ts
   - test/guidance-variants-privacy.test.ts
   - test/guidance-variants-recovery.test.ts
+  - src/cli/guidance.ts
+  - src/ui/guidance-view.ts
+  - src/ui/guidance-panel.ts
+  - test/guidance-views.test.ts
+  - test/guidance-control.test.ts
+  - test/guidance-console.test.ts
+  - test/guidance-pagination.test.ts
 ---
 
 # Immutable guidance variants
@@ -320,3 +327,112 @@ withdrawal, currentness/privacy narrowing, malformed stored rows, bounded SQL
 hydration and conditional recovery metadata. These are fixture contracts, not a
 native/live trial or a measured read-cost receipt; T3 and #1226 retain those
 separate obligations.
+
+
+## Public surfaces and editable-section diff (T3)
+
+The four operations are `guidance create`, `list`, `show` and `withdraw`, and
+`hub_guidance_create`, `hub_guidance_list`, `hub_guidance_show` and
+`hub_guidance_withdraw` on CLI/MCP. The producer console is read-only in T3:
+it agrees on list/show metadata and section diff, and directs mutations to the
+CLI/MCP. All surfaces use the same Tasks admission and closed public reply
+parsers. Creation takes a complete V1 record; the CLI reads an explicitly named
+JSON file of at most 32768 UTF-8 bytes. No surface reconstructs private baseline
+bytes from readback, rewrites an author or grants a proposal trust. Proposal
+generation, activation and actual handoff remain outside this surface.
+
+`guidance_views` advertises these operations separately from T2's retained-state
+`guidance_variants` feature. An older daemon or plugin keeps its old behavior;
+new callers refuse unsupported operations with upgrade/restart guidance. Every
+control request with a rid receives a reply. There is no protocol-version or
+schema-marker bump. Old task, role, private snapshot and T2 API records retain
+their existing meaning.
+
+### Selection and current binding
+
+Public selection is `{taskId, taskCreated, id}`, using the existing variant
+content id. Public experiment-id text is a label, never a selector: `withheld`
+never becomes an experiment key. After current task/actor/privacy admission,
+an additive task-scope/id index supports one exact lookup with LIMIT 2. Two
+matches are ambiguous and refuse; raw experiment identity is resolved only
+inside Tasks/Board. No new hashed experiment identity, unbounded scan or caller
+actor/authority flag is introduced. Existing explicit experiment selectors
+remain supported by the T2 library API.
+
+List/show replies carry `current: {taskId, taskCreated, flowRevision}` separately
+from the record's historical `flowRevision`. Withdrawal requires the current
+wrapper revision, not the old proposal revision. A historical proposal remains
+readable without becoming current or resurrecting a withdrawal. The server
+rechecks this binding and current actor/session/privacy at effects and after
+source-port reads. A displayed label or cursor grants no authority.
+
+### List wire bounds
+
+A page contains at most 32 public metadata records and at most 262144 UTF-8 bytes
+of its complete guidance-page JSON payload. Transport wrappers and the shared
+human rendering remain separate surface framing. SQL uses the task-scope/id index, `id > after` and
+LIMIT 33. The extra row is an overflow sentinel, not a truncated complete page;
+raw stored JSON is byte-bounded before hydration. Duplicate variant ids within
+the task scope refuse as ambiguous rather than being lost at a page boundary.
+There is no experiment-count cap, OFFSET scan or whole guidance-history hydration.
+Existing owning-task visibility and source-evidence context reads remain in use.
+
+The optional cursor is at most 512 ASCII bytes. Its closed payload carries a
+version, last public variant content id and HMAC signature. The signature binds
+the host project namespace, authenticated actor, task epoch, current flow and
+last id using the existing host-only cursor key. Raw experiment ids and global
+row ids never enter the token. A changed scope, task flow or signing generation
+requires refresh without the cursor. Pages are bounded current reads, not a
+frozen snapshot across concurrent additions; refresh to include newly inserted
+earlier ids. Privacy is applied before any identifier or count is exposed.
+
+### Separate section-diff reply
+
+`Tasks.guidanceVariantDiff` returns one public metadata record, its current
+binding, and the three editable section names with baseline/candidate text
+fields. It does not widen the T2 metadata-only read or list projection.
+Only Scope, Deliverables and Evidence bodies may cross this boundary. Each
+whole field first passes current pure nameable/secret/lexical policy, then
+`sanitize()`. A refusing, unknown or oversized field is literal `withheld`;
+it does not hide safe metadata or change applicability. There is no per-line
+screen, partial truncation, model screen or filesystem/address resolution.
+Each section field remains within the existing 8192-byte role ceiling.
+
+The same raw-first field guard also covers inherited T2 reads and create/withdraw
+receipt labels: nameable and secret checks examine the original string before
+JSON escaping, then the existing pure lexical policy runs. A pattern spanning
+an actual newline therefore withholds the whole field instead of disappearing
+behind JSON escape characters. Safe metadata and applicability remain available.
+
+The protected section names Not in scope, Hub use and Review duties are shown
+as unchanged by T1 construction, with no body. Raw headers, attribution,
+body prefix, protected bodies, full snapshots and opaque evidence addresses
+never enter a public reply. Rendered diff text is untrusted advisory presentation,
+not exact private bytes for a new record or proof of testing/model consumption.
+
+### Surface authority and side effects
+
+CLI create/withdraw keep the authenticated peer and refuse delegated
+`--live-test` person promotion. MCP schemas are publication only; Tasks parses
+closed input again. Private/review input, current task PII, read-only mutations,
+recovery and shutdown cannot be bypassed by a peer field or an old connection.
+All four guidance tools exclude arguments and results from capture and do not
+count as owner task progress. Reads start no probe, model, delivery or memory
+write. An unknown write or malformed receipt is unconfirmed, never permission
+for automatic retry.
+
+The producer console has its own Guidance panel and dedicated pinned-project
+manager port, separate from the dashboard action whitelist and candidate inbox.
+Its dedicated manager port permits list/show only. No console mutation,
+confirmation, person-metadata adaptation or snapshot token is introduced;
+existing question/person/receipt helpers remain unchanged. A future console
+withdrawal requires its own contract. Fixed CLI instructions do not execute
+anything. Existing dashboard panels and their behavior stay available. The
+panel renders the provider's shared lines as text, not HTML, and late responses
+cannot replace a newly selected project/task view.
+
+Source fixtures compare all three ports, field withholding, immutable legacy
+records, SQL/keyset/reply bounds, source callbacks, actor/session/private guards,
+old-feature refusal and capture/progress exclusion. The dogfood row records
+actual source-only variant size/read cost after measurement; native/account
+coverage and actual confined handoff remain separately unverified.

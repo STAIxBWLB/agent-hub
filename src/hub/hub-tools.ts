@@ -1,3 +1,6 @@
+import { EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
+import { EXECUTION_LINK_LIMITS } from "./execution-links.ts";
+import { GUIDANCE_ROLE_MAX_BYTES, GUIDANCE_RECORD_MAX_BYTES, GUIDANCE_RATIONALE_MAX_BYTES, GUIDANCE_EVIDENCE_MAX_REFS, GUIDANCE_CURSOR_MAX_BYTES, GUIDANCE_HASH_HEX_LENGTH } from "./guidance-variants.ts";
 import { redFirstSchema } from "./test-integrity.ts";
 import { SDLC_STAGES } from "./sdlc.ts";
 import { projectProfile, profileData, PROFILE_CLASS_NAMES, type ProfileName, type ProfileSelection } from "./profiles.ts";
@@ -8,7 +11,7 @@ import { NOTE_KINDS } from "./envelope.ts";
 
 /** Restricted to the fixed current-child tools server, never an ordinary peer tool. */
 /** The fixed MCP surface of a current owned implementer child; independent of broader project roles. */
-export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_lineage_show", "hub_lineage_link"]);
+export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_lineage_show", "hub_lineage_link", "hub_guidance_create", "hub_guidance_list", "hub_guidance_show", "hub_guidance_withdraw"]);
 
 export const IMPLEMENTER_PERMISSION_TOOL = {
   name: "hub_permission_request",
@@ -137,6 +140,20 @@ const executionReference = { type: "object", properties: { v: { type: "integer",
   id: { type: "string", minLength: 1, maxLength: 256 }, revision: { type: "string", minLength: 1, maxLength: 128 }, sha256: { type: "string", pattern: "^[a-f0-9]{64}$" } }, required: ["v", "tool", "projectKey", "kind", "id"], additionalProperties: false };
 const lineageShow = { taskId: id, attemptId: str, root: executionReference, task: { type: "object", properties: { id, created: { type: "integer", minimum: 0 } }, required: ["id", "created"], additionalProperties: false },
   cursor: { type: "string", minLength: 1, maxLength: 512 }, nodes: { type: "integer", minimum: 1, maximum: 100 }, edges: { type: "integer", minimum: 1, maximum: 200 }, bytes: { type: "integer", minimum: 4096, maximum: 262144 } };
+/** Guidance arguments/results can contain private admitted snapshots; never capture or credit them as task progress. */
+export const GUIDANCE_TOOL_NAMES: ReadonlySet<string> = new Set(["hub_guidance_create", "hub_guidance_list", "hub_guidance_show", "hub_guidance_withdraw"]);
+const guidanceEpoch = { taskId: id, taskCreated: { type: "integer", minimum: 0 } };
+const guidanceContentId = { type: "string", minLength: GUIDANCE_HASH_HEX_LENGTH, maxLength: GUIDANCE_HASH_HEX_LENGTH, pattern: "^[a-f0-9]{64}$" };
+const guidanceText = { type: "string", minLength: 1, maxLength: GUIDANCE_ROLE_MAX_BYTES };
+const guidanceVariant = { type: "object", additionalProperties: false, required: ["v", "id", "projectKey", "experimentId", "taskId", "taskCreated", "flowRevision", "baseline", "candidate", "author", "rationale", "evidenceRefs"], properties: {
+  v: { type: "integer", enum: [1] }, id: guidanceContentId, projectKey: { type: "string", minLength: 1, maxLength: EXECUTION_REFERENCE_LIMITS.projectKey }, experimentId: { type: "string", minLength: 1, maxLength: EXECUTION_REFERENCE_LIMITS.id }, ...guidanceEpoch,
+  flowRevision: { type: "integer", minimum: 0 }, author: { type: "string", minLength: 1, maxLength: EXECUTION_LINK_LIMITS.actor },
+  baseline: { type: "object", additionalProperties: false, required: ["roleId", "layer", "sha256", "bytes"], properties: { roleId: str, layer: { type: "string", enum: ["shipped", "project"] }, sha256: guidanceContentId, bytes: guidanceText } },
+  candidate: { type: "object", additionalProperties: false, required: ["sha256", "bytes"], properties: { sha256: guidanceContentId, bytes: guidanceText } },
+  rationale: { type: "object", additionalProperties: false, required: ["problemHypothesis", "expectedObservableDifference"], properties: { problemHypothesis: { type: "string", maxLength: GUIDANCE_RATIONALE_MAX_BYTES }, expectedObservableDifference: { type: "string", maxLength: GUIDANCE_RATIONALE_MAX_BYTES } } },
+  evidenceRefs: { type: "array", maxItems: GUIDANCE_EVIDENCE_MAX_REFS, items: executionReference },
+} };
+
 
 export const BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
 /** #445 C1: what a peer lists and publishes. Their text is another agent's words, so neither call is captured to memory. */
@@ -145,6 +162,10 @@ export const CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_p
 export const TASK_TOOLS: HubTool[] = [
   tool("hub_lineage_show", "Read bounded execution lineage from exactly one taskId, attemptId or root with optional owning task identity. Explicit recorded relationships only; missing native observations remain unknown. Hidden and absent roots share unavailable. Never probes, fetches, executes or writes memory. Keep cursor and limits bound to the same query.", lineageShow),
   tool("hub_lineage_link", "Attach one declared external execution reference through your current task role. Bind taskId, taskCreated and flowRevision copied from the current task view; optional from must already belong to the same admitted neighborhood. Duplicate declarations are idempotent. This inert metadata is not runner attestation, review approval or task progress. Private/review-observer context and recovery refuse.", { taskId: id, taskCreated: { type: "integer", minimum: 0 }, flowRevision: { type: "integer", minimum: 0 }, reference: executionReference, from: executionReference }, ["taskId", "taskCreated", "flowRevision", "reference"]),
+  tool("hub_guidance_create", `Record a complete immutable GuidanceVariantV1 proposal (canonical JSON at most ${GUIDANCE_RECORD_MAX_BYTES} bytes) through your current task authority. Author must match your authenticated actor; never add authority/tested flags. Private snapshots stay local. This creates no role, activation or probe. Inspect list after an unconfirmed result; never retry automatically.`, { variant: guidanceVariant }, ["variant"]),
+  tool("hub_guidance_list", "Read one bounded task-epoch page of guidance metadata. Evidence is declared, not handoff proof. Reuse the signed cursor with the same task scope; refresh after a changed flow. Missing/denied share unavailable. Reads start no model, probe or memory write.", { ...guidanceEpoch, cursor: { type: "string", maxLength: GUIDANCE_CURSOR_MAX_BYTES } }, ["taskId", "taskCreated"]),
+  tool("hub_guidance_show", "Read one guidance variant's metadata and screened editable-section diff by task epoch and existing variant content id. Experiment labels may be withheld and are never selectors. Raw protected bodies and full snapshots stay private. Current binding and historical declaration revision are distinct.", { ...guidanceEpoch, id: guidanceContentId }, ["taskId", "taskCreated", "id"]),
+  tool("hub_guidance_withdraw", "Record one-way withdrawal intent for your task's existing variant id. Copy the CURRENT wrapper flowRevision from guidance list/show, not the historical record revision. History is retained; a replay never resurrects it. Inspect list after an unconfirmed outcome; never retry automatically.", { ...guidanceEpoch, id: guidanceContentId, flowRevision: { type: "integer", minimum: 0 } }, ["taskId", "taskCreated", "id", "flowRevision"]),
   tool("hub_task_spec", "Read complete assigned GitHub issue contracts through the bounded hub boundary. Owner/reviewer only; no repository or URL input. Refuses withheld or oversized specs.", { id }, ["id"]),
   tool("hub_check_start", "Run an exact-head isolated Linux check for your in-progress task. Trusted opt-in runner only; no host shell or credentials. Tests require one to 32 test/*.test.ts paths. Receipt is Linux evidence.", { id, check: { type: "string", enum: ["test", "typecheck"] }, files: { type: "array", minItems: 1, maxItems: 32, items: str } }, ["id", "check"]),
   tool("hub_check_result", "Read your current task-bound isolated check receipt. Stale ownership/generation refuses; output is policy screened.", { run: str }, ["run"]),
@@ -293,7 +314,7 @@ export function configuredToolContext(status: unknown, peer: string): ProjectToo
   return { startPeers, readOnly: readOnlyPeers.includes(peer) };
 }
 
-const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
 /** Publication restricts exposure only; server-side authority remains mandatory for every call. */
 export function projectToolList<T extends { name: string }>(tools: T[], readOnly = false): T[] {
   return readOnly ? tools.filter(tool => READ_ONLY_PROJECT_TOOLS.includes(tool.name)) : tools;

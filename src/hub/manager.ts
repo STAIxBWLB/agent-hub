@@ -1,3 +1,4 @@
+import { parseGuidanceListQuery, parseGuidanceIdQuery, parseGuidancePageResult, parseGuidanceDiffResult } from "./guidance-variants.ts";
 import type { ActionMeta, InboxAnswers } from "@staix/agent-console/contract";
 import { assertExecutableRuntimeRoot } from "./project-runtime-state.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
@@ -238,7 +239,25 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch (error) { return { ok: false, error: safeError(error) }; }
     finally { client?.close(); }
   };
-  return { list, act, answer, receipt, consoleControl, lineage };
+  /** Producer-only read port; never forwards an action, actor or person-metadata claim. */
+  const guidance = async (target: { projectId: unknown; instanceId: unknown }, op: "list" | "show", input: unknown) => {
+    if (options.stopping?.()) return { ok: false, error: "guidance read is unavailable while the manager stops; reconnect before retrying" };
+    if (op !== "list" && op !== "show") return { ok: false, error: "guidance console is read-only; use the authorized CLI/MCP for mutations" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project || typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "select a running project and current instance before reading guidance" };
+    let query; try { query = op === "list" ? parseGuidanceListQuery(input) : parseGuidanceIdQuery(input); }
+    catch { return { ok: false, error: "invalid guidance query; select the task epoch and existing variant id or cursor" }; }
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      if (!client.features.includes("guidance_views")) return { ok: false, error: "running hub lacks guidance_views; upgrade and restart the hub before reading guidance" };
+      const result = await client.request({ t: op === "list" ? "guidance_list" : "guidance_show", ...query }, options.forwardTimeoutMs?.(`guidance_${op}`, 10_000) ?? 10_000);
+      if (result.ok !== true) return { ok: false, error: "guidance read is unavailable; refresh the task scope and current daemon before retrying" };
+      return { ok: true, guidance: op === "list" ? parseGuidancePageResult(result.guidance, query) : parseGuidanceDiffResult(result.guidance, query) };
+    } catch { return { ok: false, error: "guidance read is unavailable; refresh the task scope or upgrade the hub before retrying" }; }
+    finally { client?.close(); }
+  };
+  return { list, act, answer, receipt, consoleControl, lineage, guidance };
 }
 
 export async function startManager(options: ManagerOptions = {}): Promise<ManagerHandle> {

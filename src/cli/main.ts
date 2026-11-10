@@ -1239,6 +1239,46 @@ const commands: Record<string, () => Promise<void> | void> = {
     return entry.execute(context);
   }])),
 
+  guidance: async () => {
+    const { parseGuidanceCommand, validateGuidancePageReply, validateGuidanceDiffReply, validateGuidanceReceipt, renderGuidance, renderGuidanceReceipt } = await import("./guidance.ts");
+    const { parseGuidanceVariantV1, GUIDANCE_RECORD_MAX_BYTES } = await import("../hub/guidance-variants.ts");
+    let command; try { command = parseGuidanceCommand(args); } catch (error) { return fail((error as Error).message); }
+    if (liveTest && (command.op === "create" || command.op === "withdraw")) return fail("live-test cannot write guidance declarations as the person; use the current task actor without --live-test");
+    let variant: ReturnType<typeof parseGuidanceVariantV1> | undefined;
+    if (command.op === "create") {
+      try {
+        const fd = openSync(resolve(invokedFrom, command.file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          if (!fstatSync(fd).isFile()) return fail("the guidance file must be a bounded regular JSON file");
+          const bytes = Buffer.alloc(GUIDANCE_RECORD_MAX_BYTES + 1); let got = 0;
+          while (got < bytes.length) { const read = readSync(fd, bytes, got, bytes.length - got, null); if (!read) break; got += read; }
+          if (got > GUIDANCE_RECORD_MAX_BYTES) return fail("the guidance file exceeds the 32 KiB input bound");
+          variant = parseGuidanceVariantV1(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, got))));
+        } finally { closeSync(fd); }
+      } catch { return fail("cannot read a valid bounded GuidanceVariantV1 file; check its shape, content id and protected role bytes"); }
+    }
+    const hub = await connect();
+    try {
+      if (!hub.features.includes("guidance_views")) return fail("running hub lacks guidance_views; upgrade and restart the hub and refresh the client plugin, then retry ahub guidance");
+      const { op, json, ...fields } = command;
+      const message = op === "create" ? { variant } : fields;
+      const result = await hub.request({ t: `guidance_${op}`, ...message });
+      if (result.ok !== true) return fail(`${terminalText(result.error ?? "guidance request is unconfirmed").replace(/[\r\n]+/g, " ").slice(0, 512)}; inspect ahub guidance list for the task before explicitly retrying a write`, result.refusalAudited === true, result.authorityRefused);
+      const options = { json };
+      if (command.op === "create" || command.op === "withdraw") {
+        let receipt;
+        try { receipt = validateGuidanceReceipt(result.receipt, command.op === "create" ? { id: variant!.id, taskId: variant!.taskId } : { id: command.id, taskId: command.taskId, status: "withdrawn" }); }
+        catch (error) { return fail((error as Error).message); }
+        if (options.json) console.log(JSON.stringify(receipt, null, 2)); else console.log(renderGuidanceReceipt(receipt).join("\n"));
+      } else {
+        let page;
+        try { page = command.op === "list" ? validateGuidancePageReply(result.guidance, command) : validateGuidanceDiffReply(result.guidance, command); }
+        catch { return fail("guidance reply is unavailable or malformed; refresh the task scope and upgrade the hub/client before retrying"); }
+        if (options.json) console.log(JSON.stringify(page, null, 2)); else console.log(renderGuidance(page).join("\n"));
+      }
+    } finally { hub.close(); }
+  },
+
   lineage: async () => {
     const { parseLineageCommand, renderExecutionLineage, validateLineageReply, validateLineageLink } = await import("./lineage.ts");
     let command;

@@ -10335,8 +10335,9 @@ var init_roles = __esm(() => {
 });
 
 // src/hub/guidance-variants.ts
-var GUIDANCE_ROLE_MAX_BYTES = 8192, GUIDANCE_RATIONALE_MAX_BYTES = 2000, GUIDANCE_RECORD_MAX_BYTES = 32768, GUIDANCE_EVIDENCE_MAX_REFS = 16, GUIDANCE_EXPERIMENT_MAX_VARIANTS = 16, GUIDANCE_VARIANT_LIMITS, EDITABLE;
+var GUIDANCE_ROLE_MAX_BYTES = 8192, GUIDANCE_RATIONALE_MAX_BYTES = 2000, GUIDANCE_RECORD_MAX_BYTES = 32768, GUIDANCE_EVIDENCE_MAX_REFS = 16, GUIDANCE_EXPERIMENT_MAX_VARIANTS = 16, GUIDANCE_HASH_HEX_LENGTH = 64, GUIDANCE_VARIANT_LIMITS, EDITABLE, GUIDANCE_CURSOR_MAX_BYTES = 512;
 var init_guidance_variants = __esm(() => {
+  init_envelope();
   init_execution_reference();
   init_execution_links();
   init_roles();
@@ -13095,7 +13096,7 @@ var init_research_campaign = __esm(() => {
 });
 
 // src/hub/board.ts
-var HOST_MERGE_ADOPTION, HOST_SPEC_ACCEPTANCE_CARRY, EXECUTION_REFERENCE_SELECT, CLASSES2, SPEC_ACCEPTANCE_FIELD_BYTES, SPEC_ACCEPTANCE_TOTAL_BYTES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
+var GUIDANCE_VARIANT_SELECT, HOST_MERGE_ADOPTION, HOST_SPEC_ACCEPTANCE_CARRY, EXECUTION_REFERENCE_SELECT, CLASSES2, SPEC_ACCEPTANCE_FIELD_BYTES, SPEC_ACCEPTANCE_TOTAL_BYTES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
   init_guidance_variants();
   init_execution_links();
@@ -13114,6 +13115,12 @@ var init_board = __esm(() => {
   init_review_findings();
   init_deliverables();
   init_research_campaign();
+  GUIDANCE_VARIANT_SELECT = `SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN id END AS id,CASE WHEN typeof(body)='text' AND length(CAST(body AS BLOB))<=? THEN body END AS body,
+      CASE WHEN typeof(body_sha256)='text' AND length(CAST(body_sha256 AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN body_sha256 END AS body_sha256,
+      CASE WHEN typeof(created_by)='text' AND length(CAST(created_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN created_by END AS created_by,CASE WHEN typeof(created_at)='integer' THEN created_at END AS created_at,
+      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN withdrawn_by END AS withdrawn_by,CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN withdrawn_at END AS withdrawn_at,
+      CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN 1 ELSE 0 END AS valid_withdrawn_at,
+      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN 1 ELSE 0 END AS valid_withdrawn_by`;
   HOST_MERGE_ADOPTION = Symbol("host merge adoption");
   HOST_SPEC_ACCEPTANCE_CARRY = Symbol("host spec acceptance carry");
   EXECUTION_REFERENCE_SELECT = `SELECT
@@ -15598,15 +15605,18 @@ var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_
   name,
   description,
   inputSchema: { type: "object", properties: name === "hub_review" || name === "hub_task_propose" ? { ...properties, request_id: toolWriteRequestId } : properties, required, additionalProperties: false }
-}), STUDY_TOOLS, EVIDENCE_RECORD_TOOL, HANDOFF_TOOLS, LINEAGE_TOOL_NAMES, executionReference, lineageShow, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, ASK_TOOL, QUESTION_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
+}), STUDY_TOOLS, EVIDENCE_RECORD_TOOL, HANDOFF_TOOLS, LINEAGE_TOOL_NAMES, executionReference, lineageShow, GUIDANCE_TOOL_NAMES, guidanceEpoch, guidanceContentId, guidanceText, guidanceVariant, BOUNDED_TASK_TOOLS, CAPABILITY_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, SESSION_TITLE_TOOL, ASK_TOOL, QUESTION_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
+  init_execution_reference();
+  init_execution_links();
+  init_guidance_variants();
   init_test_integrity();
   init_sdlc();
   init_profiles();
   init_roles();
   init_registry();
   init_envelope();
-  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_lineage_show", "hub_lineage_link"]);
+  IMPLEMENTER_HUB_TOOL_NAMES = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_visual", "hub_visual_show", "hub_inbox", "hub_permission_request", "hub_study_show", "hub_experiment_show", "hub_experiment_record", "hub_study_handoff", "hub_specs", "hub_delivery_resolve", "hub_evidence_record", "hub_lineage_show", "hub_lineage_link", "hub_guidance_create", "hub_guidance_list", "hub_guidance_show", "hub_guidance_withdraw"]);
   IMPLEMENTER_PERMISSION_TOOL = {
     name: "hub_permission_request",
     description: "Native permission prompt for this current owned child. The person allows once or denies; failure is deny.",
@@ -15744,11 +15754,32 @@ var init_hub_tools = __esm(() => {
     edges: { type: "integer", minimum: 1, maximum: 200 },
     bytes: { type: "integer", minimum: 4096, maximum: 262144 }
   };
+  GUIDANCE_TOOL_NAMES = new Set(["hub_guidance_create", "hub_guidance_list", "hub_guidance_show", "hub_guidance_withdraw"]);
+  guidanceEpoch = { taskId: id2, taskCreated: { type: "integer", minimum: 0 } };
+  guidanceContentId = { type: "string", minLength: GUIDANCE_HASH_HEX_LENGTH, maxLength: GUIDANCE_HASH_HEX_LENGTH, pattern: "^[a-f0-9]{64}$" };
+  guidanceText = { type: "string", minLength: 1, maxLength: GUIDANCE_ROLE_MAX_BYTES };
+  guidanceVariant = { type: "object", additionalProperties: false, required: ["v", "id", "projectKey", "experimentId", "taskId", "taskCreated", "flowRevision", "baseline", "candidate", "author", "rationale", "evidenceRefs"], properties: {
+    v: { type: "integer", enum: [1] },
+    id: guidanceContentId,
+    projectKey: { type: "string", minLength: 1, maxLength: EXECUTION_REFERENCE_LIMITS.projectKey },
+    experimentId: { type: "string", minLength: 1, maxLength: EXECUTION_REFERENCE_LIMITS.id },
+    ...guidanceEpoch,
+    flowRevision: { type: "integer", minimum: 0 },
+    author: { type: "string", minLength: 1, maxLength: EXECUTION_LINK_LIMITS.actor },
+    baseline: { type: "object", additionalProperties: false, required: ["roleId", "layer", "sha256", "bytes"], properties: { roleId: str2, layer: { type: "string", enum: ["shipped", "project"] }, sha256: guidanceContentId, bytes: guidanceText } },
+    candidate: { type: "object", additionalProperties: false, required: ["sha256", "bytes"], properties: { sha256: guidanceContentId, bytes: guidanceText } },
+    rationale: { type: "object", additionalProperties: false, required: ["problemHypothesis", "expectedObservableDifference"], properties: { problemHypothesis: { type: "string", maxLength: GUIDANCE_RATIONALE_MAX_BYTES }, expectedObservableDifference: { type: "string", maxLength: GUIDANCE_RATIONALE_MAX_BYTES } } },
+    evidenceRefs: { type: "array", maxItems: GUIDANCE_EVIDENCE_MAX_REFS, items: executionReference }
+  } };
   BOUNDED_TASK_TOOLS = new Set(["hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]);
   CAPABILITY_TOOLS = new Set(["hub_capabilities", "hub_capabilities_publish", "hub_invoke"]);
   TASK_TOOLS = [
     tool2("hub_lineage_show", "Read bounded execution lineage from exactly one taskId, attemptId or root with optional owning task identity. Explicit recorded relationships only; missing native observations remain unknown. Hidden and absent roots share unavailable. Never probes, fetches, executes or writes memory. Keep cursor and limits bound to the same query.", lineageShow),
     tool2("hub_lineage_link", "Attach one declared external execution reference through your current task role. Bind taskId, taskCreated and flowRevision copied from the current task view; optional from must already belong to the same admitted neighborhood. Duplicate declarations are idempotent. This inert metadata is not runner attestation, review approval or task progress. Private/review-observer context and recovery refuse.", { taskId: id2, taskCreated: { type: "integer", minimum: 0 }, flowRevision: { type: "integer", minimum: 0 }, reference: executionReference, from: executionReference }, ["taskId", "taskCreated", "flowRevision", "reference"]),
+    tool2("hub_guidance_create", `Record a complete immutable GuidanceVariantV1 proposal (canonical JSON at most ${GUIDANCE_RECORD_MAX_BYTES} bytes) through your current task authority. Author must match your authenticated actor; never add authority/tested flags. Private snapshots stay local. This creates no role, activation or probe. Inspect list after an unconfirmed result; never retry automatically.`, { variant: guidanceVariant }, ["variant"]),
+    tool2("hub_guidance_list", "Read one bounded task-epoch page of guidance metadata. Evidence is declared, not handoff proof. Reuse the signed cursor with the same task scope; refresh after a changed flow. Missing/denied share unavailable. Reads start no model, probe or memory write.", { ...guidanceEpoch, cursor: { type: "string", maxLength: GUIDANCE_CURSOR_MAX_BYTES } }, ["taskId", "taskCreated"]),
+    tool2("hub_guidance_show", "Read one guidance variant's metadata and screened editable-section diff by task epoch and existing variant content id. Experiment labels may be withheld and are never selectors. Raw protected bodies and full snapshots stay private. Current binding and historical declaration revision are distinct.", { ...guidanceEpoch, id: guidanceContentId }, ["taskId", "taskCreated", "id"]),
+    tool2("hub_guidance_withdraw", "Record one-way withdrawal intent for your task's existing variant id. Copy the CURRENT wrapper flowRevision from guidance list/show, not the historical record revision. History is retained; a replay never resurrects it. Inspect list after an unconfirmed outcome; never retry automatically.", { ...guidanceEpoch, id: guidanceContentId, flowRevision: { type: "integer", minimum: 0 } }, ["taskId", "taskCreated", "id", "flowRevision"]),
     tool2("hub_task_spec", "Read complete assigned GitHub issue contracts through the bounded hub boundary. Owner/reviewer only; no repository or URL input. Refuses withheld or oversized specs.", { id: id2 }, ["id"]),
     tool2("hub_check_start", "Run an exact-head isolated Linux check for your in-progress task. Trusted opt-in runner only; no host shell or credentials. Tests require one to 32 test/*.test.ts paths. Receipt is Linux evidence.", { id: id2, check: { type: "string", enum: ["test", "typecheck"] }, files: { type: "array", minItems: 1, maxItems: 32, items: str2 } }, ["id", "check"]),
     tool2("hub_check_result", "Read your current task-bound isolated check receipt. Stale ownership/generation refuses; output is policy screened.", { run: str2 }, ["run"]),
@@ -15846,7 +15877,7 @@ var init_hub_tools = __esm(() => {
     tool2("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
-  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
+  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_guidance_list", "hub_guidance_show", "hub_visual_show", "hub_specs", "hub_capabilities", "hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"]);
   ROLE_TEXT = {
     conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
     planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",

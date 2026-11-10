@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { sanitize } from "./envelope.ts";
 import { types } from "node:util";
 import { executionReferenceKey, executionText, parseExecutionReference, EXECUTION_REFERENCE_LIMITS, type ExecutionReferenceV1 } from "./execution-reference.ts";
 import { executionLinkActor, executionLinkInteger } from "./execution-links.ts";
@@ -261,4 +262,137 @@ export function parseGuidanceStoredRecord(value: unknown): GuidanceStoredRecord 
     withdrawn = Object.freeze({ by: item.by, at: item.at });
   }
   return Object.freeze({ variant, createdBy: fields.createdBy, createdAt: fields.createdAt, ...(withdrawn ? { withdrawn } : {}) });
+}
+
+
+/** Published T3 reply and cursor shapes, separate from private record bounds. */
+export const GUIDANCE_PAGE_MAX_RECORDS = 32;
+export const GUIDANCE_REPLY_MAX_BYTES = 262144;
+export const GUIDANCE_CURSOR_MAX_BYTES = 512;
+export type GuidancePublicRecord = Extract<GuidanceReadResult, { state: "available" }>["records"][number];
+export interface GuidanceCurrent { readonly taskId: number; readonly taskCreated: number; readonly flowRevision: number }
+export type GuidancePageResult = { state: "unavailable" } | { state: "available"; current: GuidanceCurrent; records: GuidancePublicRecord[]; truncated: boolean; cursor?: string };
+export type GuidanceEditableSection = "Scope" | "Deliverables" | "Evidence";
+export interface GuidanceSectionDiff { readonly section: GuidanceEditableSection; readonly before: string; readonly after: string }
+export type GuidanceDiffResult = { state: "unavailable" } | { state: "available"; current: GuidanceCurrent; record: GuidancePublicRecord;
+  sections: readonly GuidanceSectionDiff[]; protectedSections: readonly string[] };
+const EDITABLE_NAMES: readonly GuidanceEditableSection[] = ["Scope", "Deliverables", "Evidence"];
+const PROTECTED_NAMES = ["Not in scope", "Hub use", "Review duties"] as const;
+export function guidanceVariantSectionDiff(value: unknown, allowed: (text: string) => boolean): readonly GuidanceSectionDiff[] {
+  const variant = parseGuidanceVariantV1(value), original = parseRoleDocument(variant.baseline.bytes, variant.baseline.roleId, variant.baseline.layer);
+  const candidate = parseRoleDocument(variant.candidate.bytes, variant.baseline.roleId, variant.baseline.layer);
+  const field = (text: string) => {
+    try { if (Buffer.byteLength(text) <= GUIDANCE_ROLE_MAX_BYTES && allowed(text)) {
+      const rendered = sanitize(text); if (Buffer.byteLength(rendered) <= GUIDANCE_ROLE_MAX_BYTES) return rendered;
+    } } catch { /* Unknown policy withholds one whole field. */ }
+    return "withheld";
+  };
+  return Object.freeze(original.sections.flatMap((section, index) => EDITABLE.has(section.name)
+    ? [Object.freeze({ section: section.name as GuidanceEditableSection, before: field(section.contentRaw), after: field(candidate.sections[index]!.contentRaw) })] : []));
+}
+export const guidanceProtectedSectionNames = (): readonly string[] => Object.freeze([...PROTECTED_NAMES]);
+function currentBinding(value: unknown): GuidanceCurrent {
+  const fields = object(value, ["taskId", "taskCreated", "flowRevision"]);
+  if (!executionLinkInteger(fields.taskId, 1) || !executionLinkInteger(fields.taskCreated) || !executionLinkInteger(fields.flowRevision)) return invalid();
+  return Object.freeze({ taskId: fields.taskId, taskCreated: fields.taskCreated, flowRevision: fields.flowRevision });
+}
+function publicText(value: unknown, maximum: number): string {
+  const text = boundedText(value, maximum);
+  if (!executionText(text.replaceAll("\n", "").replaceAll("\t", ""), maximum)) return invalid();
+  return text;
+}
+export function parseGuidancePublicRecord(value: unknown): GuidancePublicRecord {
+  const f = object(value, ["id", "experimentId", "taskId", "taskCreated", "flowRevision", "roleId", "layer", "baselineSha256", "candidateSha256", "changedSections", "bytes", "author", "status", "applicable", "rationale", "evidence"]);
+  const current = currentBinding({ taskId: f.taskId, taskCreated: f.taskCreated, flowRevision: f.flowRevision });
+  if (!executionText(f.roleId, EXECUTION_REFERENCE_LIMITS.id) || !/^[a-z][a-z0-9-]{0,47}$/.test(f.roleId) || !actor(f.author)
+    || !["shipped", "project"].includes(f.layer as string) || !["declared", "withdrawn"].includes(f.status as string)
+    || typeof f.applicable !== "boolean" || f.status === "withdrawn" && f.applicable) return invalid();
+  const changed = array(f.changedSections, EDITABLE_NAMES.length);
+  if (changed.some(name => !EDITABLE_NAMES.includes(name as GuidanceEditableSection)) || new Set(changed).size !== changed.length) return invalid();
+  const size = object(f.bytes, ["baseline", "candidate", "record"]);
+  if (!executionLinkInteger(size.baseline, 1) || size.baseline > GUIDANCE_ROLE_MAX_BYTES || !executionLinkInteger(size.candidate, 1)
+    || size.candidate > GUIDANCE_ROLE_MAX_BYTES || !executionLinkInteger(size.record, 1) || size.record > GUIDANCE_RECORD_MAX_BYTES) return invalid();
+  const why = object(f.rationale, ["problemHypothesis", "expectedObservableDifference"]);
+  const evidence = array(f.evidence, GUIDANCE_EVIDENCE_MAX_REFS).map((item): { key: string; status: "declared" | "unavailable" } => {
+    const entry = object(item, ["key", "status"]);
+    if (entry.status !== "declared" && entry.status !== "unavailable") return invalid();
+    return { key: hash(entry.key), status: entry.status };
+  });
+  if (new Set(evidence.map(entry => entry.key)).size !== evidence.length) return invalid();
+  return { id: hash(f.id), experimentId: identity(f.experimentId), ...current, roleId: f.roleId, layer: f.layer as CatalogRole["layer"],
+    baselineSha256: hash(f.baselineSha256), candidateSha256: hash(f.candidateSha256), changedSections: changed as GuidanceEditableSection[],
+    bytes: { baseline: size.baseline, candidate: size.candidate, record: size.record }, author: f.author,
+    status: f.status as "declared" | "withdrawn", applicable: f.applicable,
+    rationale: { problemHypothesis: publicText(why.problemHypothesis, GUIDANCE_RATIONALE_MAX_BYTES), expectedObservableDifference: publicText(why.expectedObservableDifference, GUIDANCE_RATIONALE_MAX_BYTES) }, evidence };
+}
+function replyBytes<T>(value: T): T { const text = JSON.stringify(value); if (typeof text !== "string" || Buffer.byteLength(text) > GUIDANCE_REPLY_MAX_BYTES) return invalid(); return value; }
+function inCurrent(record: GuidancePublicRecord, current: GuidanceCurrent): void {
+  if (record.taskId !== current.taskId || record.taskCreated !== current.taskCreated || record.applicable && record.flowRevision !== current.flowRevision) return invalid();
+}
+function unavailable(fields: Record<string, unknown>): { state: "unavailable" } | undefined {
+  if (fields.state !== "unavailable") return undefined;
+  if (Object.keys(fields).length !== 1) return invalid();
+  return { state: "unavailable" };
+}
+export function parseGuidancePageResult(value: unknown, expected?: Pick<GuidanceCurrent, "taskId" | "taskCreated">): GuidancePageResult {
+  const f = object(value, ["state", "current", "records", "truncated", "cursor"]), hidden = unavailable(f); if (hidden) return hidden;
+  if (f.state !== "available" || typeof f.truncated !== "boolean") return invalid();
+  const current = currentBinding(f.current), records = array(f.records, GUIDANCE_PAGE_MAX_RECORDS).map(parseGuidancePublicRecord);
+  if (expected && (current.taskId !== expected.taskId || current.taskCreated !== expected.taskCreated)) return invalid();
+  for (const record of records) inCurrent(record, current);
+  if (new Set(records.map(record => record.id)).size !== records.length) return invalid();
+  if (f.truncated ? !guidanceCursorText(f.cursor) || !records.length : f.cursor !== undefined) return invalid();
+  return replyBytes({ state: "available", current, records, truncated: f.truncated, ...(f.truncated ? { cursor: f.cursor as string } : {}) });
+}
+export function parseGuidanceDiffResult(value: unknown, expected?: Pick<GuidanceSelector, "taskId" | "taskCreated" | "id">): GuidanceDiffResult {
+  const f = object(value, ["state", "current", "record", "sections", "protectedSections"]), hidden = unavailable(f); if (hidden) return hidden;
+  if (f.state !== "available") return invalid();
+  const current = currentBinding(f.current), record = parseGuidancePublicRecord(f.record); inCurrent(record, current);
+  if (expected && (current.taskId !== expected.taskId || current.taskCreated !== expected.taskCreated || record.id !== expected.id)) return invalid();
+  const sections = array(f.sections, EDITABLE_NAMES.length).map((raw, index) => {
+    const entry = object(raw, ["section", "before", "after"]); if (entry.section !== EDITABLE_NAMES[index]) return invalid();
+    return { section: entry.section as GuidanceEditableSection, before: publicText(entry.before, GUIDANCE_ROLE_MAX_BYTES), after: publicText(entry.after, GUIDANCE_ROLE_MAX_BYTES) };
+  });
+  const protectedSections = array(f.protectedSections, PROTECTED_NAMES.length);
+  if (sections.length !== EDITABLE_NAMES.length || protectedSections.length !== PROTECTED_NAMES.length
+    || protectedSections.some((name, index) => name !== PROTECTED_NAMES[index])) return invalid();
+  return replyBytes({ state: "available", current, record, sections, protectedSections: [...PROTECTED_NAMES] });
+}
+export function parseGuidanceWriteReceipt(value: unknown): GuidanceWriteReceipt {
+  const f = object(value, ["id", "taskId", "experimentId", "status", "already"]);
+  if (!executionLinkInteger(f.taskId, 1) || !["declared", "withdrawn"].includes(f.status as string) || typeof f.already !== "boolean") return invalid();
+  return { id: hash(f.id), taskId: f.taskId, experimentId: identity(f.experimentId), status: f.status as "declared" | "withdrawn", already: f.already };
+}
+export const guidanceCursorText = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= GUIDANCE_CURSOR_MAX_BYTES && !/[^A-Za-z0-9_-]/.test(value);
+export function parseGuidanceListQuery(value: unknown): Pick<GuidanceCurrent, "taskId" | "taskCreated"> & { cursor?: string } {
+  const f = object(value, ["taskId", "taskCreated", "cursor"]);
+  if (!executionLinkInteger(f.taskId, 1) || !executionLinkInteger(f.taskCreated) || f.cursor !== undefined && !guidanceCursorText(f.cursor)) return invalid();
+  return { taskId: f.taskId, taskCreated: f.taskCreated, ...(f.cursor === undefined ? {} : { cursor: f.cursor as string }) };
+}
+export interface GuidanceCursorContext extends GuidanceCurrent { readonly projectKey: string; readonly actor: string }
+const cursorSignature = (key: string, context: GuidanceCursorContext, after: string): string => createHmac("sha256", key)
+  .update(JSON.stringify([1, context.projectKey, context.actor, context.taskId, context.taskCreated, context.flowRevision, after])).digest("hex");
+export function guidancePageCursor(key: string, context: GuidanceCursorContext, after: string): string {
+  hash(after);
+  return Buffer.from(JSON.stringify({ v: 1, after, signature: cursorSignature(key, context, after) })).toString("base64url");
+}
+export function guidancePageAfter(key: string, context: GuidanceCursorContext, cursor: string): string {
+  if (!guidanceCursorText(cursor)) return invalid();
+  const raw = Buffer.from(cursor, "base64url"); if (raw.toString("base64url") !== cursor) return invalid();
+  const fields = object(JSON.parse(raw.toString("utf8")), ["v", "after", "signature"]);
+  if (fields.v !== 1) return invalid();
+  const after = hash(fields.after), signature = hash(fields.signature), expected = cursorSignature(key, context, after);
+  if (!timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(expected, "hex"))) return invalid();
+  return after;
+}
+
+export interface GuidanceIdSelector { readonly taskId: number; readonly taskCreated: number; readonly id: string; readonly flowRevision?: number }
+export function parseGuidanceIdQuery(value: unknown, withdraw = false): GuidanceIdSelector {
+  const f = object(value, withdraw ? ["taskId", "taskCreated", "flowRevision", "id"] : ["taskId", "taskCreated", "id"]);
+  if (!executionLinkInteger(f.taskId, 1) || !executionLinkInteger(f.taskCreated) || withdraw && !executionLinkInteger(f.flowRevision)) return invalid();
+  return { taskId: f.taskId, taskCreated: f.taskCreated, id: hash(f.id), ...(withdraw ? { flowRevision: f.flowRevision as number } : {}) };
+}
+
+export function parseGuidanceCreateInput(value: unknown): Readonly<GuidanceVariantV1> {
+  return parseGuidanceVariantV1(object(value, ["variant"]).variant);
 }

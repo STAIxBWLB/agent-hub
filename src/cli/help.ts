@@ -139,6 +139,10 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub budget execution configure <config.json> | disable <id> [--json] [--color=auto|always|never]", "opt-in limits on model calls, tool calls, time and tokens for pi and local"],
   ]],
   ["History and reports", [
+    ["ahub guidance create --file JSON [--json]", "record a bounded immutable advisory proposal through current task authority; no activation or probe"],
+    ["ahub guidance list --task N --task-created MS [--cursor TOKEN] [--json]", "bounded guidance metadata pages; withdrawn history and withheld fields remain explicit"],
+    ["ahub guidance show --task N --task-created MS --id HASH [--json]", "screened editable-section diff selected by existing variant id, never a displayed experiment label"],
+    ["ahub guidance withdraw --task N --task-created MS --revision R --id HASH [--json]", "one-way withdrawal using current task flow; retained history never becomes active guidance"],
     ["ahub lineage show (--task N | --attempt ra-id | --root JSON [--task-scope N --task-created MS]) [--cursor TOKEN] [--nodes N --edges N --bytes N] [--json]", "bounded execution metadata and explicit evidence strengths; unavailable stays unknown, with no probes or replay"],
     ["ahub lineage link --task N --task-created MS --revision N --ref JSON [--from JSON] [--json]", "register a declared metadata link through the task's current authority and revision; no producer attestation"],
     ["ahub turns [peer] [--limit N] [--json] [--color=auto|always|never]", "recent turns and the files each changed (a git work tree only)"],

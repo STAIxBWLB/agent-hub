@@ -257,11 +257,12 @@ never becomes a read-only tool.
 The acon console reads lineage through a provider port, not a panel id and not a
 dashboard action. `projectConsole(...).lineage` in `src/hub/manager.ts` sends the
 console role's existing `lineage_show` control message, which the hub answers
-in-stack from the same `Tasks` projection the CLI and MCP read. No protocol
-message, panel id or action id is added: `manifest.panels` stays exactly
-`DASHBOARD_VIEWS`, the advertised action list is unchanged, and an older console
-that never asks for the view keeps working. Equivalent admitted views are
-therefore a property of one read path, not a comparison of two.
+in-stack from the same `Tasks` projection the CLI and MCP read. This lineage read
+adds no protocol message, panel id or action id, and leaves `DASHBOARD_VIEWS` and
+the advertised actions unchanged. Independent features, such as the read-only
+Guidance panel, may append their own panels to `manifest.panels` under their own
+contracts. An older console that never asks for lineage keeps working. Equivalent
+admitted views are therefore a property of one read path, not a comparison of two.
 
 `src/ui/plugin.ts` answers `snapshot({panel: "lineage", ...})` with
 `{ok: true, panel: "lineage", lineage, lines}`. The lines come from
@@ -287,8 +288,9 @@ as a complete graph.
 
 `test/execution-lineage-console.test.ts` pins the equivalence (the console's lines
 equal `renderExecutionLineage` of the same page), the exact control message, the
-absence of any action and of any widened panel or action list, the drop of an
-unnamed selector, and the refusals above. `test/execution-lineage-performance.test.ts`
+absence of lineage-added panels or actions while retaining the independent
+Guidance panel, the drop of an unnamed selector, and the refusals above.
+`test/execution-lineage-performance.test.ts`
 is the AC6 receipt on a synthetic board: 200 samples per point at 0, 200 and 2000
 filler tasks, a p95 under 250 ms, the same page and byte size at every board size
 (the read projects one root's neighborhood, so the board around it adds nothing),

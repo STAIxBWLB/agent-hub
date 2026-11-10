@@ -1,3 +1,4 @@
+import { parseGuidanceCreateInput, parseGuidanceIdQuery } from "./guidance-variants.ts";
 import { publicDeliveryBodies } from "./delivery-public.ts";
 import { GeneratedNoteRegistry, type GeneratedNoteProof } from "../memory/record-provenance.ts";
 import { RecordCapture, type RecordCapturePolicy } from "../memory/records.ts";
@@ -181,7 +182,7 @@ import { canonicalPath, realPath, hubHome } from "./project.ts";
 import { HandoffRefusal, checkTarget, handoffAge, handoffCatchUpRow, handoffChunks, handoffConnectFailure, handoffLogGate, handoffOutcomeUnknown, handoffReach, parseHandoff, resolveTarget, handoffEventFor, type HandoffEvent } from "./handoff.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
-import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, LINEAGE_TOOL_NAMES, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
+import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, LINEAGE_TOOL_NAMES, GUIDANCE_TOOL_NAMES, CAPABILITY_TOOLS, profileTaskTools, sessionTitleTools } from "./hub-tools.ts";
 import { effectiveClass, listedCapabilities, PublishRefusal, readShare, shareView, validatePublished, type CapabilityManifest } from "./capabilities.ts";
 import { invocationApproval, checkArgs, DEFAULT_TIMEOUT_S, InvocationLedger, invocationRefusal, refusedBy, renderInvocationResult, requestText, type InvocationOutcome, type InvocationRow } from "./invocations.ts";
 import { Conductor, ConductorHolds, conductorPeer, requireConductor, conductorProgressSink, publicConductorTask, publicPeerBudget, taskShowAllowed, type ConductEvent } from "./conductor.ts";
@@ -423,7 +424,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs", "hub_supervision_list"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs", "hub_supervision_list"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -3263,6 +3264,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const observeProgress = (peer: PeerId, observation: ToolObservation | undefined, taskId?: string): void => {
     if (!observation) return;
     if (reviewObserverHeld(peer) || bus.lastDeliveredTo(peer).some(isReviewObserverExcluded)) { progress.clearPeer(peer); return; }
+    const toolName = observation.name.replace(/^mcp__[^ ]+__/, "");
+    if (GUIDANCE_TOOL_NAMES.has(toolName)) return;
     if (observation.name === "hub_set_title" || observation.name === "hub_ask") return; // #1053: a question and its answer are never progress evidence (they may reach an escalation model)
     try {
       const candidates = board.list().filter(task => task.owner === peer && ["in_progress", "changes_requested"].includes(task.state));
@@ -5029,13 +5032,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const id = Number.isSafeInteger(proposed) && proposed! > 0 ? proposed : admittedId;
         auditConduct({ kind: "conduct", actor: by, action: op.slice(4), ...(id === undefined ? {} : { task: id }) });
       }
-      const hint = args[3] && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
+      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
       if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
-      const hint = args[3] && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
+      const hint = args[3] && !GUIDANCE_TOOL_NAMES.has(op) && op !== "hub_lineage_show" && op !== "hub_lineage_link" && op !== "hub_source_read" && op !== "hub_set_title" && op !== "hub_evidence_record" && op !== "hub_visual" && op !== "hub_visual_show" ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
@@ -5394,10 +5397,27 @@ export async function startDaemon(opts: DaemonOptions) {
     const excluded = piiTurn || !!turns.get(by)?.private || contextPii(by) || reviewObserverHeld(by) || reviewObserverInput(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     return { ok: true, lineage: excluded || stopping || recoveryActive() || bus.isRecoveryHeld ? { state: "unavailable" } : tasks.executionLineage(by, input) };
   }
+  function guidanceRead(by: PeerId, op: "list" | "show", input: unknown, piiTurn = false): Record<string, unknown> {
+    const excluded = piiTurn || !!turns.get(by)?.private || contextPii(by) || reviewObserverHeld(by) || reviewObserverInput(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
+    return { ok: true, guidance: excluded || stopping || recoveryActive() || bus.isRecoveryHeld ? { state: "unavailable" }
+      : op === "list" ? tasks.guidanceVariantList(by, input) : tasks.guidanceVariantDiff(by, input) };
+  }
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     if (op === "hub_visual" || op === "hub_visual_show") return visualTool(by, op, a, piiTurn);
     const reviewTurn = reviewObserverHeld(by) || bus.lastDeliveredTo(by).some(isReviewObserverExcluded);
     if (reviewTurn || op === "hub_review" && reviewCaptureExcluded(op, JSON.stringify(a))) progress.clearPeer(by);
+    if (GUIDANCE_TOOL_NAMES.has(op)) {
+      if (op === "hub_guidance_list" || op === "hub_guidance_show") return JSON.stringify(guidanceRead(by, op === "hub_guidance_list" ? "list" : "show", a, piiTurn));
+      const excluded = piiTurn || !!turns.get(by)?.private || contextPii(by) || reviewTurn || reviewObserverInput(by);
+      if (excluded) throw new PreEffectToolRefusal("guidance writes are unavailable in private or review input; retry in a public current-owner context");
+      if (stopping || recoveryActive() || bus.isRecoveryHeld) throw new PreEffectToolRefusal("recovery or shutdown is holding guidance writes; wait for release and inspect the task before retrying");
+      if (op === "hub_guidance_create") {
+        let variant; try { variant = parseGuidanceCreateInput(a); } catch { throw new PreEffectToolRefusal("guidance create accepts only a complete bounded V1 variant; remove unknown wrapper fields before retrying"); }
+        return JSON.stringify({ ok: true, receipt: await tasks.guidanceVariantCreate(by, variant) });
+      }
+      let selector; try { selector = parseGuidanceIdQuery(a, true); } catch { throw new PreEffectToolRefusal("guidance withdrawal needs task epoch, current flow and variant id only; refresh the selected task before retrying"); }
+      return JSON.stringify({ ok: true, receipt: await tasks.guidanceVariantWithdraw(by, selector) });
+    }
     if (LINEAGE_TOOL_NAMES.has(op)) {
       const excluded = piiTurn || !!turns.get(by)?.private || contextPii(by) || reviewTurn || reviewObserverInput(by);
       if (op === "hub_lineage_show") return JSON.stringify(executionLineageRead(by, a, piiTurn));
@@ -12152,6 +12172,27 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ ok: false, error: "autonomy is a person-only command; run ahub autonomy in a person's terminal" });
         void autonomyCommand(msg.action, msg.environment, msg.confirmed, msg.confirmation).then(reply, () => reply({ ok: false, error: "project autonomy could not be changed" }));
         return;
+      case "guidance_list":
+      case "guidance_show":
+      case "guidance_create":
+      case "guidance_withdraw": {
+        const role = c.role, actor = role === "console" ? USER : role === "tools" && typeof c.peer === "string" && PEER_ID.test(c.peer) ? c.peer : undefined;
+        if (!actor) return void reply({ ok: false, error: "guidance is unavailable for this caller; use an authorized current project session" });
+        const { t: _t, rid: _rid, ...input } = msg;
+        const ownedCurrent = c.toolsOwner ? captureImplementerTools(c) : undefined;
+        const current = () => {
+          if (sock.data !== c || c.closed || sock.readyState !== WebSocket.OPEN || c.role !== role || role === "tools" && c.peer !== actor || stopping)
+            throw new PreEffectToolRefusal("guidance caller changed; reconnect in the current project session");
+          if (c.externalOwner && !currentExternalTools(c, true) || ownedCurrent && !ownedCurrent()) throw new PreEffectToolRefusal("guidance runtime owner changed; reconnect before retrying");
+        };
+        try { current(); } catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
+        if (msg.t === "guidance_list" || msg.t === "guidance_show") return void reply(guidanceRead(actor, msg.t === "guidance_list" ? "list" : "show", input));
+        const op = msg.t === "guidance_create" ? "hub_guidance_create" : "hub_guidance_withdraw";
+        void childToolAuthority.run({ by: actor, current: () => { try { current(); return true; } catch { return false; } } }, () => taskOp(actor, op, input)).then(
+          text => { try { current(); reply(JSON.parse(text)); } catch { reply({ ok: false, error: "guidance write is unconfirmed; inspect the task guidance before explicitly retrying" }); } },
+          error => reply({ ok: false, error: error instanceof Error ? error.message : "guidance write is unconfirmed; inspect the task guidance before explicitly retrying" }));
+        return;
+      }
       case "lineage_show":
       case "lineage_link": {
         const role = c.role, actor = role === "console" ? USER : role === "tools" && typeof c.peer === "string" && PEER_ID.test(c.peer) ? c.peer : undefined;
