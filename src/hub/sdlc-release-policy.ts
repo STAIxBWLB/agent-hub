@@ -87,7 +87,11 @@ export function readCommittedReleasePolicy(git: ReleaseGit, commit: string): Rel
   if (result.code !== 0 || Buffer.byteLength(result.stdout) > 256 * 1024) throw new Error("committed .agenthub/config.json is unreadable");
   let parsed: unknown;
   try { parsed = JSON.parse(result.stdout); } catch { throw new Error("committed .agenthub/config.json is malformed JSON"); }
-  return parseReleasePolicy(parsed);
+  const policy = parseReleasePolicy(parsed);
+  if (policy.docs.source === "none" && regularBlob(git, commit, "docs/verified.json")) {
+    throw new Error("release.docs is none but the candidate commits docs/verified.json; remove release.docs from .agenthub/config.json or delete the manifest, then authorize again");
+  }
+  return policy;
 }
 
 /** Ensure every directory component and the final notes path are committed as non-symlink tree/blob entries. */

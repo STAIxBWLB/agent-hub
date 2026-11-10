@@ -221,3 +221,19 @@ test("#1381 committed release-notes policy authorizes the real CLI and pre-push 
   }
   // Two receipt-bounded commands plus daemon and owned-home cleanup.
 }, 60_000);
+
+test("#1381 docs none cannot exempt a candidate with a committed verification manifest", async () => {
+  const f = fixture({ release: { version: "package.json", docs: "none" } });
+  mkdirSync(join(f.root, "docs"), { recursive: true });
+  writeFileSync(join(f.root, "docs/verified.json"), "{}\n");
+  f.run(["add", "docs/verified.json"]);
+  f.run(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "verification manifest"]);
+  const commit = f.run(["rev-parse", "HEAD"]);
+  const refusal = "release.docs is none but the candidate commits docs/verified.json; remove release.docs from .agenthub/config.json or delete the manifest, then authorize again";
+  expect(() => readCommittedReleasePolicy(f.git, commit)).toThrow(refusal);
+  await expect(f.host.authorize("user", "1.2.3", commit)).rejects.toThrow(refusal);
+  expect(f.recorded).toEqual([]);
+  expect(f.docsCalls()).toBe(0);
+  expect(f.host.reportPolicy(commit, "example/repo")?.authorization).toBe("unavailable");
+  expect(await f.host.guardRequest({ kind: "npm-publish" })).toMatchObject({ ok: false });
+});
