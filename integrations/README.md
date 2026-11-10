@@ -8,7 +8,7 @@ The three optional companions live in their own repositories, each with its own 
 | Herdr | [STAIxBWLB/ahub-herdr](https://github.com/STAIxBWLB/ahub-herdr) | a mod folder (`mod/`) the person copies to `mods/ahub` |
 | Claude Code | [STAIxBWLB/ahub-claude](https://github.com/STAIxBWLB/ahub-claude) | a plugin (`.claude-plugin/`, `hooks/`, `types/`) with its own marketplace file |
 
-This folder holds only this page. The companion code, tests, receipts and verification records moved with the repositories (#1387).
+This folder holds only this page. The companion code, tests and receipts moved with the repositories (#1387). The Orca CLI verification records under `docs/verification/` (2026-11-02 and 2026-11-06) did not move: they are ahub's own terminal-recovery evidence, cited by `src/cli/terminal-recovery.ts`.
 
 ## The contract
 

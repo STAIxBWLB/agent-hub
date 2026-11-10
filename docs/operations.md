@@ -7063,11 +7063,11 @@ metadata. A healthy online link needs no broker repair advice.
 
 ## Optional Orca companion (moved, #1198)
 
-The optional Orca companion moved to [STAIxBWLB/ahub-orca](https://github.com/STAIxBWLB/ahub-orca) (#1387). Its code, tests, receipts and verification records live there; nothing of it remains in this repository. It is an Orca plugin (`orca-plugin.json` at that repository's root, tagged `vX.Y.Z`), not an ahub dependency. It stays off here, and its native receipts are person-run and not run.
+The optional Orca companion moved to [STAIxBWLB/ahub-orca](https://github.com/STAIxBWLB/ahub-orca) (#1387). Its code, tests and receipts live there; nothing of it remains in this repository. (The two Orca CLI verification records under `docs/verification/` stay here: they are ahub's own terminal-recovery evidence, cited by `src/cli/terminal-recovery.ts`.) It is an Orca plugin (`orca-plugin.json` at that repository's root, tagged `vX.Y.Z`), not an ahub dependency. It stays off here, and its native receipts are person-run and not run.
 
 ## Herdr companion (moved, #1199)
 
-The Herdr companion moved to [STAIxBWLB/ahub-herdr](https://github.com/STAIxBWLB/ahub-herdr) (#1387). Its code, tests, receipts and verification records live there; nothing of it remains in this repository. It is a mod folder the person copies into Herdr, not an ahub dependency. It stays off here, and its native receipts are person-run and not run.
+The Herdr companion moved to [STAIxBWLB/ahub-herdr](https://github.com/STAIxBWLB/ahub-herdr) (#1387). Its code, tests and receipts live there; nothing of it remains in this repository. It is a mod folder the person copies into Herdr, not an ahub dependency. It stays off here, and its native receipts are person-run and not run.
 
 ## Who owns a pull-only peer (#1310)
 
@@ -7182,4 +7182,4 @@ Count-only `records capture`, `records forwarded`, `records brief` and `records 
 
 ## Claude Code companion (moved, #1338)
 
-The Claude Code companion moved to [STAIxBWLB/ahub-claude](https://github.com/STAIxBWLB/ahub-claude) (#1387). Its code, tests, receipts and verification records live there; nothing of it remains in this repository. It is separate from the channel plugin `plugins/agent-hub` that ahub ships. It stays `fixture_only` with manual session-only placement, and its native receipts are person-run and not run.
+The Claude Code companion moved to [STAIxBWLB/ahub-claude](https://github.com/STAIxBWLB/ahub-claude) (#1387). Its code, tests and receipts live there; nothing of it remains in this repository. It is separate from the channel plugin `plugins/agent-hub` that ahub ships. It stays `fixture_only` with manual session-only placement, and its native receipts are person-run and not run.
