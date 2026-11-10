@@ -36,7 +36,9 @@ test("a genuine pass clears test failures while unrelated execution failures rem
     { command: "bun test", output: "3 tests failed" }, { command: "bun test", output: "18 tests passed, 0 failed" }]);
   expect(result?.severity).toBe(0.3);
   expect(result?.tests).toBe("pass");
-  expect(result?.failureDigests).toEqual([failureFingerprint("copy failed on fixture", false)]);
+  const retained = failureFingerprint("copy failed on fixture", false);
+  if (retained === undefined) throw new Error("missing unrelated execution failure digest");
+  expect(result?.failureDigests).toEqual([retained]);
 });
 
 test("quoted successful reads and editor views neither seed failures nor clear retained tests", () => {
@@ -65,7 +67,7 @@ test("local severity follows critical, native/assertion/exception, reported and 
     { output: "ReferenceError: fixture", severity: 0.7 },
     { output: "fixture export failed", severity: 0.3 },
     { command: "./wrapper.sh bun test", output: "2 failed, 8 passed (exit code 0)", severity: 0 },
-  ];
+  ] as const;
   for (const row of cases) expect(outcome([row])?.severity).toBe(row.severity);
   expect(outcome([cases[5]!])?.tests).toBe("fail");
 });
