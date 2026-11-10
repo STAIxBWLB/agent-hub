@@ -123,6 +123,19 @@ test("an overlap naming a task outside the fact set is unknown coverage, never a
   });
 });
 
+test("an overlap with a closed side is not supervised: no coverage, no gap, no observation", () => {
+  const open = task(80, ["proposed", "assigned", "accepted"]);
+  const closed = task(81, ["proposed", "assigned", "accepted"], "cancelled" as TaskState);
+  const overlapOnly = (facts: SupervisionFacts) => {
+    const evaluation = evaluateSupervision(facts);
+    return [evaluation.evaluated, evaluation.gap, evaluation.observations].map((list) => list.filter((entry) => entry.rule === "declared_overlap_without_integration"));
+  };
+  // Either side closed, in either direction, and a closed side whose partner is outside the fact set.
+  expect(overlapOnly({ tasks: [open, closed], overlaps: [{ task: 80, other: 81 }] })).toEqual([[], [], []]);
+  expect(overlapOnly({ tasks: [closed, task(82, ["proposed", "assigned", "accepted"])], overlaps: [{ task: 82, other: 81 }] })).toEqual([[], [], []]);
+  expect(overlapOnly({ tasks: [closed], overlaps: [{ task: 81, other: 90 }] })).toEqual([[], [], []]);
+});
+
 test("a hand-over starts a new revision, so the failures before it and after it are two observations", () => {
   const before: SupervisionFacts = { tasks: [task(30, failing())] };
   const after: SupervisionFacts = { tasks: [task(30, [...failing(), "reassigned", "accepted", ["check failed", { checkKey: "implement" }], "done", ["check failed", { checkKey: "implement" }]])] };
