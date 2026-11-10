@@ -91,7 +91,7 @@ function snapshotBytes(registration: ProbeRegistrationV1): number {
 /** Private same-db ledger. It never reads G1 tables or owns Task authority. */
 export class GuidanceProbeStore {
   private readonly db: Database;
-  constructor(file: string) {
+  constructor(file: string, private readonly now: () => number = Date.now) {
     this.db = openHubDatabase(file, { create: true });
     this.db.run(`CREATE TABLE IF NOT EXISTS guidance_probe_manifests (
       project TEXT NOT NULL,id TEXT NOT NULL,experiment TEXT NOT NULL,manifest TEXT NOT NULL,
@@ -180,7 +180,11 @@ export class GuidanceProbeStore {
   }
   private clockLost(key: ProbeKey, state: Stored, now: number): boolean {
     if (probeInteger(now) && (state.lastWall === null || now >= state.lastWall)
-      && (state.firstReservedAt === null || now >= state.firstReservedAt && now - state.firstReservedAt >= state.counters.elapsedHighWaterMs)) return false;
+      && (state.firstReservedAt === null || now >= state.firstReservedAt && now - state.firstReservedAt >= state.counters.elapsedHighWaterMs
+        && now - state.firstReservedAt < state.registration.manifest.limits.elapsedMs)) return false;
+    if (probeInteger(now) && (state.lastWall === null || now >= state.lastWall) && state.firstReservedAt !== null && now >= state.firstReservedAt) {
+      state.lastWall = now; state.counters.elapsedHighWaterMs = Math.max(state.counters.elapsedHighWaterMs, now - state.firstReservedAt);
+    }
     hold(state, "elapsed"); advance(state); this.save(key, state); return true;
   }
   private *lanes(project?: string): Generator<Lane> {
@@ -244,10 +248,11 @@ export class GuidanceProbeStore {
       if (slot.retryOf && previous?.state !== "failed_known") return fail("held");
       // No fake launch can begin when a first model/tool call already cannot be admitted.
       const limits = state.registration.manifest.limits;
-      if (state.counters.modelCalls >= limits.modelCalls || state.counters.toolCalls >= limits.toolCalls
+      if (state.counters.modelCalls >= limits.modelCalls || limits.elapsedMs === 0
         || limits.tokens !== undefined && state.counters.tokensReserved >= limits.tokens) return fail("budget");
-      if (this.clockLost(input.key, state, input.now)) return { kind: "existing", receipt: receipt(state) };
-      elapsed(state, input.now, true); boundChild(state, input, session);
+      const now = this.now();
+      if (this.clockLost(input.key, state, now)) return { kind: "existing", receipt: receipt(state) };
+      elapsed(state, now, true); boundChild(state, input, session);
       charge(state, slot.role === "worker" ? "workerAttempts" : "editorAttempts", 1, slot.role === "worker" ? GUIDANCE_PROBE_LIMITS.workerAttempts : GUIDANCE_PROBE_LIMITS.editorAttempts);
       session.host = input.host; session.generation = increment(session.generation); session.revision = increment(session.revision); session.state = "reserved";
       state.receipt.state = "active"; advance(state);
@@ -261,6 +266,16 @@ export class GuidanceProbeStore {
     const session = state.sessions.find(item => item.slotId === reservation.slotId);
     if (!session || session.generation !== reservation.generation || session.revision !== reservation.revision || !["reserved", "running"].includes(session.state)) return fail("changed");
     return session;
+  }
+  checkInvocation(reservation: ProbeReservation, revalidate: () => ProbeAdmissionRecheck): ProbeReceipt {
+    return this.transaction(() => {
+      const state = this.get(reservation.key), session = this.owned(state, reservation), fresh = revalidate();
+      if (!same(fresh.host, session.host) || !sameChild(fresh.child, session.child) || !invariant(state.binding, fresh.host)) return fail("changed");
+      if (state.receipt.state !== "active" || state.admissionHold !== "none") return fail("held");
+      const now = this.now();
+      if (this.clockLost(reservation.key, state, now)) return receipt(state);
+      elapsed(state, now); this.save(reservation.key, state); return receipt(state);
+    });
   }
   admitEffect(input: ProbeEffectAdmission, revalidate: () => ProbeAdmissionRecheck): ProbeEffectAdmissionResult {
     return this.transaction(() => {
@@ -278,8 +293,9 @@ export class GuidanceProbeStore {
         hold(state, "usage"); advance(state); this.save(input.reservation.key, state);
         return { kind: "existing", state: "unknown" };
       }
-      if (this.clockLost(input.reservation.key, state, input.now)) return { kind: "existing", state: "unknown" };
-      elapsed(state, input.now);
+      const now = this.now();
+      if (this.clockLost(input.reservation.key, state, now)) return { kind: "existing", state: "unknown" };
+      elapsed(state, now);
       const limits = state.registration.manifest.limits;
       const names = { model_calls: ["modelCalls", limits.modelCalls], tool_calls: ["toolCalls", limits.toolCalls], tokens: ["tokensReserved", limits.tokens], input_bytes: ["inputBytes", limits.inputBytes], scratch_bytes: ["scratchBytes", limits.scratchBytes], output_bytes: ["outputBytes", limits.outputBytes] } as const;
       const target = names[input.unit]; if (!target || target[1] === undefined) return fail("budget");
@@ -288,8 +304,9 @@ export class GuidanceProbeStore {
         if (limits.tokens !== undefined && !probeInteger(input.reservedTokens)) return fail("budget");
         if (input.reservedTokens !== undefined) charge(state, "tokensReserved", input.reservedTokens, limits.tokens ?? Number.MAX_SAFE_INTEGER);
       } else if (input.reservedTokens !== undefined) return fail("invalid");
-      session.effect = { admission: input, state: "pending", usageHash: null, observed: null }; session.state = "running";
-      advance(state); this.save(input.reservation.key, state); return { kind: "granted", admission: input };
+      const admitted = { ...input, now };
+      session.effect = { admission: admitted, state: "pending", usageHash: null, observed: null }; session.state = "running";
+      advance(state); this.save(input.reservation.key, state); return { kind: "granted", admission: admitted };
     });
   }
   private effect(state: Stored, admission: ProbeEffectAdmission): { session: Session; effect: Effect } {
@@ -332,8 +349,9 @@ export class GuidanceProbeStore {
   settleSession(input: ProbeSessionSettlement): ProbeReceipt {
     return this.transaction(() => {
       const state = this.get(input.reservation.key), session = this.owned(state, input.reservation);
-      if (this.clockLost(input.reservation.key, state, input.now)) return receipt(state);
-      elapsed(state, input.now);
+      const now = this.now();
+      if (this.clockLost(input.reservation.key, state, now)) return receipt(state);
+      elapsed(state, now);
       if (input.candidateArtifactSha256 !== null && !probeSha256(input.candidateArtifactSha256)) return fail("invalid");
       const unknown = state.admissionHold !== "none" || state.receipt.state === "closing" || input.outcome === "unknown" || state.counters.usageUnknown || session.effect?.state === "pending" || session.effect?.state === "unknown";
       session.state = unknown ? "unknown_held" : input.outcome === "failed_known" ? "failed_known" : "closed_fixture"; session.candidateArtifactSha256 = input.candidateArtifactSha256;
@@ -416,6 +434,7 @@ export class GuidanceProbeFixtureHost {
       if (typeof inputFrame !== "string" || Buffer.byteLength(inputFrame) > state.registration.manifest.limits.inputBytes) return fail("invalid");
       const frame = { inputFrame, nonGuidanceInputSha256: guidanceProbeNonGuidanceInputHash(snapshots.task, snapshots.baselineContext, snapshots.systemPolicy) };
       const effects = this.effects(reservation, signal);
+      if (signal.aborted || this.store.checkInvocation(reservation, this.options.revalidate).state !== "active" || signal.aborted) return fail("held");
       const observation = await ports.launch({ reservation, slot, manifest: state.registration.manifest,
         inputFrame: frame.inputFrame, inputSha256: probeHash(frame.inputFrame), nonGuidanceInputSha256: frame.nonGuidanceInputSha256, purpose: "guidance_probe" }, effects, signal);
       const matched = this.matchObservation(observation, reservation, frame, slot.role === "worker");
@@ -439,11 +458,13 @@ export class GuidanceProbeFixtureHost {
     return { runEffect: async <T>(request: ProbeFakeEffectRequest, effect: (signal: AbortSignal) => Promise<ProbeFakeEffectValue<T>>): Promise<ProbeFakeEffectResult<T>> => {
       if (signal.aborted) return fail("held");
       if (!request || !["model_calls", "tool_calls"].includes(request.unit)) return fail("invalid");
-      const admission: ProbeEffectAdmission = { reservation, sequence: request.sequence, unit: request.unit, amount: 1,
+      const requested: ProbeEffectAdmission = { reservation, sequence: request.sequence, unit: request.unit, amount: 1,
         descriptorSha256: request.descriptorSha256, ...(request.reservedTokens === undefined ? {} : { reservedTokens: request.reservedTokens }), now: this.options.now() };
-      const granted = this.store.admitEffect(admission, this.options.revalidate);
+      const granted = this.store.admitEffect(requested, this.options.revalidate);
       if (granted.kind === "existing") return granted;
+      const admission = granted.admission;
       try {
+        if (signal.aborted || this.store.checkInvocation(reservation, this.options.revalidate).state !== "active" || signal.aborted) return fail("held");
         const result = await effect(signal);
         const observed = result.usage, visibleHash = probeHash(canonical({ request, usage: observed }));
         if (result.observationSha256 !== visibleHash) this.store.latchHold(reservation, "observation");

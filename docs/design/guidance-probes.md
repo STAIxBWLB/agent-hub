@@ -205,6 +205,10 @@ A changed manifest hash under the same project/probe experiment id refuses rathe
 
 The elapsed ceiling is wall time since the first session reservation/admission, including editor attempts, failures, gaps and downtime. Its persisted high-water never decreases or resets per arm. Clock regression or uncertain elapsed coverage holds admission. This is an admission ceiling, not measured model time or monetary cost.
 
+The Store owns a trusted constructor-injected clock (Date.now by default, fixture clock only in tests). It samples inside each critical section after the write-lock and synchronous currentness callback, immediately before granting. A queued input timestamp is diagnostic only. The persisted/granted effect descriptor contains the actual admission sample, and usage/settlement must correlate that returned descriptor. A model-only session does not require tool quota; a tool is charged/refused only when requested by runEffect. Zero remaining model/session/time/input capacity cannot bootstrap another session.
+
+Immediately before fake launch or invocation of a freshly granted effect, the host checks abort and calls Store `checkInvocation(reservation, revalidate)` for a fresh locked clock/currentness/deadline check, then checks abort again without an intervening await. Known exhausted time cannot launch work, and an already-consumed grant is not refunded. Phase2 runtime also owns the remaining experiment deadline, abort propagation and stop of in-flight work; Phase1 does not claim real worker timers, quiescence or hard native time enforcement merely because the next call is gated.
+
 Each session retains only its current/last effect: generation, monotonic sequence, unit, amount, descriptor hash, pending/settled/unknown state and usage-applied identity. Exact replay returns state without an effect grant. Older, future or conflicting descriptors refuse. An unresolved or uncertain effect blocks the next sequence and holds its reservation. Late, unknown or unattributed usage sets a sticky unknown flag; it cannot silently reduce totals or become zero. Storage admission covers inputs, scratch and output together.
 
 `admitEffect` runs its actual-actor/Task/G1/session/privacy revalidation callback inside its own `BEGIN IMMEDIATE`, after acquiring the write-lock, not merely before waiting for it. A model-call admission atomically reserves its declared token amount too when a token ceiling applies; lack of the required amount refuses before the effect. An already granted attempt can be settled/accounted after authority is lost as narrow host bookkeeping, but no further effect is admitted without the full fresh fence.
@@ -251,6 +255,7 @@ interface GuidanceProbeStore {
   read(key: ProbeKey): ProbeStoredState | undefined;
   reserveSession(input: ProbeSessionAdmission,
     revalidate: () => ProbeAdmissionRecheck): ProbeReservationResult;
+  checkInvocation(reservation: ProbeReservation, revalidate: () => ProbeAdmissionRecheck): ProbeReceipt;
   admitEffect(input: ProbeEffectAdmission,
     revalidate: () => ProbeAdmissionRecheck): ProbeEffectAdmissionResult;
   settleEffect(input: ProbeEffectSettlement): ProbeReceipt;
@@ -292,7 +297,7 @@ interface ProbeSessionAdmission {
   expectedRevision: ProbeInteger;
   host: ProbeHostBinding;
   child?: ProbeChildBinding;
-  now: ProbeInteger; // Host clock, not a caller/wire field.
+  now: ProbeInteger; // Queued diagnostic only; Store samples its trusted clock after locking.
 }
 interface ProbeAdmissionRecheck {
   host: ProbeHostBinding;

@@ -17,7 +17,8 @@ afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "ahub-guidance-probe-")), file = join(directory, "hub.db");
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
-  const store = new GuidanceProbeStore(file); cleanup.push(() => store.close());
+  const clock = { now: 100 };
+  const store = new GuidanceProbeStore(file, () => clock.now); cleanup.push(() => store.close());
   const source = guidanceProbeFixture(), key = guidanceProbeFixtureKey(source.registration);
   const revalidate = () => ({ host: source.host });
   const register = () => store.register(source.registration, source.host, () => source.host);
@@ -28,7 +29,7 @@ function fixture() {
   const effect = (reservation: ProbeReservation, sequence = 0): ProbeEffectAdmission => ({ reservation, sequence, unit: "model_calls", amount: 1, reservedTokens: 20, descriptorSha256: probeHash(`call-${sequence}`), now: 100 });
   const usage = (admission: ProbeEffectAdmission, observed: number | null) => store.recordUsage({ admission, observed, observationSha256: probeHash(guidanceProbeCanonical({ admission, observed })) });
   const finish = (reservation: ProbeReservation, artifact: string | null = null) => store.settleSession({ reservation, outcome: "closed_fixture", candidateArtifactSha256: artifact, now: 100 });
-  return { ...source, directory, file, store, key, register, reserve, revalidate, effect, usage, finish };
+  return { ...source, directory, file, store, key, clock, register, reserve, revalidate, effect, usage, finish };
 }
 const copy = <T>(value: T): T => structuredClone(value);
 
@@ -147,7 +148,7 @@ describe("guidance probe private atomic ledger", () => {
     const f = fixture(); f.register(); const before = f.store.integrity();
     expect(() => f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, () => ({ host: { ...f.host, task: { ...f.host.task, flowRevision: 3 } } }))).toThrow("binding");
     expect(f.store.integrity()).toEqual(before);
-    const second = new GuidanceProbeStore(f.file); cleanup.push(() => second.close()); let attempted = false;
+    const second = new GuidanceProbeStore(f.file, () => f.clock.now); cleanup.push(() => second.close()); let attempted = false;
     const result = f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, () => {
       attempted = true;
       expect(() => second.register(f.registration, f.host, () => f.host)).toThrow("storage");
@@ -243,6 +244,70 @@ describe("guidance probe private atomic ledger", () => {
     const g = fixture(); g.register(); const r = g.reserve(); const { reservedTokens: _, ...unknown } = g.effect(r);
     expect(() => g.store.admitEffect(unknown, g.revalidate)).toThrow("budget"); expect(g.store.read(g.key)!.counters.modelCalls).toBe(0);
   });
+  test("model-only work admits with zero tool quota and refuses a requested tool before invocation", async () => {
+    const f = fixture(); f.registration.manifest.limits.toolCalls = 0;
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    const provider = new FakeGuidanceProbeProvider(); let tools = 0, models = 0;
+    provider.script = async (input, callbacks) => {
+      const model = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("model-only"), reservedTokens: 20 };
+      await callbacks.runEffect(model, async () => { models++; return fakeEffectValue(model, "model-only", 10); });
+      const tool = { sequence: 1, unit: "tool_calls" as const, descriptorSha256: probeHash("no-tool-quota") };
+      await expect(callbacks.runEffect(tool, async () => { tools++; return fakeEffectValue(tool, "forbidden-tool", 1); })).rejects.toThrow("budget");
+      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, inputFrameHash: input.inputSha256,
+        workerEffectiveInputHash: input.inputSha256, nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
+    };
+    const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => f.clock.now });
+    await runner.start({ key, expectedRevision: 0, host: f.host, now: 1 }, new AbortController().signal);
+    expect(provider.launches).toHaveLength(1); expect(models).toBe(1); expect(tools).toBe(0);
+    expect(f.store.read(key)!.counters).toMatchObject({ modelCalls: 1, toolCalls: 0, usageUnknown: false });
+  });
+  test("post-lock revalidation clock sample refuses the next session after its deadline despite a queued old timestamp", () => {
+    const f = fixture(); f.register(); f.finish(f.reserve()); const before = f.store.read(f.key)!;
+    const result = f.store.reserveSession({ key: f.key, expectedRevision: before.receipt.revision, host: f.host, now: 100 }, () => {
+      f.clock.now = 100 + f.registration.manifest.limits.elapsedMs; return f.revalidate();
+    });
+    expect(result.kind).toBe("existing"); expect(f.store.read(f.key)!.admissionHold).toBe("elapsed");
+    expect(f.store.read(f.key)!.sessions[1]!.state).toBe("planned"); expect(f.store.read(f.key)!.counters.editorAttempts).toBe(0);
+  });
+  test("effect grant records its fresh critical-section time and usage correlates the returned descriptor", () => {
+    const f = fixture(); f.register(); const reservation = f.reserve(), requested = { ...f.effect(reservation), now: 1 };
+    const grant = f.store.admitEffect(requested, () => { f.clock.now = 120; return f.revalidate(); });
+    expect(grant.kind).toBe("granted"); if (grant.kind !== "granted") throw new Error("expected fresh effect grant");
+    expect(grant.admission.now).toBe(120); expect(grant.admission.now).not.toBe(requested.now);
+    f.usage(grant.admission, 10); f.store.settleEffect({ admission: grant.admission, outcome: "settled" });
+    expect(f.store.read(f.key)!.counters).toMatchObject({ tokensReserved: 20, tokensObservedKnown: 10, usageUnknown: false, elapsedHighWaterMs: 20 });
+  });
+  test("effect admission samples after revalidation and refuses exhausted time without charging a call", () => {
+    const f = fixture(); f.register(); const reservation = f.reserve();
+    const result = f.store.admitEffect({ ...f.effect(reservation), now: 100 }, () => {
+      f.clock.now = 100 + f.registration.manifest.limits.elapsedMs; return f.revalidate();
+    });
+    expect(result).toEqual({ kind: "existing", state: "unknown" });
+    expect(f.store.read(f.key)!.counters.modelCalls).toBe(0); expect(f.store.read(f.key)!.admissionHold).toBe("elapsed");
+  });
+  test("clock exhaustion immediately before fake launch prevents launch after session reservation", async () => {
+    const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider(); let checks = 0;
+    const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, now: () => f.clock.now, revalidate: () => {
+      if (++checks === 2) f.clock.now = 100 + f.registration.manifest.limits.elapsedMs; return f.revalidate();
+    } });
+    await expect(runner.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal)).rejects.toThrow("uncertain");
+    expect(provider.launches).toHaveLength(0); expect(f.store.read(f.key)!.admissionHold).toBe("elapsed");
+    expect(f.store.read(f.key)!.counters.workerAttempts).toBe(1);
+  });
+  test("clock exhaustion immediately before fake effect invocation preserves spent grant but invokes nothing", async () => {
+    const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider(); let checks = 0, effects = 0;
+    provider.script = async (input, callbacks) => {
+      const request = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("deadline-before-invoke"), reservedTokens: 20 };
+      await callbacks.runEffect(request, async () => { effects++; return fakeEffectValue(request, "must-not-run", 10); });
+      throw new Error("exhausted effect cannot return success");
+    };
+    const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, now: () => f.clock.now, revalidate: () => {
+      if (++checks === 4) f.clock.now = 100 + f.registration.manifest.limits.elapsedMs; return f.revalidate();
+    } });
+    await expect(runner.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal)).rejects.toThrow("uncertain");
+    expect(provider.launches).toHaveLength(1); expect(effects).toBe(0); expect(f.store.read(f.key)!.admissionHold).toBe("elapsed");
+    expect(f.store.read(f.key)!.counters).toMatchObject({ modelCalls: 1, tokensReserved: 20, usageUnknown: true });
+  });
   test("cross-await withdrawal refuses a new call; already spent accounting needs no new authority", async () => {
     const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider(); let authorized = true, effects = 0;
     const check = () => { if (!authorized) throw new Error("fixture G1 withdrawn"); return f.revalidate(); };
@@ -299,8 +364,9 @@ describe("guidance probe private atomic ledger", () => {
   });
   test("wall clock regression holds the lane across reopen without a reservation refund", () => {
     const f = fixture(); f.register(); const r = f.reserve();
+    f.clock.now = 99;
     expect(f.store.admitEffect({ ...f.effect(r), now: 99 }, f.revalidate)).toEqual({ kind: "existing", state: "unknown" });
-    const reopened = new GuidanceProbeStore(f.file); cleanup.push(() => reopened.close());
+    const reopened = new GuidanceProbeStore(f.file, () => f.clock.now); cleanup.push(() => reopened.close());
     expect(reopened.read(f.key)!.receipt.state).toBe("unknown_held"); expect(reopened.read(f.key)!.counters.workerAttempts).toBe(1);
     expect(() => reopened.reserveSession({ key: f.key, expectedRevision: reopened.read(f.key)!.receipt.revision, host: f.host, now: 200 }, f.revalidate)).toThrow("uncertain");
   });
@@ -315,7 +381,9 @@ describe("guidance probe private atomic ledger", () => {
     const check = () => ({ host: f.host, child });
     const second = f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, child, now: 100 }, check);
     if (second.kind !== "granted") throw new Error("expected candidate");
+    f.clock.now = 99;
     expect(f.store.admitEffect({ ...f.effect(second.reservation), now: 99 }, check)).toEqual({ kind: "existing", state: "unknown" });
+    f.clock.now = 101;
     f.store.settleSession({ reservation: second.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: 101 });
     expect(f.store.read(key)!.admissionHold).toBe("elapsed"); expect(f.store.read(key)!.receipt.state).toBe("unknown_held");
     const db = openHubDatabase(f.file); cleanup.push(() => db.close());
@@ -381,7 +449,7 @@ describe("guidance probe private atomic ledger", () => {
   });
   test("integrity manifest/session/lane passes retain one read snapshot across another connection's commit", () => {
     const f = fixture(); f.register(); const setup = openHubDatabase(f.file); setup.run("PRAGMA journal_mode = WAL"); setup.close();
-    const second = new GuidanceProbeStore(f.file); cleanup.push(() => second.close());
+    const second = new GuidanceProbeStore(f.file, () => f.clock.now); cleanup.push(() => second.close());
     const before = f.store.integrity(), internal = f.store as unknown as { db: Database }, db = internal.db;
     const original = db.query.bind(db), descriptor = Object.getOwnPropertyDescriptor(db, "query"); let inserted = false;
     // Intercept only this owned read, after its real session SELECT. The concurrent write uses the real second connection.
