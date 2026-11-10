@@ -14,6 +14,20 @@ paths:
   - test/model-stage-fallback.test.ts
   - test/fixtures/model-stage-sizing-v1.json
   - test/progress.test.ts
+  - src/hub/inference.ts
+  - templates/adec/**
+  - test/model-advisor-trigger.test.ts
+  - test/model-conversation-view.test.ts
+  - test/model-escalation-control.test.ts
+  - test/model-hub-prompts.test.ts
+  - test/model-judge-replies.test.ts
+  - test/model-plan-execute-choice.test.ts
+  - test/model-turn-state.test.ts
+  - test/model-observation-signals.test.ts
+  - test/model-judge-choice.test.ts
+  - test/model-route-public-api-scalars.test.ts
+  - test/fixtures/model-route-public-api-scalars-v1.json
+  - test/route-stage-classifier.test.ts
 ---
 
 # Hub Model Routes
@@ -468,6 +482,247 @@ approximation, without dropping or modifying input. Record that difference in
 CHANGELOG. No unique absolute-count pin was found in the inspected owned caller
 assertions; their fit outcomes and relay/local equality still remain authority.
 A later discovered owned absolute pin must be preserved explicitly.
+
+## Host route policies and model-choice observation (R2)
+
+This section defines the R2 integration contract for review before shared wiring.
+The self-contained helpers and focused receipts are separate from acceptance of
+that integration. It adds no permission to consult the protected route bodies,
+source-port vectors or `src/hub/ports.ts`. R1's four stage units are owned inputs;
+R3 retains license, notice, port-offset and remnant cleanup ownership.
+
+### Configuration and service ownership
+
+Use the existing top-level `decision_backend`, `decision_mode`, `policy_id`,
+`adec_endpoint`, `candidates` and `decision_timeout_ms` keys. A `plan_execute`
+route with a valid optional service binding asks the phase-model question; an
+`advisor` or `escalation` route with a valid binding asks the judge-model question.
+An ordinary route without that binding keeps its host policy. No `judge_choice`
+block or other TOML key is introduced. Service fields that are present must form
+a valid binding rather than being silently ignored. Every supported choice path
+defaults off, accepts shadow and refuses enforce at load with the #554 follow-up.
+
+One common service validator checks the existing backend/mode, bounded policy
+identifier, numeric-loopback `/v1/route` endpoint, timeout and alias/effort options.
+The S2 stage classifier, tier offerings, ambiguity band/defaults and stage-specific
+validation retain their existing behavior. It does not turn into the phase or
+judge route. The memo purposes are `stage`, `decision`, `phase` and `judge`,
+separated by purpose, route, scope, configuration and opaque user turn. S2's
+one-stage-question-per-turn held answer remains its own contract. Phase/judge
+observation does not cache a valid pair as applied host authority; the service
+rechecks its own pins and hard rules.
+
+All these questions use policy-backed `POST /v1/route`. No generic ask or
+System One shortcut is added. The host owns whether to review/escalate,
+APPROVE/REDO, feedback, PII screening and peer assignment. A configured service
+chooses only eligible model/effort pairs; off/shadow leaves the actual fallback
+model, effort and forwarded conversation unchanged. Explicit model overrides
+continue to bypass optional choice. The two shipped policy examples are
+`ahub.stage` and `ahub.plan-execute` under `templates/adec`; the person supplies
+provider, aliases and residency and copies policies into their own adec home.
+The hub neither reads nor writes that home or a provider key.
+
+### Numeric question evidence
+
+The proposed ordinary R2 packet is closed and contains no transcript or arguments:
+
+```ts
+type HostChoicePurpose = "plan_execute_model" |
+  "advisor_judge_model" | "escalation_judge_model";
+interface HostChoiceEvidence {
+  schemaVersion: 1;
+  kind: "host-route-choice-evidence";
+  purpose: HostChoicePurpose;
+  phase?: "planning" | "executing"; // phase question only
+  stage: StageEvidence;
+}
+```
+
+The entire serialized packet must fit 1024 UTF-8 bytes at the request boundary.
+Overflow is unavailable and sends no HTTP; no fragment is silently removed to
+make it fit. `phase` and `judge` are memo purposes, not additional request-wire
+fields. A sensitive request retains only R1's `schemaVersion`, `kind` and four
+dimensions, with contextTokens zero; purpose, phase, history counts and text size
+are omitted from its evidence. The request's opaque hashed turn identity still
+separates purposes. Generic #813 decision evidence v1 and its tests remain
+unchanged, including their distinct bounded-fragment contract.
+
+### Host state and completed mutation
+
+`PlanPhase.observe(view, scope)` starts capable/planning and adds the newly
+written planning instruction. An associated, individually complete, non-error
+mutation result establishes efficient/executing for that scope. Explicit failed,
+denied, refused or cancelled results do not prove success. This is protocol
+completion evidence, not filesystem-effect attestation. A clipped old history
+does not block a complete current mutation; clipped/unknown current text cannot
+prove completion. Once established, the scope latch survives later partial views.
+A fresh or unavailable no-mutation view remains planning, not presumed execution.
+
+`captureRouteView` reuses R1 association and diagnostics and adds only a local
+`sourceTextComplete` observation. It uses the same bounded positions before R1
+capture, rejects proxies/accessors/inherited data, and aligns captured results by
+chronological tool ordinal. An inspected malformed record can make the local view
+unavailable; that is unknown evidence, not proof that no mutation happened.
+No completeness bit or other field is added to the StageEvidence wire.
+
+The generic `ScopeStore` intentionally uses explicit 512-entry/one-hour limits:
+expiry is since the last set, reads update LRU order but do not extend expiry,
+undefined values refuse, and a backward clock clears all retained state. Opaque
+local keys have a new 4096-byte ceiling. These explicit defaults/expiry semantics
+are declared choices where the former default/clock behavior was not observed;
+they are not claims of measured equivalence and belong in CHANGELOG.
+
+### Advisor and escalation authority
+
+Advisor uses a separate 1024-entry FIFO budget ledger and 1024-scope FIFO stalled
+set, not the generic ScopeStore. The `instance` budget entry is never evicted.
+A pending reservation is charged immediately; success keeps the charge, failure
+refunds one and increments failures. Omitted review budget is one, and three
+failed reviews block further review. Check budget before either trigger.
+
+The ordinary primary trigger is a terminal no-tool answer with at least the
+configured completed tool-result count (omitted minimum zero). The pattern primary
+uses the configured Unicode regular expression instead. Assistant-message count
+supplies stall turns. Omitted/zero stall is disabled; a positive threshold offers
+a checkpoint at or above that count only when the scope is not already stalled.
+Only a stall without a simultaneous primary marks the checkpoint. Success does
+not rearm it. Failure settlement, budget-refused reservation and explicit eviction
+clear the checkpoint. Automatic budget eviction deletes only its ledger entry;
+the stalled set keeps its separate FIFO lifetime.
+
+The capacity correction is intentional: only inserting a new key into a full
+ledger trims that ledger. Same-key updates and unrelated-ledger operations cannot
+evict charged reviews or rearm stalled scopes. Record this difference in CHANGELOG.
+Escalation confirms two fresh same-category replies by default. Explicit old or
+negative evidence breaks the streak, category change restarts it, unavailable
+reply preserves it and an established latch remains set. Store no judge reason
+in event or confirmation state. Runtime accepts only the checked reply parser's
+output, never an assert-cast foreign verdict.
+
+### Full local judge context and fresh prompt wording
+
+`captureJudgeConversation` projects full inert native string/null messages,
+function-call/result metadata, local opaque argument strings, instruction order,
+assistant/tool counts and terminal-answer facts. It is separate from the recent
+stage window and the service packet. It rejects malformed/explicitly unknown
+fields instead of assembling partial judge context. The actual relay/local caller
+must establish the supported native shape; unsupported formats are unavailable,
+not blanket claims that every provider format is malformed. The existing 2M-byte
+whole-wire ceiling applies before prompt construction and admits all valid
+200000-codepoint cases. Getters, custom serialization and proxies do not execute.
+
+Advisor transcript default is 200000 Unicode code points, with the existing
+256..200000 validator. Serialize instructions first and messages next as JSON;
+then retain floor(cap/4) points at the head and the remaining cap points at the
+tail, separated by `\n...<middle of the conversation truncated>...\n`. The marker
+is outside the cap. Only afterward append the latest-turn suffix without a byte
+cut. Discarded telemetry counts code points. This preserves the recorded main
+behavior rather than introducing a new transcript default. Advisor output is
+2048 tokens; escalation output is 256 and its input is the full validated local
+context without a guessed additional transcript cap. Surrounding planning,
+review, escalation and redo prompt wording is newly written; the owned caller's
+short `senior reviewer` feedback cue remains.
+
+Reply parsing is anchored APPROVE/REDO, case-insensitive. Escalation accepts the
+documented JSON fields and closed categories only. New accepted-data ceilings
+are 64 KiB reply input and 4096 bytes local feedback/reason; oversized input is
+unavailable, not a partial verdict. These safety ceilings are declared in
+CHANGELOG rather than described as observed former defaults. No prompt, reason,
+argument, diagnostic or native identifier enters the numeric service packet.
+
+### Owned observation outcomes and existing progress fences
+
+`observation-signals` follows the owned R1 evidence/diagnostic precedence and
+shared critical predicate, not former signal tables or source-port fixtures.
+A full outcome batch must not be reported as complete from the recent 16-result
+stage window. Unknown/over-bound input stays unavailable. Local label adapters
+retain the owned observed-outcome pins: an unflagged AssertionError can label
+severity 0.7; the owned wrapped numeric-test fixture containing `exit code 0`
+can label severity zero while tests fail; successful read/editor-view text does
+not create execution failure/repetition; and an early failure in a batch is not
+lost because later results are clean. These are local outcome flags, not a new
+stage score formula or native exit-status attestation from untrusted text. Their precise adapter is reviewed before implementation.
+
+Native `progressDimensions`, its eight-distinct-known-turn rule, cross-turn
+failure predicate, attempted-frame deduplication, generation, owner/open-task and
+privacy fences remain unchanged. Only owned observation/reply/type dependencies
+migrate. Peer-reassignment advice remains a host inference purpose; this change
+does not add an adec path to pure peer assignment or PII screening.
+
+### Deadline, currentness and publication ceiling
+
+For optional host judges, fallback has priority and does not wait for the shadow
+model-choice answer. One absolute deadline covers common preparation and the judge/observation window;
+there is no fresh timeout after a slow admission. The current common budget and
+campus APIs cannot be cancelled: the deadline races them, it does not join them.
+There is no strict physical eight-second completion or zero-pending-common-host
+claim. Keep a `ponytail:` ceiling naming the optional abort/currentness API upgrade
+if an actual hang is observed. No LocalWorker or OmniRoute API edit is part of
+this approved choice. The separately owned `requestAdecRoute` observation is
+aborted and joined when fallback finishes. A normal window close is not a failed
+service memo or warning; actual failed transports keep bounded failure handling.
+
+Re-read current actor/privacy/observer facts after awaits and before owned service
+HTTP, metadata publication and feedback delivery. Changed/unavailable authority
+propagates as `DecisionPolicyChangedError`; it is not converted into fallback or
+swallowed as optional telemetry. Review/remote observer exclusion skips service,
+and sensitive work requires positive campus admission. A client abort does not
+prove the external service stopped provider generation.
+
+The sole additional event field is `RouteEvent.decisionTarget?: "judge"`.
+Absence preserves the executor event contract. A judge-choice observation uses a
+separate existing `onRoute` callback: `tier` is the requested fallback judge
+alias, `source` is `default`, and the remaining metadata uses existing checked
+decision fields. It does not claim a served or applied model and adds no purpose
+or phase field. Publication bypasses `addDecision` and the executor label path,
+with no label, progress or usage credit. Off emits no observation. Recheck
+privacy/currentness immediately before publication; sink failures stay optional,
+but authority refusals are not swallowed as telemetry errors.
+
+Before emission is enabled, executor consumers exclude `decisionTarget: "judge"`:
+the report before timestamp/switch accounting, task research before generic
+accumulation/peer involvement, and the owned routing corpus harness before its
+last-executor-observation collector. This changes no corpus input, guard, expected
+result or scoring. The raw research-quality `events.present` census remains a
+truthful count of recorded event types, including metadata; it is not business
+or executor credit. Token/cost and SDLC measures retain their separate inputs.
+The closed operational projection already withholds the entire `route` kind,
+while raw event export retains the target; this adds no console/display feature.
+
+### R2 observation and inspection record
+
+One approved public-API observation ran on committed baseline
+`78891c179954f80adc90bec716f9f78107a2e872` with 24 newly authored synthetic cases,
+no account/model/decider call, no dependency installation and scalar-only output.
+The private guarded driver/fixture/command have distinct hashes; Git blob bindings
+identify the opaque baseline APIs. All 24 scalar rows passed the closed collector;
+network/process/server/output/write effect counters were zero, native-network and
+owned-canary guard controls passed, source bindings matched before/after, and
+owned stop/drains/temp cleanup succeeded. This is finite API evidence, not general
+implementation equivalence, routing quality or live acceptance.
+
+The committed fixture is `test/fixtures/model-route-public-api-scalars-v1.json`.
+The exact argv is retained privately at workspace-relative
+`scratchpad/temp/task856/public-api-scalars-v1/command.json`, SHA256
+`43e1c7919945847f9d2859822901e42e6418f52488faa90417bacbd5f2395a4d`;
+its raw result log SHA256 is
+`e9790c07cae5e974cdc9695b08ecf7099bf72d2679a1a747bfc18078a57cb338`.
+The fixture's redacted command shape is not executable; an exact-argv reference
+requires that retained artifact, not an invented public reproducer. No additional
+API probe, model call or TTL wait is implied.
+
+On 2026-11-10 a conductor instruction mistakenly allowed AdvisorGate and text
+helper reuse. The AdvisorGate class, one named stall test and the middleDrop
+exported signature were read under that instruction. The helper body was not
+read, and its temporary import was removed; truncation is newly authored from
+the owner's literal behavior contract. The own advisor unit was written and
+reviewed against that contract, including the later capacity correction, without
+copying a ported function body. An earlier broad historical-doc search exposed
+advisor behavior notes; review preparation also exposed limited excluded inventory
+expression/key-pattern metadata after initial algorithm commits. These exposures
+are recorded as process limits, not represented as unread history. No further
+protected body, prompt, vector or ports read/import is authorized. This is a newly authored rewrite with explicit provenance. Licenses/notices
+remain R3 work.
 
 ## Native progress projection, separate from stage selection
 
