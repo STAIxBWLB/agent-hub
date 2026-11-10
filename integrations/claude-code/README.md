@@ -1,6 +1,6 @@
 # Optional Claude Code hub companion
 
-C1 of [#1338](https://github.com/STAIxBWLB/agent-hub/issues/1338), amended 2026-11-09. Support: **fixture_only**. Terminal native receipt: **NOT RUN**. Declared API provenance is Claude Code 2.1.319, not a supported or minimum-version promise. The separate [C0 contract](host-contract-v1.md) keeps all seven capability questions unproven or unsupported.
+C1-C3 of [#1338](https://github.com/STAIxBWLB/agent-hub/issues/1338), amended 2026-11-09. Support: **fixture_only**. All four native receipts: **NOT RUN**. Minimum supported version: **UNKNOWN**. Declared API provenance is Claude Code 2.1.319, not a supported or minimum-version promise. The separate [C0 contract](host-contract-v1.md) keeps all seven capability questions unproven or unsupported.
 
 # What it does
 
@@ -17,11 +17,27 @@ The pane shows only the hub version, peer ids/states/counts, optional attachment
 
 The displayed states distinguish running, partial, stale (over 60 seconds at render time), offline, unavailable version, unknown and fixed transport failures. There is no timer to redraw an idle pane; age is checked when the host draws it.
 
-# Isolated person-run installation
+# Manual session-only placement
 
-No Claude Code mod was installed or loaded, and no real Claude Code profile/settings were loaded or changed in C1. A separately authorized read of this project's hub status/registry is recorded only as source-CLI measurement. First use a scratch project and explicit isolated HOME and CLAUDE_CONFIG_DIR, with no credentials copied. In that isolated terminal, start a Claude session with `claude --plugin-dir <absolute path to this folder>`. This is a separate optional mod, not the agent-hub channel plugin or a marketplace entry.
+Distribution is **manual_session_only**. There is no companion marketplace entry or qualified persistent CLI installation. Copy the whole `integrations/claude-code` folder to a scratch location outside Claude profiles, preserving `.claude-plugin`, hooks and types. Placing that folder does not register an installed plugin. The existing agent-hub channel marketplace entry is unchanged.
 
-The command-line declaration kit says that flag loads the mod for that session only. Removing that flag and exiting the scratch session removes it; for an installed copy, use the existing `claude plugin disable agent-hub-companion` / `claude plugin uninstall agent-hub-companion` commands in that same isolated profile. Do not change the real profile to qualify this fixture-only build. Record observed commands and outcomes in [terminal receipt](receipts/terminal.md) before claiming support.
+The shipped 2.1.319 declaration kit documents `--plugin-dir <folder>` as a session-only opt-in. The following is a **person-run procedure**, not an instruction for an agent to execute. First prepare an isolated empty HOME/config, a scratch hub project and an absolute executable path; copy no credentials. From that scratch project, use an explicit noncredential environment allowlist, for example:
+
+```sh
+env -i PATH=/usr/bin:/bin HOME=/absolute/scratch/home CLAUDE_CONFIG_DIR=/absolute/scratch/config /absolute/claude --plugin-dir /absolute/scratch/companion
+```
+
+Executable/runtime PATH requirements must be checked for that installation. This example neither starts a hub nor supplies account credentials. No install, enable, interactive load or removal was executed for C3. No real Claude profile/settings were loaded or changed. C1's separately authorized source-CLI hub-status measurement remains a different evidence class.
+
+To disable the session opt-in, exit that scratch Claude session and restart without `--plugin-dir`. To remove the placed files, discard only the scratch companion copy you created after exiting. Do not remove another installation or edit profile settings. Persistent `plugin install`, `enable`, `disable` and `uninstall` identifiers are not published here because this distribution has no qualified registered installation. Static validation is not registration or native loading.
+
+# Surface qualification and action counts
+
+[The support matrix](support-matrix.json) has four independent [receipts](receipts/terminal.md). Terminal and desktop remain **fixture_only**: declarations and fixtures are source evidence, not observed painting. VS Code and mobile are **unsupported for the full attention-band journey**, because AbovePrompt is not declared there. Their pane and tool-row behavior remains unqualified; this does not establish that those individual views are impossible. No surface is supported and `nativeSupportedVersions` is empty.
+
+A surface becomes supported only with its own completed native receipt naming exact surface, platform, version, source head, date and evidence. Pane, attention, original compact row, composer origins, unchanged model inputs, disable/remove, standalone hub and bounded status reads are separate receipt legs. A working version is not a minimum: a minimum needs explicit version-boundary evidence. Missing, NOT RUN or placeholder receipts cannot qualify support; `test/claude-code-companion-support.test.ts` checks the matrix and rejects those promotions.
+
+C0's complete "what needs me?" console procedure counts **2 actions** from a focused Claude session: open a separate terminal, then submit the existing quoted console command. C2 can expose a fresh positively known subset with **0 further actions** when already visible, or **1 submitted refresh** when needed. Those endpoints differ: complete console follow-up still counts 2 actions, with target selection or consent counted separately. These are procedure counts, not measured UX savings. All observed action counts remain null / **NOT RUN** in each receipt.
 
 # Checks and limits
 
@@ -33,7 +49,9 @@ Only the last closed projection goes to per-session `$.state`. No raw CLI output
 
 `test/claude-code-companion-status.test.ts` runs a fake host and the C0 fake CLI, including literal shell-metacharacter roots, identity refusals, output bounds, closed fields, non-composer effects, coalescing and held-response races. Synthetic 850-row board and 300-row global-project payloads both exceed 256 KiB; fixtures prove neither command is requested. These checks and static validation are source evidence. Native painting, real command origins, process error encoding, action counts and disable independence remain person-run NOT RUN. See [support matrix](support-matrix.json).
 
-Static installed-CLI validation (`claude plugin validate --json`) on an isolated copy passed with zero manifest or hooks errors. Author/icon warnings and marketplace-install advice remain; marketplace distribution is outside C1. This is static module validation, not an installed plugin, host test session or native receipt.
+Historical C1 static installed-CLI validation (`claude plugin validate --json`, self-reported 2.1.319) on an isolated copy passed with zero manifest or hooks errors. Author/icon warnings and marketplace-install advice remain; marketplace distribution is outside C1. This is static module validation, not an installed plugin, host test session or native receipt.
+
+C3 static validation is **UNVERIFIED / person-run**. The installed binary path label was 2.1.321 (metadata, not a self-reported version). The first protected version phase returned no output; its child exit was not retained, so it remains unknown. One explicitly authorized version-only diagnostic under the same default-deny isolation recorded child exit -6 / signal 6, stdout and stderr 0 bytes, and 1902.276 ms. The helper exited 1; source/settings/symlink and copied-input fences matched, and no owned process group remained. Termination cause is UNKNOWN. No isolation was relaxed, no further probe was made, and `plugin validate` was **NOT RUN**. Scalar/hash evidence is in the matrix; no native or minimum-version claim follows, and the historical 2.1.319 result is not substituted for this leg.
 
 # Read-set measurements
 

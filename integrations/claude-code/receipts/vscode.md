@@ -1,19 +1,44 @@
 # Claude Code vscode native receipt
 
-Status: **NOT RUN**. No support or native UX claim. C0 CLI evidence is separate in [c0-cli.md](c0-cli.md).
+Status: **NOT RUN**. This is an uncompleted person-run receipt, not support evidence. Source/static CLI facts belong to the support matrix or [C0 receipt](c0-cli.md).
 
-- Date, OS and exact Claude Code version: NOT RUN
-- Isolated HOME and CLAUDE_CONFIG_DIR, scratch project outside Git: NOT RUN
-- Real settings.json SHA-256 before and after (must match): NOT RUN
-- Credentials copied and which model turn required them: none in C0; native leg NOT RUN
-- Exact project binding and changed/missing/duplicate refusal: NOT RUN
-- Pane and AbovePrompt band visible, hold raised and cleared: NOT RUN
-- composer, model and plugin origin captures; non-composer effects absent: NOT RUN
-- Channel receive origin and unchanged model inputs with companion on/off: NOT RUN
-- User statusLine plus statusline-tee coexistence (only if a status entry is proposed): NOT RUN
-- What-needs-me actions and observed result: NOT RUN
-- Peer-liveness actions and observed result: NOT RUN
-- Disable/remove leaves channel, peers, hub and standalone CLI working: NOT RUN
-- Process argv, timeout and combined byte cap enforced in native host: NOT RUN
+```json
+{
+  "schema": 1,
+  "surface": "vscode",
+  "status": "NOT RUN",
+  "observedAt": null,
+  "platform": null,
+  "claudeCodeVersion": null,
+  "sourceHead": null,
+  "native": {
+    "pane": "NOT RUN",
+    "attentionBand": "UNSUPPORTED",
+    "compactOriginal": "NOT RUN",
+    "composerOrigin": "NOT RUN",
+    "modelInputsOnOff": "NOT RUN",
+    "disableRemove": "NOT RUN",
+    "standaloneHub": "NOT RUN",
+    "statusReadBounds": "NOT RUN"
+  },
+  "actionCounts": {
+    "knownNotice": null,
+    "refresh": null,
+    "completeConsole": null
+  },
+  "minimumVersionEvidence": null,
+  "evidenceRefs": []
+}
+```
 
-Use only an isolated profile. Stop if this surface needs the real home. Record each missing leg as unknown; never turn a fixture result into UI evidence.
+# Qualification scope
+
+- Record the exact surface, platform, Claude Code version, source head, date and observed evidence independently for this leg.
+- Use an isolated HOME and CLAUDE_CONFIG_DIR with a scratch hub. No mod was installed/enabled/loaded or removed by the C3 implementation task, no account was copied and no native/model turn was run.
+- Check canonical-root/pinned-daemon-projectId refusal, status-only bounds, genuine composer versus non-composer behavior, model-input preservation and clear/exit behavior. Registry existence/uniqueness is not verified by this mod.
+- Observe the pane and original/compact/verbose rows; where AbovePrompt is declared, raise and clear a genuine needs_review hold. Record native paint and actual behavior rather than a fixture result.
+- Record disable/remove and standalone channel/peers/hub independence separately. No status-line or channel-row qualification is claimed.
+- Count actions with C0's rule. Known-subset notice, explicit refresh and complete console follow-up are different endpoints; keep actual counts null until observed.
+- A working tested version does not by itself prove a minimum. Record an explicit native version boundary before making that separate claim.
+
+AbovePrompt is not declared on this surface in the pinned API. The full attention-band journey is unsupported; pane/tool-row behavior remains unqualified, not declared impossible.
