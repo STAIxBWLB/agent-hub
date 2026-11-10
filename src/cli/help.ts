@@ -139,6 +139,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub budget execution configure <config.json> | disable <id> [--json] [--color=auto|always|never]", "opt-in limits on model calls, tool calls, time and tokens for pi and local"],
   ]],
   ["History and reports", [
+    ["ahub guidance probe register --file JSON [--json] | start --id HASH --revision N [--variant G1-HASH] [--json] | show --id HASH [--json] | cancel --id HASH --revision N [--json]", "person or configured conductor only: bounded T1 declaration and fake-only probe lifecycle; production execution is unavailable"],
     ["ahub guidance create --file JSON [--json]", "record a bounded immutable advisory proposal through current task authority; no activation or probe"],
     ["ahub guidance list --task N --task-created MS [--cursor TOKEN] [--json]", "bounded guidance metadata pages; withdrawn history and withheld fields remain explicit"],
     ["ahub guidance show --task N --task-created MS --id HASH [--json]", "screened editable-section diff selected by existing variant id, never a displayed experiment label"],

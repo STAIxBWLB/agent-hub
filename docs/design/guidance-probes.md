@@ -179,7 +179,15 @@ Unknown, missing or mismatched fixed inputs, model identity, runtime/toolset/con
 
 All writes and effects enter through Tasks. CLI and daemon only parse, authenticate and delegate; they never open a writable ledger. The declaration cannot name an actor, session or authority override. Minimal T1 register/start/show/cancel access is limited to the person or the one currently configured authorized conductor, using the existing operational-authority admission path. A console delegation, ordinary peer or live-test session cannot borrow USER authority.
 
+Tasks' private bridge reuses its current request/private/review/recovery fences, requires the unique configured conductor to remain rostered and inside an admitted operational context, and uses the current public Task/repository scope before source reads. New snapshot text passes existing pure nameable/secret checks. G1 is rendered first, then the exact sanitized rendered guidance actually handed off passes raw nameable/secret checks plus first-party lexical path-candidate/private-policy checks; its private raw role-file provenance is not screened as worker input. Unlike an opaque address field, actual prose such as "merge/release" is not private solely because it contains a slash under an unrelated deny rule. A candidate matching private lexical policy or its literal prefix refuses. This is a lexical screen, not alias discovery or confinement proof. Raw candidate SHA remains separate metadata. No new model, file/address resolver or generation path is added. Historical metadata show does not return raw snapshots. Narrowing cancellation does not rescreen stored prose or require a still-applicable G1, while retaining its specified current caller/Task-epoch/privacy fences.
+
 Tasks captures and revalidates project identity, actual actor/roster/conductor currentness, peer identity, session generation/native session, current task epoch/flow and privacy/review-only context across every await and immediately before each write or fake effect. A private turn or private/PII task refuses before content leaves its existing private boundary. Unknown or missing current proof refuses with a next step.
+
+Private session generation is an exact bounded identifier string or nonnegative safe integer, matching the existing Peer contract without coercion/hash/default zero. The daemon mints a per-connection UUID for each authenticated console or tools connection, never a control token or daemon-wide person epoch. For console requests, that UUID is both `sessionGeneration` and `requestConnectionId`. A conductor captures its actual Peer generation/native session and the original live socket fence, plus the separate connection UUID comparator. Tasks captures a host-only `guidanceProbes.session(by)` context with generation/nativeSession/requestConnectionId/current callback at admission; that callback closes over the original request/socket authority, rather than consulting a later request's ambient context. A new connection for either caller cannot replay a prior connection's start CAS, even when the conductor's native session is unchanged. The IDs are durably stored only as private replay comparators; they never restore or attest live authority.
+
+The host-only `TasksDeps.guidanceProbes` dependency contains Store, optional fakePorts/editor-frame preparer, session context reader and optional timer.set/clear seam. There is no corresponding config/wire runner, session or timer selector. `guidanceProbesPending()` counts owned in-process admissions/launch/stop/drain work, not persisted held lanes; zero does not prove unknown durable work quiescent. `stopGuidanceProbes()` aborts and requests stop only for captured owned reservation/generation, then awaits actual launch and stop settlements. Its named operational 5,000 ms bound rejects with cause/next step on a noncooperative fixture, retains unsettled handles and durable hold, and never claims zero/drained, refunds/releases or closes Store/Board beneath callbacks. A later explicit drain can finish once those actual promises settle. Daemon awaits it before its finally-bearing cleanup/stopped-notification path; a rejected drain is retryable explicitly while new admissions remain fenced.
+
+Only active owned fake work has one watchdog: named operational interval 250 ms, scheduled with `setTimeout(min(interval, remainingMs))`. It rechecks the captured currentness/clock; nonpositive remaining time aborts/stops without rescheduling, and cancel/finish clears the handle. Small chunks avoid the JavaScript long-timeout overflow without a new manifest duration cap. Timer handles are wrapped with an explicit absence sentinel so valid zero/null handles clear correctly. A stale callback checks active-map identity before any Store write/effect. Tests inject the host-only scheduler/clock, never a global clock, and explicitly release/drain noncooperative fixture promises in cleanup.
 
 New registration and session start require an already accepted task in `in_progress` or `changes_requested`. There is no implicit assignment/acceptance, no generic MOVES change, and no bypass of existing Task, role, SDLC or operational guards. Historical show is separate from fresh applicability.
 
@@ -192,6 +200,8 @@ Each reserved session retains its original start selector: requested experiment 
 Tasks may use the host-private bounded `startSelector(key, requestedRevision)` read to select the original slot/child for fresh source-owner G1 revalidation. It must not use today's next planned slot for a historical replay, and must perform current caller/Task outer admission before this lookup. Withdrawn/changed original G1 or a now-closed Task can therefore refuse a replay even though the historical selector exists. No new wire operation, public raw snapshot or history scan is introduced.
 
 Cancellation relaxes only frozen flow equality and current G1 applicability to narrow already-owned existing work. It retains current person/configured-conductor authority, session, project, Task epoch, privacy/review-only and operational guards. It persists intent, never launches or releases. Cleanup of an already-owned fake handle after a fence is lost is a separate host duty, not a new caller privilege.
+
+The private `cancelRequested` boolean records admitted intent independently of receipt state, strictly stored as SQLite integer 0 or 1. Once true it survives holds, unknown settlements, stop and reopen; it is digest-covered and never reset/refunded. New grants refuse it, while an exact historical replay can only return an already/held receipt. Cancellation of an already terminal experiment is a no-op and must not turn a false flag true or claim new intent. The closed public status may expose the boolean to explain a held cancellation; write receipts do not echo actor/body/snapshots. Earlier unreleased private prototype fixture databases with incompatible fields fail closed and must be recreated explicitly by their fixture owner, not silently migrated/erased; no public database marker is bumped.
 
 Known input/authority refusals before the first Board/store write may be PreEffectToolRefusal. Storage, hydration, readback and unknown wrapped errors remain plain fixed safe errors, including rollback failures. After a reservation, an unknown outcome is never described as safely retryable.
 
@@ -288,8 +298,9 @@ interface ProbeHostBinding {
   task: { id: number; created: ProbeInteger; flowRevision: ProbeInteger };
   role: ProbeRoleIdentity;
   baselineGuidance: string; // Private existing rendered catalog baseline, <=8 KiB.
-  sessionGeneration: ProbeInteger;
+  sessionGeneration: ProbeInteger | ProbeId;
   nativeSession: ProbeId | null;
+  requestConnectionId: ProbeId;
 }
 interface ProbeChildBinding {
   variantId: ProbeSha256;
@@ -323,8 +334,9 @@ interface ProbeStartSelector {
   slotId: ProbeId;
   variantId: ProbeSha256 | null;
   actor: PeerId;
-  sessionGeneration: ProbeInteger;
+  sessionGeneration: ProbeInteger | ProbeId;
   nativeSession: ProbeId | null;
+  requestConnectionId: ProbeId;
 }
 type ProbeReservationResult =
   | { kind: "granted"; reservation: ProbeReservation }
@@ -387,6 +399,7 @@ interface ProbeStoredState {
   counters: ProbeCounters;
   firstReservedAt: ProbeInteger | null;
   admissionHold: "none" | "elapsed" | "observation" | "usage";
+  cancelRequested: boolean;
   notNeeded: ProbeInteger; // Derived from session records, never an attempt/budget counter.
   sessions: readonly {
     slotId: ProbeId;
@@ -434,6 +447,7 @@ interface ProbePublicReceipt extends ProbeReceipt {
 }
 interface ProbePublicStatus extends ProbePublicReceipt {
   counters: ProbeCounters;
+  cancelRequested: boolean;
   notNeeded: ProbeInteger;
   comparable: boolean;
   authoring: "admitted_fixture" | "uncontrolled" | "unknown";

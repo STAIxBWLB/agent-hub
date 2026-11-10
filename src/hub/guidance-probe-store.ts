@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { GUIDANCE_ROLE_MAX_BYTES } from "./guidance-variants.ts";
 import { executionText, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
 import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL, GuidanceProbeError, guidanceProbeCanonical, guidanceProbeManifestKey,
-  parseGuidanceProbeRegistration, guidanceProbeWorkerFrame, guidanceProbeNonGuidanceInputHash, probeHash, probeInteger, probeSha256,
+  parseGuidanceProbeRegistration, guidanceProbeWorkerFrame, guidanceProbeNonGuidanceInputHash, probeHash, probeInteger, probeSha256, probeSessionGeneration,
   type ProbeRegistrationV1, type ProbeHostBinding, type ProbeKey, type ProbeReceipt, type ProbeStoredState,
   type ProbeCounters, type ProbeSession, type ProbeSessionAdmission, type ProbeAdmissionRecheck,
   type ProbeReservation, type ProbeReservationResult, type ProbeEffectAdmission, type ProbeEffectAdmissionResult,
@@ -41,7 +41,8 @@ const checkedHash = (value: unknown): string => probeSha256(value) ? value : fai
 function json<T>(value: unknown): T { if (typeof value !== "string") return fail("storage"); return JSON.parse(value) as T; }
 function host(value: ProbeHostBinding): void {
   canonical(value);
-  if (!value || typeof value.actor !== "string" || !value.actor || !probeInteger(value.sessionGeneration)
+  if (!value || typeof value.actor !== "string" || !value.actor || !probeSessionGeneration(value.sessionGeneration)
+    || !executionText(value.requestConnectionId, EXECUTION_REFERENCE_LIMITS.id)
     || typeof value.baselineGuidance !== "string" || Buffer.byteLength(value.baselineGuidance) > GUIDANCE_ROLE_MAX_BYTES
     || !probeSha256(value.role?.baselineSha256) || !probeInteger(value.task?.id) || value.task.id === 0
     || !probeInteger(value.task.created) || !probeInteger(value.task.flowRevision)) fail("changed");
@@ -110,16 +111,30 @@ export class GuidanceProbeStore {
   private readonly db: Database;
   constructor(file: string, private readonly now: () => number = Date.now) {
     this.db = openHubDatabase(file, { create: true });
-    this.db.run(`CREATE TABLE IF NOT EXISTS guidance_probe_manifests (
-      project TEXT NOT NULL,id TEXT NOT NULL,experiment TEXT NOT NULL,manifest TEXT NOT NULL,
-      task_input TEXT NOT NULL,baseline_context TEXT NOT NULL,data_policy TEXT NOT NULL,system_policy TEXT NOT NULL,improver_context TEXT,
-      binding TEXT NOT NULL,counters TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,first_reserved INTEGER,last_wall INTEGER,admission_hold TEXT NOT NULL,
-      PRIMARY KEY(project,id),UNIQUE(project,experiment))`);
-    this.db.run(`CREATE TABLE IF NOT EXISTS guidance_probe_lanes (project TEXT PRIMARY KEY,manifest_id TEXT NOT NULL,slot_id TEXT)`);
-    this.db.run(`CREATE TABLE IF NOT EXISTS guidance_probe_sessions (project TEXT NOT NULL,manifest_id TEXT NOT NULL,ordinal INTEGER NOT NULL,
-      slot_id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(project,manifest_id,slot_id),UNIQUE(project,manifest_id,ordinal))`);
+    try {
+      this.db.run(`CREATE TABLE IF NOT EXISTS guidance_probe_manifests (
+        project TEXT NOT NULL,id TEXT NOT NULL,experiment TEXT NOT NULL,manifest TEXT NOT NULL,
+        task_input TEXT NOT NULL,baseline_context TEXT NOT NULL,data_policy TEXT NOT NULL,system_policy TEXT NOT NULL,improver_context TEXT,
+        binding TEXT NOT NULL,counters TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,first_reserved INTEGER,last_wall INTEGER,admission_hold TEXT NOT NULL,cancel_requested INTEGER NOT NULL,
+        PRIMARY KEY(project,id),UNIQUE(project,experiment))`);
+      this.db.run(`CREATE TABLE IF NOT EXISTS guidance_probe_lanes (project TEXT PRIMARY KEY,manifest_id TEXT NOT NULL,slot_id TEXT)`);
+      this.db.run(`CREATE TABLE IF NOT EXISTS guidance_probe_sessions (project TEXT NOT NULL,manifest_id TEXT NOT NULL,ordinal INTEGER NOT NULL,
+        slot_id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(project,manifest_id,slot_id),UNIQUE(project,manifest_id,ordinal))`);
+    } catch (error) {
+      this.db.close();
+      if (error instanceof GuidanceProbeError) throw error;
+      throw new GuidanceProbeError("storage");
+    }
   }
   close(): void { this.db.close(); }
+  hasRecords(): boolean {
+    try {
+      const row = this.db.query(`SELECT EXISTS(SELECT 1 FROM guidance_probe_manifests)
+        OR EXISTS(SELECT 1 FROM guidance_probe_sessions) OR EXISTS(SELECT 1 FROM guidance_probe_lanes) AS present`).get() as { present: number };
+      if (row.present !== 0 && row.present !== 1) return fail("storage");
+      return row.present === 1;
+    } catch (error) { if (error instanceof GuidanceProbeError) throw error; return fail("storage"); }
+  }
   private transaction<T>(action: () => T): T {
     try { return this.db.transaction(action).immediate(); }
     catch (error) { if (error instanceof GuidanceProbeError) throw error; throw new GuidanceProbeError("storage"); }
@@ -135,7 +150,8 @@ export class GuidanceProbeStore {
       (first_reserved IS NULL OR typeof(first_reserved)='integer') AS first_reserved_valid,
       CASE WHEN last_wall IS NULL OR typeof(last_wall)='integer' THEN last_wall END AS last_wall,
       (last_wall IS NULL OR typeof(last_wall)='integer') AS last_wall_valid,
-      CASE WHEN admission_hold IN ('none','elapsed','observation','usage') THEN admission_hold END AS admission_hold
+      CASE WHEN admission_hold IN ('none','elapsed','observation','usage') THEN admission_hold END AS admission_hold,
+      CASE WHEN typeof(cancel_requested)='integer' AND cancel_requested IN (0,1) THEN cancel_requested END AS cancel_requested
       FROM guidance_probe_manifests WHERE project=? AND id=?`).get(key.projectKey, key.id) as Row | null;
     if (!row) return undefined;
     const registration = parseGuidanceProbeRegistration({ manifest: json(row.manifest), snapshots: {
@@ -174,11 +190,12 @@ export class GuidanceProbeStore {
       else if (!["planned", "not_needed"].includes(session.state)) return fail("storage");
       if (session.host) {
         const start = session.start;
-        if (!start || Object.keys(start).sort().join(",") !== "actor,nativeSession,requestedRevision,sessionGeneration,slotId,variantId"
+        if (!start || Object.keys(start).sort().join(",") !== "actor,nativeSession,requestConnectionId,requestedRevision,sessionGeneration,slotId,variantId"
           || !probeInteger(start.requestedRevision) || start.requestedRevision >= checkedInteger(row.revision) || starts.has(start.requestedRevision)
           || start.slotId !== session.slotId || start.actor !== session.host.actor || !executionText(start.actor, EXECUTION_REFERENCE_LIMITS.id)
-          || !probeInteger(start.sessionGeneration) || start.sessionGeneration !== session.host.sessionGeneration
+          || !probeSessionGeneration(start.sessionGeneration) || start.sessionGeneration !== session.host.sessionGeneration
           || start.nativeSession !== session.host.nativeSession || start.nativeSession !== null && !executionText(start.nativeSession, EXECUTION_REFERENCE_LIMITS.id)
+          || start.requestConnectionId !== session.host.requestConnectionId || !executionText(start.requestConnectionId, EXECUTION_REFERENCE_LIMITS.id)
           || start.variantId !== (session.child?.variantId ?? null) || start.variantId !== null && !probeSha256(start.variantId)) return fail("storage");
         starts.add(start.requestedRevision);
       }
@@ -198,10 +215,11 @@ export class GuidanceProbeStore {
     if (row.first_reserved_valid !== 1 || row.last_wall_valid !== 1 || !["declared", "active", "closing", "closed_fixture", "failed_fixture", "unknown_held"].includes(row.state as string)) return fail("storage");
     if (!["none", "elapsed", "observation", "usage"].includes(row.admission_hold as string)
       || row.admission_hold !== "none" && !["unknown_held", "closing"].includes(row.state as string)) return fail("storage");
+    if (row.cancel_requested !== 0 && row.cancel_requested !== 1 || row.cancel_requested === 1 && !["closing", "unknown_held"].includes(row.state as string)) return fail("storage");
     return { registration, binding, receipt: { id: key.id, revision: checkedInteger(row.revision), state: row.state as ProbeReceipt["state"], already: false },
       counters: totals, firstReservedAt: row.first_reserved === null ? null : checkedInteger(row.first_reserved),
       lastWall: row.last_wall === null ? null : checkedInteger(row.last_wall), admissionHold: row.admission_hold as Stored["admissionHold"],
-      notNeeded: sessions.filter(item => item.state === "not_needed").length, sessions };
+      cancelRequested: row.cancel_requested === 1, notNeeded: sessions.filter(item => item.state === "not_needed").length, sessions };
   }
   read(key: ProbeKey): ProbeStoredState | undefined {
     try { const state = this.readStored(key); if (!state) return undefined; const { lastWall: _, ...result } = state; return result; }
@@ -215,8 +233,8 @@ export class GuidanceProbeStore {
   }
   private get(key: ProbeKey): Stored { return this.readStored(key) ?? fail("changed"); }
   private save(key: ProbeKey, state: Stored): void {
-    this.db.query("UPDATE guidance_probe_manifests SET counters=?,revision=?,state=?,first_reserved=?,last_wall=?,admission_hold=? WHERE project=? AND id=?")
-      .run(canonical(state.counters), state.receipt.revision, state.receipt.state, state.firstReservedAt, state.lastWall, state.admissionHold, key.projectKey, key.id);
+    this.db.query("UPDATE guidance_probe_manifests SET counters=?,revision=?,state=?,first_reserved=?,last_wall=?,admission_hold=?,cancel_requested=? WHERE project=? AND id=?")
+      .run(canonical(state.counters), state.receipt.revision, state.receipt.state, state.firstReservedAt, state.lastWall, state.admissionHold, state.cancelRequested ? 1 : 0, key.projectKey, key.id);
     for (const session of state.sessions) this.db.query("UPDATE guidance_probe_sessions SET body=? WHERE project=? AND manifest_id=? AND slot_id=?")
       .run(sessionCanonical(session), key.projectKey, key.id, session.slotId);
   }
@@ -262,9 +280,9 @@ export class GuidanceProbeStore {
       if (existing) { if (!probeSha256(existing.id)) return fail("storage"); if (existing.id !== id) return fail("changed"); const state = this.get(key); if (!invariant(state.binding, binding)) return fail("changed"); return receipt(state, true); }
       const totals = counters(); totals.inputBytes = bytes;
       const snap = registration.snapshots;
-      this.db.query(`INSERT INTO guidance_probe_manifests(project,id,experiment,manifest,task_input,baseline_context,data_policy,system_policy,improver_context,binding,counters,revision,state,admission_hold)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(key.projectKey, id, manifest.experimentId, canonical(manifest), snap.task, snap.baselineContext,
-          canonical(snap.dataPolicy), snap.systemPolicy, snap.improverContext ?? null, canonical(binding), canonical(totals), 0, "declared", "none");
+      this.db.query(`INSERT INTO guidance_probe_manifests(project,id,experiment,manifest,task_input,baseline_context,data_policy,system_policy,improver_context,binding,counters,revision,state,admission_hold,cancel_requested)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(key.projectKey, id, manifest.experimentId, canonical(manifest), snap.task, snap.baselineContext,
+          canonical(snap.dataPolicy), snap.systemPolicy, snap.improverContext ?? null, canonical(binding), canonical(totals), 0, "declared", "none", 0);
       manifest.slots.forEach((slot, index) => this.db.query("INSERT INTO guidance_probe_sessions(project,manifest_id,ordinal,slot_id,body) VALUES(?,?,?,?,?)")
         .run(key.projectKey, id, index, slot.id, canonical({ slotId: slot.id, generation: 0, revision: 0, state: "planned", candidateArtifactSha256: null, effect: null })));
       return { id, revision: 0, state: "declared", already: false };
@@ -278,12 +296,12 @@ export class GuidanceProbeStore {
       const replay = state.sessions.find(item => item.start?.requestedRevision === input.expectedRevision);
       if (replay) {
         const expected: ProbeStartSelector = { requestedRevision: input.expectedRevision, slotId: replay.slotId, variantId: input.child?.variantId ?? null,
-          actor: input.host.actor, sessionGeneration: input.host.sessionGeneration, nativeSession: input.host.nativeSession };
+          actor: input.host.actor, sessionGeneration: input.host.sessionGeneration, nativeSession: input.host.nativeSession, requestConnectionId: input.host.requestConnectionId };
         if (!same(replay.start, expected) || !sameChild(replay.child, input.child)) return fail("changed");
         return { kind: "existing", receipt: receipt(state, true) };
       }
       if (state.receipt.revision !== input.expectedRevision) return fail("changed");
-      if (["closing", "closed_fixture", "failed_fixture", "unknown_held"].includes(state.receipt.state) || state.counters.usageUnknown) return fail("held");
+      if (state.cancelRequested || ["closing", "closed_fixture", "failed_fixture", "unknown_held"].includes(state.receipt.state) || state.counters.usageUnknown) return fail("held");
       const lanes = [...this.lanes(input.key.projectKey)]; if (lanes.length > 1) return fail("storage");
       const lane = lanes[0]; if (lane && (lane.manifestId !== input.key.id || lane.slotId !== null)) return fail("held");
       const index = state.sessions.findIndex(item => item.state === "planned"), session = state.sessions[index]; if (!session) return fail("held");
@@ -300,7 +318,7 @@ export class GuidanceProbeStore {
       charge(state, slot.role === "worker" ? "workerAttempts" : "editorAttempts", 1, slot.role === "worker" ? GUIDANCE_PROBE_LIMITS.workerAttempts : GUIDANCE_PROBE_LIMITS.editorAttempts);
       session.host = input.host; session.generation = increment(session.generation); session.revision = increment(session.revision); session.state = "reserved";
       session.start = { requestedRevision: input.expectedRevision, slotId: slot.id, variantId: input.child?.variantId ?? null,
-        actor: input.host.actor, sessionGeneration: input.host.sessionGeneration, nativeSession: input.host.nativeSession };
+        actor: input.host.actor, sessionGeneration: input.host.sessionGeneration, nativeSession: input.host.nativeSession, requestConnectionId: input.host.requestConnectionId };
       state.receipt.state = "active"; advance(state);
       this.db.query("INSERT INTO guidance_probe_lanes(project,manifest_id,slot_id) VALUES(?,?,?) ON CONFLICT(project) DO UPDATE SET slot_id=excluded.slot_id")
         .run(input.key.projectKey, input.key.id, slot.id);
@@ -317,7 +335,7 @@ export class GuidanceProbeStore {
     return this.transaction(() => {
       const state = this.get(reservation.key), session = this.owned(state, reservation), fresh = revalidate();
       if (!same(fresh.host, session.host) || !sameChild(fresh.child, session.child) || !invariant(state.binding, fresh.host)) return fail("changed");
-      if (state.receipt.state !== "active" || state.admissionHold !== "none") return fail("held");
+      if (state.cancelRequested || state.receipt.state !== "active" || state.admissionHold !== "none") return fail("held");
       const now = this.now();
       if (this.clockLost(reservation.key, state, now)) return receipt(state);
       elapsed(state, now); this.save(reservation.key, state); return receipt(state);
@@ -327,7 +345,7 @@ export class GuidanceProbeStore {
     return this.transaction(() => {
       const state = this.get(input.reservation.key), session = this.owned(state, input.reservation), fresh = revalidate();
       if (!same(fresh.host, session.host) || !sameChild(fresh.child, session.child) || !invariant(state.binding, fresh.host)) return fail("changed");
-      if (state.receipt.state !== "active" || state.counters.usageUnknown || !probeInteger(input.sequence) || !probeSha256(input.descriptorSha256) || !probeInteger(input.amount)) return fail("held");
+      if (state.cancelRequested || state.receipt.state !== "active" || state.counters.usageUnknown || !probeInteger(input.sequence) || !probeSha256(input.descriptorSha256) || !probeInteger(input.amount)) return fail("held");
       if (["model_calls", "tool_calls"].includes(input.unit) && input.amount !== 1) return fail("invalid");
       const previous = session.effect;
       if (previous && input.sequence === previous.admission.sequence) {
@@ -399,7 +417,7 @@ export class GuidanceProbeStore {
       if (this.clockLost(input.reservation.key, state, now)) return receipt(state);
       elapsed(state, now);
       if (input.candidateArtifactSha256 !== null && !probeSha256(input.candidateArtifactSha256)) return fail("invalid");
-      const unknown = state.admissionHold !== "none" || state.receipt.state === "closing" || input.outcome === "unknown" || state.counters.usageUnknown || session.effect?.state === "pending" || session.effect?.state === "unknown";
+      const unknown = state.cancelRequested || state.admissionHold !== "none" || state.receipt.state === "closing" || input.outcome === "unknown" || state.counters.usageUnknown || session.effect?.state === "pending" || session.effect?.state === "unknown";
       session.state = unknown ? "unknown_held" : input.outcome === "failed_known" ? "failed_known" : "closed_fixture"; session.candidateArtifactSha256 = input.candidateArtifactSha256;
       if (unknown) state.receipt.state = "unknown_held";
       else {
@@ -419,8 +437,8 @@ export class GuidanceProbeStore {
     return this.transaction(() => {
       const state = this.get(input.key), fresh = revalidate();
       if (!same(input.host, fresh) || !taskEpoch(state.binding, fresh) || state.receipt.revision !== input.expectedRevision) return fail("changed");
-      if (["closing", "closed_fixture", "failed_fixture"].includes(state.receipt.state)) return receipt(state, true);
-      state.receipt.state = "closing"; advance(state); this.save(input.key, state); return receipt(state);
+      if (state.cancelRequested || ["closing", "closed_fixture", "failed_fixture"].includes(state.receipt.state)) return receipt(state, true);
+      state.cancelRequested = true; state.receipt.state = "closing"; advance(state); this.save(input.key, state); return receipt(state);
     });
   }
   /** Narrow already-owned bookkeeping only. No effect admission, lane release or hold-reset. */
@@ -446,7 +464,7 @@ export class GuidanceProbeStore {
       if (typeof key.projectKey !== "string") return fail("storage");
       const state = this.get(key); experiments++; sessions += state.sessions.length;
       for (const component of [key, state.registration.manifest, state.binding, state.counters, state.receipt,
-        { firstReservedAt: state.firstReservedAt, lastWall: state.lastWall, admissionHold: state.admissionHold }]) digest.update(canonical(component)).update("\n");
+        { firstReservedAt: state.firstReservedAt, lastWall: state.lastWall, admissionHold: state.admissionHold, cancelRequested: state.cancelRequested }]) digest.update(canonical(component)).update("\n");
       for (const session of state.sessions) digest.update(sessionCanonical(session)).update("\n");
     }
     const orphan = this.db.query(`SELECT EXISTS(SELECT 1 FROM guidance_probe_sessions s LEFT JOIN guidance_probe_manifests m ON m.project=s.project AND m.id=s.manifest_id WHERE m.id IS NULL)

@@ -8,7 +8,7 @@ export function guidanceProbeFixture(): { registration: ProbeRegistrationV1; hos
     worker: { dataIds: [], guidanceOnlyExperience: true }, proposal: { dataIds: [], improverContext: false },
     compose: { dataIds: [], improverContext: false }, select: { dataIds: [], anonymizedDeliverables: true }, reflect: { dataIds: [], closedRoundOnly: true } } };
   const host: ProbeHostBinding = { projectKey: "fixture-project", actor: "codex", task: { id: 1, created: 10, flowRevision: 2 },
-    role: { id: "fixture-role", layer: "project", baselineSha256: probeHash("catalog") }, baselineGuidance: "Baseline guidance.", sessionGeneration: 1, nativeSession: "fixture-session" };
+    role: { id: "fixture-role", layer: "project", baselineSha256: probeHash("catalog") }, baselineGuidance: "Baseline guidance.", sessionGeneration: 1, nativeSession: "fixture-session", requestConnectionId: "fixture-connection" };
   const snapshots = { task: "Read code.\r\nconst value = 1;\tKeep exact bytes.\n", baselineContext: "Fixed context.", dataPolicy: policy, systemPolicy: "Fixture system policy." };
   const reference = (text: string) => ({ sha256: probeHash(text), bytes: Buffer.byteLength(text) });
   const slots: ProbeSlot[] = [ { id: "baseline", stage: "baseline", role: "worker", arm: "baseline" },

@@ -147,7 +147,7 @@ describe("guidance probe private atomic ledger", () => {
   test("original start selector replays reserved work without another grant or metadata write", () => {
     const f = fixture(); f.register(); f.reserve(); const before = f.store.integrity();
     expect(f.store.startSelector(f.key, 0)).toEqual({ requestedRevision: 0, slotId: "baseline", variantId: null, actor: f.host.actor,
-      sessionGeneration: f.host.sessionGeneration, nativeSession: f.host.nativeSession });
+      sessionGeneration: f.host.sessionGeneration, nativeSession: f.host.nativeSession, requestConnectionId: f.host.requestConnectionId });
     expect(f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, now: 999999 }, f.revalidate)).toMatchObject({ kind: "existing", receipt: { already: true } });
     expect(f.store.integrity()).toEqual(before); expect(f.store.read(f.key)!.counters.workerAttempts).toBe(1);
     expect(JSON.stringify(f.store.startSelector(f.key, 0))).not.toContain(f.registration.snapshots.task);
@@ -187,7 +187,7 @@ describe("guidance probe private atomic ledger", () => {
   });
   test("original start replay cannot change actor/session/variant and current refusal precedes duplicate lookup", () => {
     const f = fixture(); f.register(); f.reserve(); const before = f.store.integrity();
-    for (const changed of [{ ...f.host, actor: "pi" }, { ...f.host, sessionGeneration: f.host.sessionGeneration + 1 }, { ...f.host, nativeSession: "changed-session" }]) {
+    for (const changed of [{ ...f.host, actor: "pi" }, { ...f.host, sessionGeneration: "changed-generation" }, { ...f.host, nativeSession: "changed-session" }, { ...f.host, requestConnectionId: "changed-connection" }]) {
       expect(() => f.store.reserveSession({ key: f.key, expectedRevision: 0, host: changed, now: 100 }, () => ({ host: changed }))).toThrow("binding");
       expect(f.store.integrity()).toEqual(before);
     }
@@ -470,6 +470,22 @@ describe("guidance probe private atomic ledger", () => {
     expect(() => f.store.reserveSession({ key: f.key, expectedRevision: f.store.read(f.key)!.receipt.revision, host: f.host, now: 100 }, f.revalidate)).toThrow("uncertain");
     expect(() => f.store.cancelIntent({ key: f.key, expectedRevision: revision + 1, host: { ...current, task: { ...current.task, created: 999 } } }, () => ({ ...current, task: { ...current.task, created: 999 } }))).toThrow("binding");
   });
+  test("cancel intent survives hold, unknown settlement and reopen without releasing or granting", () => {
+    const f = fixture(); f.register(); const reservation = f.reserve();
+    f.store.cancelIntent({ key: f.key, expectedRevision: f.store.read(f.key)!.receipt.revision, host: f.host }, () => f.host);
+    f.store.latchHold(reservation, "observation");
+    f.store.settleSession({ reservation, outcome: "unknown", candidateArtifactSha256: null, now: f.clock.now });
+    const reopened = new GuidanceProbeStore(f.file, () => f.clock.now); cleanup.push(() => reopened.close());
+    const state = reopened.read(f.key)!; expect(state.cancelRequested).toBe(true); expect(state.receipt.state).toBe("unknown_held");
+    const before = reopened.integrity();
+    expect(reopened.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, now: f.clock.now }, f.revalidate)).toMatchObject({ kind: "existing", receipt: { already: true, state: "unknown_held" } });
+    expect(() => reopened.reserveSession({ key: f.key, expectedRevision: state.receipt.revision, host: f.host, now: f.clock.now }, f.revalidate)).toThrow("uncertain");
+    expect(reopened.integrity()).toEqual(before); expect(reopened.read(f.key)!.counters.workerAttempts).toBe(1);
+    const db = openHubDatabase(f.file); cleanup.push(() => db.close());
+    expect((db.query("SELECT COUNT(*) AS n FROM guidance_probe_lanes WHERE project=?").get(f.key.projectKey) as { n: number }).n).toBe(1);
+    db.query("UPDATE guidance_probe_manifests SET cancel_requested=2 WHERE project=? AND id=?").run(f.key.projectKey, f.key.id);
+    expect(() => reopened.read(f.key)).toThrow("storage");
+  });
   test("late candidate is atomically bound to existing current G1; external provenance stays uncontrolled", () => {
     const f = fixture(); f.register(); f.finish(f.reserve()); f.finish(f.reserve());
     const child: ProbeChildBinding = { variantId: probeHash("variant"), candidateSha256: probeHash("Raw candidate role file."), guidanceSha256: probeHash("Candidate guidance."), guidance: "Candidate guidance.", task: f.host.task, role: f.host.role, authoring: "admitted_fixture", sourceSessionId: "invented" };
@@ -559,6 +575,9 @@ describe("guidance probe private atomic ledger", () => {
     }
     expect(f.store.read(key)!.counters).toMatchObject({ workerAttempts: 4, editorAttempts: 5 });
     expect(f.store.read(key)!.receipt.state).toBe("closed_fixture");
+    const terminal = f.store.read(key)!;
+    expect(f.store.cancelIntent({ key, expectedRevision: terminal.receipt.revision, host: f.host }, () => f.host).already).toBe(true);
+    expect(f.store.read(key)!.cancelRequested).toBe(false);
     expect(() => f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, now: 100 }, f.revalidate)).toThrow("uncertain");
     expect(f.store.read(key)!.sessions[2]!.child!.authoring).toBe("admitted_fixture");
   });

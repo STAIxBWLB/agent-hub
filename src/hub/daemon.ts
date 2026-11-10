@@ -1,4 +1,7 @@
 import { parseGuidanceCreateInput, parseGuidanceIdQuery } from "./guidance-variants.ts";
+import { GuidanceProbeStore } from "./guidance-probe-store.ts";
+import { probeSessionGeneration } from "./guidance-probes.ts";
+import { executionText, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
 import { publicDeliveryBodies } from "./delivery-public.ts";
 import { GeneratedNoteRegistry, type GeneratedNoteProof } from "../memory/record-provenance.ts";
 import { RecordCapture, type RecordCapturePolicy } from "../memory/records.ts";
@@ -864,6 +867,8 @@ interface Client {
   launchId?: string;
   /** Display-only retained standby id; peer operations stay fenced until ownsSocket confirms attachment. */
   standbyId?: string;
+  /** Host-minted per connection and durable only as a private replay comparator; never a token, live authority or wire claim. */
+  guidanceProbeConnectionId?: string;
   retainStandby?: boolean;
   peerGeneration?: string | number;
   detachedByPerson?: boolean;
@@ -881,6 +886,13 @@ interface Client {
   closed?: true;
 }
 type Sock = ServerWebSocket<Client>;
+interface GuidanceProbeRequestContext {
+  actor: PeerId;
+  requestConnectionId: string;
+  generation: string | number;
+  nativeSession: string | null;
+  current: () => void;
+}
 
 
 /**
@@ -1172,6 +1184,7 @@ export async function startDaemon(opts: DaemonOptions) {
   mkdirSync(opts.stateDir, { recursive: true });
   const operationalLogSubscribers=new Map<Sock,()=>void>();
   const operationalContext=new AsyncLocalStorage<{actor:string;current:()=>void}|undefined>();
+  const guidanceProbeRequestContext = new AsyncLocalStorage<GuidanceProbeRequestContext>();
   const checkOperational=(authority:SettingAuthority)=>{if(authority==="conductor"){const scope=operationalContext.getStore();if(!scope)throw new OperationalAuthorityError("operational conductor authority unavailable");scope.current();}};
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
@@ -2286,19 +2299,30 @@ export async function startDaemon(opts: DaemonOptions) {
   const inboxPolling = new InboxPolling();
   startupTimings.mark("model_runtime");
   const board = new Board(join(opts.stateDir, "hub.db"));
+  let guidanceProbeStore: GuidanceProbeStore;
+  try { guidanceProbeStore = new GuidanceProbeStore(join(opts.stateDir, "hub.db")); }
+  catch { board.close(); throw new Error("guidance probe storage is unavailable; inspect retained probe state and hub.db before restarting"); }
   try {
     const retainedExecutionReferences = board.executionReferencesIntegrity(), expected = restored?.integrity?.executionReferences;
     if (restored?.integrity && (expected ? expected.count !== retainedExecutionReferences.count || expected.digest !== retainedExecutionReferences.digest : retainedExecutionReferences.count !== 0)) throw new Error("changed recovery binding");
   } catch {
-    board.close(); throw new Error("execution reference state or recovery binding is unavailable; restore trusted project state and choose a compatible recovery target before retrying");
+    guidanceProbeStore.close(); board.close(); throw new Error("execution reference state or recovery binding is unavailable; restore trusted project state and choose a compatible recovery target before retrying");
   }
   try {
     const retainedGuidance = board.guidanceVariantsIntegrity(), expected = restored?.integrity?.guidanceVariants;
     if (restored?.integrity && (expected ? expected.experiments !== retainedGuidance.experiments || expected.variants !== retainedGuidance.variants
       || expected.digest !== retainedGuidance.digest : retainedGuidance.experiments !== 0 || retainedGuidance.variants !== 0)) throw new Error("changed recovery binding");
   } catch {
-    board.close(); throw new Error("guidance variant state or recovery binding is unavailable; restore trusted project state and choose a supporting target before retrying");
+    guidanceProbeStore.close(); board.close(); throw new Error("guidance variant state or recovery binding is unavailable; restore trusted project state and choose a supporting target before retrying");
   }
+  try {
+    const retained = guidanceProbeStore.integrity(), expected = restored?.integrity?.guidanceProbes;
+    if (restored && (expected ? expected.experiments !== retained.experiments || expected.sessions !== retained.sessions || expected.digest !== retained.digest
+      : retained.experiments !== 0 || retained.sessions !== 0)) throw new Error("changed recovery binding");
+  } catch {
+    guidanceProbeStore.close(); board.close(); throw new Error("guidance probe state or recovery binding is unavailable; restore trusted project state and choose a compatible target before retrying");
+  }
+  startupCleanup.push(() => guidanceProbeStore.close());
   const visuals = new VisualStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => visuals.close());
   // Held recovery must compare the source's exact rows before any retention mutation.
@@ -2871,6 +2895,11 @@ export async function startDaemon(opts: DaemonOptions) {
   let specsMissingBlockHintShown = false;
   let releaseReportPolicy: ((head: string, repo: string) => ReleaseReportPolicy | undefined) | undefined;
   const tasks: Tasks = new Tasks({
+    guidanceProbes: { store: guidanceProbeStore, session: by => {
+      const request = guidanceProbeRequestContext.getStore();
+      return request?.actor === by ? { generation: request.generation, nativeSession: request.nativeSession,
+        requestConnectionId: request.requestConnectionId, current: request.current } : undefined;
+    } },
     releaseWindow,
     researchRunners: () => {
       if (config.research.runners === undefined) return {};
@@ -6582,6 +6611,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
     if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].filter(peer => !peer.id.includes("@")).some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
+    if (tasks.guidanceProbesPending() !== 0) return false; // Active and uncertain fixture work retains its project lane.
     if (checkPending.size !== 0) return false;
     if (tasks.autoPullsPending() !== 0) return false; // #785 P1c: an automatic backlog pull mid-admission would write after the commit's digest; its own line keeps the line above exact for scripts/seeds.json
     if (tasks.queuePressureRechecksPending() !== 0) return false;
@@ -6894,13 +6924,14 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchRunners = board.runnerReceiptIntegrity();
     const researchEvidence = board.researchEvidenceIntegrity();
     const guidanceVariants = board.guidanceVariantsIntegrity();
+    const guidanceProbes = guidanceProbeStore.integrity();
     const executionReferences = board.executionReferencesIntegrity();
     const reviewComments = board.reviewCommentsIntegrity();
     const modelState = modelOverrides.integrity();
     const visualIntegrity = visuals.integrity();
     if (!Number.isSafeInteger(visualIntegrity.count) || visualIntegrity.count < 0 || !/^[a-f0-9]{64}$/.test(visualIntegrity.digest))
       throw new Error("visual recovery integrity unavailable; inspect the retained store before recovery");
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(guidanceProbes.experiments || guidanceProbes.sessions ? { guidanceProbes } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -10365,6 +10396,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // #272: the rest of what recoveryReady() waits for, so the upgrade screen can name the wait. Display only.
       ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
       ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
+      ...(tasks.guidanceProbesPending() !== 0 ? ["guidance probe work in flight"] : []),
       ...(tasks.autoPullsPending() !== 0 ? ["an automatic backlog pull in flight"] : []),
       ...(tasks.queuePressureRechecksPending() !== 0 ? ["a queue-pressure assignment recheck in flight"] : []),
       ...(tasks.schedulesPending() !== 0 ? ["a scheduled task proposal in flight"] : []),
@@ -10397,6 +10429,10 @@ export async function startDaemon(opts: DaemonOptions) {
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
     const incompatibleRecoveryTarget = () => {
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("guidance_probes")) {
+        try { if (guidanceProbeStore.hasRecords()) return "target lacks guidance_probes; retained probe declarations or held work require a supporting daemon; choose a target advertising guidance_probes"; }
+        catch { return "guidance probe compatibility is unknown; inspect retained probe state or choose a supporting target"; }
+      }
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("guidance_variants")) {
         try { if (board.hasGuidanceVariants()) return "target lacks guidance_variants; retained immutable variants require a supporting daemon; choose a target advertising guidance_variants"; }
         catch { return "guidance variant compatibility is unknown; inspect retained storage or choose a supporting target"; }
@@ -10921,6 +10957,7 @@ export async function startDaemon(opts: DaemonOptions) {
       c.authed = true;
       c.protocol = selectedProtocol;
       c.role = msg.role;
+      c.guidanceProbeConnectionId = randomUUID(); // Private comparator only; never sent, persisted separately or accepted from hello.
       if (c.role === "console") consoles.add(sock);
       else if (c.role === "tools" && sessionHello(msg)) {
         // agent-hub#1036: a connection that names a peer id but is not that peer's current session gets an id of its own instead of becoming the peer. It can send and read; it holds none of the
@@ -12222,6 +12259,64 @@ export async function startDaemon(opts: DaemonOptions) {
           error => reply({ ok: false, error: error instanceof Error ? error.message : "guidance write is unconfirmed; inspect the task guidance before explicitly retrying" }));
         return;
       }
+      case "guidance_probe_register":
+      case "guidance_probe_start":
+      case "guidance_probe_show":
+      case "guidance_probe_cancel": {
+        const role = c.role, actor = role === "console" ? USER : role === "tools" && typeof c.peer === "string" && PEER_ID.test(c.peer) ? c.peer : undefined;
+        if ((role !== "console" && role !== "tools") || !actor) return void reply({ ok: false, error: "guidance probes require a person or the current configured conductor" });
+        if (stopping || recoveryActive() || bus.isRecoveryHeld) return void reply({ ok: false, error: "recovery or shutdown is holding guidance probe operations; inspect retained state after release" });
+        const operation = msg.t === "guidance_probe_register" ? "guidance probe register" : msg.t === "guidance_probe_start" ? "guidance probe start"
+          : msg.t === "guidance_probe_show" ? "guidance probe show" : "guidance probe cancel";
+        let authorityCurrent: () => void;
+        if (role === "tools") {
+          try { authorityCurrent = admitOperational(sock, operation); }
+          catch (error) { return void reply(operationalFailure(error)); }
+        } else authorityCurrent = () => {
+          if (sock.data !== c || c.closed || sock.readyState !== WebSocket.OPEN || c.role !== "console" || stopping)
+            throw new PreEffectToolRefusal("guidance probe console session changed; reconnect and inspect retained state");
+        };
+        const requestConnectionId = c.guidanceProbeConnectionId;
+        if (!executionText(requestConnectionId, EXECUTION_REFERENCE_LIMITS.id))
+          return void reply({ ok: false, error: "guidance probe request identity is unavailable; reconnect through the authenticated project connection" });
+        let generation: string | number, nativeSession: string | null, owner: PeerAdapter | undefined;
+        if (role === "console") {
+          generation = requestConnectionId;
+          nativeSession = null;
+        } else {
+          owner = bus.peers.get(actor);
+          const peerGeneration = owner?.sessionGeneration, peerNativeSession = owner?.nativeSession;
+          if (!owner || !("sessionGeneration" in owner) || !probeSessionGeneration(peerGeneration)
+            || !("nativeSession" in owner) || typeof peerNativeSession !== "string"
+            || !executionText(peerNativeSession, EXECUTION_REFERENCE_LIMITS.id))
+            return void reply({ ok: false, error: "guidance probe conductor session identity is unavailable; reconnect the current native peer session" });
+          generation = peerGeneration;
+          nativeSession = peerNativeSession;
+        }
+        const current = (): void => {
+          if (sock.data !== c || c.closed || sock.readyState !== WebSocket.OPEN || c.role !== role || c.guidanceProbeConnectionId !== requestConnectionId
+            || role === "tools" && (c.peer !== actor || bus.peers.get(actor) !== owner || owner!.sessionGeneration !== generation || owner!.nativeSession !== nativeSession))
+            throw new PreEffectToolRefusal("guidance probe request connection or native peer session changed; inspect retained state and reconnect");
+          authorityCurrent();
+        };
+        const requestContext: GuidanceProbeRequestContext = { actor, requestConnectionId, generation, nativeSession, current };
+        const input = msg.registration;
+        taskOpsInFlight++;
+        const run = () => {
+          current();
+          if (recoveryActive() || bus.isRecoveryHeld || stopping) throw new PreEffectToolRefusal("recovery or shutdown is holding guidance probe operations; inspect retained state after release");
+          const action = () => msg.t === "guidance_probe_register" ? tasks.guidanceProbeRegister(actor, input)
+            : msg.t === "guidance_probe_start" ? tasks.guidanceProbeStart(actor, msg.id, msg.revision, msg.variantId)
+            : msg.t === "guidance_probe_show" ? tasks.guidanceProbeShow(actor, msg.id)
+            : tasks.guidanceProbeCancel(actor, msg.id, msg.revision);
+          const withRequest = () => guidanceProbeRequestContext.run(requestContext, action);
+          return role === "tools" ? operationalContext.run({ actor, current }, withRequest) : withRequest();
+        };
+        void Promise.resolve().then(run).then(value => reply(msg.t === "guidance_probe_show" ? { ok: true, status: value } : { ok: true, receipt: value }),
+          error => reply(operationalFailure(error, "guidance probe operation is unavailable; inspect retained state before explicitly retrying")))
+          .finally(() => { taskOpsInFlight--; }).catch(() => {});
+        return;
+      }
       case "lineage_show":
       case "lineage_link": {
         const role = c.role, actor = role === "console" ? USER : role === "tools" && typeof c.peer === "string" && PEER_ID.test(c.peer) ? c.peer : undefined;
@@ -12610,6 +12705,8 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    // A failed bounded probe drain must return before teardown/finalization. The retained DB, owned fixture handles and retryable shutdown remain available.
+    await tasks.stopGuidanceProbes();
     kimiUsage.stop();
     controlWriteTelemetry?.stop();
     const roomsStopped = roomCommands.stop().catch(() => { log("room shutdown failed; inspect ahub room status after restart"); });
@@ -12680,6 +12777,7 @@ export async function startDaemon(opts: DaemonOptions) {
       memoryStore?.close();
       modelPreviews.clear(); modelOverrides.close();
       visuals.close();
+      guidanceProbeStore.close();
       board.close();
       turnLog?.close();
       server.stop(true);

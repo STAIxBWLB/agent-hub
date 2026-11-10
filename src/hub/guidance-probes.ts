@@ -10,6 +10,8 @@ const registrationScaffoldBytes = Buffer.byteLength(JSON.stringify({ manifest: 0
 export const GUIDANCE_PROBE_REGISTRATION_BYTES = GUIDANCE_PROBE_LIMITS.recordBytes + GUIDANCE_PROBE_LIMITS.snapshotBytes
   + 4 * 2 * GUIDANCE_PROBE_LIMITS.snapshotBytes + registrationScaffoldBytes;
 export const GUIDANCE_PROBE_SESSION_BYTES = 4 * GUIDANCE_PROBE_LIMITS.recordBytes;
+export const GUIDANCE_PROBE_STOP_TIMEOUT_MS = 5000;
+export const GUIDANCE_PROBE_FENCE_INTERVAL_MS = 250;
 export const GUIDANCE_PROBE_MODEL = "qwen27b/qwen3.8-27b";
 export type ProbeInteger = number;
 export type ProbeSha256 = string;
@@ -53,7 +55,7 @@ export type ProbeBudgetUnit = "model_calls" | "tool_calls" | "tokens" | "input_b
 export interface ProbeKey { projectKey: string; id: string }
 export interface ProbeHostBinding {
   projectKey: string; actor: string; task: { id: number; created: number; flowRevision: number }; role: ProbeRoleIdentity;
-  baselineGuidance: string; sessionGeneration: number; nativeSession: string | null;
+  baselineGuidance: string; sessionGeneration: number | string; nativeSession: string | null; requestConnectionId: string;
 }
 export interface ProbeChildBinding {
   variantId: string; candidateSha256: string; guidanceSha256: string; task: ProbeHostBinding["task"]; role: ProbeRoleIdentity; guidance: string;
@@ -64,7 +66,7 @@ export interface ProbeSessionAdmission {
   key: ProbeKey; expectedRevision: number; host: ProbeHostBinding; child?: ProbeChildBinding; now: number;
 }
 export interface ProbeReservation { key: ProbeKey; slotId: string; generation: number; revision: number }
-export interface ProbeStartSelector { requestedRevision: number; slotId: string; variantId: string | null; actor: string; sessionGeneration: number; nativeSession: string | null }
+export interface ProbeStartSelector { requestedRevision: number; slotId: string; variantId: string | null; actor: string; sessionGeneration: number | string; nativeSession: string | null; requestConnectionId: string }
 export interface ProbeReceipt { id: string; revision: number; state: ProbeState; already: boolean }
 export type ProbeReservationResult = { kind: "granted"; reservation: ProbeReservation } | { kind: "existing"; receipt: ProbeReceipt };
 export interface ProbeEffectAdmission { reservation: ProbeReservation; sequence: number; unit: ProbeBudgetUnit; amount: number; reservedTokens?: number; descriptorSha256: string; now: number }
@@ -84,7 +86,7 @@ export interface ProbeSession {
 }
 export interface ProbeStoredState {
   registration: ProbeRegistrationV1; binding: ProbeHostBinding; receipt: ProbeReceipt; counters: ProbeCounters;
-  firstReservedAt: number | null; admissionHold: "none" | "elapsed" | "observation" | "usage"; notNeeded: number; sessions: readonly ProbeSession[];
+  firstReservedAt: number | null; admissionHold: "none" | "elapsed" | "observation" | "usage"; cancelRequested: boolean; notNeeded: number; sessions: readonly ProbeSession[];
 }
 export interface ProbeIntegrity { experiments: number; sessions: number; digest: string }
 export interface ProbeFakeLaunch { reservation: ProbeReservation; slot: ProbeSlot; manifest: GuidanceProbeManifestV1; inputFrame: string; inputSha256: string; nonGuidanceInputSha256: string; purpose: "guidance_probe" }
@@ -107,7 +109,7 @@ export interface GuidanceProbeFakePorts {
   stop(input: ProbeFakeStop, signal: AbortSignal): Promise<ProbeFakeStopObservation>;
 }
 export interface ProbePublicReceipt extends ProbeReceipt { experimentId: string; taskId: number; evidence: "declaration" | "fixture" | "unknown" }
-export interface ProbePublicStatus extends ProbePublicReceipt { counters: ProbeCounters; notNeeded: number; comparable: boolean; authoring: "admitted_fixture" | "uncontrolled" | "unknown" }
+export interface ProbePublicStatus extends ProbePublicReceipt { counters: ProbeCounters; cancelRequested: boolean; notNeeded: number; comparable: boolean; authoring: "admitted_fixture" | "uncontrolled" | "unknown" }
 export type GuidanceProbeCommand = { op: "register"; file: string; json: boolean }
   | { op: "start"; id: string; revision: number; variantId?: string; json: boolean }
   | { op: "show"; id: string; json: boolean } | { op: "cancel"; id: string; revision: number; json: boolean };
@@ -128,6 +130,7 @@ export const probeHash = (text: string): string => createHash("sha256").update(t
 export const probeInteger = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 export const probeSha256 = (value: unknown): value is string => typeof value === "string" && value.length === GUIDANCE_PROBE_LIMITS.hashLength && /^[a-f0-9]+$/.test(value);
 const identity = (value: unknown): value is string => executionText(value, EXECUTION_REFERENCE_LIMITS.id) && !/\p{Cf}/u.test(value);
+export const probeSessionGeneration = (value: unknown): value is number | string => probeInteger(value) || identity(value);
 const required = (condition: unknown): void => { if (!condition) invalid(); };
 
 /** Bounded inert copy: no getter, iterator, proxy, toJSON, sparse array or cycle is evaluated. */
@@ -304,6 +307,31 @@ export function parseGuidanceProbeCommand(args: readonly string[]): GuidanceProb
   const variantId = fields.get("--variant"); if (variantId !== undefined && !probeSha256(variantId)) return undefined;
   return { op: "start", id, revision, ...(variantId === undefined ? {} : { variantId }), json };
 }
+export function parseGuidanceProbeSubcommand(args: readonly string[]): GuidanceProbeCommand | undefined {
+  if (args[0] !== "probe") return undefined;
+  return parseGuidanceProbeCommand(args.slice(1)) ?? invalid();
+}
+
+const probeStates: readonly ProbeState[] = ["declared", "active", "closing", "closed_fixture", "failed_fixture", "unknown_held"];
+const publicEvidence = (value: unknown): value is ProbePublicReceipt["evidence"] => ["declaration", "fixture", "unknown"].includes(value as string);
+function publicReceipt(value: unknown, status: boolean): ProbePublicReceipt | ProbePublicStatus | undefined {
+  try {
+    const extra = status ? ["counters", "cancelRequested", "notNeeded", "comparable", "authoring"] : [];
+    const fields = object(value, ["id", "revision", "state", "already", "taskId", "experimentId", "evidence", ...extra]);
+    required(probeSha256(fields.id) && probeInteger(fields.revision) && probeStates.includes(fields.state as ProbeState)
+      && typeof fields.already === "boolean" && probeInteger(fields.taskId) && fields.taskId > 0
+      && typeof fields.experimentId === "string" && fields.experimentId.length <= 256 && publicEvidence(fields.evidence));
+    if (!status) return fields as unknown as ProbePublicReceipt;
+    const counters = object(fields.counters, ["workerAttempts", "editorAttempts", "modelCalls", "toolCalls", "tokensReserved", "tokensObservedKnown",
+      "inputBytes", "scratchBytes", "outputBytes", "elapsedHighWaterMs", "usageUnknown"]);
+    required(Object.entries(counters).every(([key, item]) => key === "usageUnknown" ? typeof item === "boolean" : probeInteger(item))
+      && typeof fields.cancelRequested === "boolean" && probeInteger(fields.notNeeded) && typeof fields.comparable === "boolean"
+      && ["admitted_fixture", "uncontrolled", "unknown"].includes(fields.authoring as string));
+    return fields as unknown as ProbePublicStatus;
+  } catch { return undefined; }
+}
+export const parseGuidanceProbePublicReceipt = (value: unknown): ProbePublicReceipt | undefined => publicReceipt(value, false) as ProbePublicReceipt | undefined;
+export const parseGuidanceProbePublicStatus = (value: unknown): ProbePublicStatus | undefined => publicReceipt(value, true) as ProbePublicStatus | undefined;
 
 /** Explicit worker-visible bytes; no host identity, arm label or improver side channel. */
 export function guidanceProbeWorkerFrame(task: string, baselineContext: string, systemPolicy: string, guidance: string): string {
