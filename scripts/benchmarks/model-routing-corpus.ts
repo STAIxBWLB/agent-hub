@@ -192,7 +192,7 @@ async function runRouteCase(c: RouteCase, routing: Routing): Promise<CaseResult>
   const host: RouteHost = {
     onCampus: async () => c.onCampus ?? true,
     staySwitch: () => ({ stay_switch: routing.stay_switch, max_switch_prefill_tokens: routing.max_switch_prefill_tokens }),
-    onRoute: event => { events.push(event); },
+    onRoute: event => { if (event.decisionTarget !== "judge") events.push(event); },
     execute: async (model, messages, judge) => {
       calls.push({ model, judge, planned: !judge && messages[0]?.role === "system" && messages[0].content === DEFAULT_PLANNING_PROMPT });
       return { message: { role: "assistant", content: judge ? replies.shift() ?? "" : "ok" } };

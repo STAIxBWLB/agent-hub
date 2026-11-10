@@ -14,6 +14,7 @@ import { parseAdvisorVerdict } from "./text.ts";
 import { planExecutePhase, type PlanExecuteState } from "./plan-execute.ts";
 
 export interface RouteEvent extends Partial<SwitchTrace>, Partial<DecisionTrace> {
+  decisionTarget?: "judge";
   route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default" | "decision"; score: number; ms: number;
   decision?: string; turn?: string; task?: number; pii?: boolean; severity?: number; spinning?: number; exploring?: number; production?: number;
 }

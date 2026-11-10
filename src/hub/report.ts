@@ -114,6 +114,7 @@ export function summarize(events: StampedEvent[]): Report {
   const seenSupervision = new Set<string>();
   const lastTier = new Map<string, string>();
   for (const e of events) {
+    if (e.type === "route" && e.decisionTarget === "judge") continue;
     r.from ??= e.at;
     r.to = e.at;
     switch (e.type) {
@@ -304,6 +305,7 @@ export function summarizeByTask(events: StampedEvent[]): TaskReport {
   const seenUsage = new Set<string>();
   // Resolve latest class/outcome before rolling usage up: usage may precede the task's history in a slice.
   for (const e of events) {
+    if (e.type === "route" && e.decisionTarget === "judge") continue;
     r.from ??= e.at; r.to = e.at;
     if (startsAttribution(e) && reportingSince === null) reportingSince = Date.parse(e.at);
     if (e.type !== "task") continue;
