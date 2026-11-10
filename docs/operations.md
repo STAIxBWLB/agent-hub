@@ -2577,7 +2577,10 @@ Jcode, Qwen, other Kimi versions and native TUI forms remain `unsupported live`.
 The [Jcode headless fixture](verification/2026-11-08-jcode-0991-model-setter-1317.md)
 passes, but does not fence a shared TUI turn across native failover. The
 [Qwen 0.26.9 setter fixture](verification/2026-11-08-qwen-0269-model-setter-1317.md)
-fails restoration of the original model. Neither enables a production setter.
+retains historical A/B/B with an unknown third-request purpose. The
+[suggestions-off repeat](verification/2026-11-11-qwen-setter-suggestions-off.md)
+records ordinary A/B/A on exact 0.26.9 and 0.27.0; separate production setter
+admission is still required. Neither fixture enables a production setter.
 A refused set writes no new override and never restarts a process. Follow the
 reported cause and `ahub restart <peer>` guidance for unsupported forms.
 
@@ -3698,7 +3701,7 @@ Agent CLIs update themselves often, and a hub release cannot follow every one. O
 The [0.27.0 ACP receipt](verification/2026-11-09-qwen-0270-acp.md) records passing account-free
 ACP/permission/lifecycle checks after explicit runtime-state fence rulings, separately preserving earlier
 controller preflight failures. Its [model-setter check](verification/2026-11-09-qwen-0270-model-setter-1317.md)
-observed A/B/B after acknowledged B/A setters, so baseline clear failed. Basic ACP 0.27.0 is exact-receipt admitted independently of that failed optional live-setter contract.
+observed A/B/B after acknowledged B/A setters, but retained no latest-USER binding for the third request, whose purpose remains unknown. The [suggestions-off repeat](verification/2026-11-11-qwen-setter-suggestions-off.md) records ordinary A/B/A on both 0.26.9 and 0.27.0. Basic ACP 0.27.0 remains independently admitted; this setter evidence proposes a separate admission and enables nothing.
 The production Qwen setter remains unavailable; `qwen-dual` is verified separately (0.26.1, 0.27.0 and 0.27.1).
 
 ### Receipt automation audit (#1248 T0)

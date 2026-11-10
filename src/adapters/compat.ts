@@ -64,7 +64,7 @@ export const COMPAT = {
     receipt: "docs/verification/2026-11-08-agy-1.5.3.md" },
   qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0", "0.26.1", "0.26.4", "0.26.5", "0.26.8", "0.26.9", "0.27.0"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); exact 0.26.9 and 0.27.0 repeat those account-free probes on macOS arm64. Real model turns and Linux repetition of those versions remain unverified. The independent 0.27.0 live-setter clear failed and stays unavailable. Another version may change those contracts.",
+    trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.4, 0.26.5 and 0.26.8 (macOS arm64 and Linux x86_64); exact 0.26.9 and 0.27.0 repeat those account-free probes on macOS arm64. Real model turns and Linux repetition of those versions remain unverified. The historical A/B/B setter result did not identify the third request's purpose. Exact 0.26.9 and 0.27.0 pass isolated suggestions-off A/B/clear/A probes; production live-setter admission stays unavailable pending a separate decision. Another version may change those contracts.",
     receipt: "docs/verification/2026-11-09-qwen-0270-acp.md" },
   // Receipt: docs/verification/2026-11-10-qwen-0271-dual-output.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
   // the ACP receipts of the headless `qwen` entry say nothing about it, so that entry is not widened and this one carries no `line`.
