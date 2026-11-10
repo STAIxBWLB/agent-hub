@@ -91,7 +91,14 @@ export function conductorOperation(command:string,args:readonly string[]): Condu
   if (command==="intake" && sub==="approve" && words.length===2) return "intake approve";
   if (command==="schedule" && (sub==="run" || sub==="pause" || sub==="resume")) return `schedule ${sub}`;
   if (command==="goal" && args.find(arg=>arg!=="--json")==="link") return "goal link";
-  if (command==="guidance" && args[0] === "probe" && ["register","start","show","cancel"].includes(args[1] ?? "")) return `guidance probe ${args[1]}`;
+  if (command === "guidance" && args[0] === "probe") {
+    switch (args[1]) {
+      case "register": return "guidance probe register";
+      case "start": return "guidance probe start";
+      case "show": return "guidance probe show";
+      case "cancel": return "guidance probe cancel";
+    }
+  }
   return undefined;
 }
 

@@ -14,7 +14,7 @@ import { guidanceVariantKey, type GuidanceVariantPayloadV1 } from "../src/hub/gu
 import { GuidanceProbeStore } from "../src/hub/guidance-probe-store.ts";
 import { GUIDANCE_PROBE_MODEL, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_STOP_TIMEOUT_MS, parseGuidanceProbePublicReceipt,
   parseGuidanceProbePublicStatus, parseGuidanceProbeRegistration, parseGuidanceProbeSubcommand, probeHash, probeSessionGeneration,
-  type ProbeFakeLaunch, type ProbeFakeObservation } from "../src/hub/guidance-probes.ts";
+  type ProbeFakeLaunch, type ProbeFakeObservation, type ProbePublicReceipt, type ProbePublicStatus } from "../src/hub/guidance-probes.ts";
 import { CONDUCTOR_DAEMON_OPERATIONS, conductorOperation, operationalRequestLabel } from "../src/hub/operational-authority.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { DAEMON_FEATURES } from "../src/hub/control-client.ts";
@@ -132,10 +132,10 @@ test("probe CLI authority labels and public replies stay closed, with the derive
     expect(classifyPeerCommand("guidance", ["probe", sub])).toBe("conductor");
     expect(operationalRequestLabel({ t: wire })).toBe(`guidance probe ${sub}`);
   }
-  const receipt = { id: "a".repeat(64), revision: 0, state: "declared", already: false, taskId: 1, experimentId: "probe", evidence: "declaration" };
+  const receipt: ProbePublicReceipt = { id: "a".repeat(64), revision: 0, state: "declared", already: false, taskId: 1, experimentId: "probe", evidence: "declaration" };
   expect(parseGuidanceProbePublicReceipt(receipt)).toEqual(receipt);
   expect(parseGuidanceProbePublicReceipt({ ...receipt, actor: "user" })).toBeUndefined();
-  const status = { ...receipt, counters: { workerAttempts: 0, editorAttempts: 0, modelCalls: 0, toolCalls: 0, tokensReserved: 0,
+  const status: ProbePublicStatus = { ...receipt, counters: { workerAttempts: 0, editorAttempts: 0, modelCalls: 0, toolCalls: 0, tokensReserved: 0,
     tokensObservedKnown: 0, inputBytes: 0, scratchBytes: 0, outputBytes: 0, elapsedHighWaterMs: 0, usageUnknown: false },
     cancelRequested: false, notNeeded: 0, comparable: false, authoring: "unknown" };
   expect(parseGuidanceProbePublicStatus(status)).toEqual(status);
