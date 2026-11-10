@@ -179,7 +179,7 @@ test("an authenticated read-only ACP owner cannot create or withdraw valid guida
     const adapter = { transport: "acp" as const, command: process.execPath,
       args: [join(import.meta.dir, "fakes/acp-server.ts"), "--agent-name", "Fixture ACP", "--agent-version", "1", "--modes", "default,plan"],
       displayName: "Fixture ACP", roles: ["implementer", "verifier"], identity: { name: "Fixture ACP", version: "1" }, permission: { ask: "default" }, readOnly: "plan" };
-    const local = { adapters: { fixture: adapter }, instances: { "guidance-check": { kind: "fixture", roles: ["implementer"], start_mode: "headless" as const, readOnly: true } }, roster: { fixture: false, "guidance-check": true } };
+    const local = { adapters: { fixture: adapter }, instances: { "fixture-check": { kind: "fixture", roles: ["implementer"], start_mode: "headless" as const, readOnly: true } }, roster: { fixture: false, "fixture-check": true } };
     writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify(local));
     const config: HubConfig = { ...DEFAULT_CONFIG, ...local, start: { agents: [] }, batch_ms: 0,
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
@@ -187,15 +187,17 @@ test("an authenticated read-only ACP owner cannot create or withdraw valid guida
       approvals: { ...DEFAULT_CONFIG.approvals, notify: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       omniroute: { urls: [], access_hosts: [] }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false } };
-    daemon = await startDaemon({ cwd: root, stateDir, config, kimiHome: join(home, "kimi"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, memorySyncTrigger: () => {} });
-    person = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
-    const started = await person.request({ t: "start", peer: "guidance-check" }); expect<boolean>(started.ok, started.error).toBe(true);
-    tools = await ControlClient.connect(stateDir, { role: "tools", peer: "guidance-check", projectRoot: root });
+    mkdirSync(stateDir);
     board = new Board(join(stateDir, "hub.db"));
     const task = board.propose("user", { title: "Read-only guidance owner fixture", class: "implement", role: "test-engineer" });
-    board.update(task.id, "user", "accepted", { owner: "guidance-check", state: "in_progress" });
+    board.update(task.id, "user", "accepted", { owner: "fixture-check", state: "in_progress" });
     const current = board.get(task.id)!;
+    daemon = await startDaemon({ cwd: root, stateDir, config, kimiHome: join(home, "kimi"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, memorySyncTrigger: () => {} });
+    person = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
+    const started = await person.request({ t: "start", peer: "fixture-check" }); expect<boolean>(started.ok, started.error).toBe(true);
+    tools = await ControlClient.connect(stateDir, { role: "tools", peer: "fixture-check", projectRoot: root });
     const lineage = await person.request({ t: "lineage_show", taskId: task.id }); expect<boolean>(lineage.ok, lineage.error).toBe(true);
+    expect(lineage.lineage.state).toBe("available");
     const node = lineage.lineage.nodes.find((entry: { ref: { tool: string; kind: string } }) => entry.ref.tool === "ahub" && entry.ref.kind === "task");
     const projectKey: string = node.ref.projectKey;
     const role = parseRole(vectors.baseline, "test-engineer", "project"), routing = loadRouting(root);
@@ -204,14 +206,14 @@ test("an authenticated read-only ACP owner cannot create or withdraw valid guida
     // identity, owner base, catalog and privacy are valid before testing the
     // independent server guard that marks this actual configured peer read-only.
     const direct = new Tasks({ cwd: root, board, bus: daemon.bus, project: "fixture", catalog: { roles: new Map([[role.id, role]]), errors: [] },
-      roles: { "guidance-check": ["implementer"] }, notify: () => {},
+      roles: { "fixture-check": ["implementer"] }, notify: () => {},
       routing: () => ({ ...routing, signals: { ...routing.signals, pii_screen: "off", pii_patterns: [] } }),
       executionLineage: { projectKey, cursorKey: "readonly-guidance-fixture-cursor-000001" } });
     const { id: _id, ...golden } = vectors.golden.record;
     const payload: GuidanceVariantPayloadV1 = { ...golden, v: 1, projectKey, taskId: current.id, taskCreated: current.created, flowRevision: current.history.length,
-      author: "guidance-check", baseline: { ...golden.baseline, layer: "project" }, evidenceRefs: [] };
+      author: "fixture-check", baseline: { ...golden.baseline, layer: "project" }, evidenceRefs: [] };
     const variant = { ...payload, id: guidanceVariantKey(payload) }, selector = { taskId: current.id, taskCreated: current.created, id: variant.id }, withdrawal = { ...selector, flowRevision: current.history.length };
-    const admitted = await direct.guidanceVariantCreate("guidance-check", variant); expect(admitted.already).toBe(false);
+    const admitted = await direct.guidanceVariantCreate("fixture-check", variant); expect(admitted.already).toBe(false);
     const before = board.guidanceVariantsIntegrity(), stored = board.guidanceVariants(projectKey, current.id, current.created, variant.experimentId);
     for (const message of [
       { t: "guidance_create", variant }, { t: "guidance_withdraw", ...withdrawal },
@@ -265,18 +267,19 @@ test("actual hook, Pi executeTool and local callback paths exclude guidance from
       task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false },
       mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] },
       pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] } };
-    daemon = await startDaemon({ cwd: root, stateDir, config, kimiHome: join(home, "kimi"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, memorySyncTrigger: () => {} });
-    person = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
-    claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", projectRoot: root });
-    const status = await person.request({ t: "status" });
-    const piStart = await person.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx" } }); expect<boolean>(piStart.ok, piStart.error).toBe(true);
-    const localStart = await person.request({ t: "start", peer: "local", args: { model: "vllm/test" } }); expect<boolean>(localStart.ok, localStart.error).toBe(true);
+    mkdirSync(stateDir);
     board = new Board(join(stateDir, "hub.db"));
     const ownTasks = new Map<string, ReturnType<Board["propose"]>>();
     for (const peer of ["claude", "pi", "local"]) {
       const task = board.propose("user", { title: "Progress exclusion fixture", class: "implement", role: "test-engineer" });
       ownTasks.set(peer, board.update(task.id, "user", "accepted", { owner: peer, state: "in_progress" }));
     }
+    daemon = await startDaemon({ cwd: root, stateDir, config, kimiHome: join(home, "kimi"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0, configWatch: false, memorySyncTrigger: () => {} });
+    person = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
+    claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", projectRoot: root });
+    const status = await person.request({ t: "status" });
+    const piStart = await person.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx" } }); expect<boolean>(piStart.ok, piStart.error).toBe(true);
+    const localStart = await person.request({ t: "start", peer: "local", args: { model: "vllm/test" } }); expect<boolean>(localStart.ok, localStart.error).toBe(true);
     const hook = (name: string) => claude!.request({ t: "facts", phase: "pre", tool: name, input: { file_path: join(root, "read-fixture.txt") }, sessionId: "guidance-progress-claude", nativeInstanceId: status.status.instanceId });
     const pi = daemon.bus.peers.get("pi")!;
     const piPort = pi as unknown as { nativeSession?: string; opts: { executeTool(name: string, raw: unknown, callId: string, sessionId?: string): Promise<unknown> } };
@@ -297,6 +300,7 @@ test("actual hook, Pi executeTool and local callback paths exclude guidance from
     runtime.d.inference.escalate = (conversation, turn) => { escalated.push({ conversation, turn }); return escalate(conversation, turn); };
     restoreSinks = () => { runtime.d.emit = emit; runtime.d.inference.escalate = escalate; };
     const piTask = ownTasks.get("pi")!, lineage = await person.request({ t: "lineage_show", taskId: piTask.id });
+    expect<boolean>(lineage.ok, lineage.error).toBe(true); expect(lineage.lineage.state).toBe("available");
     const projectKey: string = lineage.lineage.nodes.find((entry: { ref: { tool: string; kind: string } }) => entry.ref.tool === "ahub" && entry.ref.kind === "task").ref.projectKey;
     const role = parseRole(vectors.baseline, "test-engineer", "project"), routing = loadRouting(root);
     const direct = new Tasks({ cwd: root, board, bus: daemon.bus, project: "fixture", catalog: { roles: new Map([[role.id, role]]), errors: [] }, roles: { pi: ["implementer", "verifier"] }, notify: () => {},
