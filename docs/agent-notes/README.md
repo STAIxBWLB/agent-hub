@@ -152,4 +152,7 @@ pair passed with owned cleanup/final closure. The independent direct-busy pair
 on both versions observed one user/assistant/Stop with both markers in one
 assistant, while required normal-Bus Q2 retained two distinct turns. No production
 adapter, Bus or automatic receipt-admission behavior changed.
-||||||| b98faa060
+
+The task 859 deny-readiness correction separates known delivery disposition from native quiescence. Task 850 measured no post-deny completion ACK; normal-Bus assistant/Stop evidence cannot be reused for the denied turn. The durable fence keeps a synchronous Bus drain from submitting queued work and allows recovery through a new personal turn or a verified fresh generation. The 30 s deadline is an operational waiting bound, not evidence that native work stopped.
+
+The same review found that a single append can write a prefix without throwing. The byte-count check and actual tail guard prevent a second append from completing that prefix. This intentionally adds no per-write persisted intent: a crash leaving a torn prefix that already ends with newline remains the explicit ceiling.

@@ -170,7 +170,7 @@ Agent CLIs update themselves. `ahub agents` shows which installed versions the h
 accepts, `ahub agents trust <id> <version>` accepts an untested one on this
 machine, and the hub tells the planner when an installed version is not verified.
 
-Qwen Code dual-output 0.27.0 is qualified by [source and account-free macOS arm64 checks](docs/verification/2026-11-10-qwen-0270-dual-output.md) (support takes effect after release and upgrade); real-model turns and live TUI use here remain unverified.
+Qwen Code dual-output 0.27.0 is qualified by [source and account-free macOS arm64 checks](docs/verification/2026-11-10-qwen-0270-dual-output.md) (support takes effect after release and upgrade); real-model turns and live TUI use here remain unverified. A hub deny keeps later input fenced until a new personal turn completes or a verified fresh generation starts; see [Qwen TUI operations](docs/operations.md#qwens-own-tui-driven-through-dual-output-286-part-3).
 
 Before you migrate a memory home with `amem`, read
 [memory profiles and rollout](docs/memory.md#selected-memory-profile). Every hub that
