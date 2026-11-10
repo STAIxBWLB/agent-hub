@@ -5461,7 +5461,9 @@ selected roster and existing capabilities; the TUI is always a person's start.
 - Restart: if the hub restarts while your Qwen keeps running, it reads on from its saved offset (no event twice, no launch). If Qwen is gone, `ahub qwen --mode tui` starts `qwen -r <session id>` on the same two files; the earlier submits are not replayed and the recorded answers are not shared again. Recovery never restores this terminal as a headless worker, and `ahub stop qwen` refuses: end Qwen in its own terminal.
 
 The [2026-11-10 account-free receipt](verification/2026-11-10-qwen-0270-dual-output.md)
-qualifies exact 0.27.0 against matched private 0.26.1 on macOS arm64. Normal-Bus
+qualifies exact 0.27.0 against matched private 0.26.1 on macOS arm64; the
+[0.27.1 receipt](verification/2026-11-10-qwen-0271-dual-output.md) repeats the same
+Q2 and Q3/Q5/Q6/Q7 suite on exact 0.27.1 against matched 0.27.0. Normal-Bus
 Q2 has two user/final-Stop/ordinary-provider turns after owned stop; Q3's five
 permission cases, unread-FIFO Q5, same-session/no-replay/assistant-context Q6 and
 identity/guard Q7 also passed, with final closure and protected/artifact/source
