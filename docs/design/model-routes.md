@@ -344,6 +344,16 @@ exactly the route's two tiers, since a tier carries no effort: `efficient` and
 question is asked per user turn, reused through the tool loop and dropped at the
 turn's end.
 
+The question carries R1's own closed `stage-route-evidence` packet
+(`schemaVersion`, `kind`, `turn`, `incomplete`, `signals`, `dimensions`,
+`scores`), never the generic `routing-decision-evidence` v1 projection, whose
+quoted conversation fragments that contract does not allow; a PII or private
+turn carries the `sensitiveStageEvidence` view of `schemaVersion`, `kind` and
+`dimensions` only. The per-turn reuse keeps the privacy and observer facts an
+answer was computed under: a later call republishes the held answer only while
+those facts still hold, drops it when they change, and lets an unreadable
+authority read propagate as `DecisionPolicyChangedError`.
+
 ### Secondary API pins
 
 The new units define the public compatibility types/functions; `stage.ts` becomes

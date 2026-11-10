@@ -105,7 +105,15 @@ test("adec is asked for the owned ambiguous reading and for nothing else, with t
   expect(s.requests[0].candidates).toEqual(["fast", "coding"]);
   expect(s.requests[0].constraints).toMatchObject({ pii: false, private: false });
   expect(s.requests[0].constraints.current).toEqual({ alias: "fast", effort: "none" });
-  expect(JSON.parse(s.requests[0].evidence).dimensions).toMatchObject({ severity: 0, spinning: 0.46 });
+  const packet = JSON.parse(s.requests[0].evidence);
+  // R1's own packet: numeric signals, dimensions and scores, never the generic v1 conversation projection.
+  expect(packet).toMatchObject({ kind: "stage-route-evidence", schemaVersion: 1, turn: "tool_result", incomplete: false,
+    signals: { results: 8, failures: 0, tests: "none" }, dimensions: { severity: 0, spinning: 0.46 } });
+  expect(packet.scores.capable).toBeCloseTo(0.46); expect(packet.scores.efficient).toBeCloseTo(0.54);
+  expect(Buffer.byteLength(s.requests[0].evidence)).toBeLessThanOrEqual(1024);
+  for (const field of ["interpretation", "latestUser", "lastAssistantTail", "lastToolTail", "toolNames"]) expect(packet[field]).toBeUndefined();
+  // The turn's text is screened in as public and still must not travel: the sentinel appears only in the user message.
+  expect(JSON.stringify(s.requests[0])).not.toContain("KEEP-GOING-SENTINEL");
   expect(JSON.stringify(s.requests[0])).not.toContain("tool_call_id");
   expect(h.events.at(-1)).toMatchObject({ tier: "fast", source: "default", decisionMode: "shadow", chosenAlias: "coding", chosenEffort: "none", margin: 0.2 });
 });
@@ -141,7 +149,9 @@ test("an off-campus decider never sees a PII or private turn, and on-campus sens
   await campus.runtime.call("hub/test", onCampus.config, SPINNING, "scope", true, signal());
   expect(onCampus.requests[0].constraints).toMatchObject({ pii: true, private: true, contextTokens: 0 });
   const evidence = JSON.parse(onCampus.requests[0].evidence);
-  expect(Object.keys(evidence).sort()).toEqual(["dimensions", "interpretation", "kind", "schemaVersion", "toolNames"]);
+  // The sensitive projection is R1's dimensions-only view: no signal shape, no scores, no fragments.
+  expect(Object.keys(evidence).sort()).toEqual(["dimensions", "kind", "schemaVersion"]);
+  expect(evidence.kind).toBe("stage-route-evidence");
   expect(evidence.dimensions).toEqual({ severity: 0, spinning: 0.46, exploring: 0, productionIntensity: 0 });
   expect(JSON.stringify(onCampus.requests)).not.toContain("KEEP-GOING-SENTINEL");
 });
@@ -171,6 +181,51 @@ test("one question per user turn, kept through the tool loop", async () => {
   h.runtime.endTurn("loop", "completed"); h.runtime.beginTurn({ turn: "next", pii: false });
   await h.runtime.call("hub/test", s.config, SPINNING, "scope", false, signal());
   expect(s.requests).toHaveLength(2);
+});
+
+test("a held answer is not republished once the turn's privacy or observer facts change", async () => {
+  const s = service();
+  let privateNow = false, excludedNow = false;
+  const h = host({ decisionContext: () => ({ private: privateNow, excluded: excludedNow }) });
+  h.runtime.beginTurn({ turn: "privacy-change", pii: false });
+  await h.runtime.call("hub/test", s.config, SPINNING, "scope", false, signal());
+  expect(s.requests).toHaveLength(1);
+  expect(h.events[0]).toMatchObject({ decisionMode: "shadow", chosenAlias: "coding" });
+  // The turn continues, but the board context became private: the held answer was approved under public facts.
+  privateNow = true;
+  await h.runtime.call("hub/test", s.config, SPINNING, "scope", false, signal());
+  expect(s.requests).toHaveLength(1);
+  expect(h.events[1]?.decisionMode).toBeUndefined();
+  expect(h.calls[1]?.model).toBe("fast");
+  h.runtime.endTurn("privacy-change", "completed");
+  // A fresh public turn is asked again, and an excluded observer drops the held answer the same way.
+  privateNow = false;
+  h.runtime.beginTurn({ turn: "observer-excluded", pii: false });
+  await h.runtime.call("hub/test", s.config, SPINNING, "scope", false, signal());
+  expect(s.requests).toHaveLength(2);
+  expect(h.events[2]).toMatchObject({ decisionMode: "shadow", chosenAlias: "coding" });
+  excludedNow = true;
+  await h.runtime.call("hub/test", s.config, SPINNING, "scope", false, signal());
+  expect(s.requests).toHaveLength(2);
+  expect(h.events[3]?.decisionMode).toBeUndefined();
+  h.runtime.endTurn("observer-excluded", "completed");
+});
+
+test("unreadable authority during a held turn refuses it instead of publishing the cached answer", async () => {
+  const s = service();
+  let unavailable = false;
+  const h = host({ decisionContext: () => { if (unavailable) throw new Error("BOARD-UNAVAILABLE-SENTINEL"); return { private: false, excluded: false }; } });
+  h.runtime.beginTurn({ turn: "authority-lost", pii: false });
+  await h.runtime.call("hub/test", s.config, SPINNING, "scope", false, signal());
+  expect(s.requests).toHaveLength(1);
+  unavailable = true;
+  const pending = h.runtime.call("hub/test", s.config, SPINNING, "scope", false, signal());
+  const outcome = await pending.then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+  // The cached answer is not a substitute for current authority: the stale turn is refused and nothing executes.
+  expect(outcome.error).toBeInstanceOf(DecisionPolicyChangedError);
+  expect(h.calls).toHaveLength(1);
+  expect(h.events).toHaveLength(1);
+  expect(JSON.stringify(h.events)).not.toContain("BOARD-UNAVAILABLE-SENTINEL");
 });
 
 test("a turn that ends while the question is held applies no answer", async () => {

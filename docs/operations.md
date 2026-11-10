@@ -4810,7 +4810,12 @@ off-campus decider for a PII or private turn each keep the heuristic tier and
 record a closed reason in that event. `enforce` stays refused at load with the
 same message as a decision route. One question is asked per user turn, reused
 through the tool loop, and it dies with the turn: a turn that ends while the
-question is outstanding applies no answer and is not failed by it. A privacy or
+question is outstanding applies no answer and is not failed by it. The question
+carries R1's closed stage evidence (numeric signals, dimensions and scores),
+never the generic decision v1 conversation projection; a PII or private turn
+sends only the dimensions view. A held answer is reused only while the privacy
+and observer facts it was recorded with still hold: a changed reading drops it,
+and an unreadable one refuses the turn. A privacy or
 observer change detected across the request is different from a service failure:
 it refuses the stale turn, exactly as a decision route does, and the heuristic is
 not executed around that refusal. The PII

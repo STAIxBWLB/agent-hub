@@ -13778,6 +13778,86 @@ var init_stage_input = __esm(() => {
   };
 });
 
+// src/models/route/stage-diagnostics.ts
+function diagnoseStageResult(result) {
+  const value = result.text.toLowerCase();
+  const diagnosticText = value.replace(/\b0\s+(?:tests?\s+)?(?:fail|failed|failures)\b/g, "");
+  const failedTest = /\b(?:[1-9]\d*\s+(?:tests?\s+)?(?:fail|failed)|tests?\s+failed|assertion(?:error| failed))\b/.test(diagnosticText);
+  const positivePass = /\b[1-9]\d*\s+(?:tests?\s+)?(?:pass|passed)\b/.test(value);
+  const zeroPass = /\b0\s+(?:tests?\s+)?(?:pass|passed)\b/.test(value);
+  const affirmativePass = /^[ \t]*(?:all[ \t]+tests?[ \t]+pass(?:ed)?|tests?[ \t]+passed)[.!]?[ \t\r]*$/m.test(value);
+  const passedTest = !failedTest && (positivePass || !zeroPass && affirmativePass);
+  const critical = /\b(?:fatal|panic|segmentation fault|out of memory|memoryerror)\b/.test(value);
+  const explicit = result.error || failedTest || (critical || /\b(?:error|failed|failure|exception|fatal|panic|memoryerror)\b/.test(diagnosticText) || /\b\w*(?:exception|error):/.test(diagnosticText)) && result.family !== "read";
+  if (!explicit)
+    return { fault: "none", test: passedTest ? "pass" : zeroPass ? "unknown" : "none" };
+  const fault = critical ? "critical" : !/\bassertionerror:/.test(value) && /\b\w*(?:exception|error):/.test(value) ? "exception" : "reported";
+  const fingerprint = value.replace(/\b\d+\b/g, "#").replace(/\s+/g, " ").trim();
+  return { fault, test: failedTest ? "fail" : "none", fingerprint: `${failedTest ? "test" : "other"}:${fingerprint}` };
+}
+
+// src/models/route/stage-evidence.ts
+function buildStageEvidence(input) {
+  const failures = [];
+  let reads = 0, mutations = 0, tests = "none";
+  let latestFault = "none", successfulExecutions = 0;
+  const executionFrames = new Set;
+  for (const result of input.results) {
+    if (result.family === "read")
+      reads++;
+    if (result.family === "mutation")
+      mutations++;
+    const diagnostic = diagnoseStageResult(result);
+    tests = diagnostic.test;
+    latestFault = diagnostic.fault;
+    if (result.family === "execution" && result.associated && result.assistantTurn !== undefined && diagnostic.fault === "none" && diagnostic.test !== "pass") {
+      successfulExecutions++;
+      executionFrames.add(result.assistantTurn);
+    } else {
+      successfulExecutions = 0;
+      executionFrames.clear();
+    }
+    if (diagnostic.test === "pass") {
+      for (let index = failures.length - 1;index >= 0; index--)
+        if (failures[index].test)
+          failures.splice(index, 1);
+    }
+    if (diagnostic.fault !== "none")
+      failures.push({ fault: diagnostic.fault, test: diagnostic.test === "fail", fingerprint: diagnostic.fingerprint });
+  }
+  const fault = failures.reduce((prior, failure) => SEVERITY[failure.fault] > SEVERITY[prior] ? failure.fault : prior, "none");
+  const groups = new Map;
+  for (const failure of failures)
+    groups.set(failure.fingerprint, (groups.get(failure.fingerprint) ?? 0) + 1);
+  const repeatedFailures = Math.max(0, ...groups.values());
+  const currentCompletion = input.turn === "tool_result";
+  const currentFailure = currentCompletion && latestFault !== "none";
+  const noProgress = currentCompletion && successfulExecutions >= EXECUTION_STREAK && executionFrames.size >= EXECUTION_STREAK && input.assistantTurns >= EXECUTION_STREAK;
+  const dimensions = {
+    severity: currentCompletion ? SEVERITY[latestFault] : 0,
+    spinning: currentFailure && repeatedFailures >= 2 ? Math.min(1, repeatedFailures / Math.max(1, failures.length)) : noProgress ? EXECUTION_AMBIGUITY : 0,
+    exploring: reads / Math.max(1, input.results.length),
+    productionIntensity: mutations / Math.max(1, input.results.length)
+  };
+  const risk = Math.max(dimensions.severity, dimensions.spinning);
+  return {
+    schemaVersion: 1,
+    kind: "stage-route-evidence",
+    turn: input.turn,
+    incomplete: input.incomplete,
+    signals: { results: input.results.length, failures: failures.length, repeatedFailures, reads, mutations, assistantTurns: input.assistantTurns, tests, fault },
+    dimensions,
+    scores: { efficient: 1 - risk, capable: risk }
+  };
+}
+function sensitiveStageEvidence(evidence) {
+  return { schemaVersion: evidence.schemaVersion, kind: evidence.kind, dimensions: { ...evidence.dimensions } };
+}
+var EXECUTION_STREAK = 8, EXECUTION_AMBIGUITY = 0.46, SEVERITY;
+var init_stage_evidence = __esm(() => {
+  SEVERITY = { none: 0, reported: 0.3, exception: 0.7, critical: 1 };
+});
+
 // src/models/route/state.ts
 class EscalationState {
   category;
@@ -13845,6 +13925,12 @@ class SessionState {
 
 // src/models/route/decision.ts
 import { createHash as createHash6 } from "crypto";
+function stagePacket(context, sensitive) {
+  const evidence = context.stageEvidence;
+  if (!evidence)
+    throw new Error("stage routing needs R1's stage evidence; inspect the route call before retrying");
+  return JSON.stringify(sensitive ? sensitiveStageEvidence(evidence) : evidence);
+}
 
 class DecisionRouteController {
   host;
@@ -13903,17 +13989,25 @@ class DecisionRouteController {
       current: context.current,
       messages: context.messages,
       dimensions: context.evidence.dimensions,
+      stageEvidence: context.evidence,
       pii: context.pii,
       signal: context.signal
     };
     if (inner.signal.aborted || inner.turn?.closed)
       return {};
     const state = this.state(config, inner, "stage"), key = this.turnKey("stage", inner);
-    if (state.held?.turn === key)
-      return state.held.trace;
+    const held = state.held;
+    if (held?.turn === key) {
+      const now = this.privacy(inner.pii);
+      if (!inner.current() || !this.same(held.privacy, now)) {
+        state.held = undefined;
+        return {};
+      }
+      return held.trace;
+    }
     try {
       const trace = (await this.select(config, inner, "stage", options)).trace ?? {};
-      state.held = { turn: key, trace };
+      this.hold(state, key, trace, inner);
       return trace;
     } catch (error) {
       if (error instanceof DecisionPolicyChangedError || error && typeof error === "object" && "budgetStop" in error)
@@ -13921,8 +14015,15 @@ class DecisionRouteController {
       if (inner.signal.aborted || inner.turn?.closed)
         return {};
       const trace = this.skip(config, "unavailable").trace ?? {};
-      state.held = { turn: key, trace };
+      this.hold(state, key, trace, inner);
       return trace;
+    }
+  }
+  hold(state, key, trace, context) {
+    try {
+      state.held = { turn: key, trace, privacy: this.privacy(context.pii) };
+    } catch {
+      state.held = undefined;
     }
   }
   turnKey(purpose, context) {
@@ -13999,7 +14100,7 @@ class DecisionRouteController {
       throw new DecisionPolicyChangedError;
     const state = this.state(config, context, purpose), key = this.turnKey(purpose, context);
     const began = performance.now();
-    const attempt = state.failure?.turn === key ? { result: state.failure.result, privacy } : await this.request(config, context, privacy, state, key, options);
+    const attempt = state.failure?.turn === key ? { result: state.failure.result, privacy } : await this.request(config, context, privacy, state, key, options, purpose);
     if (!context.current())
       throw ended();
     if ("skipped" in attempt)
@@ -14032,7 +14133,7 @@ class DecisionRouteController {
       }
     };
   }
-  async request(config, context, initial, state, key, options) {
+  async request(config, context, initial, state, key, options, purpose) {
     await this.host.admitDecision?.();
     if (!context.current())
       throw ended();
@@ -14044,7 +14145,7 @@ class DecisionRouteController {
     if (!campus)
       return { skipped: "off_campus" };
     const sensitive = privacy.pii || privacy.private;
-    const evidence = buildDecisionEvidence(sensitive ? [] : context.messages, context.dimensions, (text) => this.host.publicDecisionText?.(text) === true);
+    const evidence = purpose === "stage" ? stagePacket(context, sensitive) : buildDecisionEvidence(sensitive ? [] : context.messages, context.dimensions, (text) => this.host.publicDecisionText?.(text) === true);
     this.fence(context, privacy);
     const result = await requestAdecRoute(config.adec_endpoint ?? "http://127.0.0.1:8740/v1/route", {
       policyId: config.policy_id ?? "",
@@ -14069,6 +14170,7 @@ var init_decision = __esm(() => {
   init_adec();
   init_decision_evidence();
   init_stage_input();
+  init_stage_evidence();
   DecisionPolicyChangedError = class DecisionPolicyChangedError extends Error {
     constructor() {
       super("decision routing privacy or observer policy changed or is unavailable during preparation; run ahub status, inspect current task policy and retry");
@@ -15137,83 +15239,6 @@ function safeJson(value) {
 var discreteSeverity = (value) => value >= 1 ? 1 : value >= 0.7 ? 0.7 : value >= 0.3 ? 0.3 : 0, sha256 = (value) => createHash7("sha256").update(value).digest("hex");
 var init_labels = __esm(() => {
   init_signals();
-});
-
-// src/models/route/stage-diagnostics.ts
-function diagnoseStageResult(result) {
-  const value = result.text.toLowerCase();
-  const diagnosticText = value.replace(/\b0\s+(?:tests?\s+)?(?:fail|failed|failures)\b/g, "");
-  const failedTest = /\b(?:[1-9]\d*\s+(?:tests?\s+)?(?:fail|failed)|tests?\s+failed|assertion(?:error| failed))\b/.test(diagnosticText);
-  const positivePass = /\b[1-9]\d*\s+(?:tests?\s+)?(?:pass|passed)\b/.test(value);
-  const zeroPass = /\b0\s+(?:tests?\s+)?(?:pass|passed)\b/.test(value);
-  const affirmativePass = /^[ \t]*(?:all[ \t]+tests?[ \t]+pass(?:ed)?|tests?[ \t]+passed)[.!]?[ \t\r]*$/m.test(value);
-  const passedTest = !failedTest && (positivePass || !zeroPass && affirmativePass);
-  const critical = /\b(?:fatal|panic|segmentation fault|out of memory|memoryerror)\b/.test(value);
-  const explicit = result.error || failedTest || (critical || /\b(?:error|failed|failure|exception|fatal|panic|memoryerror)\b/.test(diagnosticText) || /\b\w*(?:exception|error):/.test(diagnosticText)) && result.family !== "read";
-  if (!explicit)
-    return { fault: "none", test: passedTest ? "pass" : zeroPass ? "unknown" : "none" };
-  const fault = critical ? "critical" : !/\bassertionerror:/.test(value) && /\b\w*(?:exception|error):/.test(value) ? "exception" : "reported";
-  const fingerprint = value.replace(/\b\d+\b/g, "#").replace(/\s+/g, " ").trim();
-  return { fault, test: failedTest ? "fail" : "none", fingerprint: `${failedTest ? "test" : "other"}:${fingerprint}` };
-}
-
-// src/models/route/stage-evidence.ts
-function buildStageEvidence(input) {
-  const failures = [];
-  let reads = 0, mutations = 0, tests = "none";
-  let latestFault = "none", successfulExecutions = 0;
-  const executionFrames = new Set;
-  for (const result of input.results) {
-    if (result.family === "read")
-      reads++;
-    if (result.family === "mutation")
-      mutations++;
-    const diagnostic = diagnoseStageResult(result);
-    tests = diagnostic.test;
-    latestFault = diagnostic.fault;
-    if (result.family === "execution" && result.associated && result.assistantTurn !== undefined && diagnostic.fault === "none" && diagnostic.test !== "pass") {
-      successfulExecutions++;
-      executionFrames.add(result.assistantTurn);
-    } else {
-      successfulExecutions = 0;
-      executionFrames.clear();
-    }
-    if (diagnostic.test === "pass") {
-      for (let index = failures.length - 1;index >= 0; index--)
-        if (failures[index].test)
-          failures.splice(index, 1);
-    }
-    if (diagnostic.fault !== "none")
-      failures.push({ fault: diagnostic.fault, test: diagnostic.test === "fail", fingerprint: diagnostic.fingerprint });
-  }
-  const fault = failures.reduce((prior, failure) => SEVERITY[failure.fault] > SEVERITY[prior] ? failure.fault : prior, "none");
-  const groups = new Map;
-  for (const failure of failures)
-    groups.set(failure.fingerprint, (groups.get(failure.fingerprint) ?? 0) + 1);
-  const repeatedFailures = Math.max(0, ...groups.values());
-  const currentCompletion = input.turn === "tool_result";
-  const currentFailure = currentCompletion && latestFault !== "none";
-  const noProgress = currentCompletion && successfulExecutions >= EXECUTION_STREAK && executionFrames.size >= EXECUTION_STREAK && input.assistantTurns >= EXECUTION_STREAK;
-  const dimensions = {
-    severity: currentCompletion ? SEVERITY[latestFault] : 0,
-    spinning: currentFailure && repeatedFailures >= 2 ? Math.min(1, repeatedFailures / Math.max(1, failures.length)) : noProgress ? EXECUTION_AMBIGUITY : 0,
-    exploring: reads / Math.max(1, input.results.length),
-    productionIntensity: mutations / Math.max(1, input.results.length)
-  };
-  const risk = Math.max(dimensions.severity, dimensions.spinning);
-  return {
-    schemaVersion: 1,
-    kind: "stage-route-evidence",
-    turn: input.turn,
-    incomplete: input.incomplete,
-    signals: { results: input.results.length, failures: failures.length, repeatedFailures, reads, mutations, assistantTurns: input.assistantTurns, tests, fault },
-    dimensions,
-    scores: { efficient: 1 - risk, capable: risk }
-  };
-}
-var EXECUTION_STREAK = 8, EXECUTION_AMBIGUITY = 0.46, SEVERITY;
-var init_stage_evidence = __esm(() => {
-  SEVERITY = { none: 0, reported: 0.3, exception: 0.7, critical: 1 };
 });
 
 // src/models/route/plan-execute.ts
