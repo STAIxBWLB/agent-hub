@@ -85,6 +85,19 @@ oldest rows can drop out of a long wave (an undercount, named as such), and a pr
 reading stops holding is expired by the next reading, which keeps the row but moves it out of
 pending.
 
+Reading rule, set by the conductor on 2026-11-11 after the wave opened and recorded before any
+number below is filled:
+
+- the pilot takes no count by reading hub state files directly, `sqlite3` on `hub.db` included
+  and read-only included; `hub_supervision_list` scopes rows to the caller's roles on purpose,
+  so a direct read would step around a fence the feature carries;
+- my own tool reads are therefore a lower bound, and a pilot total comes from them plus a
+  conductor-scope count the conductor sends by `hub_send`; the receipt cites that message as the
+  source of the total;
+- one read-only count was taken before this rule existed, to answer the conductor's own readiness
+  check on 2026-11-11 (7 rows, all `declared_overlap_without_integration`). It is disclosed here,
+  it is not the source of any number in this receipt, and it was not repeated after the rule.
+
 No model call and no memory write is part of this pilot: the rules and the queue import only the
 board, the deliverable measurement, the database schema and `node:crypto`; there is no inference
 path. Cost is therefore daemon CPU per task change plus one row per stored proposal.
@@ -93,10 +106,19 @@ path. Cost is therefore daemon CPU per task change plus one row per stored propo
 
 | at | mode | stored proposals | refused | board head |
 | --- | --- | --- | --- | --- |
-| 2026-11-11, first read | `shadow` | 0 | 0 (current queue) | `16b8251657a2` |
+| 2026-11-11, first read | `shadow` | 0 (role-scoped tool read) | 0 (current queue) | `16b8251657a2` |
 
 Evaluated revisions at this reading: not stored, replay pending at fill time. Recorded as
 unknown rather than 0.
+
+## Conductor reads (source of the totals)
+
+| read | at | total rows | by rule | by state | note |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 2026-11-11, conductor-scope | 7 | `declared_overlap_without_integration` 7 | 5 pending, 2 expired | both expired rows are on #856, superseded by its revision 12:11 |
+
+At this read the other two families had stored nothing, which is unknown coverage and not zero:
+the ledger holds only what a rule produced.
 
 ## Numbers (filled from stored records as the wave runs)
 
@@ -108,7 +130,10 @@ unknown rather than 0.
 
 | proposal | rule | task | revision | trigger | action | outcome | evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| none yet | | | | | | | |
+| `sup-067f72d97dd1` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:873` | `request_integration` | pending, classification deferred to wave close | the two tasks share `docs/dogfood.md` at file level only: #873 appends a separate row after the `Console review guidance (#711)` row, while this task's row goes after the supervision row at line 128 (conductor note, 2026-11-11) |
+
+A proposal stays pending until the wave closes: classifying one while later revisions are already
+in view would let its outcome be chosen to fit them.
 
 ## Cost
 
@@ -117,7 +142,7 @@ unknown rather than 0.
 | model calls | 0 (no inference path in the rules or the queue) |
 | memory writes | 0 |
 | daemon evaluations | pending (replayed from board revisions) |
-| rows written | 0 |
+| rows written | 7 at the first conductor read, written by the daemon on a task change and not by this task |
 | wall time | wave open 2026-11-11, cap 2026-11-18 |
 
 ## Person burden
