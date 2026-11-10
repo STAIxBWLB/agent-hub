@@ -2037,7 +2037,7 @@
   "src/hub/sdlc-release-authorization.ts:guardPush:inline:updates.length > 128=128#0": "safety floor",
   "src/hub/sdlc-release-authorization.ts:origin:inline:fetch.length > 8=8#0": "safety floor",
   "src/hub/sdlc-release-authorization.ts:origin:inline:urls.length > 8=8#0": "safety floor",
-  "src/hub/sdlc-release-authorization.ts:policy:inline:error.message.length <= 300=300#0": "safety floor",
+  "src/hub/sdlc-release-authorization.ts:detail:inline:error.message.length <= 300=300#0": "safety floor",
   "src/hub/sdlc-release-authorization.ts:result:inline:this.ports.gh=10000#0": "operational",
   "src/hub/sdlc-release-authorization.ts:timeout:inline:Math.max=1#0": "operational",
   "src/hub/sdlc-release-authorization.ts:timeout:inline:Math.min=1000#0": "operational",
