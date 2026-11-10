@@ -7,7 +7,7 @@ import type { ClaudeChannelEvidence } from "./claude-channel-evidence.ts";
 /** Only the control socket operations the peer owns; authentication remains in the daemon. */
 export interface ChannelSocket {
   readyState: number;
-  data: { launchId?: string; protocol?: number; standbyId?: string; retainStandby?: boolean; clientPid?: number; channel?: boolean; channelEvidence?: ClaudeChannelEvidence; cwd?: string; peerGeneration?: string | number; detachedByPerson?: boolean };
+  data: { launchId?: string; protocol?: number; standbyId?: string; retainStandby?: boolean; clientPid?: number; clientVersion?: string; channel?: boolean; channelEvidence?: ClaudeChannelEvidence; cwd?: string; peerGeneration?: string | number; detachedByPerson?: boolean };
   send(data: string): unknown;
   close(code?: number, reason?: string): void;
 }
@@ -139,6 +139,12 @@ export class WsPeer extends BasePeer {
   }
   /** A hello that has not finished its preface yet. The peer reads as offline until then, and a session standing by
    *  for the id must not take it from a claimant that is still arriving. */
+  /** #1385: whether a client is attached and the agent-hub version its hello reported (validated at hello). Display only. */
+  get hubClient(): { attached: boolean; version?: string } {
+    const sock = this.sock;
+    if (!sock || sock.readyState !== WebSocket.OPEN) return { attached: false };
+    return sock.data.clientVersion ? { attached: true, version: sock.data.clientVersion } : { attached: true };
+  }
   get claiming(): boolean {
     return !!this.claimed && this.claimed !== this.sock && this.claimed.readyState === WebSocket.OPEN;
   }

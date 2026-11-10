@@ -1,9 +1,9 @@
 import { globalCliUpdateStep, type InstallPathOptions } from "./install-paths.ts";
 import type { DoctorCheck } from "./output.ts";
 import { parseList, pluginState, type InstalledPlugin } from "./setup.ts";
+import { displayVersion } from "../version.ts";
 
-const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/;
-const version = (value: unknown): string | undefined => typeof value === "string" && value.length <= 64 && VERSION.exec(value)?.[0] === value ? value : undefined;
+const version = displayVersion;
 
 /** Authenticated daemon status and the existing plugin inventory only. Suggestions never run an update. */
 export function runtimeVersionWarnings(daemonVersion: unknown, cliVersion: unknown, pluginVersion: unknown, install: InstallPathOptions = {}): DoctorCheck[] {
