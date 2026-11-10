@@ -13377,8 +13377,10 @@ function selectFallbackStage(evidence, policy = {}, prior) {
   if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1 || !Number.isSafeInteger(hold) || hold < 0 || hold > 200000)
     throw new Error("invalid stage fallback policy");
   const score = evidence.scores.capable;
-  const recovery = evidence.turn === "compaction" || evidence.signals.fault === "critical" || evidence.signals.repeatedFailures >= 2;
-  const remaining = evidence.signals.tests === "pass" && evidence.signals.failures === 0 ? 0 : prior?.recoveryHoldRemaining ?? 0;
+  const currentFailure = evidence.turn === "tool_result" && evidence.dimensions.severity > 0;
+  const recovery = evidence.turn === "compaction" || currentFailure && (evidence.dimensions.severity === 1 || evidence.signals.repeatedFailures >= 2);
+  const cleanPass = evidence.turn === "tool_result" && evidence.signals.tests === "pass" && evidence.dimensions.severity === 0;
+  const remaining = cleanPass ? 0 : prior?.recoveryHoldRemaining ?? 0;
   if (recovery)
     return { tier: "capable", source: "override", score, state: { recoveryHoldRemaining: hold } };
   if (remaining > 0)
@@ -13575,6 +13577,8 @@ function boundedString(value, bytes) {
 function family(name) {
   if (!name)
     return "other";
+  if (/^(bash|exec_command)$/i.test(name))
+    return "execution";
   if (/^(read|read_file|readfile|glob|grep|search|list|ls|lookup)(_|$)/i.test(name))
     return "read";
   if (/^(write|write_file|edit|apply_patch|patch|delete|create|replace)(_|$)/i.test(name))
@@ -13612,16 +13616,21 @@ function captureStageInput(source) {
     };
     const calls = new Map;
     const observations = [];
-    let turn = "other", assistantTurns = 0;
+    let turn = "other", assistantTurns = 0, turnCaptured = false;
     for (let index = messages.length - 1;index >= Math.max(0, messages.length - MESSAGE_LIMIT); index--) {
       const message = field(messages, String(index)), role = field(message, "role");
       if (role === "system" || role === "developer")
         continue;
       if (role !== "user" && role !== "assistant" && role !== "tool") {
         incomplete = true;
+        if (!turnCaptured) {
+          turnCaptured = true;
+          turn = "other";
+        }
         continue;
       }
-      if (turn === "other") {
+      if (!turnCaptured) {
+        turnCaptured = true;
         turn = role === "tool" ? "tool_result" : role === "user" ? "user" : "other";
         if (role === "user") {
           const latest = text(field(message, "content"));
@@ -13666,7 +13675,7 @@ function captureStageInput(source) {
     const results = observations.reverse().map((result) => {
       const call = result.id && !duplicates.has(result.id) ? calls.get(result.id) : undefined;
       const associated = !!call && call.index < result.index;
-      return { text: result.text, error: result.error, family: associated ? family(call.name) : "other", associated };
+      return { text: result.text, error: result.error, family: associated ? family(call.name) : "other", associated, ...associated ? { assistantTurn: call.index } : {} };
     });
     return { turn, incomplete, assistantTurns, results };
   } catch {
@@ -15090,6 +15099,8 @@ function diagnoseStageResult(result) {
 function buildStageEvidence(input) {
   const failures = [];
   let reads = 0, mutations = 0, tests = "none";
+  let latestFault = "none", successfulExecutions = 0;
+  const executionFrames = new Set;
   for (const result of input.results) {
     if (result.family === "read")
       reads++;
@@ -15097,6 +15108,14 @@ function buildStageEvidence(input) {
       mutations++;
     const diagnostic = diagnoseStageResult(result);
     tests = diagnostic.test;
+    latestFault = diagnostic.fault;
+    if (result.family === "execution" && result.associated && result.assistantTurn !== undefined && diagnostic.fault === "none" && diagnostic.test !== "pass") {
+      successfulExecutions++;
+      executionFrames.add(result.assistantTurn);
+    } else {
+      successfulExecutions = 0;
+      executionFrames.clear();
+    }
     if (diagnostic.test === "pass") {
       for (let index = failures.length - 1;index >= 0; index--)
         if (failures[index].test)
@@ -15110,9 +15129,12 @@ function buildStageEvidence(input) {
   for (const failure of failures)
     groups.set(failure.fingerprint, (groups.get(failure.fingerprint) ?? 0) + 1);
   const repeatedFailures = Math.max(0, ...groups.values());
+  const currentCompletion = input.turn === "tool_result";
+  const currentFailure = currentCompletion && latestFault !== "none";
+  const noProgress = currentCompletion && successfulExecutions >= EXECUTION_STREAK && executionFrames.size >= EXECUTION_STREAK && input.assistantTurns >= EXECUTION_STREAK;
   const dimensions = {
-    severity: SEVERITY[fault],
-    spinning: repeatedFailures >= 2 ? Math.min(1, repeatedFailures / Math.max(1, failures.length)) : 0,
+    severity: currentCompletion ? SEVERITY[latestFault] : 0,
+    spinning: currentFailure && repeatedFailures >= 2 ? Math.min(1, repeatedFailures / Math.max(1, failures.length)) : noProgress ? EXECUTION_AMBIGUITY : 0,
     exploring: reads / Math.max(1, input.results.length),
     productionIntensity: mutations / Math.max(1, input.results.length)
   };
@@ -15127,7 +15149,7 @@ function buildStageEvidence(input) {
     scores: { efficient: 1 - risk, capable: risk }
   };
 }
-var SEVERITY;
+var EXECUTION_STREAK = 8, EXECUTION_AMBIGUITY = 0.46, SEVERITY;
 var init_stage_evidence = __esm(() => {
   SEVERITY = { none: 0, reported: 0.3, exception: 0.7, critical: 1 };
 });
