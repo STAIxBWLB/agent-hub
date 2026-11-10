@@ -1,0 +1,70 @@
+{
+  "contract": "companion-cli",
+  "version": 1,
+  "since": "0.37.0",
+  "about": "The only things the companion repositories (STAIxBWLB/ahub-orca, ahub-herdr, ahub-claude) may assume about ahub. Removing or renaming a listed path, changing a listed closed set, an argv form, the exit code or the stderr prefix needs companion-cli-v2.json beside this file and a hub_task_handoff to each companion repository. Adding a field needs neither. test/companion-contract.test.ts holds ahub to it.",
+  "types": {
+    "semver": "string matching MAJOR.MINOR.PATCH with an optional -pre or +build suffix",
+    "string": "non-empty string",
+    "absolute-path": "string starting with /",
+    "count": "non-negative safe integer",
+    "count-map": "object whose keys are in values and whose values are counts",
+    "enum": "string in values",
+    "true": "the boolean true",
+    "false": "the boolean false",
+    "prefixed": "string equal to one of values or starting with one of prefixes",
+    "object": "plain object"
+  },
+  "commands": [
+    { "argv": ["status", "--json"], "reads": "status" },
+    { "argv": ["--project", "<id|root>", "status", "--json"], "reads": "status" },
+    { "argv": ["projects", "--json"], "reads": "projects" },
+    { "argv": ["ui"] },
+    { "argv": ["--project", "<id|root>", "ui"] },
+    { "argv": ["console"] },
+    { "argv": ["--project", "<id|root>", "console"] },
+    { "bin": "acon", "argv": ["ui"] }
+  ],
+  "noHub": { "exitCode": 1, "stderrPrefix": "ahub: no hub running for " },
+  "status": {
+    "version": { "type": "semver", "presence": "always" },
+    "projectId": { "type": "string", "presence": "always" },
+    "cwd": { "type": "absolute-path", "presence": "always" },
+    "tasks": { "type": "count-map", "presence": "always", "values": ["backlog", "proposed", "in_progress", "in_review", "approved", "changes_requested", "cancelled"] },
+    "peers": { "type": "object", "presence": "always" },
+    "peers.<id>.state": { "type": "enum", "presence": "always", "values": ["idle", "busy", "paused", "offline"] },
+    "peers.<id>.queued": { "type": "count", "presence": "always" },
+    "peers.<id>.attached": { "type": "false", "presence": "when the peer has no adapter attached; absent otherwise" },
+    "peers.<id>.needsReview": { "type": "count", "presence": "when nonzero; absent when zero" },
+    "peers.<id>.pullOnly": { "type": "true", "presence": "when the peer reads messages only through hub_inbox; absent otherwise" },
+    "peers.<id>.paused": { "type": "prefixed", "presence": "when paused; absent otherwise", "values": ["manual"], "prefixes": ["budget: "] },
+    "needs": { "type": "object", "presence": "always" },
+    "needs.act": { "type": "count", "presence": "always" },
+    "needs.watch": { "type": "count", "presence": "always" },
+    "needs.state": { "type": "string", "presence": "always" },
+    "needs.first": { "type": "object", "presence": "when any item needs the person; absent otherwise" },
+    "needs.first.kind": { "type": "string", "presence": "with needs.first; \"approval\" is a pending permission request" },
+    "needs.first.level": { "type": "enum", "presence": "with needs.first", "values": ["act", "watch"] },
+    "needs.first.until": { "type": "count", "presence": "when the item expires (milliseconds since the epoch)" },
+    "needs.first.peer": { "type": "string", "presence": "when the item belongs to a peer" }
+  },
+  "projects": {
+    "[]": { "type": "object", "presence": "one per registered project" },
+    "[].id": { "type": "string", "presence": "always" },
+    "[].root": { "type": "absolute-path", "presence": "always" },
+    "[].state": { "type": "string", "presence": "always; readers recognise running and stopped, any other value reads as unknown" }
+  },
+  "shellQuote": [
+    { "in": "it's $(x)", "out": "'it'\\''s $(x)'" },
+    { "in": "", "out": "''" },
+    { "in": "a b", "out": "'a b'" },
+    { "in": "'", "out": "''\\'''" },
+    { "in": "''", "out": "''\\'''\\'''" },
+    { "in": "$(x)", "out": "'$(x)'" },
+    { "in": "`x`", "out": "'`x`'" },
+    { "in": "a\nb", "out": "'a\nb'" },
+    { "in": "é", "out": "'é'" },
+    { "in": "\\", "out": "'\\'" },
+    { "in": "a;b&c|d", "out": "'a;b&c|d'" }
+  ]
+}
