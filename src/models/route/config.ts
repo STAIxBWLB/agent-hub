@@ -1,4 +1,5 @@
 import { isAdecRouteEndpoint } from "./adec.ts";
+import { AMBIGUOUS_BAND_DEFAULT, AMBIGUOUS_BAND_MAX } from "./stage-fallback.ts";
 
 /** In-process hub model-route policy. */
 export interface HubRoute {
@@ -9,6 +10,8 @@ export interface HubRoute {
   policy_id?: string;
   candidates?: { alias: string; efforts: string[] }[];
   decision_timeout_ms?: number;
+  classifier?: "decision";
+  ambiguous_band?: number;
   efficient?: string;
   capable?: string;
   judge?: string;
@@ -45,9 +48,33 @@ export function parseHubRoutes(input: unknown): Record<string, HubRoute> {
     if (typeof r.pattern === "string") new RegExp(r.pattern, "u");
     if (r.type === "decision") {
       out[id] = parseDecisionConfig(id, r);
+    } else if (r.type === "stage") {
+      out[id] = parseStageConfig(id, r);
     } else out[id] = r as unknown as HubRoute;
   }
   return out;
+}
+
+/** A stage route keeps the deterministic picker; the optional classifier only decides whether adec is asked. */
+function parseStageConfig(id: string, r: Record<string, unknown>): HubRoute {
+  if (r.classifier === undefined) {
+    if (r.ambiguous_band !== undefined) throw new Error(`routing.toml: invalid ${id}.ambiguous_band; set classifier = "decision" first`);
+    return r as unknown as HubRoute;
+  }
+  const problem = (field: string, step: string): never => { throw new Error(`routing.toml: invalid ${id}.${field}; ${step}`); };
+  if (r.classifier !== "decision") problem("classifier", 'use "decision"');
+  // ponytail: these four service validators repeat parseDecisionConfig because a stage route names two tiers instead of alias/effort pairs; fold both into one adec-service parser if a third route type needs it.
+  if (r.decision_backend !== "adec") problem("decision_backend", 'set decision_backend = "adec" for a loopback policy service');
+  if (r.decision_mode === "enforce") throw new Error("decision_mode enforce is not available yet; use shadow; tracked in #554");
+  if (r.decision_mode !== undefined && !["off", "shadow"].includes(String(r.decision_mode))) problem("decision_mode", 'use "off" or "shadow"');
+  if (typeof r.policy_id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,49}$/.test(r.policy_id)) problem("policy_id", "name a configured adec policy with 1 to 50 lowercase identifier characters");
+  const endpoint = r.adec_endpoint ?? "http://127.0.0.1:8740/v1/route";
+  if (!isAdecRouteEndpoint(endpoint)) problem("adec_endpoint", "use an HTTP numeric loopback /v1/route URL without credentials, query or fragment");
+  if (r.decision_timeout_ms !== undefined && (!Number.isSafeInteger(r.decision_timeout_ms) || Number(r.decision_timeout_ms) < 1 || Number(r.decision_timeout_ms) > 30_000)) problem("decision_timeout_ms", "use 1 to 30000 milliseconds");
+  for (const tier of ["efficient", "capable"] as const) if (typeof r[tier] !== "string" || !(r[tier] as string).trim()) problem(tier, 'name the model alias this tier executes when classifier = "decision"');
+  const band = r.ambiguous_band ?? AMBIGUOUS_BAND_DEFAULT;
+  if (typeof band !== "number" || !Number.isFinite(band) || band < 0 || band > AMBIGUOUS_BAND_MAX) problem("ambiguous_band", `use a number from 0 to ${AMBIGUOUS_BAND_MAX}`);
+  return { ...r, decision_backend: "adec", decision_mode: r.decision_mode ?? "off", adec_endpoint: endpoint, ambiguous_band: band } as unknown as HubRoute;
 }
 
 function parseDecisionConfig(id: string, r: Record<string, unknown>): HubRoute {

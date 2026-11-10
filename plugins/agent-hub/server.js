@@ -13363,13 +13363,6 @@ var init_adec = __esm(() => {
   RULES = ["onprem_only", "explicit", "no_downgrade", "ctx_max", "no_candidate", "pin_broken", "pinned", "single"];
 });
 
-// src/models/route/config.ts
-var TYPES;
-var init_config2 = __esm(() => {
-  init_adec();
-  TYPES = new Set(["stage", "plan_execute", "advisor", "escalation", "decision"]);
-});
-
 // src/models/route/stage-fallback.ts
 function selectFallbackStage(evidence, policy = {}, prior) {
   const threshold = policy.confidenceThreshold ?? 0.5, hold = policy.holdTurns ?? 2;
@@ -13385,6 +13378,12 @@ function selectFallbackStage(evidence, policy = {}, prior) {
   if (remaining > 0)
     return { tier: "capable", source: "hold", score, state: { recoveryHoldRemaining: remaining - 1 } };
   return { tier: score > threshold ? "capable" : "efficient", source: score > threshold ? "dimensions" : "default", score, state: { recoveryHoldRemaining: 0 } };
+}
+function ambiguousStage(result, policy = {}) {
+  const threshold = policy.confidenceThreshold ?? 0.5, band = policy.ambiguousBand ?? AMBIGUOUS_BAND_DEFAULT;
+  if (!Number.isFinite(threshold) || !Number.isFinite(band) || band < 0 || band > AMBIGUOUS_BAND_MAX)
+    return false;
+  return Math.abs(result.score - threshold) <= band;
 }
 function planStageSwitch(policy, pin, fallback, turn, host) {
   const actual = policy ?? DEFAULT_STAY_SWITCH;
@@ -13425,9 +13424,17 @@ function planStageSwitch(policy, pin, fallback, turn, host) {
   const tier = actual.stay_switch === "enforce" ? proposal : fallback.tier;
   return { tier, pin: tier, trace };
 }
-var DEFAULT_STAY_SWITCH;
+var AMBIGUOUS_BAND_DEFAULT = 0.05, AMBIGUOUS_BAND_MAX = 0.5, DEFAULT_STAY_SWITCH;
 var init_stage_fallback = __esm(() => {
   DEFAULT_STAY_SWITCH = { stay_switch: "shadow", max_switch_prefill_tokens: 32000 };
+});
+
+// src/models/route/config.ts
+var TYPES;
+var init_config2 = __esm(() => {
+  init_adec();
+  init_stage_fallback();
+  TYPES = new Set(["stage", "plan_execute", "advisor", "escalation", "decision"]);
 });
 
 // src/hub/routing.ts
@@ -13871,7 +13878,7 @@ class DecisionRouteController {
       } };
     };
     try {
-      return checked(await this.select(config, context));
+      return checked(await this.select(config, context, "decision", this.decisionOptions(config)));
     } catch (error) {
       if (context.signal.aborted || context.turn?.closed)
         throw ended();
@@ -13880,6 +13887,57 @@ class DecisionRouteController {
         throw error;
       return checked(this.skip(config, "unavailable"));
     }
+  }
+  async shadowClassify(config, context) {
+    if (config.type !== "stage" || config.classifier !== "decision" || (config.decision_mode ?? "off") === "off") {
+      this.issues.delete(context.route);
+      return {};
+    }
+    const options = this.stageOptions(config, context.tier);
+    if (!options)
+      return {};
+    const inner = {
+      route: context.route,
+      scope: context.scope,
+      turn: context.turn,
+      current: context.current,
+      messages: context.messages,
+      dimensions: context.evidence.dimensions,
+      pii: context.pii,
+      signal: context.signal
+    };
+    if (inner.signal.aborted || inner.turn?.closed)
+      return {};
+    const state = this.state(config, inner, "stage"), key = this.turnKey("stage", inner);
+    if (state.held?.turn === key)
+      return state.held.trace;
+    try {
+      const trace = (await this.select(config, inner, "stage", options)).trace ?? {};
+      state.held = { turn: key, trace };
+      return trace;
+    } catch (error) {
+      if (error && typeof error === "object" && "budgetStop" in error)
+        throw error;
+      if (inner.signal.aborted || inner.turn?.closed)
+        return {};
+      const trace = this.skip(config, "unavailable").trace ?? {};
+      state.held = { turn: key, trace };
+      return trace;
+    }
+  }
+  turnKey(purpose, context) {
+    return createHash6("sha256").update(JSON.stringify([purpose, context.route, context.scope, context.turn?.context.turn])).digest("hex");
+  }
+  decisionOptions(config) {
+    const pairs = config.candidates?.flatMap((candidate) => candidate.efforts.map((effort) => ({ alias: candidate.alias, effort }))) ?? [];
+    return { pairs, candidates: [...new Set(pairs.map((pair) => pair.alias))] };
+  }
+  stageOptions(config, tier) {
+    const { efficient, capable } = config;
+    if (!efficient || !capable || efficient === capable)
+      return;
+    const efficientPair = { alias: efficient, effort: "none" }, capablePair = { alias: capable, effort: "none" };
+    return { pairs: [efficientPair, capablePair], candidates: [efficient, capable], current: tier === "capable" ? capablePair : efficientPair };
   }
   issue(config, context, reason) {
     const fingerprint = JSON.stringify(config), previous = this.issues.get(context.route);
@@ -13895,8 +13953,8 @@ class DecisionRouteController {
   skip(config, reason) {
     return { trace: { decisionMode: config.decision_mode ?? "off", chosenAlias: null, chosenEffort: null, decisionReason: reason } };
   }
-  state(config, context) {
-    const key = JSON.stringify([context.route, context.scope]), fingerprint = JSON.stringify(config);
+  state(config, context, purpose) {
+    const key = JSON.stringify([purpose, context.route, context.scope]), fingerprint = JSON.stringify(config);
     const prior = this.states.get(key);
     if (prior?.fingerprint === fingerprint)
       return prior;
@@ -13930,7 +13988,7 @@ class DecisionRouteController {
     } catch {}
     throw new DecisionPolicyChangedError;
   }
-  async select(config, context) {
+  async select(config, context, purpose, options) {
     const { turn } = context;
     if (!turn)
       return this.skip(config, "turn_unavailable");
@@ -13939,9 +13997,9 @@ class DecisionRouteController {
       return this.skip(config, "observer_excluded");
     if ((privacy.pii || privacy.private) && !context.pii)
       throw new DecisionPolicyChangedError;
-    const state = this.state(config, context), key = createHash6("sha256").update(JSON.stringify([context.route, context.scope, turn.context.turn])).digest("hex");
+    const state = this.state(config, context, purpose), key = this.turnKey(purpose, context);
     const began = performance.now();
-    const attempt = state.failure?.turn === key ? { result: state.failure.result, privacy } : await this.request(config, context, privacy, state, key);
+    const attempt = state.failure?.turn === key ? { result: state.failure.result, privacy } : await this.request(config, context, privacy, state, key, options);
     if (!context.current())
       throw ended();
     if ("skipped" in attempt)
@@ -13974,7 +14032,7 @@ class DecisionRouteController {
       }
     };
   }
-  async request(config, context, initial, state, key) {
+  async request(config, context, initial, state, key, options) {
     await this.host.admitDecision?.();
     if (!context.current())
       throw ended();
@@ -13987,15 +14045,19 @@ class DecisionRouteController {
       return { skipped: "off_campus" };
     const sensitive = privacy.pii || privacy.private;
     const evidence = buildDecisionEvidence(sensitive ? [] : context.messages, context.dimensions, (text) => this.host.publicDecisionText?.(text) === true);
-    const pairs = config.candidates?.flatMap((candidate) => candidate.efforts.map((effort) => ({ alias: candidate.alias, effort }))) ?? [];
     this.fence(context, privacy);
     const result = await requestAdecRoute(config.adec_endpoint ?? "http://127.0.0.1:8740/v1/route", {
       policyId: config.policy_id ?? "",
       turnId: `ahub:${key}`,
       evidence,
-      constraints: { contextTokens: sensitive ? 0 : estimateInputTokens(context.messages), pii: privacy.pii, private: privacy.private },
-      candidates: [...new Set(pairs.map((pair) => pair.alias))]
-    }, pairs, context.signal, config.decision_timeout_ms ?? this.timeoutMs);
+      constraints: {
+        contextTokens: sensitive ? 0 : estimateInputTokens(context.messages),
+        pii: privacy.pii,
+        private: privacy.private,
+        ...options.current === undefined ? {} : { current: options.current }
+      },
+      candidates: options.candidates
+    }, options.pairs, context.signal, config.decision_timeout_ms ?? this.timeoutMs);
     this.fence(context, privacy);
     if (!result.ok)
       state.failure = { turn: key, result };
@@ -15240,6 +15302,19 @@ class HubRouteRuntime {
       model = staged.tier === "capable" ? capable : efficient;
       score = decision.score;
       source = decision.source;
+      if (config.type === "stage" && config.classifier === "decision" && ambiguousStage(decision, { confidenceThreshold: config.confidence_threshold, ambiguousBand: config.ambiguous_band })) {
+        trace = { ...trace, ...await this.decisions.shadowClassify(config, {
+          route,
+          scope,
+          turn: labelTurn,
+          messages,
+          evidence,
+          pii,
+          signal,
+          tier: staged.tier,
+          current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn
+        }) };
+      }
     } else if (config.type === "plan_execute") {
       const decision = planExecutePhase(signals, scope, state.plan);
       model = decision.tier === "capable" ? capable : efficient;

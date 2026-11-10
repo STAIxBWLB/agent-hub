@@ -1,7 +1,7 @@
 import type { StageEvidence } from "./stage-evidence.ts";
 import type { StageTurn } from "./stage-input.ts";
 export type StageTier = "efficient" | "capable";
-export interface FallbackStagePolicy { confidenceThreshold?: number; holdTurns?: number }
+export interface FallbackStagePolicy { confidenceThreshold?: number; holdTurns?: number; ambiguousBand?: number }
 export interface FallbackStageState { recoveryHoldRemaining: number }
 export interface FallbackStageResult { tier: StageTier; source: "default" | "dimensions" | "override" | "hold"; score: number; state: FallbackStageState }
 export function selectFallbackStage(evidence: StageEvidence, policy: FallbackStagePolicy = {}, prior?: FallbackStageState): FallbackStageResult {
@@ -15,6 +15,14 @@ export function selectFallbackStage(evidence: StageEvidence, policy: FallbackSta
   if (recovery) return { tier: "capable", source: "override", score, state: { recoveryHoldRemaining: hold } };
   if (remaining > 0) return { tier: "capable", source: "hold", score, state: { recoveryHoldRemaining: remaining - 1 } };
   return { tier: score > threshold ? "capable" : "efficient", source: score > threshold ? "dimensions" : "default", score, state: { recoveryHoldRemaining: 0 } };
+}
+/** The band decides only whether a decider is asked; membership never changes the tier. */
+export const AMBIGUOUS_BAND_DEFAULT = 0.05, AMBIGUOUS_BAND_MAX = 0.5;
+export function ambiguousStage(result: FallbackStageResult, policy: FallbackStagePolicy = {}): boolean {
+  const threshold = policy.confidenceThreshold ?? 0.5, band = policy.ambiguousBand ?? AMBIGUOUS_BAND_DEFAULT;
+  // A band outside its own range is not ambiguous: the fallback tier stands and no service is asked.
+  if (!Number.isFinite(threshold) || !Number.isFinite(band) || band < 0 || band > AMBIGUOUS_BAND_MAX) return false;
+  return Math.abs(result.score - threshold) <= band;
 }
 export type StaySwitchMode = "off" | "shadow" | "enforce";
 export interface StaySwitchPolicy { stay_switch: StaySwitchMode; max_switch_prefill_tokens: number }

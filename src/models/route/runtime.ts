@@ -8,7 +8,7 @@ import { extractToolSignals } from "./signals.ts";
 import { RouteLabelTracker, type RouteLabelEvent, type RouteTurnContext, type RouteTurnOutcome } from "./labels.ts";
 import { captureStageInput, estimateStageInputTokens } from "./stage-input.ts";
 import { buildStageEvidence, type CodingAgentDimensions } from "./stage-evidence.ts";
-import { selectFallbackStage, planStageSwitch, type FallbackStageState, type StaySwitchPolicy, type StageSwitchTrace as SwitchTrace, type StageTier as Tier } from "./stage-fallback.ts";
+import { selectFallbackStage, planStageSwitch, ambiguousStage, type FallbackStageState, type StaySwitchPolicy, type StageSwitchTrace as SwitchTrace, type StageTier as Tier } from "./stage-fallback.ts";
 import { EscalationState, SessionState } from "./state.ts";
 import { parseAdvisorVerdict } from "./text.ts";
 import { planExecutePhase, type PlanExecuteState } from "./plan-execute.ts";
@@ -80,6 +80,11 @@ export class HubRouteRuntime {
       model = staged.tier === "capable" ? capable : efficient;
       score = decision.score;
       source = decision.source;
+      if (config.type === "stage" && config.classifier === "decision" && ambiguousStage(decision, { confidenceThreshold: config.confidence_threshold, ambiguousBand: config.ambiguous_band })) {
+        // The band decides only whether adec is asked; the tier and model above stay exactly as the heuristic chose them.
+        trace = { ...trace, ...await this.decisions.shadowClassify(config, { route, scope, turn: labelTurn, messages, evidence, pii, signal, tier: staged.tier,
+          current: () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn }) };
+      }
     } else if (config.type === "plan_execute") {
       const decision = planExecutePhase(signals!, scope, state.plan);
       model = decision.tier === "capable" ? capable : efficient;
