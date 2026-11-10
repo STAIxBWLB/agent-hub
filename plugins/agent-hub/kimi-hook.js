@@ -6151,6 +6151,11 @@ var init_qwen_dual = __esm(() => {
     eventStart = 0;
     freshFenceOwner;
     personalProof;
+    readCompletion;
+    freshCompletionAllowed = false;
+    freshRead;
+    freshEventIdentity;
+    polling = false;
     fenceFile;
     denyStorageFailure = false;
     inputBlocked = false;
@@ -6274,6 +6279,7 @@ var init_qwen_dual = __esm(() => {
       const dir = lstatSync8(this.dir);
       if (!dir.isDirectory() || dir.isSymbolicLink() || typeof process.getuid === "function" && dir.uid !== process.getuid() || (dir.mode & 63) !== 0)
         throw new Error("Qwen dual-output directory is not private to the person running the hub");
+      this._launch = undefined;
       this.loadState();
       for (const path of [this.inputFile, this.eventFile])
         this.ensureFile(path, true);
@@ -6295,13 +6301,13 @@ var init_qwen_dual = __esm(() => {
         }
         this.sessionSeen = this.state_.sessionId !== undefined;
         this.primed = true;
-        if (this.state_.denyPending) {
+        if (this.state_.denyPending || this.freshInputPending) {
           this.denyCursor = size;
         }
         this.saveState();
       } else {
         this.adopting = false;
-        const fenced = this.state_.denyPending || this.inputBlocked;
+        const fenced = this.state_.denyPending || this.inputBlocked || this.freshInputPending;
         if (fenced) {
           const rows = (this.opts.table ?? processTable)();
           const flag = `--input-file ${this.inputFile}`;
@@ -6335,6 +6341,17 @@ var init_qwen_dual = __esm(() => {
             this.inputBlocked = false;
             this.state_ = { v: 1, offset: 0, generation: this.state_.generation + 1, ...resumeId ? { sessionId: resumeId } : {}, ...denyPending ? { denyPending } : {} };
             this.sessionSeen = false;
+            if (fenced) {
+              this.discardReadProof();
+              this.fenceFile = this.freshEventIdentity;
+              this.denyCursor = 0;
+              this.eventCursor = 0;
+              this.eventStart = 0;
+              this.detached = false;
+              this.discarding = false;
+              this.pollFailures = 0;
+              this.freshRead = { generation: this.state_.generation, source: this.freshEventIdentity, activity: false };
+            }
             this.saveState();
             this.writeLaunch(resumeId);
           }
@@ -6347,7 +6364,7 @@ var init_qwen_dual = __esm(() => {
         this.monitor.unref?.();
       }
       this.poll();
-      if (this.adopting && !this.detached && this.sessionSeen && !this.state_.denyPending && !this.inputBlocked)
+      if (this.adopting && !this.detached && this.sessionSeen && !this.state_.denyPending && !this.inputBlocked && !this.freshInputPending)
         this.setState("idle");
     }
     prepareFreshEvents(fenced) {
@@ -6361,6 +6378,7 @@ var init_qwen_dual = __esm(() => {
         }
         return true;
       }
+      this.freshEventIdentity = undefined;
       let fd;
       let ready = false;
       try {
@@ -6371,6 +6389,8 @@ var init_qwen_dual = __esm(() => {
         fd = openSync4(this.eventFile, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
         const info = fstatSync4(fd);
         ready = info.isFile() && info.size === 0;
+        if (ready)
+          this.freshEventIdentity = `${info.dev}:${info.ino}`;
       } catch {} finally {
         if (fd !== undefined)
           try {
@@ -6379,6 +6399,8 @@ var init_qwen_dual = __esm(() => {
             ready = false;
           }
       }
+      if (!ready)
+        this.freshEventIdentity = undefined;
       return ready;
     }
     writeLaunch(resumeId) {
@@ -6428,14 +6450,10 @@ var init_qwen_dual = __esm(() => {
         if (this.sessionSeen)
           this.discoverOwner();
         this.verifyFreshInput();
-        if (this.state_.denyPending && this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && this.sessionSeen && this.ownerAlive() && this.ownerIdentity() !== this.freshFenceOwner)
-          this.clearDenyFence();
         return;
       }
       if (this.ownerAlive()) {
         this.verifyFreshInput();
-        if (this.state_.denyPending && this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && this.ownerIdentity() !== this.freshFenceOwner)
-          this.clearDenyFence();
         return;
       }
       if (this.state === "offline" && !this.sessionSeen)
@@ -6459,12 +6477,14 @@ var init_qwen_dual = __esm(() => {
       const last = Buffer.alloc(1);
       return readSync3(fd, last, 0, last.length, info.size - last.length) === last.length && last[0] === 10;
     }
+    freshRecoveryCurrent() {
+      const launch = this.freshRead;
+      return this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && !!launch && launch.generation === this.state_.generation && launch.session === this.state_.sessionId && this.sessionSeen && this.ownerIdentity() !== this.freshFenceOwner;
+    }
     verifyFreshInput() {
-      if (!this.freshInputPending || !this.freshEventReady || !this.freshBaselineAbsent || !this.sessionSeen || !this.ownerAlive() || this.ownerIdentity() === this.freshFenceOwner)
+      if (!(this.state_.denyPending || this.freshInputPending) || !this.freshCompletionAllowed || !this.freshRecoveryCurrent() || !this.ownerAlive())
         return;
-      this.freshInputPending = false;
-      if (!this.state_.denyPending && !this.inputBlocked && !this.stopping && !this.detached && !this.exited)
-        this.setState("idle");
+      this.readCompletion = { kind: "fresh", generation: this.state_.generation, session: this.state_.sessionId, owner: this.ownerIdentity(), source: this.freshRead.source };
     }
     checkInputTail() {
       let fd;
@@ -6486,7 +6506,7 @@ var init_qwen_dual = __esm(() => {
     blockInput() {
       const newlyBlocked = !this.inputBlocked;
       this.inputBlocked = true;
-      this.personalProof = undefined;
+      this.discardReadProof();
       this.failTurn(QWEN_INPUT_UNCERTAIN_NOTE, true);
       this.setState("offline");
       if (newlyBlocked)
@@ -6585,26 +6605,27 @@ ${text}`;
         return;
       this.detached = true;
       this.opts.log?.(`[${this.id}] event file ${reason}: detached`);
-      this.personalProof = undefined;
+      this.discardReadProof();
       this.failTurn("the Qwen event file became unreadable before the turn settled; inspect the Qwen terminal before retrying", true);
       this.abortApprovals();
       if (this.state !== "offline")
         this.setState("offline");
     }
     poll() {
-      if (this.stopping)
+      if (this.stopping || this.polling)
         return;
-      this.checkInputTail();
+      this.polling = true;
       let fd;
       try {
+        this.checkInputTail();
         fd = openSync4(this.eventFile, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
         const info = fstatSync4(fd);
         if (!info.isFile())
           throw new Error("not a regular file");
-        if (this.state_.denyPending) {
+        if (this.state_.denyPending || this.freshInputPending) {
           const identity = `${info.dev}:${info.ino}`;
-          if (this.fenceFile !== undefined && identity !== this.fenceFile) {
-            this.personalProof = undefined;
+          if (this.detached || this.fenceFile !== undefined && identity !== this.fenceFile) {
+            this.discardReadProof();
             this.denyCursor = info.size;
           }
           this.fenceFile = identity;
@@ -6621,7 +6642,7 @@ ${text}`;
           offset = 0;
           this.discarding = false;
           this.state_.generation++;
-          this.personalProof = undefined;
+          this.discardReadProof();
           this.denyCursor = info.size;
           this.opts.log?.(`[${this.id}] event file was replaced; reading from its start`);
         }
@@ -6642,7 +6663,7 @@ ${text}`;
           if (end === 0) {
             if (got < READ_CAP)
               break;
-            this.personalProof = undefined;
+            this.discardReadProof();
             this.opts.log?.(`[${this.id}] dropped an event line over ${READ_CAP} bytes`);
             this.discarding = true;
             offset += got;
@@ -6660,7 +6681,7 @@ ${text}`;
             cursor = newline + 1;
             this.eventCursor = start + cursor;
             if (!Buffer.from(line).equals(rawLine)) {
-              this.personalProof = undefined;
+              this.discardReadProof();
               continue;
             }
             if (line.trim())
@@ -6669,6 +6690,7 @@ ${text}`;
           if (this.stopping)
             break;
         }
+        this.finishFencedRead(fd);
         this.saveState();
       } catch (error) {
         this.pollFailures++;
@@ -6679,6 +6701,7 @@ ${text}`;
           try {
             closeSync4(fd);
           } catch {}
+        this.polling = false;
       }
     }
     parse(line) {
@@ -6686,31 +6709,34 @@ ${text}`;
       try {
         event = JSON.parse(line);
       } catch {
-        this.personalProof = undefined;
+        this.discardReadProof();
         this.opts.log?.(`[${this.id}] skipped an unreadable event line`);
         return;
       }
       if (!event || typeof event !== "object" || typeof event.type !== "string") {
-        this.personalProof = undefined;
+        this.discardReadProof();
         return;
       }
       try {
         this.handle(event);
       } catch (error) {
-        this.personalProof = undefined;
+        this.discardReadProof();
         this.opts.log?.(`[${this.id}] event handling failed: ${sanitize(error.message)}`);
       }
     }
     handle(event) {
       if (this.inputBlocked)
         return;
-      if (this.freshInputPending && event.type !== "system")
-        return;
-      if (this.state_.denyPending && this.eventStart < this.denyCursor) {
-        this.personalProof = undefined;
+      const fenced = this.state_.denyPending || this.freshInputPending;
+      if (fenced && this.eventStart < this.denyCursor) {
+        this.discardReadProof();
         return;
       }
-      if (this.state_.denyPending && event.type !== "system") {
+      if (fenced && event.type !== "system") {
+        this.readCompletion = undefined;
+        this.freshCompletionAllowed = false;
+        if (this.freshRead)
+          this.freshRead.activity = true;
         this.observeDenied(event);
         return;
       }
@@ -6737,17 +6763,29 @@ ${text}`;
       }
     }
     onSystem(event) {
-      if (this.state_.denyPending)
+      const fenced = this.state_.denyPending || this.freshInputPending;
+      if (fenced) {
         this.personalProof = undefined;
-      if (event.subtype !== "session_start")
+        this.readCompletion = undefined;
+        this.freshCompletionAllowed = false;
+      }
+      if (event.subtype !== "session_start") {
+        if (fenced && this.freshRead)
+          this.freshRead.activity = true;
         return;
+      }
       const data = event.data ?? {};
       const id = event.session_id ?? data.session_id;
-      if (!qwenSessionId(id))
+      if (!qwenSessionId(id)) {
+        if (fenced && this.freshRead)
+          this.freshRead.activity = true;
         return;
+      }
       const verdict = assessVersion("qwen-dual", data.version);
       const supported = data.supported_events;
       if (!verdict.ok || data.protocol_version !== 2 || !Array.isArray(supported) || !["user", "assistant", "stream_event", "control_request", "control_response"].every((name) => supported.includes(name))) {
+        if (fenced && this.freshRead)
+          this.freshRead.activity = true;
         this.opts.log?.(`[${this.id}] the Qwen TUI's dual-output contract is not verified; not attached`);
         try {
           this.opts.onNotice?.(`${this.id}: this Qwen's dual-output contract is not verified (${verdict.ok ? "protocol or event set" : verdict.reason}); the hub did not attach it`);
@@ -6755,16 +6793,21 @@ ${text}`;
         return;
       }
       if (this.state_.denyPending && this.freshFenceOwner === undefined && id !== this.state_.sessionId) {
-        this.personalProof = undefined;
+        this.discardReadProof();
         return;
       }
       this.state_.sessionId = id;
       this.sessionSeen = true;
+      if (fenced && this.freshRead) {
+        if (this.freshRead.session === undefined) {
+          this.freshRead.session = id;
+          this.freshCompletionAllowed = !this.freshRead.activity;
+        } else
+          this.freshRead.activity = true;
+      }
       this.saveState();
       this.discoverOwner();
       this.verifyFreshInput();
-      if (this.state_.denyPending && this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && this.ownerAlive() && this.ownerIdentity() !== this.freshFenceOwner)
-        this.clearDenyFence();
       if (!this.stopping && !this.detached && this.state === "offline" && !this.state_.denyPending && !this.freshInputPending)
         this.setState("idle");
     }
@@ -6878,12 +6921,12 @@ ${text}`;
         return;
       const session = this.state_.sessionId;
       if (!session || event.session_id !== session || !this.ownerAlive()) {
-        this.personalProof = undefined;
+        this.discardReadProof();
         return;
       }
       if (event.type === "user") {
         if (this.isNotificationEvent(event) || this.promptText(event) === undefined) {
-          this.personalProof = undefined;
+          this.discardReadProof();
           return;
         }
         this.personalProof = { generation: this.state_.generation, session, owner: this.ownerIdentity(), assistant: false };
@@ -6896,12 +6939,39 @@ ${text}`;
         const message = event.message;
         proof.assistant = message?.stop_reason === "end_turn" && Array.isArray(message.content) && !message.content.some((block) => block?.type === "tool_use");
       } else if (event.type === "stream_event" && event.event?.type === "message_stop") {
-        if (proof.assistant)
-          this.clearDenyFence();
-        else
-          proof.assistant = false;
+        if (proof.assistant && this.fenceFile !== undefined)
+          this.readCompletion = { kind: "personal", generation: proof.generation, session: proof.session, owner: proof.owner, source: this.fenceFile, personal: proof };
+        proof.assistant = false;
       } else
         proof.assistant = false;
+    }
+    discardReadProof() {
+      this.personalProof = undefined;
+      this.readCompletion = undefined;
+      this.freshCompletionAllowed = false;
+      if (this.freshRead)
+        this.freshRead.activity = true;
+    }
+    finishFencedRead(fd) {
+      const candidate = this.readCompletion;
+      if (!(this.state_.denyPending || this.freshInputPending) || !candidate || this.discarding)
+        return;
+      if (!this.ownerAlive()) {
+        this.discardReadProof();
+        return;
+      }
+      if (this.readCompletion !== candidate || this.stopping || this.exited || this.detached || this.inputBlocked || candidate.generation !== this.state_.generation || candidate.session !== this.state_.sessionId || candidate.owner !== this.ownerIdentity() || candidate.kind === "personal" && candidate.personal !== this.personalProof || candidate.kind === "fresh" && !this.freshCompletionAllowed || this.freshInputPending && !this.freshRecoveryCurrent()) {
+        this.discardReadProof();
+        return;
+      }
+      const current = fstatSync4(fd), named = lstatSync8(this.eventFile);
+      if (!current.isFile() || !named.isFile() || named.isSymbolicLink() || current.dev !== named.dev || current.ino !== named.ino || `${current.dev}:${current.ino}` !== candidate.source || this.freshInputPending && candidate.source !== this.freshRead?.source || current.size !== this.state_.offset || named.size !== current.size) {
+        this.discardReadProof();
+        return;
+      }
+      this.readCompletion = undefined;
+      this.freshInputPending = false;
+      this.clearDenyFence();
     }
     clearDenyFence() {
       if (this.inputBlocked || this.freshInputPending)
@@ -6911,7 +6981,7 @@ ${text}`;
       delete this.state_.denyPending;
       if (!this.saveState()) {
         this.state_.denyPending = true;
-        this.personalProof = undefined;
+        this.discardReadProof();
         this.denyStorageFailure = true;
         this.setState("offline");
         try {
@@ -6922,7 +6992,7 @@ ${text}`;
       if (this.denyTimer)
         clearTimeout(this.denyTimer);
       this.denyTimer = undefined;
-      this.personalProof = undefined;
+      this.discardReadProof();
       this.freshFenceOwner = undefined;
       this.denyStorageFailure = false;
       this.stalled_ = false;
@@ -6943,7 +7013,7 @@ ${text}`;
         this.state_.denyPending = true;
         if (!this.saveState())
           throw new Error("could not persist fence");
-        this.personalProof = undefined;
+        this.discardReadProof();
         this.lastAssistant = undefined;
         return true;
       } catch {
@@ -7078,7 +7148,7 @@ ${text}`;
       if (this.denyTimer)
         clearTimeout(this.denyTimer);
       this.denyTimer = undefined;
-      this.personalProof = undefined;
+      this.discardReadProof();
       if (this.poller)
         clearInterval(this.poller);
       this.poller = undefined;
