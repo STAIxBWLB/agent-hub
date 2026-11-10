@@ -234,13 +234,15 @@ const integratedAfter = (side: Side, accepted: number): boolean => side.window.s
  * Persistence is record-based (both sides accepted), never elapsed time: silence proves nothing. The pair is bound to
  * its lower task id, so the same pair named in either direction is one observation and not two.
  */
-function unintegratedOverlap(pair: DeclaredOverlapFact, sides: Map<number, Side>): { reading: Reading; evaluated: EvaluatedRevision } {
+function unintegratedOverlap(pair: DeclaredOverlapFact, sides: Map<number, Side>): { reading: Reading; evaluated?: EvaluatedRevision } {
   const low = Math.min(pair.task, pair.other), high = Math.max(pair.task, pair.other);
   const mine = sides.get(low), theirs = sides.get(high);
   // The pair is read as its lower id under that id's revision; a pair whose low side is absent keeps this as its gap revision.
+  // A pair with a closed side is not supervised, like a closed task: no coverage, no gap, no observation.
+  if ((mine && isClosedTaskState(mine.task.state)) || (theirs && isClosedTaskState(theirs.task.state))) return { reading: {} };
   const evaluated: EvaluatedRevision = { rule: "declared_overlap_without_integration", task: low, revision: (mine ?? theirs)?.revision ?? "0:none" };
+  // Read but undecided: the coverage entry and the gap name the same triple, and the gap wins.
   if (!mine || !theirs) return { evaluated, reading: { gap: gapOf("declared_overlap_without_integration", low, evaluated.revision, "no-history") } };
-  if (isClosedTaskState(mine.task.state) || isClosedTaskState(theirs.task.state)) return { evaluated, reading: {} };
   const accepted = [mine.accepted, theirs.accepted] as const;
   if (accepted[0] < 0 || accepted[1] < 0) return { evaluated, reading: {} };
   if (integratedAfter(mine, accepted[0]) || integratedAfter(theirs, accepted[1])) return { evaluated, reading: {} };
@@ -287,7 +289,7 @@ export function evaluateSupervision(facts: SupervisionFacts): SupervisionEvaluat
   }
   for (const overlap of facts.overlaps ?? []) {
     const pair = unintegratedOverlap(overlap, sides);
-    evaluated.push(pair.evaluated);
+    if (pair.evaluated) evaluated.push(pair.evaluated);
     keep(pair.reading);
   }
   // One entry per rule and revision: a pair named twice, or a task listed twice, is one read and not two.
