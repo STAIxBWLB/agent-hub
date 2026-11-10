@@ -401,9 +401,12 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
       previous.get(project.id)?.instanceId === project.instanceId ? previous.get(project.id)!.cursor : 0, generation)));
     for (const [i, project] of projects.entries()) {
       const snap = snaps[i];
-      if (!snap || snap.ok === false) continue;
       const cached = previous.get(project.id);
       const sameInstance = cached?.instanceId === project.instanceId;
+      // A timeout omits this project's outward scene, but retains its baseline for the next valid reply.
+      // A known refusal or a restarted instance gets no such fallback.
+      if (!snap) { if (sameInstance) next.set(project.id, cached!); continue; }
+      if (snap.ok === false) continue;
       // Event cursors do not cover every public status/privacy field on older daemons. Only an explicit
       // unchanged reply permits model reuse; a full reply is always screened by the unchanged #264 mapper.
       if (snap.changed === false && !sameInstance) continue;
