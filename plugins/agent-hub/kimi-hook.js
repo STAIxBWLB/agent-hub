@@ -414,13 +414,13 @@ var init_compat = __esm(() => {
     },
     "qwen-dual": {
       label: "Qwen Code dual-output TUI",
-      verified: ["0.26.1"],
+      verified: ["0.26.1", "0.27.0"],
       gate: "contract",
       probe: ["qwen", "--version"],
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "The dual-output file contract (submit and confirmation_response input, user/assistant/stream_event/control events, session_start identity) was verified on 0.26.1 only. A hub deny ends the turn without any Qwen event, and no external stop of a running turn exists; another version may change either.",
-      receipt: "docs/verification/2026-10-25-qwen-dual-output-t0.md"
+      trustNote: "Exact 0.27.0 repeats normal-Bus Q2 and account-free normal-mode Q3/Q5/Q6/Q7 on macOS arm64 against 0.26.1. Existing deny and external-stop limits remain. Real model/account turns, Linux and lifetime containment remain unverified; direct busy-submit characterization is separate from normal-Bus Q2.",
+      receipt: "docs/verification/2026-11-10-qwen-0270-dual-output.md"
     }
   };
   MAX_BYTES = 64 * 1024;

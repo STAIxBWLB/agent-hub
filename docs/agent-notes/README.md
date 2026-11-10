@@ -106,6 +106,44 @@ revision preserves both behaviors; capture still uses its stricter turn fence.
 
 ## Changes
 
+- 2026-11-10: #850 distinguishes normal-Bus Q2 proof from direct busy-submit characterization and preserves adoption/reattach/deny quiescence ceilings.
+- 2026-11-10: Spec acceptance carry-over (#1328 T4) distinguishes a new person decision from host-verified reuse of the same decision on explicitly superseding work. The narrow exception preserves original consent and records its cancelled source; it does not expose acceptance as a tool or receipt field. Review caught an early carry write before a later plan refusal: staging the host proof and committing only with the admitted outer event preserves the existing pre-effect refusal contract.
 - 2026-11-09: #1328 T6 extended the closed machine-default schema for an explicit setup research choice, reusing guarded publication and preserving the existing autonomy and start choices.
 
-- 2026-11-10: Spec acceptance carry-over (#1328 T4) distinguishes a new person decision from host-verified reuse of the same decision on explicitly superseding work. The narrow exception preserves original consent and records its cancelled source; it does not expose acceptance as a tool or receipt field. Review caught an early carry write before a later plan refusal: staging the host proof and committing only with the admitted outer event preserves the existing pre-effect refusal contract.
+## 2026-11-10: Qwen dual-output Q2
+
+The v2 native workload appended a second submit directly while the first provider
+response was held. Its private 0.26.1 matched control and later candidates emitted
+one user event and one final assistant/stop containing both markers. The extra
+provider POSTs were not classified by response format or role counts, so their
+underlying cause is unknown. That workload did not reproduce the original
+0.26.1 receipt's native-queued-turn claim; the original used a real gateway and a
+global installation that changed during the day.
+
+Ruling fa75c5f2-fc78-42a1-85dc-cf206e6a7825 makes required Q2 follow the actual normal
+Bus and QwenDualPeer path. The second envelope waits in the Bus during the held
+first response. Distinct native user/provider/final assistant/stop boundaries
+remain necessary. Direct native busy-submit behavior is separate characterization.
+The manual producer does not make the receipt harness eligible for automation.
+
+Adoption can report idle with an unknown pre-existing turn; reattachment can
+report idle before proving native quiescence; deny marks the hub turn ended before
+native consumption is acknowledged. Those existing ceilings prevent an absolute
+claim that no input can ever reach a native active turn. The premature deny/idle
+follow-up is outside this compatibility change; the production adapter is unchanged.
+
+The final account-free normal-Bus Q2 runs passed on the private 0.26.1 control
+and 0.27.0 candidate, with two user/final-stop/provider turns after evidence was
+frozen at owned stop. Two earlier normal-path controls failed the strict provider
+check despite observing two real turns. Shipped-source analysis showed `--bare`
+bypassed the private UI follow-up setting; the corrected fixture loads owned full
+settings. The earlier extra requests remain unattributed because their latest
+user bodies were not retained. The [dated receipt](../verification/2026-11-10-qwen-0270-dual-output.md)
+separates these attempts and the 0.26.1 config-only observation from the later
+passing required Q3/Q5/Q6/Q7 pair. The remaining producer preserved a PTY/catalog
+control failure and a host FIFO-helper setup failure before the final matched
+pair passed with owned cleanup/final closure. The independent direct-busy pair
+on both versions observed one user/assistant/Stop with both markers in one
+assistant, while required normal-Bus Q2 retained two distinct turns. No production
+adapter, Bus or automatic receipt-admission behavior changed.
+||||||| b98faa060
