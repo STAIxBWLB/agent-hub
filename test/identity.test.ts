@@ -390,3 +390,13 @@ test("autonomy, usage and deliverables name their subcommand and never an operan
     expect(cliCommandLabel(command, rest)).toBe(label);
   }
 });
+
+
+test("guidance preserves the authenticated peer and refuses live-test promotion for writes", () => {
+  for (const operation of ["create", "list", "show", "withdraw"]) {
+    expect(classifyPeerCommand("guidance", [operation])).toBe("allowed");
+    expect(cliCommandLabel("guidance", [operation, "SECRET_ARGUMENT"])).toBe(`guidance ${operation}`);
+  }
+  expect(classifyPeerCommand("guidance", ["activate"])).toBe("console");
+  for (const operation of ["create", "withdraw"]) expect(liveTestRefusal("guidance", [operation])).toBe(true);
+});

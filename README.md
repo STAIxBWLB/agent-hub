@@ -107,8 +107,10 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   (`ahub specs stamp`). Fixture-tested only so far: this repository's own specs in
   `docs/design/` are unstamped drafts ([dogfood](docs/dogfood.md#operations)).
   The [guidance variant contract](docs/design/guidance-experiments.md) defines
-  immutable advisory role proposals and private task-local lifecycle storage,
-  without activation, permissions or probe execution.
+  immutable advisory role proposals and private task-local lifecycle storage.
+  `ahub guidance create|list|show|withdraw` and the MCP tools share task authority
+  and public projections; the producer console's Guidance panel is read-only.
+  Section diffs remain advisory, without activation, permissions or probes.
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
   in process with no claude-mem worker (short- and long-term tiers, a typed graph,

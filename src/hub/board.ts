@@ -1,4 +1,4 @@
-import { GUIDANCE_VARIANT_LIMITS, GUIDANCE_HASH_HEX_LENGTH, parseGuidanceVariantV1, parseGuidanceExperiment, parseGuidanceStoredRecord, validateGuidanceVariantV1, type GuidanceVariantV1, type GuidanceExperimentRecord, type GuidanceStoredRecord, type GuidanceWriteFence } from "./guidance-variants.ts";
+import { GUIDANCE_VARIANT_LIMITS, GUIDANCE_PAGE_MAX_RECORDS, GUIDANCE_HASH_HEX_LENGTH, parseGuidanceVariantV1, parseGuidanceExperiment, parseGuidanceStoredRecord, validateGuidanceVariantV1, type GuidanceVariantV1, type GuidanceExperimentRecord, type GuidanceStoredRecord, type GuidanceWriteFence } from "./guidance-variants.ts";
 import { ExecutionLinkError, EXECUTION_LINK_LIMITS, executionLinkActor, executionLinkInteger, executionLinkId, executionLinkReferences, executionReferenceDigest, parseExecutionLinkInput, parseExecutionLinkRecord, type ExecutionLinkInput, type ExecutionLinkRecord, type ExecutionLinkFence } from "./execution-links.ts";
 import { executionReferenceKey, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt, type AttemptReceiptV1 } from "./research-runner.ts";
@@ -27,6 +27,13 @@ import type { CostPlan, ReviewCost } from "./cost-governance.ts";
 import type { SpecRef, SpecTaskReport } from "./specs-task.ts";
 export type { SpecAck, SpecRef, SpecTaskReport } from "./specs-task.ts";
 import { campaignHash, parseResearchCampaign, parseResearchHandoff, type ResearchCampaignContract, type ResearchCampaignStatus, type ResearchUnit, type ResearchHandoffV1, type ResearchHandoffRecord } from "./research-campaign.ts";
+
+const GUIDANCE_VARIANT_SELECT = `SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN id END AS id,CASE WHEN typeof(body)='text' AND length(CAST(body AS BLOB))<=? THEN body END AS body,
+      CASE WHEN typeof(body_sha256)='text' AND length(CAST(body_sha256 AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN body_sha256 END AS body_sha256,
+      CASE WHEN typeof(created_by)='text' AND length(CAST(created_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN created_by END AS created_by,CASE WHEN typeof(created_at)='integer' THEN created_at END AS created_at,
+      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN withdrawn_by END AS withdrawn_by,CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN withdrawn_at END AS withdrawn_at,
+      CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN 1 ELSE 0 END AS valid_withdrawn_at,
+      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN 1 ELSE 0 END AS valid_withdrawn_by`;
 
 /** Internal host capability; never accepted from a control or tool argument. */
 export const HOST_MERGE_ADOPTION = Symbol("host merge adoption");
@@ -604,6 +611,7 @@ export class Board {
       recorded_by TEXT NOT NULL, recorded_at INTEGER NOT NULL,
       UNIQUE(project_id,task_id,task_created,from_sha256,reference_sha256))`);
     this.db.run("CREATE INDEX IF NOT EXISTS execution_reference_task_scope ON execution_reference_links(project_id,task_id,task_created,id)");
+    this.db.run("CREATE INDEX IF NOT EXISTS guidance_variant_task_id ON guidance_variants(project_id,task_id,task_created,id)");
     this.db.run(`CREATE TABLE IF NOT EXISTS review_comments (
       task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,lifecycle TEXT NOT NULL,revision INTEGER NOT NULL,
       PRIMARY KEY(task_id,task_created,id))`);
@@ -1090,27 +1098,50 @@ export class Board {
   }
   guidanceVariants(projectKey: string, taskId: number, taskCreated: number, experimentId: string): GuidanceStoredRecord[] {
     const experiment = this.guidanceExperiment(projectKey, taskId, taskCreated, experimentId);
-    const rows = this.db.query(`SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN id END AS id,CASE WHEN typeof(body)='text' AND length(CAST(body AS BLOB))<=? THEN body END AS body,
-      CASE WHEN typeof(body_sha256)='text' AND length(CAST(body_sha256 AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN body_sha256 END AS body_sha256,
-      CASE WHEN typeof(created_by)='text' AND length(CAST(created_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN created_by END AS created_by,CASE WHEN typeof(created_at)='integer' THEN created_at END AS created_at,
-      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN withdrawn_by END AS withdrawn_by,CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN withdrawn_at END AS withdrawn_at,
-      CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN 1 ELSE 0 END AS valid_withdrawn_at,
-      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN 1 ELSE 0 END AS valid_withdrawn_by FROM guidance_variants
-      WHERE project_id=? AND task_id=? AND task_created=? AND experiment_id=? ORDER BY id LIMIT ?`)
+    const rows = this.db.query(`${GUIDANCE_VARIANT_SELECT} FROM guidance_variants
+      WHERE project_id=? AND task_id=? AND task_created=? AND experiment_id=? ORDER BY guidance_variants.id LIMIT ?`)
       .all(GUIDANCE_VARIANT_LIMITS.recordBytes, projectKey, taskId, taskCreated, experimentId, GUIDANCE_VARIANT_LIMITS.variants + 1) as Record<string, unknown>[];
     if (rows.length > GUIDANCE_VARIANT_LIMITS.variants || rows.length && !experiment) throw new Error("guidance variant storage is invalid");
-    return rows.map(row => {
+    return rows.map(row => this.guidanceVariantRow(row, experiment!));
+  }
+  private guidanceVariantRow(row: Record<string, unknown>, experiment: GuidanceExperimentRecord): GuidanceStoredRecord {
       if (row.valid_withdrawn_by !== 1 || row.valid_withdrawn_at !== 1 || typeof row.body !== "string" || createHash("sha256").update(row.body).digest("hex") !== row.body_sha256
         || (row.withdrawn_by === null) !== (row.withdrawn_at === null)) throw new Error("guidance variant storage is invalid");
       const record = parseGuidanceStoredRecord({ variant: JSON.parse(row.body), createdBy: row.created_by, createdAt: row.created_at,
         ...(row.withdrawn_by === null ? {} : { withdrawn: { by: row.withdrawn_by, at: row.withdrawn_at } }) });
       const value = record.variant;
-      if (JSON.stringify(value) !== row.body || value.id !== row.id || value.projectKey !== projectKey || value.taskId !== taskId
-        || value.taskCreated !== taskCreated || value.experimentId !== experimentId
-        || JSON.stringify(value.baseline) !== JSON.stringify(experiment!.baseline)) throw new Error("guidance variant binding is invalid");
+      if (JSON.stringify(value) !== row.body || value.id !== row.id || value.projectKey !== experiment.projectKey || value.taskId !== experiment.taskId
+        || value.taskCreated !== experiment.taskCreated || value.experimentId !== experiment.experimentId
+        || JSON.stringify(value.baseline) !== JSON.stringify(experiment.baseline)) throw new Error("guidance variant binding is invalid");
       return record;
+  }
+  /** After Tasks admission only. The raw experiment id is never part of the public selector. */
+  guidanceVariantLocation(projectKey: string, taskId: number, taskCreated: number, id: string): string | undefined {
+    const rows = this.db.query(`SELECT CASE WHEN typeof(experiment_id)='text' AND length(CAST(experiment_id AS BLOB))<=? THEN experiment_id END AS experiment_id
+      FROM guidance_variants INDEXED BY guidance_variant_task_id WHERE project_id=? AND task_id=? AND task_created=? AND id=? LIMIT 2`)
+      .all(EXECUTION_REFERENCE_LIMITS.id, projectKey, taskId, taskCreated, id) as { experiment_id: unknown }[];
+    if (rows.length > 1 || rows.some(row => typeof row.experiment_id !== "string")) throw new Error("guidance variant selection is ambiguous or unavailable");
+    return rows[0]?.experiment_id as string | undefined;
+  }
+  /** One fixed keyset page: no OFFSET, task history, experiment-count cap or unbounded payload scan. */
+  guidanceVariantPage(projectKey: string, taskId: number, taskCreated: number, after = ""): GuidanceStoredRecord[] {
+    const rows = this.db.query(`${GUIDANCE_VARIANT_SELECT},CASE WHEN typeof(experiment_id)='text' AND length(CAST(experiment_id AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN experiment_id END AS experiment_id
+      FROM guidance_variants INDEXED BY guidance_variant_task_id WHERE project_id=? AND task_id=? AND task_created=? AND guidance_variants.id>? ORDER BY guidance_variants.id LIMIT ?`)
+      .all(GUIDANCE_VARIANT_LIMITS.recordBytes, projectKey, taskId, taskCreated, after, GUIDANCE_PAGE_MAX_RECORDS + 1) as Record<string, unknown>[];
+    if (new Set(rows.map(row => row.id)).size !== rows.length) throw new Error("guidance variant selection is ambiguous");
+    const experiments = new Map<string, GuidanceExperimentRecord>();
+    return rows.map(row => {
+      if (typeof row.experiment_id !== "string") throw new Error("guidance experiment scope is invalid");
+      let experiment = experiments.get(row.experiment_id);
+      if (!experiment) {
+        experiment = this.guidanceExperiment(projectKey, taskId, taskCreated, row.experiment_id);
+        if (!experiment) throw new Error("guidance experiment is unavailable");
+        experiments.set(row.experiment_id, experiment);
+      }
+      return this.guidanceVariantRow(row, experiment);
     });
   }
+
   private guidanceWriteTask(fence: GuidanceWriteFence): Task {
     const task = this.get(fence.taskId);
     if (!executionLinkActor(fence.by) || !executionLinkInteger(fence.at) || !task || task.created !== fence.taskCreated

@@ -1,4 +1,4 @@
-import { GuidanceVariantError, guidanceVariantMetadata, parseGuidanceVariantV1, validateGuidanceVariantV1, parseGuidanceSelector, type GuidanceVariantV1, type GuidanceStoredRecord, type GuidanceSelector, type GuidanceWriteFence, type GuidanceWriteReceipt, type GuidanceReadResult } from "./guidance-variants.ts";
+import { GuidanceVariantError, GUIDANCE_PAGE_MAX_RECORDS, GUIDANCE_REPLY_MAX_BYTES, guidanceVariantSectionDiff, guidanceProtectedSectionNames, parseGuidancePageResult, parseGuidanceDiffResult, parseGuidanceListQuery, parseGuidanceIdQuery, guidancePageCursor, guidancePageAfter, guidanceVariantMetadata, parseGuidanceVariantV1, validateGuidanceVariantV1, parseGuidanceSelector, type GuidanceVariantV1, type GuidanceStoredRecord, type GuidanceSelector, type GuidanceIdSelector, type GuidanceWriteFence, type GuidanceWriteReceipt, type GuidanceCurrent, type GuidancePublicRecord, type GuidancePageResult, type GuidanceDiffResult, type GuidanceReadResult } from "./guidance-variants.ts";
 import { buildEntryDiagnostic } from "./build-entry.ts";
 import { taskShowAllowed } from "./conductor.ts";
 import { executionOwnerSnapshot, parseOwnerLineageQuery, type ExecutionLineageOwnerPorts } from "./execution-lineage-owner.ts";
@@ -5006,7 +5006,37 @@ export class Tasks {
     return { by, at: this.d.now?.() ?? Date.now(), taskId: task.id, taskCreated: task.created, flowRevision: task.history.length,
       owner: task.owner, state: task.state, roleId: task.role };
   }
-  private guidancePublicField(text: string): string { return this.lineageMetadata(JSON.stringify(text)) ? text : "withheld"; }
+  private guidanceFieldAllowed(text: string): boolean {
+    try { return this.nameable(text) && !looksSecret(text) && this.lineageMetadata(JSON.stringify(text)); }
+    catch { return false; }
+  }
+  private guidancePublicField(text: string): string { return this.guidanceFieldAllowed(text) ? text : "withheld"; }
+  private guidanceExperimentFor(projectKey: string, task: Task, selector: Pick<GuidanceSelector, "taskId" | "taskCreated" | "id"> & { experimentId?: string }): string | undefined {
+    return selector.experimentId ?? (selector.id ? this.guidanceStorage("read", () => this.d.board.guidanceVariantLocation(projectKey, task.id, task.created, selector.id!)) : undefined);
+  }
+  private guidanceCurrent(task: Task): GuidanceCurrent { return { taskId: task.id, taskCreated: task.created, flowRevision: task.history.length }; }
+  private guidanceReadFence(by: PeerId, selector: Pick<GuidanceSelector, "taskId" | "taskCreated">, task: Task, check: () => void): Task {
+    check(); const current = this.guidanceTask(by, selector, false);
+    if (JSON.stringify([current.created, current.history.length, current.owner, current.reviewer, current.state, current.role])
+      !== JSON.stringify([task.created, task.history.length, task.owner, task.reviewer, task.state, task.role])) throw new Error("guidance read binding changed");
+    return current;
+  }
+  private guidanceEvidence(by: PeerId, task: Task, records: readonly GuidanceStoredRecord[]): GuidancePublicRecord["evidence"][] {
+    const ports = this.lineagePorts(by), projectKey = this.guidanceProject();
+    return records.map(record => record.variant.evidenceRefs.map(reference => {
+      let known = false;
+      if (ports && reference.tool === "ahub" && reference.projectKey === projectKey) {
+        const snapshot = executionOwnerSnapshot(ports, { root: reference, task: { id: task.id, created: task.created } });
+        known = snapshot.source.health === "ready" && snapshot.source.nodes.some(node => executionReferenceKey(node.ref) === executionReferenceKey(reference));
+      }
+      return { key: executionReferenceDigest(reference), status: known ? "declared" as const : "unavailable" as const };
+    }));
+  }
+  private guidanceProjection(by: PeerId, task: Task, record: GuidanceStoredRecord, evidence: GuidancePublicRecord["evidence"]): GuidancePublicRecord {
+    return { ...guidanceVariantMetadata(record.variant), experimentId: this.guidancePublicField(record.variant.experimentId),
+      status: record.withdrawn ? "withdrawn" : "declared", applicable: this.guidanceApplicable(by, task, record),
+      rationale: { problemHypothesis: this.guidancePublicField(record.variant.rationale.problemHypothesis), expectedObservableDifference: this.guidancePublicField(record.variant.rationale.expectedObservableDifference) }, evidence };
+  }
   private guidanceReceipt(saved: { record: GuidanceStoredRecord; already: boolean }): GuidanceWriteReceipt {
     const value = saved.record.variant;
     return { id: value.id, taskId: value.taskId, experimentId: this.guidancePublicField(value.experimentId), status: saved.record.withdrawn ? "withdrawn" : "declared", already: saved.already };
@@ -5045,15 +5075,17 @@ export class Tasks {
   }
   async guidanceVariantWithdraw(by: PeerId, input: unknown): Promise<GuidanceWriteReceipt> {
     const check = this.guidanceRequest(by);
-    let selector: GuidanceSelector;
-    try { selector = parseGuidanceSelector(input, true); } catch { throw new PreEffectToolRefusal("invalid guidance withdrawal; name a current task epoch, flow revision, experiment and variant"); }
+    let selector: GuidanceSelector | GuidanceIdSelector;
+    try { try { selector = parseGuidanceSelector(input, true); } catch { selector = parseGuidanceIdQuery(input, true); } }
+    catch { throw new PreEffectToolRefusal("invalid guidance withdrawal; name a current task epoch, flow revision and existing variant selector"); }
     return this.studyWrite(async () => {
       check(); const task = this.guidanceTask(by, selector, true), projectKey = this.guidanceProject();
       if (task.history.length !== selector.flowRevision) throw new PreEffectToolRefusal("guidance task revision changed; reload the task before withdrawing");
-      const record = this.guidanceStorage("read", () => this.d.board.guidanceVariants(projectKey, task.id, task.created, selector.experimentId)).find(item => item.variant.id === selector.id);
+      const experimentId = this.guidanceExperimentFor(projectKey, task, selector);
+      const record = experimentId === undefined ? undefined : this.guidanceStorage("read", () => this.d.board.guidanceVariants(projectKey, task.id, task.created, experimentId)).find(item => item.variant.id === selector.id);
       if (!record) throw new PreEffectToolRefusal("guidance variant is unavailable; refresh the task experiment before withdrawing");
       check();
-      const saved = this.guidanceStorage("write", () => this.d.board.withdrawGuidanceVariant(projectKey, selector.experimentId, selector.id!, this.guidanceFence(by, task)));
+      const saved = this.guidanceStorage("write", () => this.d.board.withdrawGuidanceVariant(projectKey, experimentId!, selector.id!, this.guidanceFence(by, task)));
       return this.guidanceReceipt(saved);
     });
   }
@@ -5070,35 +5102,71 @@ export class Tasks {
     try {
       const check = this.guidanceRequest(by), selector = parseGuidanceSelector(input);
       check(); const task = this.guidanceTask(by, selector, false), projectKey = this.guidanceProject();
-      const records = this.d.board.guidanceVariants(projectKey, task.id, task.created, selector.experimentId);
+      const experimentId = this.guidanceExperimentFor(projectKey, task, selector);
+      if (experimentId === undefined) return { state: "unavailable" };
+      const records = this.d.board.guidanceVariants(projectKey, task.id, task.created, experimentId);
       const selected = selector.id ? records.filter(item => item.variant.id === selector.id) : records;
       if (!selected.length) return { state: "unavailable" };
-      const ports = this.lineagePorts(by);
-      const evidence = selected.map(record => record.variant.evidenceRefs.map(reference => {
-        let known = false;
-        if (ports && reference.tool === "ahub" && reference.projectKey === projectKey) {
-          const snapshot = executionOwnerSnapshot(ports, { root: reference, task: { id: task.id, created: task.created } });
-          known = snapshot.source.health === "ready" && snapshot.source.nodes.some(node => executionReferenceKey(node.ref) === executionReferenceKey(reference));
-        }
-        return { key: executionReferenceDigest(reference), status: known ? "declared" as const : "unavailable" as const };
-      }));
-      // A source port may observe a concurrent disposition or task change. Never return its earlier applicability.
-      check(); const current = this.guidanceTask(by, selector, false);
-      if (JSON.stringify([current.created, current.history.length, current.owner, current.reviewer, current.state, current.role])
-        !== JSON.stringify([task.created, task.history.length, task.owner, task.reviewer, task.state, task.role])) return { state: "unavailable" };
-      const fresh = this.d.board.guidanceVariants(projectKey, current.id, current.created, selector.experimentId);
+      const evidence = this.guidanceEvidence(by, task, selected), current = this.guidanceReadFence(by, selector, task, check);
+      if (this.guidanceExperimentFor(projectKey, current, selector) !== experimentId) return { state: "unavailable" };
+      const fresh = this.d.board.guidanceVariants(projectKey, current.id, current.created, experimentId);
       const currentSelected = selector.id ? fresh.filter(item => item.variant.id === selector.id) : fresh;
       if (JSON.stringify(selected) !== JSON.stringify(currentSelected)) return { state: "unavailable" };
-      const result: GuidanceReadResult = { state: "available", records: currentSelected.map((record, index) => ({ ...guidanceVariantMetadata(record.variant),
-        experimentId: this.guidancePublicField(record.variant.experimentId), status: record.withdrawn ? "withdrawn" : "declared", applicable: this.guidanceApplicable(by, current, record),
-        rationale: { problemHypothesis: this.guidancePublicField(record.variant.rationale.problemHypothesis),
-          expectedObservableDifference: this.guidancePublicField(record.variant.rationale.expectedObservableDifference) }, evidence: evidence[index]! })) };
+      const result: GuidanceReadResult = { state: "available", records: currentSelected.map((record, index) => this.guidanceProjection(by, current, record, evidence[index]!)) };
       check();
       return result;
     } catch { return { state: "unavailable" }; }
   }
+  /** Public T3 detail: private selection, screened editable fields, no raw snapshot readback. */
+  guidanceVariantDiff(by: PeerId, input: unknown): GuidanceDiffResult {
+    try {
+      const check = this.guidanceRequest(by), selector = parseGuidanceIdQuery(input);
+      const task = this.guidanceTask(by, selector, false), projectKey = this.guidanceProject(), experimentId = this.guidanceExperimentFor(projectKey, task, selector);
+      if (experimentId === undefined) return { state: "unavailable" };
+      const record = this.d.board.guidanceVariants(projectKey, task.id, task.created, experimentId).find(item => item.variant.id === selector.id);
+      if (!record) return { state: "unavailable" };
+      const evidence = this.guidanceEvidence(by, task, [record]), current = this.guidanceReadFence(by, selector, task, check);
+      if (this.guidanceExperimentFor(projectKey, current, selector) !== experimentId) return { state: "unavailable" };
+      const fresh = this.d.board.guidanceVariants(projectKey, current.id, current.created, experimentId).find(item => item.variant.id === selector.id);
+      if (!fresh || JSON.stringify(fresh) !== JSON.stringify(record)) return { state: "unavailable" };
+      const result = parseGuidanceDiffResult({ state: "available", current: this.guidanceCurrent(current), record: this.guidanceProjection(by, current, fresh, evidence[0]!),
+        sections: guidanceVariantSectionDiff(fresh.variant, text => this.guidanceFieldAllowed(text)), protectedSections: guidanceProtectedSectionNames() });
+      check(); return result;
+    } catch { return { state: "unavailable" }; }
+  }
+  /** Fixed indexed keyset pages; cursor contains only an existing public variant id and authenticated context. */
+  guidanceVariantList(by: PeerId, input: unknown): GuidancePageResult {
+    try {
+      const check = this.guidanceRequest(by), query = parseGuidanceListQuery(input), task = this.guidanceTask(by, query, false), projectKey = this.guidanceProject();
+      const key = this.d.executionLineage?.cursorKey; if (!key) return { state: "unavailable" };
+      const context = { ...this.guidanceCurrent(task), projectKey, actor: by };
+      const after = query.cursor ? guidancePageAfter(key, context, query.cursor) : "";
+      if (after && !this.d.board.guidanceVariantLocation(projectKey, task.id, task.created, after)) return { state: "unavailable" };
+      const page = this.d.board.guidanceVariantPage(projectKey, task.id, task.created, after), selected = page.slice(0, GUIDANCE_PAGE_MAX_RECORDS);
+      const evidence = this.guidanceEvidence(by, task, selected), current = this.guidanceReadFence(by, query, task, check);
+      const fresh = this.d.board.guidanceVariantPage(projectKey, current.id, current.created, after);
+      if (JSON.stringify(page) !== JSON.stringify(fresh)) return { state: "unavailable" };
+      const records: GuidancePublicRecord[] = [];
+      for (const [index, record] of selected.entries()) {
+        const candidate = this.guidanceProjection(by, current, record, evidence[index]!);
+        const sized = { state: "available", current: this.guidanceCurrent(current), records: [...records, candidate], truncated: true, cursor: guidancePageCursor(key, context, candidate.id) };
+        if (Buffer.byteLength(JSON.stringify(sized)) > GUIDANCE_REPLY_MAX_BYTES) break;
+        records.push(candidate);
+      }
+      const truncated = records.length < page.length;
+      if (truncated && !records.length) return { state: "unavailable" };
+      const result = parseGuidancePageResult({ state: "available", current: this.guidanceCurrent(current), records, truncated,
+        ...(truncated ? { cursor: guidancePageCursor(key, context, records.at(-1)!.id) } : {}) });
+      check(); return result;
+    } catch { return { state: "unavailable" }; }
+  }
+
   /** Future probe admission must capture its own current runtime/turn fence; this boolean is no handoff receipt. */
   guidanceVariantApplicable(by: PeerId, input: unknown): boolean {
+    try {
+      const selected = parseGuidanceIdQuery(input), read = this.guidanceVariantDiff(by, selected);
+      return read.state === "available" && read.record.applicable;
+    } catch { /* Existing explicit experiment selectors keep the T2 metadata-only path. */ }
     try { if (parseGuidanceSelector(input).id === undefined) return false; } catch { return false; }
     const read = this.guidanceVariantRead(by, input);
     return read.state === "available" && read.records.length === 1 && read.records[0]!.applicable;

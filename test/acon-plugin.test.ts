@@ -50,8 +50,8 @@ function fixture(o: { stallSnapshots?: boolean; spaceBudgetMs?: number; features
 }
 
 describe("acon plugin manifest", () => {
-  test("panels are exactly DASHBOARD_VIEWS, with inbox and confirm", () => {
-    expect(plugin.manifest.panels.map((p) => p.id)).toEqual([...DASHBOARD_VIEWS]);
+  test("panels preserve DASHBOARD_VIEWS and add read-only Guidance, with inbox and confirm", () => {
+    expect(plugin.manifest.panels.map((p) => p.id)).toEqual([...DASHBOARD_VIEWS, "guidance"]);
     expect(plugin.manifest).toMatchObject({ api: 1, tool: "ahub", capabilities: { inbox: true, confirm: true } });
     expect(() => JSON.stringify(plugin.manifest)).not.toThrow();
   });

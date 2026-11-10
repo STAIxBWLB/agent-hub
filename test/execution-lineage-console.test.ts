@@ -58,7 +58,7 @@ describe("acon lineage provider port (#1220 T3)", () => {
 
   test("reading executes nothing and widens neither the dashboard's panels nor its action list", async () => {
     const { provider, actions } = fixture();
-    expect(plugin.manifest.panels.map((panel) => panel.id)).toEqual([...DASHBOARD_VIEWS]);
+    expect(plugin.manifest.panels.map((panel) => panel.id)).toEqual([...DASHBOARD_VIEWS, "guidance"]);
     expect((plugin.manifest.capabilities?.actions ?? []).some((name) => name.startsWith("lineage"))).toBe(false);
     for (const query of [{ taskId: 7 }, { attemptId: attempt.id }, { root: task, task: { id: 7, created: 100 }, nodes: 5, edges: 2, bytes: 4096, cursor: "opaque_cursor" }]) {
       expect((await provider.snapshot({ after: 0, panel: "lineage", projectId: "p1", instanceId: "i1", ...query })).ok).toBe(true);

@@ -1,3 +1,5 @@
+import { guidancePanelAssets } from "./guidance-panel.ts";
+import { guidanceLines } from "./guidance-view.ts";
 /**
  * acon console plugin for agent-hub (#935, plan entelecheia/ai-workspace#60 §2.5).
  *
@@ -175,8 +177,17 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
-  const { list, act, answer, receipt, consoleControl, lineage } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
-  const assets = panelAssets();
+  const { list, act, answer, receipt, consoleControl, lineage, guidance } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
+  const dashboard = panelAssets(), guide = guidancePanelAssets();
+  const assets = { css: `${dashboard.css}\n${guide.css}`, js: `${dashboard.js.replace("export default (host) => {", "const createDashboard = (host) => {")}\n${guide.js.replace("export default (host) => {", "const createGuidance = (host) => {")}\nexport default (host) => {
+    const dashboardMount = host.mount.ownerDocument.createElement('div'), guidanceMount = host.mount.ownerDocument.createElement('div');
+    dashboardMount.hidden = true; guidanceMount.hidden = true; host.mount.append(dashboardMount, guidanceMount);
+    const dashboard = createDashboard({...host,mount:dashboardMount}), guidance = createGuidance({...host,mount:guidanceMount});
+    return { show(panel,params) { const guide = panel === 'guidance'; dashboardMount.hidden = guide; guidanceMount.hidden = !guide;
+      if (guide) { dashboard.hide(); guidance.show(panel,params); } else { guidance.hide(); dashboard.show(panel,params); } },
+      hide() { dashboard.hide(); guidance.hide(); dashboardMount.hidden = true; guidanceMount.hidden = true; },
+      destroy() { dashboard.destroy(); guidance.destroy(); dashboardMount.remove(); guidanceMount.remove(); } };
+  };` };
   const seen = new Map<string, string>(); // inbox item id -> first-seen ISO time, so `at` stays stable
 
   async function running(): Promise<ProjectRow[]> {
@@ -422,6 +433,13 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
       // #1220 T3: the execution-lineage read (AC5). A provider port, not a panel id: the shell's own panels are
       // DASHBOARD_VIEWS and neither that list nor the dashboard's action list grows. Reading executes nothing, and
       // an unavailable or unsupported source stays a refusal here rather than an empty successful graph.
+      if (input.panel === "guidance") {
+        const { panel: _panel, after: _after, projectId, instanceId, op, ...query } = input;
+        if (op !== "list" && op !== "show") return { ok: false, panel: "guidance", error: "guidance console is read-only; select list/show and a current task scope" };
+        const result = await guidance({ projectId, instanceId }, op, query);
+        if (!result.ok || !("guidance" in result)) return { ok: false, panel: "guidance", error: "error" in result ? result.error : "guidance read unavailable" };
+        return { ok: true, panel: "guidance", guidance: result.guidance, lines: guidanceLines(result.guidance) };
+      }
       if (input.panel === "lineage") {
         const query = Object.fromEntries(LINEAGE_QUERY.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]));
         const reply = await lineage({ projectId: input.projectId, instanceId: input.instanceId }, query);
@@ -539,7 +557,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
 const plugin: ConsolePlugin = {
   manifest: {
     api: 1, tool: "ahub", version, title: "agent-hub", icon: "agents", pollMs: 2000,
-    panels: DASHBOARD_VIEWS.map((id, order) => ({ id, title: TITLES[id], order })),
+    panels: [...DASHBOARD_VIEWS.map((id, order) => ({ id, title: TITLES[id], order })), { id: "guidance", title: "Guidance", order: DASHBOARD_VIEWS.length }],
     capabilities: { actions: [...FORWARDED, ...INBOX_VERBS, ...QUESTION_ACTIONS, ...RESULT_ADVERTISED, ...REVIEW_ACTIONS], confirm: true, multiProject: true, inbox: true, space: true },
   },
   async open(ctx) { return createProvider({ home: ctx.home, log: ctx.log, features: ctx.features }); },
