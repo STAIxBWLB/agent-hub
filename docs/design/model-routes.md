@@ -622,6 +622,10 @@ behavior rather than introducing a new transcript default. Advisor output is
 context without a guessed additional transcript cap. Surrounding planning,
 review, escalation and redo prompt wording is newly written; the owned caller's
 short `senior reviewer` feedback cue remains.
+The fresh request bytes invalidate former live request digests for these prompts.
+Keep historical receipts unchanged; the new prompt-quality live leg is manual
+and UNRUN, without a model call or restamp. Model-free protocol tests do not
+establish real-model judgement quality.
 
 Reply parsing is anchored APPROVE/REDO, case-insensitive. Escalation accepts the
 documented JSON fields and closed categories only. New accepted-data ceilings
@@ -749,7 +753,12 @@ waits or guessed event-loop turns. The separately started owned HTTP task remain
 the only abort-and-join claim.
 
 The owned model-free routing harness has optional `beforeJudgeReply`,
-`choicePrepared` and `observeRoute` proof ports. The first pauses a scripted reply
+`choicePrepared` and `observeRoute` proof ports. A value-only optional
+`turnContext` binds one controlled fake logical user turn using the existing
+trusted begin/end API, with end in finally. Its fixture must explicitly name the
+owned loopback fake service endpoint, never an implicit default. Default absence
+retains canonical missing-turn/no-HTTP behavior; no native/provider/person identity
+or inferred multi-user lifecycle is introduced. The first pauses a scripted reply
 only after execute arguments have been recorded; the last receives a detached,
 frozen copy and has no return authority. Absent ports introduce no new await or
 readiness promise in canonical corpus execution. These ports do not change corpus
