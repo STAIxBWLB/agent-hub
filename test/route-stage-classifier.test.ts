@@ -3,6 +3,7 @@ import { AMBIGUOUS_BAND_DEFAULT, AMBIGUOUS_BAND_MAX, ambiguousStage, selectFallb
 import { buildStageEvidence } from "../src/models/route/stage-evidence.ts";
 import { captureStageInput } from "../src/models/route/stage-input.ts";
 import { HubRouteRuntime, type RouteEvent, type RouteHost } from "../src/models/route/runtime.ts";
+import { DecisionPolicyChangedError } from "../src/models/route/decision.ts";
 import { parseHubRoutes, type HubRoute } from "../src/models/route/config.ts";
 import type { ChatMessage } from "../src/omniroute/client.ts";
 
@@ -52,6 +53,9 @@ test("the band is a question trigger only: the owned 0.46 reading is inside it a
   expect(ambiguousStage(at(0.5))).toBe(true);
   for (const score of [0, 0.3, 0.7, 1]) expect(ambiguousStage(at(score))).toBe(false);
   expect(ambiguousStage(at(0.46), { ambiguousBand: 0 })).toBe(false);
+  // Zero is the off switch, so even an exact tie with the threshold asks nothing.
+  expect(ambiguousStage(at(0.5), { ambiguousBand: 0 })).toBe(false);
+  expect(ambiguousStage(at(0.5), { ambiguousBand: 0.001 })).toBe(true);
   expect(ambiguousStage(at(0.46), { ambiguousBand: AMBIGUOUS_BAND_MAX })).toBe(true);
   expect(ambiguousStage(at(0.46), { confidenceThreshold: 0.9 })).toBe(false); // it is always relative to the threshold in force
   for (const band of [Number.NaN, Number.POSITIVE_INFINITY, -0.01, AMBIGUOUS_BAND_MAX + 0.01]) expect(ambiguousStage(at(0.46), { ambiguousBand: band })).toBe(false);
@@ -189,5 +193,30 @@ test("a turn that ends while the question is held applies no answer", async () =
   expect(outcome.error).toBeUndefined();
   expect(outcome.value).toBeDefined();
   expect(h.calls[0]?.model).toBe("fast");
+  expect(h.events).toHaveLength(0);
+});
+
+test("authority that changes while the question waits refuses the stale turn instead of executing the heuristic", async () => {
+  let arrived!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { arrived = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  close.push(release);
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
+    arrived(); await gate;
+    return Response.json({ id: "0123456789abcdef0123456789abcdef", policyId: "ahub.stage", alias: "coding", effort: "none", margin: 0.2,
+      abstain: false, reason: "ok", fallbackApplied: false, pinned: false, rules: [], decider: null });
+  } });
+  close.push(() => server.stop(true));
+  const s = service();
+  let privateNow = false;
+  const h = host({ decisionContext: () => ({ private: privateNow, excluded: false }) });
+  h.runtime.beginTurn({ turn: "authority-change", pii: false });
+  const pending = h.runtime.call("hub/test", { ...s.config, adec_endpoint: `http://127.0.0.1:${server.port}/v1/route` }, SPINNING, "scope", false, signal());
+  const settled = pending.then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+  await entered; privateNow = true; release();
+  const outcome = await settled;
+  // Not a service failure: the stale turn is refused, so no model runs and no route event reaches execution.
+  expect(outcome.error).toBeInstanceOf(DecisionPolicyChangedError);
+  expect(outcome.value).toBeUndefined();
+  expect(h.calls).toHaveLength(0);
   expect(h.events).toHaveLength(0);
 });

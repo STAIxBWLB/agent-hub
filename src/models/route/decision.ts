@@ -88,7 +88,9 @@ export class DecisionRouteController {
       return trace;
     }
     catch (error) {
-      if (error && typeof error === "object" && "budgetStop" in error) throw error;
+      // Changed or unavailable authority is not a service failure: it keeps refusing the stale turn, exactly as on a
+      // decision route, instead of becoming a model fallback around that refusal. A closed turn only moots the question.
+      if (error instanceof DecisionPolicyChangedError || error && typeof error === "object" && "budgetStop" in error) throw error;
       if (inner.signal.aborted || inner.turn?.closed) return {};
       const trace = this.skip(config, "unavailable").trace ?? {};
       state.held = { turn: key, trace };

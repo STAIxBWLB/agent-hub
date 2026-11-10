@@ -13381,7 +13381,7 @@ function selectFallbackStage(evidence, policy = {}, prior) {
 }
 function ambiguousStage(result, policy = {}) {
   const threshold = policy.confidenceThreshold ?? 0.5, band = policy.ambiguousBand ?? AMBIGUOUS_BAND_DEFAULT;
-  if (!Number.isFinite(threshold) || !Number.isFinite(band) || band < 0 || band > AMBIGUOUS_BAND_MAX)
+  if (!Number.isFinite(threshold) || !Number.isFinite(band) || band <= 0 || band > AMBIGUOUS_BAND_MAX)
     return false;
   return Math.abs(result.score - threshold) <= band;
 }
@@ -13916,7 +13916,7 @@ class DecisionRouteController {
       state.held = { turn: key, trace };
       return trace;
     } catch (error) {
-      if (error && typeof error === "object" && "budgetStop" in error)
+      if (error instanceof DecisionPolicyChangedError || error && typeof error === "object" && "budgetStop" in error)
         throw error;
       if (inner.signal.aborted || inner.turn?.closed)
         return {};

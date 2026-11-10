@@ -20,8 +20,9 @@ export function selectFallbackStage(evidence: StageEvidence, policy: FallbackSta
 export const AMBIGUOUS_BAND_DEFAULT = 0.05, AMBIGUOUS_BAND_MAX = 0.5;
 export function ambiguousStage(result: FallbackStageResult, policy: FallbackStagePolicy = {}): boolean {
   const threshold = policy.confidenceThreshold ?? 0.5, band = policy.ambiguousBand ?? AMBIGUOUS_BAND_DEFAULT;
-  // A band outside its own range is not ambiguous: the fallback tier stands and no service is asked.
-  if (!Number.isFinite(threshold) || !Number.isFinite(band) || band < 0 || band > AMBIGUOUS_BAND_MAX) return false;
+  // Zero is the documented way to switch the question off, so it cannot fire on an exact tie with the threshold; a
+  // band outside its own range is not ambiguous either, and the fallback tier stands with no service asked.
+  if (!Number.isFinite(threshold) || !Number.isFinite(band) || band <= 0 || band > AMBIGUOUS_BAND_MAX) return false;
   return Math.abs(result.score - threshold) <= band;
 }
 export type StaySwitchMode = "off" | "shadow" | "enforce";

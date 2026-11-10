@@ -516,8 +516,10 @@ decision mode, alias, effort, margin, latency, reason and screened decider
 fields. Shadow records and changes no tier; abstain, `no_candidate`, a transport
 failure or timeout, `decision_mode = off` and an off-campus decider for a
 PII/private turn each keep the fallback tier and record a closed reason. An
-optional question never refuses a turn: it is skipped once the turn has ended,
-and a turn that ends while the question is outstanding applies no answer.
+optional question cannot refuse a turn by itself: a service failure or an ended
+turn records nothing to apply. Changed or unavailable privacy or observer
+authority is not a service failure, so it keeps refusing the stale turn exactly
+as on a `decision` route, never as a model fallback around that refusal.
 
 ## Bounded public sizing characterization
 
