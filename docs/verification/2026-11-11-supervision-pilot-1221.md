@@ -122,18 +122,31 @@ the ledger holds only what a rule produced.
 
 ## Numbers (filled from stored records as the wave runs)
 
-| reading | at | distinct revisions read | `repeated_failure` | `deliverable_invalidated_check` | `declared_overlap_without_integration` | stored | refused | expired |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 0 | 2026-11-11 | pending | pending | pending | pending | 0 | 0 | 0 |
+Scope is part of a reading: a conductor-scope count covers the queue, while a role-scoped tool
+read covers only the tasks I hold a role on and is a lower bound. A per-family cell counts the
+rows a reading returned, so `0 on my tasks` is not a claim about the queue.
+
+| reading | scope | at | distinct revisions read | `repeated_failure` | `deliverable_invalidated_check` | `declared_overlap_without_integration` | stored | refused | expired |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | role-scoped (task 866), wave start | 2026-11-11 | unknown (not stored) | 0 on my tasks | 0 on my tasks | 0 on my tasks | 0 | 0 (current queue) | 0 |
+| 1 | role-scoped (task 866) | 2026-11-11 06:28 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 2 |
+
+Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
+expired by the queue at their partner's approving verdict. Coverage (`evaluated`) is not part of
+a role-scoped read and stays unknown at this reading, never zero.
 
 ## Proposal ledger
 
 | proposal | rule | task | revision | trigger | action | outcome | evidence |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `sup-067f72d97dd1` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:873` | `request_integration` | pending, classification deferred to wave close | the two tasks share `docs/dogfood.md` at file level only: #873 appends a separate row after the `Console review guidance (#711)` row, while this task's row goes after the supervision row at line 128 (conductor note, 2026-11-11) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `sup-067f72d97dd1` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:873` | `request_integration` | expired by the queue at #873's approving verdict, before its merge; unknown from stored records | #873 inserts one row (`Console agent-hub versions (#1385)`) at line 96 of main's `docs/dogfood.md`, while this task's row goes after the supervision row at line 128 (role-scoped read, 2026-11-11); an approved side is a closed side, so the pair left supervision at the verdict |
+| `sup-67b2b2319f69` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:874` | `request_integration` | expired by the queue at #874's approving verdict, before its merge; unknown from stored records | #874 adds one row to `docs/dogfood.md` about 86 rows above this task's anchor (read at `0c427dd0`); same closure rule as the row above |
+| `sup-adb3295ebc9b` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:881` | `request_integration` | pending, classification deferred to wave close | #881 rewrites rows 122, 124-126 and 249-253 of `docs/dogfood.md` in place while this task inserts one row after 128; jcode asked on 2026-11-11 and confirmed those ranges, so the pair needed no integration record |
 
-A proposal stays pending until the wave closes: classifying one while later revisions are already
-in view would let its outcome be chosen to fit them.
+A pending proposal stays pending until the wave closes: classifying one while later revisions are
+already in view would let its outcome be chosen to fit them. An expiry is the queue's own
+disposition and not a classification: it records that the reading stopped holding, and it counts
+neither as a helpful or false intervention nor as a clean non-trigger.
 
 ## Cost
 
@@ -142,7 +155,7 @@ in view would let its outcome be chosen to fit them.
 | model calls | 0 (no inference path in the rules or the queue) |
 | memory writes | 0 |
 | daemon evaluations | pending (replayed from board revisions) |
-| rows written | 7 at the first conductor read, written by the daemon on a task change and not by this task |
+| rows written | 7 at the first conductor read, 3 of them on this task, written by the daemon on a task change and not by this task |
 | wall time | wave open 2026-11-11, cap 2026-11-18 |
 
 ## Person burden
@@ -157,4 +170,12 @@ and is not part of this wave.
 - coverage per rule family, until the replay at wave end;
 - refusals that happened before a daemon restart, which the counter does not carry;
 - rows dropped by the 400-row prune, if the wave ever reaches it;
+- whether an expired row would have been helpful or false: the expiry records no classification,
+  and no later record can name what an action that never ran would have found;
+- an integration that lands with the merge itself. Both `declared_overlap_without_integration`
+  rows on this task expired about 1.3 s after their partner's recorded review time, which is the
+  approving verdict and comes before the merge (both partner PRs were still open at reading 1),
+  so a declared pair leaves supervision at approval and no row can name the merge as its
+  integration. Measured twice on 2026-11-11; it is a limit of the reading window, not a defect of
+  either task;
 - every threshold that needs a live sample larger than this pilot can produce.
