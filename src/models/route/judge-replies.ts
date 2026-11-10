@@ -26,12 +26,56 @@ function feedback(text: string): string {
   return result;
 }
 
+const DECORATIONS = ["**", "__", "*", "_", "`", "\"", "'"] as const;
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function stripLeadingDecoration(input: string): string {
+  let value = input.trimStart();
+  for (let count = 0; count < 8; count++) {
+    const quote = /^(?:>\s*)+/.exec(value), heading = /^#{1,6}[ \t]+/.exec(value), list = /^(?:[-+*]|[0-9]{1,3}[.)])[ \t]+/.exec(value);
+    const prefix = quote ?? heading ?? list;
+    if (!prefix) break;
+    value = value.slice(prefix[0].length).trimStart();
+  }
+  return value;
+}
+
+function advisorVerdict(input: string): { verdict: "APPROVE" | "REDO"; rest: string } | undefined {
+  let value = stripLeadingDecoration(input);
+  // A whole decorated verdict, e.g. **Verdict: REDO**: feedback.
+  for (const marker of DECORATIONS) {
+    const escaped = escapeRegExp(marker), whole = new RegExp(`^${escaped}\\s*Verdict\\s*:\\s*(APPROVE|REDO)\\s*${escaped}(?=$|[\\s:.-])`, "i").exec(value);
+    if (whole) return { verdict: whole[1]!.toUpperCase() as "APPROVE" | "REDO", rest: value.slice(whole[0].length) };
+  }
+  // Optional prefix may itself be bold, italic, underscored or inline-code decorated.
+  let prefix = /^Verdict\s*:\s*/i.exec(value);
+  if (prefix) value = value.slice(prefix[0].length);
+  else {
+    for (const marker of DECORATIONS) {
+      const escaped = escapeRegExp(marker), decorated = new RegExp(`^${escaped}\\s*Verdict\\s*:${escaped}\\s*`, "i").exec(value);
+      if (decorated) { value = value.slice(decorated[0].length); break; }
+    }
+  }
+  value = value.trimStart();
+  const marker = DECORATIONS.find(candidate => value.startsWith(candidate));
+  if (marker) value = value.slice(marker.length).trimStart();
+  const match = (marker ? /^(APPROVE|REDO)/i : /^(APPROVE|REDO)\b/i).exec(value);
+  if (!match) return undefined;
+  let rest = value.slice(match[0].length);
+  if (marker) {
+    rest = rest.trimStart();
+    if (!rest.startsWith(marker)) return undefined;
+    rest = rest.slice(marker.length);
+  }
+  return { verdict: match[1]!.toUpperCase() as "APPROVE" | "REDO", rest };
+}
+
 export function parseAdvisorReply(text: unknown): AdvisorReply | undefined {
   if (!bounded(text)) return undefined;
-  const match = /^\s*(APPROVE|REDO)\b/i.exec(text);
-  if (!match) return undefined;
-  if (match[1]?.toUpperCase() === "APPROVE") return { kind: "approve" };
-  return { kind: "redo", feedback: feedback(text.slice(match[0].length).replace(/^\s*:\s*/, "").trim()) };
+  const parsed = advisorVerdict(text);
+  if (!parsed) return undefined;
+  if (parsed.verdict === "APPROVE") return { kind: "approve" };
+  return { kind: "redo", feedback: feedback(parsed.rest.replace(/^\s*:\s*/, "").trim()) };
 }
 
 function category(value: unknown): value is EscalationCategory {
@@ -41,8 +85,15 @@ function category(value: unknown): value is EscalationCategory {
 
 export function parseEscalationReply(text: unknown): EscalationReply | undefined {
   if (!bounded(text)) return undefined;
+  let json = text;
+  const trimmed = text.trim();
+  if (trimmed.startsWith("```") || trimmed.endsWith("```")) {
+    const fence = /^```[ \t]*(?:json[ \t]*)?\r?\n([\s\S]*?)\r?\n```[ \t]*$/i.exec(trimmed);
+    if (!fence) return undefined;
+    json = fence[1]!;
+  }
   let value: unknown;
-  try { value = JSON.parse(text); } catch { return undefined; }
+  try { value = JSON.parse(json); } catch { return undefined; }
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const reply = value as Record<string, unknown>;
   if (typeof reply.escalate !== "boolean" || !category(reply.category)

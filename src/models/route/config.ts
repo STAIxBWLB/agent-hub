@@ -61,6 +61,7 @@ export function parseHubRoutes(input: unknown): Record<string, HubRoute> {
 function parseStageConfig(id: string, r: Record<string, unknown>): HubRoute {
   if (r.classifier === undefined) {
     if (r.ambiguous_band !== undefined) throw new Error(`routing.toml: invalid ${id}.ambiguous_band; set classifier = "decision" first`);
+    if (SERVICE_FIELDS.some(field => r[field] !== undefined)) throw new Error(`routing.toml: invalid ${id} service binding; set classifier = "decision" first`);
     return r as unknown as HubRoute;
   }
   const problem = (field: string, step: string): never => { throw new Error(`routing.toml: invalid ${id}.${field}; ${step}`); };

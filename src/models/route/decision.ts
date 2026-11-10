@@ -54,7 +54,7 @@ export class DecisionPolicyChangedError extends Error {
   constructor() { super("decision routing privacy or observer policy changed or is unavailable during preparation; run ahub status, inspect current task policy and retry"); }
 }
 interface State { fingerprint: string; failure?: { turn: string; result: AdecResult }; held?: { turn: string; trace: Partial<DecisionTrace>; privacy: Privacy } }
-const ended = () => new Error("model route turn ended before execution; retry in the current turn");
+const ended = (step = "routing") => new Error(`model route turn ended during ${step}; retry in the current turn`);
 const STAGE_PACKET_BYTES = 1024;
 /** R1's stage packet: numeric and categorical fields only, never a conversation fragment. */
 function stagePacket(context: Context, sensitive: boolean): string {
@@ -144,11 +144,11 @@ export class DecisionRouteController {
     return { pairs: [efficientPair, capablePair], candidates: [efficient, capable], current: tier === "capable" ? capablePair : efficientPair };
   }
   /** A current host authority guard, independent of whether a service binding is enabled. */
-  captureGuard(pii: boolean, current: () => boolean): () => void {
+  captureGuard(pii: boolean, current: () => boolean): (step?: string) => void {
     const initial = this.privacy(pii);
     if ((initial.pii || initial.private) && !pii) throw new DecisionPolicyChangedError();
-    return () => {
-      if (!current()) throw ended();
+    return (step = "routing") => {
+      if (!current()) throw ended(step);
       if (!this.same(initial, this.privacy(pii))) throw new DecisionPolicyChangedError();
     };
   }

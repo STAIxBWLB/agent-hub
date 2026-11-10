@@ -11,6 +11,13 @@ import type { ChatMessage } from "../src/omniroute/client.ts";
 const close: (() => void)[] = [];
 afterEach(() => { for (const stop of close.splice(0)) stop(); });
 const signal = () => new AbortController().signal;
+
+test("a stage route without a classifier cannot hide service binding or enforce fields", () => {
+  for (const fields of [{ decision_mode: "enforce" }, { decision_mode: "off" }, { decision_mode: "shadow" },
+    { policy_id: "unused" }, { adec_endpoint: "http://127.0.0.1:8740/v1/route" }]) {
+    expect(() => parseHubRoutes({ "hub/stage": { type: "stage", efficient: "fast", capable: "coding", ...fields } })).toThrow("classifier");
+  }
+});
 const at = (score: number, tier: "efficient" | "capable" = "efficient"): FallbackStageResult => ({ tier, source: "dimensions", score, state: { recoveryHoldRemaining: 0 } });
 
 const step = (id: string, name: string, content: string, error = false) => [

@@ -14,14 +14,17 @@ describe("owned route scope storage", () => {
     expect(store.get("one")).toBeUndefined();
   });
 
-  test("a read does not prolong expiry; a write establishes a fresh lifetime", () => {
+  test("successful reads and writes renew idle expiry", () => {
     let time = 0;
     const store = new ScopeStore<string>({ ttlMs: 10, now: () => time });
     store.set("scope", "old"); time = 9;
-    expect(store.get("scope")).toBe("old"); time = 10;
+    expect(store.get("scope")).toBe("old"); time = 18;
+    expect(store.get("scope")).toBe("old"); time = 27;
+    expect(store.get("scope")).toBe("old"); time = 37;
     expect(store.get("scope")).toBeUndefined();
-    store.set("scope", "new"); time = 19;
-    expect(store.get("scope")).toBe("new"); time = 20;
+    store.set("scope", "new"); time = 46;
+    expect(store.get("scope")).toBe("new"); time = 55;
+    expect(store.get("scope")).toBe("new"); time = 65;
     expect(store.get("scope")).toBeUndefined();
   });
 

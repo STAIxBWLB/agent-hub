@@ -27,6 +27,7 @@ paths:
   - test/model-judge-choice.test.ts
   - test/model-route-event-parity.test.ts
   - test/benchmarks/model-routing-gate.test.ts
+  - test/model-route-scope-lifetime.test.ts
   - test/model-route-public-api-scalars.test.ts
   - test/fixtures/model-route-public-api-scalars-v1.json
   - test/route-stage-classifier.test.ts
@@ -568,8 +569,10 @@ unavailable; that is unknown evidence, not proof that no mutation happened.
 No completeness bit or other field is added to the StageEvidence wire.
 
 The generic `ScopeStore` intentionally uses explicit 512-entry/one-hour limits:
-expiry is since the last set, reads update LRU order but do not extend expiry,
-undefined values refuse, and a backward clock clears all retained state. Opaque
+expiry is since the last successful get or set, so active scopes renew their
+idle lifetime and preserve established latches, execution phase, advisor budgets
+and stage holds. Reads also update LRU order. Undefined values refuse, and a
+backward clock clears all retained state. Opaque
 local keys have a new 4096-byte ceiling. These explicit defaults/expiry semantics
 are declared choices where the former default/clock behavior was not observed;
 they are not claims of measured equivalence and belong in CHANGELOG.
@@ -620,8 +623,15 @@ tail, separated by `\n...<middle of the conversation truncated>...\n`. The marke
 is outside the cap. Only afterward append the latest-turn suffix without a byte
 cut. Discarded telemetry counts code points. This preserves the recorded main
 behavior rather than introducing a new transcript default. Advisor output is
-2048 tokens; escalation output is 256 and its input is the full validated local
-context without a guessed additional transcript cap. Surrounding planning,
+2048 tokens; escalation output is 256. Its owned input window is the most recent
+12 assistant turns with their following tool results, the closest preceding user
+task, and system/developer instructions. Bound each serialized message to 1500
+Unicode code points with an explicit middle-drop marker, then bound the assembled
+transcript to 16000 code points including its middle-drop marker. Fixed prompt
+and turn headers stay outside those bounds. Discarded telemetry counts omitted
+original transcript code points, excluding inserted markers. These owned bounds
+retain history for repetition/false-progress assessment while limiting one large
+result's share; they provide no live quality or eight-second latency guarantee. Surrounding planning,
 review, escalation and redo prompt wording is newly written; the owned caller's
 short `senior reviewer` feedback cue remains.
 The fresh request bytes invalidate former live request digests for these prompts.
@@ -629,8 +639,12 @@ Keep historical receipts unchanged; the new prompt-quality live leg is manual
 and UNRUN, without a model call or restamp. Model-free protocol tests do not
 establish real-model judgement quality.
 
-Reply parsing is anchored APPROVE/REDO, case-insensitive. Escalation accepts the
-documented JSON fields and closed categories only. New accepted-data ceilings
+Reply parsing is anchored APPROVE/REDO after optional leading Markdown/quote
+decoration and an optional `Verdict:` prefix, case-insensitive. Closing verdict
+decoration is removed before REDO feedback. Arbitrary leading prose remains
+unparsed. Escalation accepts one optionally JSON-fenced object with the documented
+consumed fields and closed categories. Unused extra keys remain ignored as before;
+surrounding commentary or multiple objects refuse. New accepted-data ceilings
 are 64 KiB reply input and 4096 bytes local feedback/reason; oversized input is
 unavailable, not a partial verdict. These safety ceilings are declared in
 CHANGELOG rather than described as observed former defaults. No prompt, reason,

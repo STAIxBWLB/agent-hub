@@ -95,7 +95,7 @@ export class HubRouteRuntime {
       if (decision.addPlanningInstruction) sent = [{ role: "system", content: planningInstruction }, ...messages];
     } else if (config.type === "escalation" && state.escalation.snapshot().latched) model = capable;
     const current = () => !signal.aborted && !labelTurn?.closed && this.labels.captureTurn() === labelTurn;
-    let phaseGuard: (() => void) | undefined;
+    let phaseGuard: ReturnType<DecisionRouteController["captureGuard"]> | undefined;
     let proposed: DecisionSelection = {};
     if (config.type === "decision") proposed = await this.decisions.pick(config, { route, scope, turn: labelTurn, messages, dimensions, pii, signal, current });
     else if (config.type === "plan_execute" && config.decision_backend === "adec" && (config.decision_mode ?? "off") === "shadow") {
@@ -116,7 +116,7 @@ export class HubRouteRuntime {
     source = picked.trace ? "decision" : source;
     let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
     const result = await this.host.execute(model, sent, false, signal);
-    phaseGuard?.();
+    phaseGuard?.("executor reply");
     if (config.type !== "escalation" || state.escalation.snapshot().latched) return this.withDecision(result, decisionId);
     const conversation = captureJudgeConversation([...messages, result.message]);
     const request = buildEscalationRequest(conversation, conversation?.assistantTurns ?? 0);
@@ -145,15 +145,15 @@ export class HubRouteRuntime {
       const input = captureStageInput(messages) ?? { turn: "other" as const, incomplete: true, assistantTurns: 0, results: [] };
       const answer = request ? await this.judge(config.judge ?? config.capable ?? "coding", [{ role: "system", content: request.systemPrompt }, ...request.messages], pii, signal, request.maxOutputTokens,
         { route, config, scope, turn, messages, evidence: buildStageEvidence(input), purpose: "advisor_judge_model", current }) : undefined;
-      guard();
+      guard("advisor reply");
       const verdict = answer ? parseAdvisorReply(answer) : undefined;
       state.advisor.settle(scope, verdict ? "success" : "failure"); settled = true;
-      this.labels.observeAdvisor(decisionId, verdict?.kind ?? "failed");
+      try { this.labels.observeAdvisor(decisionId, verdict?.kind ?? "failed"); } catch { /* optional telemetry */ }
       if (answer && !verdict) this.judgeOffUntil = Date.now() + 5 * 60_000;
-      guard();
+      guard("advisor publication");
       try { this.host.onAdvisor?.({ route, trigger: config.trigger ?? "no_tool_call", verdict: verdict?.kind ?? "failed", discardedChars: request?.discardedChars ?? 0 }); }
       catch (error) { if (error instanceof DecisionPolicyChangedError) throw error; }
-      guard();
+      guard("advisor publication");
       return verdict?.kind === "redo" ? redoFeedback(verdict, latest?.content ?? "").user : undefined;
     } finally { if (!settled) state.advisor.settle(scope, "failure"); }
   }
@@ -221,15 +221,15 @@ export class HubRouteRuntime {
           return window;
         },
       });
-      guard();
+      guard("judge result");
       const observed = this.decisions.confirm(result.observation ?? {});
       if (observed.trace && choice) {
-        guard();
+        guard("observation publication");
         // Metadata only: never enter emitRoute/addDecision, label, progress or usage paths.
         try { this.host.onRoute?.({ route: choice.route, tier: model, source: "default", score: 0,
           ms: Math.max(0, performance.now() - began), ...observed.trace, decisionTarget: "judge" }); }
         catch (error) { if (error instanceof DecisionPolicyChangedError) throw error; }
-        guard();
+        guard("observation publication");
       }
       if (!result.value && !parent.aborted) this.judgeOffUntil = Date.now() + 5 * 60_000;
       return result.value;

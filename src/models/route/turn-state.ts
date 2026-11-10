@@ -9,9 +9,9 @@ export interface ScopeStoreOptions {
   now?: () => number;
 }
 
-interface Entry<T> { value: T; writtenAt: number }
+interface Entry<T> { value: T; lastAccessAt: number }
 
-/** Bounded LRU order; expiry is measured from set, never prolonged by a read. */
+/** Bounded LRU order; expiry is an idle TTL renewed by each successful get or set. */
 export class ScopeStore<T> {
   private readonly entries = new Map<string, Entry<T>>();
   private readonly maxEntries: number;
@@ -34,10 +34,11 @@ export class ScopeStore<T> {
     const time = this.time();
     const entry = this.entries.get(scope);
     if (!entry) return undefined;
-    if (time < entry.writtenAt || time - entry.writtenAt >= this.ttlMs) {
+    if (time < entry.lastAccessAt || time - entry.lastAccessAt >= this.ttlMs) {
       this.entries.delete(scope);
       return undefined;
     }
+    entry.lastAccessAt = time;
     this.entries.delete(scope);
     this.entries.set(scope, entry);
     return entry.value;
@@ -48,10 +49,10 @@ export class ScopeStore<T> {
     if (value === undefined) throw new TypeError("route scope values must be defined");
     const time = this.time();
     for (const [key, entry] of this.entries) {
-      if (time < entry.writtenAt || time - entry.writtenAt >= this.ttlMs) this.entries.delete(key);
+      if (time < entry.lastAccessAt || time - entry.lastAccessAt >= this.ttlMs) this.entries.delete(key);
     }
     this.entries.delete(scope);
-    this.entries.set(scope, { value, writtenAt: time });
+    this.entries.set(scope, { value, lastAccessAt: time });
     while (this.entries.size > this.maxEntries) {
       const oldest = this.entries.keys().next().value;
       if (oldest === undefined) break;
