@@ -381,7 +381,7 @@ interface ProbeSessionCoverage {
   toolCalls: ProbeInteger;
   toolUsageKnown: ProbeInteger;
   usageUnknown: boolean;
-  fixtureVerified: boolean;
+  coverageVerified: boolean;
 }
 interface ProbeUsageObservation {
   admission: ProbeEffectAdmission;
@@ -562,3 +562,28 @@ Source inspection confirms G1 creation writes only private guidance tables and B
 Fake-only tests must prove closed parsing and exact model literals; zero writes on known refusals; production no-runner refusal before reservations; current authority/privacy/task/G1 fences across awaits; one project lane and serialized CAS under concurrent admission; exact duplicate no-effect behavior; four/five aggregate ceilings including failures; reservation before fake launch; unknown-held restart/cancel behavior; immutable successor binding; no ordinary observer/progress/completion effects; bounded SQL hydration and recovery integrity. Cross-await callback fixtures must prove shared model/tool/token/input-frame budgets including the frame bytes, refusal before fake invocation on exhausted capacity, no second effect or double frame charge on replay, new-call refusal after G1 withdrawal or actor/session loss, and pre-reservation exhausted budgets without a launch. Separate controls prove correlated bookkeeping after fence loss, missing/conflicting/late numeric usage remaining sticky unknown before descriptor replacement, zero model calls or unknown post-launch usage not becoming `comparable`, a host-attested known pre-launch failure retaining only its preregistered retry, a fully covered controlled fixture, and that a `known_fixture` label alone never certifies coverage. Direct low-level Store fixtures retain their lifecycle/counter assertions while lacking checked frame/coverage proof and therefore cannot yield comparable public evidence.
 
 Control fixtures use scratch daemon/database and host-injected fake ports only. They must exercise older/unknown rid replies and privileged direct-call refusal. Recovery fixtures must prove present-state integrity, missing legacy compatibility, tamper/unknown refusal, retained counters/lane and no auto-respawn. No real hub, account, model, worker or native process is part of this proof. Measurements, if later recorded, identify source/fake evidence separately from unimplemented native guarantees.
+
+### Refusal certainty and operator recovery
+
+Deterministic `PreEffectToolRefusal` and non-storage `GuidanceProbeError` failures
+that occur before reservation or without a committed write retain their bounded
+cause and next step. Registration tracks whether it committed a new declaration;
+the host reports a fresh reservation to its controller before later preparation
+or launch work. Storage, unknown and post-reservation failures remain unconfirmed.
+The control transport preserves known refusal messages and always echoes `rid`; it
+uses a fixed unconfirmed fallback for unknown errors. CLI recovery names
+`ahub guidance probe show --id <id>` only for an operation that already has an id;
+a refused registration has no lookup suffix. Retained baseline guidance counts
+toward `limits.inputBytes` as well as private snapshots.
+
+The conductor's current delivery snapshot is a conservative T1 admission fence:
+a new hub delivery invalidates it and can latch an observation hold. Production T1
+has no runner, so the effect is fixture-only. Before T2 real execution, review this
+fence so ordinary coordination cannot invalidate an admitted run without an
+authority/privacy change. This note does not weaken the current fence.
+
+Probe recovery deliberately checks any restored snapshot against the private
+probe digest when records exist, including an older snapshot without an integrity
+section. Missing proof refuses restoration; absence of records keeps the older
+snapshot compatible. The check is stronger than legacy sibling guards because
+restoring an unbound probe ledger could lose its shared budget or uncertain lane.

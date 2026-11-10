@@ -2,7 +2,7 @@ import { requireConductor } from "./conductor.ts";
 import { pathCandidates } from "@staix/agent-mem";
 import { renderGuidanceVariantV1 } from "./guidance-variants.ts";
 import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-probe-store.ts";
-import { GUIDANCE_PROBE_STOP_TIMEOUT_MS, GUIDANCE_PROBE_FENCE_INTERVAL_MS, guidanceProbeCanonical, guidanceProbeManifestKey,
+import { GuidanceProbeError, GUIDANCE_PROBE_STOP_TIMEOUT_MS, GUIDANCE_PROBE_FENCE_INTERVAL_MS, guidanceProbeCanonical, guidanceProbeManifestKey,
   parseGuidanceProbeRegistration, probeHash, probeSha256, probeInteger, probeSessionGeneration,
   type ProbeChildBinding, type ProbeStoredState, type ProbePublicReceipt, type ProbePublicStatus, type ProbeHostBinding,
   type ProbeAdmissionRecheck, type ProbeReservation, type ProbeSlot, type GuidanceProbeFakePorts, type GuidanceProbeManifestV1 } from "./guidance-probes.ts";
@@ -5111,14 +5111,19 @@ export class Tasks {
     const binding = this.guidanceProbeHost(by, registration.manifest, request);
     if (!this.guidanceProbeSnapshotClear(registration)) throw new PreEffectToolRefusal("guidance probe inputs are private; register public task-local inputs in a current public session");
     this.guidanceProbeAdmissions++;
+    let wrote = false;
     try {
       const saved = this.d.guidanceProbes!.store.register(registration, binding, () => {
         if (!this.guidanceProbeSnapshotClear(registration)) throw new PreEffectToolRefusal("guidance probe input policy changed; inspect its current public scope before retrying");
         return this.guidanceProbeHost(by, registration.manifest, request);
       });
+      wrote = !saved.already;
       const state = this.guidanceProbeState(by, saved.id, request.check);
       return this.guidanceProbeReceipt(state, saved.already);
-    } catch { throw new Error("guidance probe registration is unconfirmed; inspect the registered id before explicitly retrying"); }
+    } catch (error) {
+      if (!wrote && (error instanceof PreEffectToolRefusal || error instanceof GuidanceProbeError && error.reason !== "storage")) throw error;
+      throw new Error("guidance probe registration is unconfirmed; inspect retained state before explicitly retrying");
+    }
     finally { this.guidanceProbeAdmissions--; }
   }
   async guidanceProbeShow(by: PeerId, id: string): Promise<ProbePublicStatus> {
@@ -5169,11 +5174,13 @@ export class Tasks {
       },
       stop: (input, signal) => dependency.fakePorts!.stop(input, signal),
     };
+    let reserved = false, returned = false;
     const runner = new GuidanceProbeFixtureHost(dependency.store, { ports, revalidate: current, now: () => this.d.now?.() ?? Date.now(),
-      prepareEditorFrame: dependency.prepareEditorFrame });
+      prepareEditorFrame: dependency.prepareEditorFrame, onReserved: () => { reserved = true; } });
     entry.promise = (async () => {
       try {
         const saved = await runner.start({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, entry.controller.signal);
+        returned = true;
         if (saved.state === "unknown_held" && entry.launched) {
           this.guidanceProbeAbort(entry, "observation", true);
           if (!entry.stopPromise) throw new Error("owned probe stop was not recorded; retain the held lane and explicitly inspect its outcome");
@@ -5182,8 +5189,9 @@ export class Tasks {
         request.check();
         if (entry.failure) throw entry.failure;
         return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), saved.already);
-      } catch {
+      } catch (error) {
         this.guidanceProbeAbort(entry, "observation");
+        if (!reserved && !returned && (error instanceof PreEffectToolRefusal || error instanceof GuidanceProbeError && error.reason !== "storage")) throw error;
         throw new Error("guidance probe attempt outcome is unconfirmed; inspect its retained id without replaying work");
       } finally { entry.launchSettled = true; this.guidanceProbeClearWatch(entry); this.guidanceProbeRetire(entry); }
     })();

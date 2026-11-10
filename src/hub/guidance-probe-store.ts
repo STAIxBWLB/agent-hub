@@ -293,7 +293,11 @@ export class GuidanceProbeStore {
     if (manifest.projectKey !== binding.projectKey || !same(manifest.task, binding.task) || !same(manifest.role, binding.role)
       || probeHash(binding.baselineGuidance) !== manifest.guidance.baselineSha256) return fail("changed");
     const bytes = increment(snapshotBytes(registration), Buffer.byteLength(binding.baselineGuidance));
-    if (bytes > manifest.limits.inputBytes) return fail("budget");
+    if (bytes > manifest.limits.inputBytes) {
+      const error = new GuidanceProbeError("budget");
+      error.message = "probe budget limits.inputBytes is too small for retained snapshots plus baseline guidance; raise it before registering this declaration";
+      throw error;
+    }
     return this.transaction(() => {
       if (!same(binding, revalidate())) return fail("changed");
       const existing = this.db.query("SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=64 THEN id END AS id FROM guidance_probe_manifests WHERE project=? AND experiment=?").get(key.projectKey, manifest.experimentId) as { id: unknown } | null;
@@ -559,6 +563,7 @@ export class GuidanceProbeFixtureHost {
     revalidate: () => ProbeAdmissionRecheck;
     now: () => number;
     prepareEditorFrame?: (state: ProbeStoredState, slot: ProbeSlot) => string;
+    onReserved?: (reservation: ProbeReservation) => void;
   }) {}
   async start(input: ProbeSessionAdmission, signal: AbortSignal): Promise<ProbeReceipt> {
     const ports = this.options.ports;
@@ -579,6 +584,7 @@ export class GuidanceProbeFixtureHost {
     if (result.kind === "existing") return result.receipt;
     const reservation = result.reservation;
     try {
+      this.options.onReserved?.(reservation);
       const state = this.store.read(input.key)!;
       const snapshots = state.registration.snapshots, frame = { inputFrame, nonGuidanceInputSha256: guidanceProbeNonGuidanceInputHash(snapshots.task, snapshots.baselineContext, snapshots.systemPolicy) };
       let effectsOpen = true;

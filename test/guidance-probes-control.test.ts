@@ -12,9 +12,9 @@ import { parseRole, parseRoleDocument, taskRoleText } from "../src/hub/roles.ts"
 import { SHIPPED_ROLES } from "../src/hub/shipped-roles.ts";
 import { guidanceVariantKey, type GuidanceVariantPayloadV1 } from "../src/hub/guidance-variants.ts";
 import { GuidanceProbeStore } from "../src/hub/guidance-probe-store.ts";
-import { GUIDANCE_PROBE_MODEL, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_STOP_TIMEOUT_MS, parseGuidanceProbePublicReceipt,
+import { GuidanceProbeError, GUIDANCE_PROBE_MODEL, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_STOP_TIMEOUT_MS, guidanceProbeManifestKey, parseGuidanceProbePublicReceipt,
   parseGuidanceProbePublicStatus, parseGuidanceProbeRegistration, parseGuidanceProbeSubcommand, probeHash, probeSessionGeneration,
-  type GuidanceProbeFakePorts, type ProbeFakeLaunch, type ProbeFakeObservation, type ProbePublicReceipt, type ProbePublicStatus } from "../src/hub/guidance-probes.ts";
+  type GuidanceProbeFakePorts, type ProbeFakeEffects, type ProbeFakeLaunch, type ProbeFakeObservation, type ProbePublicReceipt, type ProbePublicStatus } from "../src/hub/guidance-probes.ts";
 import { CONDUCTOR_DAEMON_OPERATIONS, conductorOperation, operationalRequestLabel } from "../src/hub/operational-authority.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { DAEMON_FEATURES } from "../src/hub/control-client.ts";
@@ -163,9 +163,46 @@ test("current person/conductor/session/private/review/task-state guards refuse b
   expect(f.store.integrity()).toEqual(before);
   f.board.update(f.taskId, USER, "submitted", { state: "in_review" });
   await expect(f.tasks.guidanceProbeRegister(USER, f.registration())).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  f.board.update(f.taskId, USER, "changes_requested", { state: "changes_requested" });
+  f.board.update(f.taskId, USER, "accepted", { state: "in_progress" });
   f.board.update(f.taskId, USER, "note", { signals: ["pii"] });
   await expect(f.tasks.guidanceProbeRegister(USER, f.registration())).rejects.toBeInstanceOf(PreEffectToolRefusal);
   expect(f.store.integrity()).toEqual(before);
+});
+
+test("write-free input-budget registration refusal keeps its cause and creates no phantom id", async () => {
+  const f = await fixture(), value = f.registration();
+  value.manifest.limits.inputBytes = value.manifest.inputs.task.bytes + value.manifest.inputs.baselineContext.bytes
+    + value.manifest.inputs.dataPolicy.bytes + value.manifest.inputs.systemPolicy.bytes;
+  expect(parseGuidanceProbeRegistration(value)).toBeDefined();
+  const before = f.store.integrity(), key = { projectKey: f.projectKey, id: guidanceProbeManifestKey(value.manifest) };
+  const error = await f.tasks.guidanceProbeRegister(USER, value).then(() => undefined, error => error);
+  expect(error).toBeInstanceOf(GuidanceProbeError); expect(error.reason).toBe("budget");
+  expect(error.message).toContain("limits.inputBytes"); expect(error.message).not.toContain("unconfirmed");
+  expect(f.store.read(key)).toBeUndefined(); expect(f.store.integrity()).toEqual(before);
+});
+
+test("stale and lane-held start refusals remain known and write-free", async () => {
+  const f = await fixture(), receipt = await f.tasks.guidanceProbeRegister(USER, f.registration());
+  const before = f.store.integrity();
+  const stale = await f.tasks.guidanceProbeStart(USER, receipt.id, 999).then(() => undefined, error => error);
+  expect(stale).toBeInstanceOf(GuidanceProbeError); expect(stale.reason).toBe("changed");
+  expect(stale.message).not.toContain("unconfirmed"); expect(f.store.integrity()).toEqual(before); expect(f.provider.launches).toHaveLength(0);
+  await f.tasks.guidanceProbeStart(USER, receipt.id, 0);
+  const other = f.registration(); other.manifest.experimentId = "another-public-experiment";
+  const registered = await f.tasks.guidanceProbeRegister(USER, other), heldBefore = f.store.integrity();
+  const held = await f.tasks.guidanceProbeStart(USER, registered.id, 0).then(() => undefined, error => error);
+  expect(held).toBeInstanceOf(GuidanceProbeError); expect(held.reason).toBe("held");
+  expect(held.message).not.toContain("unconfirmed"); expect(f.store.integrity()).toEqual(heldBefore); expect(f.provider.launches).toHaveLength(1);
+});
+
+test("a post-reservation startup failure stays unconfirmed while preserving host no-launch evidence", async () => {
+  const f = await fixture(), receipt = await f.tasks.guidanceProbeRegister(USER, f.registration());
+  f.store.exposeLaunch = () => { throw new GuidanceProbeError("changed"); };
+  await expect(f.tasks.guidanceProbeStart(USER, receipt.id, 0)).rejects.toThrow("guidance probe attempt outcome is unconfirmed");
+  expect(f.provider.launches).toHaveLength(0);
+  const session = f.store.read({ projectKey: f.projectKey, id: receipt.id })!.sessions[0]!;
+  expect(session.state).toBe("failed_known"); expect(session.coverage.preLaunchFailure).toBe(true);
 });
 
 test("same live console session replays without launch while a new connection cannot borrow its original start", async () => {
@@ -286,12 +323,14 @@ test("port settlement joins a fire-and-forget effect callback before session set
   const started = new Promise<void>(resolve => { effectStarted = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
   const settled = new Promise<void>(resolve => { portSettled = resolve; });
   clean.push(release);
+  let portEffects!: ProbeFakeEffects;
   const launch = f.provider.launch.bind(f.provider);
   f.provider.launch = (input, effects, signal) => launch(input, effects, signal).then(observation => {
     queueMicrotask(portSettled); return observation;
   });
   const request = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("port-returned-effect"), reservedTokens: 20 };
   f.provider.script = async (input, effects) => {
+    portEffects = effects;
     // The port intentionally returns without awaiting its still-owned callback.
     void effects.runEffect(request, async () => {
       effectStarted(); await gate; return fakeEffectValue(request, "late fixture result", 5);
@@ -302,6 +341,12 @@ test("port settlement joins a fire-and-forget effect callback before session set
   await started; await settled;
   const key = { projectKey: f.projectKey, id: receipt.id };
   expect(f.store.read(key)!.sessions[0]!.state).toBe("running");
+  let lateCallback = false;
+  const beforeLateCall = f.store.integrity();
+  await expect(portEffects.runEffect({ sequence: 1, unit: "model_calls", descriptorSha256: probeHash("effect-after-port-settlement"), reservedTokens: 20 }, async () => {
+    lateCallback = true; return fakeEffectValue("late-effect", "must not run", 1);
+  })).rejects.toThrow();
+  expect(lateCallback).toBe(false); expect(f.store.integrity()).toEqual(beforeLateCall);
   const stopping = f.tasks.stopGuidanceProbes().then(() => ({ stopped: true }), error => ({ error }));
   f.clock.now += GUIDANCE_PROBE_STOP_TIMEOUT_MS;
   f.timer.fireDelay(GUIDANCE_PROBE_STOP_TIMEOUT_MS);

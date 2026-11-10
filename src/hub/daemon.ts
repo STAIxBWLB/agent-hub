@@ -1,6 +1,6 @@
 import { parseGuidanceCreateInput, parseGuidanceIdQuery } from "./guidance-variants.ts";
 import { GuidanceProbeStore } from "./guidance-probe-store.ts";
-import { probeSessionGeneration } from "./guidance-probes.ts";
+import { GuidanceProbeError, probeSessionGeneration } from "./guidance-probes.ts";
 import { executionText, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
 import { publicDeliveryBodies } from "./delivery-public.ts";
 import { GeneratedNoteRegistry, type GeneratedNoteProof } from "../memory/record-provenance.ts";
@@ -12312,8 +12312,11 @@ export async function startDaemon(opts: DaemonOptions) {
           const withRequest = () => guidanceProbeRequestContext.run(requestContext, action);
           return role === "tools" ? operationalContext.run({ actor, current }, withRequest) : withRequest();
         };
-        void Promise.resolve().then(run).then(value => reply(msg.t === "guidance_probe_show" ? { ok: true, status: value } : { ok: true, receipt: value }),
-          error => reply(operationalFailure(error, "guidance probe operation is unavailable; inspect retained state before explicitly retrying")))
+        void Promise.resolve().then(run).then(value => reply(msg.t === "guidance_probe_show" ? { ok: true, status: value } : { ok: true, receipt: value }), error => {
+          if (error instanceof PreEffectToolRefusal || error instanceof GuidanceProbeError) return reply({ ok: false, error: error.message });
+          if (error instanceof OperationalAuthorityError) return reply(operationalFailure(error));
+          return reply({ ok: false, error: "guidance probe operation is unconfirmed; inspect retained state before retrying" });
+        })
           .finally(() => { taskOpsInFlight--; }).catch(() => {});
         return;
       }

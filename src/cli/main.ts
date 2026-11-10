@@ -1275,7 +1275,11 @@ const commands: Record<string, () => Promise<void> | void> = {
           : probeCommand.op === "cancel" ? { t: "guidance_probe_cancel", id: probeCommand.id, revision: probeCommand.revision }
           : { t: "guidance_probe_show", id: probeCommand.id };
         const result = await hub.request(request);
-        if (result.ok !== true) return fail(`${terminalText(result.error ?? "guidance probe outcome is unconfirmed").replace(/[\r\n]+/g, " ").slice(0, 512)}; inspect ahub guidance show --id <id> before any explicit retry`);
+        if (result.ok !== true) {
+          const detail = terminalText(result.error ?? "guidance probe outcome is unconfirmed").replace(/[\r\n]+/g, " ").slice(0, 512);
+          const nextStep = probeCommand.op === "register" ? "" : `; inspect ahub guidance probe show --id ${probeCommand.id} before any explicit retry`;
+          return fail(`${detail}${nextStep}`);
+        }
         if (probeCommand.op === "show") {
           const status = parseGuidanceProbePublicStatus(result.status);
           if (!status) return fail("guidance probe status is malformed; refresh its id and current task context");
