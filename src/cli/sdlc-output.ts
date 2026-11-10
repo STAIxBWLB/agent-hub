@@ -249,7 +249,7 @@ export function renderAuthorization(authorization: unknown, columns?: number, no
   const w = 8;
   return [...heading("Release authorized", columns),
     ...pair("version", a?.version ?? "unknown", columns, w), ...pair("commit", short(a?.commit), columns, w), ...pair("by", a?.by ?? "unknown", columns, w),
-    ...pair("at", moment(a?.at, now), columns, w), ...pair("docs", a?.docs ? `${a.docs.fresh ? "fresh" : "not fresh"}, ${plural(a.docs.documents ?? 0, "document")}, digest ${short(a.docs.digest)}` : "unknown", columns, w),
+    ...pair("at", moment(a?.at, now), columns, w), ...pair("docs", a?.docs?.source === "none" ? "none (explicit exemption)" : a?.docs ? `${a.docs.fresh ? "fresh" : "not fresh"}, ${plural(a.docs.documents ?? 0, "document")}, digest ${short(a.docs.digest)}` : "unknown", columns, w),
     ...pair("id", a?.id ?? "unknown", columns, w, "muted"), blank,
     ...para("A daemon restart revokes this authorization.", columns, "muted")];
 }

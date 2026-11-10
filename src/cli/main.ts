@@ -248,6 +248,7 @@ const requireNamedPeerFeature = (hub: ControlClient, peer: string | undefined) =
 const projectConfig = () => {
   const config = loadConfig(cwd);
   for (const line of config.ignored ?? []) console.error(`note: ${line}; only a config file nobody committed may set it`);
+  for (const line of config.releasePolicyNotices ?? []) console.error(`note: ${line}`);
   return config;
 };
 const stateDir = selected.stateDir;
@@ -3094,6 +3095,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
       const config = loadConfig(cwd);
       row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
+      for (const line of config.releasePolicyNotices ?? []) row(false, "release policy", line);
       for (const line of config.retired ?? []) row(false, "retired setting", line);
       const { routing, errors: routingErrors } = inspectDoctorRouting(cwd);
       for (const error of routingErrors) row(false, "routing", error);

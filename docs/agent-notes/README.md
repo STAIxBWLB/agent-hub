@@ -2,6 +2,8 @@
 
 Human explanation. Agent instructions: the area notes in this directory.
 
+Issue #1381 records the package-only release guard blocking a project with no package manifest or documentation checker. The release policy was bound to the candidate commit because choosing a different source or exempting docs relaxes that guard; the shared committed file makes that choice reviewable in the same Git candidate. The runtime/local configuration is a different authority and does not define this consent.
+
 On 2026-11-10, #1352 R1 separated newly authored stage evidence, fallback and
 whole-wire sizing from the remaining legacy route modules. The models note
 points at the stage contract and its single switch planner; generic decision

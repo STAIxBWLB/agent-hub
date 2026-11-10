@@ -105,6 +105,8 @@ const drop = (file: Record<string, unknown>, path: string) => {
  * once resolved to the project root). A committed copy of the template sets them to defaults and asks git nothing.
  */
 export function stripUntrusted(file: Record<string, unknown>, defaults: object, cwd: string, name: string): string | undefined {
+  const releaseLocal = name === "config.local.json" && Object.hasOwn(file, "release");
+  if (releaseLocal) delete file.release;
   const research = file.research;
   if (research && typeof research === "object" && Object.hasOwn(research, "runners")) {
     if (name !== "config.local.json") throw new Error("research.runners requires untracked config.local.json");
@@ -114,7 +116,10 @@ export function stripUntrusted(file: Record<string, unknown>, defaults: object, 
   if (name !== "config.local.json") delete file.rooms;
   const localOnly = name !== "config.local.json" && file.action_policy !== undefined;
   if (localOnly) delete file.action_policy;
-  const originNotice = localOnly ? "action_policy ignored: only .agenthub/config.local.json may set it" : undefined;
+  const originNotice = [
+    localOnly ? "action_policy ignored: only .agenthub/config.local.json may set it" : undefined,
+    releaseLocal ? "release in .agenthub/config.local.json ignored: only committed .agenthub/config.json may set release policy" : undefined,
+  ].filter(Boolean).join("; ") || undefined;
   for (const p of ALL_MACHINE_LOCAL) if (!EMPTY_IS_VALUE.includes(p) && valueAt(file, p) !== undefined && !chooses(valueAt(file, p))) drop(file, p);
   const set = ALL_MACHINE_LOCAL.filter((p) => {
     const v = valueAt(file, p);

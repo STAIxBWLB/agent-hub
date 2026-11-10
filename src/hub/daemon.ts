@@ -39,6 +39,7 @@ import { ActionBudgets, actionPolicyConfig, floorEnforcement, floorReads, type A
 import { actionGate, claudeActionClasses } from "./action-enforce.ts";
 import type { FloorFacts } from "./action-class.ts";
 import { ReleaseAuthorizations, releaseAuthorizationError } from "./sdlc-release-authorization.ts";
+import { readCommittedReleasePolicy } from "./sdlc-release-policy.ts";
 import { parseReleaseGuardArgv, parseReleasePushUpdates } from "../cli/sdlc-release-guard.ts";
 import type { DocEvidence } from "./sdlc-release.ts";
 import { loadExternalAdapterDefinitions, readAdapterModuleDeclarations, externalModuleIdentity, externalModuleIdentityCurrent, type AdapterModuleDeclaration } from "../adapters/external-modules.ts";
@@ -365,6 +366,8 @@ export interface HubConfig {
   pet?: false | Record<string, unknown>;
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
+  /** Reporting-only notice that machine-local release policy was ignored; never part of accepted policy authority. */
+  releasePolicyNotices?: string[];
   /** Settings that were removed or are about to be (issue #83): what each does now, for `hub.log` and `ahub doctor`. */
   retired?: string[];
 }
@@ -539,6 +542,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
   const instances = instanceConfig.instances;
   const adapterCatalog = instanceConfig.catalog;
   const ignored: string[] = [...instanceConfig.ignored];
+  const releasePolicyNotices: string[] = [];
   const inertModuleRoster = !!instanceConfig.adapter_modules?.length;
   const appliedPermissionSources: NonNullable<HubConfig["permission_default_sources"]> = {};
   let retiredPetWindow = false;
@@ -594,7 +598,14 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     if (file.research !== undefined && (!file.research || typeof file.research !== "object" || Array.isArray(file.research))) throw new Error("research must be an object");
     const hasRunners = file.research && Object.hasOwn(file.research, "runners"), runnerDeclarations: unknown = hasRunners ? file.research.runners : undefined;
     const why = stripUntrusted(file, DEFAULT_CONFIG, cwd, name);
-    if (why) ignored.push(why);
+    if (why) {
+      const notices = why.split("; ");
+      releasePolicyNotices.push(...notices.filter(notice => notice.startsWith("release in .agenthub/config.local.json ignored:")));
+      const existingNotices = notices.filter(notice => !notice.startsWith("release in .agenthub/config.local.json ignored:"));
+      if (existingNotices.length) ignored.push(existingNotices.join("; "));
+    }
+    // Release policy is read directly from the candidate commit by the S6 host reader, never runtime config.
+    delete file.release;
     if (hasRunners) file.research.runners = parseResearchRunners(runnerDeclarations);
     for (const [peer, mode] of Object.entries(permissionDefaults(file.permission_modes, instances, adapterCatalog))) appliedPermissionSources[peer] = { mode, source: `.agenthub/${name}` };
     return [file];
@@ -698,6 +709,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     capabilities: { ...file.capabilities },
     mlx,
     ...(ignored.length ? { ignored } : {}),
+    ...(releasePolicyNotices.length ? { releasePolicyNotices } : {}),
     ...(retired.length ? { retired } : {}),
   };
 }
@@ -2570,6 +2582,7 @@ export async function startDaemon(opts: DaemonOptions) {
   if (strayChecks.length) log(`checks ignored for ${strayChecks.join(", ")}: not a task class with a command (classes: ${CLASSES.join(", ")})`);
   // Commands and the other machine-local fields came only from a file git vouched for (loadConfig, issue #17).
   for (const line of config.ignored ?? []) log(`${line}; only a config file nobody committed may set it`);
+  for (const line of config.releasePolicyNotices ?? []) log(`config: ${line}`);
   for (const line of config.retired ?? []) log(`config: ${line}`);
   const checksAllowed = Object.keys(checkCommands).length > 0;
   const checkTimeoutS = typeof config.checks.timeout_s === "number" && config.checks.timeout_s >= 1 ? Math.min(config.checks.timeout_s, 3600) : 600;
@@ -6506,13 +6519,16 @@ export async function startDaemon(opts: DaemonOptions) {
 
   const releaseAuthorizations = new ReleaseAuthorizations(opts.cwd, {
     docs: opts.releaseDocEvidence,
+    policy: (commit, git) => readCommittedReleasePolicy(git, commit),
     gh: (args, timeout) => sdlcGh(args, timeout, opts.cwd),
     current: () => !stopping && !recoveryActive() && !bus.isRecoveryHeld,
     conductor: () => {
       const peer = conductorPeer(config.roles);
       return peer && !turns.get(peer)?.private && !contextPii(peer) ? peer : undefined;
     },
-    record: receipt => event({ type: "release_authorization", by: receipt.by, authorization: receipt.id, commit: receipt.commit, version: receipt.version, docsDigest: receipt.docs.digest, documents: receipt.docs.documents }),
+    record: receipt => event("source" in receipt.docs
+      ? { type: "release_authorization", by: receipt.by, authorization: receipt.id, commit: receipt.commit, version: receipt.version, docs: "none" }
+      : { type: "release_authorization", by: receipt.by, authorization: receipt.id, commit: receipt.commit, version: receipt.version, docsDigest: receipt.docs.digest, documents: receipt.docs.documents }),
   });
   const terminalReads = terminalOwnerReads();
   const terminalLaunches = new TerminalLaunches({
@@ -9469,6 +9485,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function declaredPaths(value: unknown, prefix = ""): string[] {
     if (prefix === "_autonomy" || prefix.startsWith("_autonomy.")) return [];
+    if (prefix === "release" || prefix.startsWith("release.")) return [];
     if (prefix === "pet.window") return [];
     // Retired dictionaries never enter active publication; hub ids remain opaque keys.
     if (prefix === "routing.targets" || prefix === "routing.routes") return [];
@@ -9578,11 +9595,13 @@ export async function startDaemon(opts: DaemonOptions) {
       guarded.length = 0; previews.length = 0;
     }
     candidate.retired = fileConfig.retired;
+    candidate.releasePolicyNotices = fileConfig.releasePolicyNotices;
     routing.retired = sources.routing.retired;
     const changes = configChanges({ ...config, roles: policyRoles }, candidate, [{ catalog: adapterCatalog, instances: declarations }, configIdentityScope(acceptedSources.identity), configIdentityScope(sources.identity)]);
     const running = structuredClone({ ...config, roles: policyRoles });
     for (const change of changes) if (change.applies !== "restart") putConfig(running, change.key, change.after);
     running.retired = fileConfig.retired;
+    running.releasePolicyNotices = fileConfig.releasePolicyNotices;
     validateEffectiveConfig(running, adapterCatalog);
     conductorPeer(running.roles);
     for (const peer of Object.keys(running.catalog_roles ?? {})) selectedRoles(peer, running.roles, { ...resolvedProfile.catalog_roles, ...catalogAssignments(running.catalog_roles) }, catalog);
@@ -9663,6 +9682,9 @@ export async function startDaemon(opts: DaemonOptions) {
       const priorRetired = new Set(config.retired ?? []);
       config.retired = prepared.running.retired;
       for (const line of config.retired ?? []) if (!priorRetired.has(line)) log(`config: ${line}`);
+      const priorReleaseNotices = new Set(config.releasePolicyNotices ?? []);
+      config.releasePolicyNotices = prepared.running.releasePolicyNotices;
+      for (const line of config.releasePolicyNotices ?? []) if (!priorReleaseNotices.has(line)) log(`config: ${line}`);
       config.permission_default_sources = candidate.permission_default_sources;
       refreshAutonomyConsent(prepared.fileConfig);
       for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);

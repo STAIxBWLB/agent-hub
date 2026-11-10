@@ -204,6 +204,8 @@ const schema: Record<string, Check> = {
   text_projection: v => { projectionConfig(v); },
   corpus: v => { corpusConfig(v); },
   specs: (v, k) => { block({ enabled: bool, review: words(["off", "report", "require"]), roots: strings, stamps_file: text })(v, k); parseSpecsConfig(v); },
+  // S6 owns this closed schema at the committed candidate boundary; config.local is ignored before runtime publication.
+  release: () => {},
   conductor: block({ feed: words(["own", "all", "off"]), approval_wait_s: number(0, 2_147_483_647 / 1000) }),
   budget: block({ gate: number(0, 1), stale_min: timerMinutes, poll_min: timerMinutes, checkpoint_timeout_s: timerSeconds, kimi_tokens_5h: number(0), wait_max_min: number(0) }),
   context: block({ gate: number(0, 1), stale_min: timerMinutes, max_assignment_used: number(0, 1) }),
@@ -259,7 +261,7 @@ export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, 
 }
 export function validateEffectiveConfig(value: unknown, catalog?: ProjectAdapterCatalog): asserts value is HubConfig {
   const raw = { ...object(value, "config") };
-  delete raw.ignored; delete raw.retired; delete raw.permission_default_sources;
+  delete raw.ignored; delete raw.retired; delete raw.releasePolicyNotices; delete raw.permission_default_sources;
   validateRawConfig(raw, undefined, catalog);
   const profile = resolveProfile(raw.profile, raw.profile_overrides);
   for (const key of Object.keys(object(raw.checks, "checks"))) if (!["timeout_s", "runner", "remote", ...CLASSES, ...Object.keys(profile.classes)].includes(key)) fail(`checks.${key}`, "unknown task class");
@@ -327,7 +329,7 @@ export function configChanges(running: HubConfig, next: HubConfig, scopes: reado
       changes.push({ key, before, after, ...(stale ? { applies: "live" as const } : configApply(key, scopes)) });
     }
   };
-  const clean = (v: HubConfig) => Object.fromEntries(Object.entries(v).filter(([key]) => !["ignored", "retired", "permission_default_sources"].includes(key)));
+  const clean = (v: HubConfig) => Object.fromEntries(Object.entries(v).filter(([key]) => !["ignored", "retired", "releasePolicyNotices", "permission_default_sources"].includes(key)));
   walk(clean(running), clean(next), ""); return changes.sort((a, b) => a.key.localeCompare(b.key));
 }
 
