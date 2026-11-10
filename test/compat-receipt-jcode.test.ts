@@ -170,7 +170,7 @@ test("a third completion attempt fails even when only two request bodies are ret
 }, 20000);
 
 /** Runs the actual observer program with only its filesystem import bound to a pipe-gated real I/O port. */
-async function observerPublication(program: string, fault: "none" | "write" | "existing" = "none") {
+async function observerPublication(program: string, fault: "none" | "write" | "existing" = "none", expected: "atomic" | "legacy" = "atomic") {
   const root = realPath(mkdtempSync(join(tmpdir(), "jcode-observer-publication-"))); roots.push(root);
   const target = join(root, "observed.json"), temp = target + ".tmp", port = join(root, "fs-port.mjs"), script = join(root, "observer.mjs");
   const existing = "preexisting private temporary file";
@@ -208,7 +208,7 @@ export function writeFileSync(file,data,options){
     (child.stdio[4] as Writable).write("1");
     expect(await Promise.race([opened, ended.then(() => { throw new Error("observer exited before the write barrier"); })])).toBe("opened");
     const published = (() => { try { return lstatSync(target); } catch { return undefined; } })();
-    if (program === OLD_MCP_OBSERVER) {
+    if (expected === "legacy") {
       expect(published?.size).toBe(0);
       expect(() => JSON.parse(readFileSync(target, "utf8"))).toThrow();
     } else {
@@ -235,7 +235,7 @@ export function writeFileSync(file,data,options){
 }
 
 test("the old observer exposes an incomplete final JSON file at a consumed write barrier", async () => {
-  await observerPublication(OLD_MCP_OBSERVER);
+  await observerPublication(OLD_MCP_OBSERVER, "none", "legacy");
 }, 20000);
 test("the observer publishes complete environment JSON atomically before its MCP reply", async () => {
   await observerPublication(MCP_OBSERVER);
