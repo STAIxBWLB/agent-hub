@@ -176,7 +176,7 @@ function canonical(value: unknown): string {
   if (value && typeof value === "object") return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
   return JSON.stringify(value);
 }
-export const guidanceProbeCanonical = (value: unknown, maximum = GUIDANCE_PROBE_LIMITS.recordBytes): string => canonical(inert(value, maximum));
+export const guidanceProbeCanonical = (value: unknown, maximum: number = GUIDANCE_PROBE_LIMITS.recordBytes): string => canonical(inert(value, maximum));
 function ref(value: unknown): void { const fields = object(value, ["sha256", "bytes"]); required(probeSha256(fields.sha256) && probeInteger(fields.bytes) && fields.bytes <= GUIDANCE_PROBE_LIMITS.snapshotBytes); }
 function role(value: unknown): void { const fields = object(value, ["id", "layer", "baselineSha256"]); required(identity(fields.id) && ["shipped", "project"].includes(fields.layer as string) && probeSha256(fields.baselineSha256)); }
 const graph: readonly [ProbeStage, ProbeSlot["role"], ProbeSlot["arm"]][] = [

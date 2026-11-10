@@ -76,7 +76,7 @@ function boundChild(state: Stored, input: ProbeSessionAdmission, session: Sessio
   const child = input.child;
   if (!child || !probeSha256(child.variantId) || !probeSha256(child.candidateSha256) || !probeSha256(child.guidanceSha256) || !same(child.task, input.host.task)
     || !same(child.role, input.host.role) || typeof child.guidance !== "string" || Buffer.byteLength(child.guidance) > GUIDANCE_ROLE_MAX_BYTES
-    || probeHash(child.guidance) !== child.guidanceSha256) fail("changed");
+    || probeHash(child.guidance) !== child.guidanceSha256) return fail("changed");
   if (session.child) { if (!same(session.child, child)) fail("changed"); return; }
   const producerStage = slot.arm === "successor" ? "compose" : slot.arm === "candidate2" ? "proposal2" : "proposal1";
   const source = state.sessions.findLast(item => state.registration.manifest.slots.find(slot => slot.id === item.slotId)?.stage === producerStage && item.state === "closed_fixture");
