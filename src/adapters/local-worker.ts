@@ -6,7 +6,7 @@ import { HubRouteRuntime, type RouteEvent, type AdvisorEvent } from "../models/r
 import type { HubRoute } from "../models/route/config.ts";
 import type { RouteLabelEvent, RouteTurnOutcome } from "../models/route/labels.ts";
 import type { StaySwitchPolicy } from "../models/route/stage-fallback.ts";
-import type { ToolObservation } from "../models/route/signals.ts";
+import type { ToolObservation } from "../models/route/observation-signals.ts";
 import { randomUUID } from "node:crypto";
 import { MAX_HOP, remoteEnvelope, renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
 import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools, SESSION_TITLE_TOOL } from "../hub/hub-tools.ts";

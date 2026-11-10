@@ -39,7 +39,9 @@ This document defines agent-hub's replacement route design for issue #1352. Its
 inputs are the project's configuration, operational contracts and nonported
 consumers. It is a newly authored rewrite. R1 covers
 stage evidence and deterministic fallback; R2 owns the remaining route decisions
-and judge/prompt replacement; R3 owns notice and remnant cleanup.
+and judge/prompt replacement; R3 retires the derived modules, their upstream
+checker and the corresponding Apache license/notice. The unrelated Tabler Icons
+notice remains in the package.
 
 **Review basis:** the recorded R1 contract review for issue #1352 accepted the
 ownership split, packet bounds and numerical contract. The sizing
@@ -49,6 +51,18 @@ review preceded commits and remote checks. The four fresh units and approved
 consumer wiring implement this contract; validation conclusions remain bound
 to their exact-head receipts. Accepted design choices are not measurements of
 implementation equivalence or runtime behavior.
+
+## R3 retirement
+
+The active route implementation uses the owned `stage-*`, `turn-state`,
+`conversation-view`, `observation-signals`, `escalation-control`,
+`advisor-trigger`, `plan-execute-choice`, `judge-choice`, `judge-replies` and
+`hub-prompts` modules. R3 removes the replaced source-port modules and their
+ported vector suites, the upstream checker, and the corresponding Apache
+license/notice. The owned `stage.ts` compatibility re-export remains.
+`RESERVED_SIDECAR = 3` keeps the unused port offset stable; no listener is added.
+The Tabler Icons notice remains packaged. This retirement changes no routing
+behavior, configuration grammar or generic decision-evidence v1 payload.
 
 ## Decision ownership
 
@@ -71,6 +85,10 @@ reader. #554 S2 adds the opt-in stage classifier option and its ambiguity band
 below; judge/plan-execute choice questions require later reviewed wiring (R2).
 
 ## Route contracts and compatibility
+
+The slice references below record the R1/R2 ownership split. R2 now supplies
+the owned host decision and judge implementations; R3 removes their replaced
+source-port counterparts.
 
 - `stage` produces stage evidence, a deterministic efficient/capable fallback and
   the existing session-aware switch plan. With `classifier = "decision"` it may
@@ -382,7 +400,9 @@ a freshly authored re-export facade, containing no former implementation body.
 In particular `CodingAgentDimensions` is defined in `stage-evidence.ts` with the
 four existing numeric fields, and `estimateInputTokens` is an export of the new
 input-sizing unit. The generic v1 builder/test imports keep their existing path
-and behavior until R3 retires that compatibility boundary.
+and behavior; the freshly authored facade remains an owned compatibility API.
+R3 removes derived implementations and migrates remaining type-only consumers
+to owned types without changing generic v1 evidence bytes.
 
 ```ts
 type StaySwitchMode = "off" | "shadow" | "enforce";
@@ -492,7 +512,8 @@ This section defines the R2 integration contract for review before shared wiring
 The self-contained helpers and focused receipts are separate from acceptance of
 that integration. It adds no permission to consult the protected route bodies,
 source-port vectors or `src/hub/ports.ts`. R1's four stage units are owned inputs;
-R3 retains license, notice, port-offset and remnant cleanup ownership.
+R3 retires the derived implementations, provenance checker and corresponding
+license/notice, and preserves reserved port offset 3 under a neutral name.
 
 ### Configuration and service ownership
 
@@ -847,8 +868,10 @@ copying a ported function body. An earlier broad historical-doc search exposed
 advisor behavior notes; review preparation also exposed limited excluded inventory
 expression/key-pattern metadata after initial algorithm commits. These exposures
 are recorded as process limits, not represented as unread history. No further
-protected body, prompt, vector or ports read/import is authorized. This is a newly authored rewrite with explicit provenance. Licenses/notices
-remain R3 work.
+protected body, prompt, vector or ports read/import was authorized under R2.
+This is a newly authored rewrite with explicit provenance. R3 removes the derived
+implementations and their corresponding license/notice; this process record
+remains historical evidence.
 
 ## Native progress projection, separate from stage selection
 
@@ -874,8 +897,10 @@ native-turn fields; it does not inspect commands or tool arguments. It emits onl
   dimension grants no execution, reassignment or model-routing authority.
 
 This replacement removes the observer's dependency on the former stage helper.
-Generic decision evidence v1 and remaining legacy route signal/judge code are
-unchanged. The existing owned progress tests remain acceptance authority.
+At the R1 boundary, generic decision evidence v1 and the remaining legacy route
+signal/judge code were unchanged. R2 supplies the owned signal/judge replacements;
+R3 removes the replaced modules. Generic decision evidence v1 stays unchanged,
+and the existing owned progress tests remain acceptance authority.
 
 ## Privacy, authority and events
 
@@ -970,8 +995,9 @@ committed as our fixture at `test/fixtures/model-stage-sizing-v1.json`. The PR
 records that the former function was observed only through its public API.
 No second characterization, model request or quiet/no-op follow-up is implied.
 
-## Implementation and consumer map
+## Historical R1 implementation and consumer map
 
+This section records the R1 boundary before R2 replacement and R3 retirement.
 Fresh stage-only units were added under the reviewed task plan:
 
 | Unit | Responsibility |
@@ -995,13 +1021,16 @@ implementations:
 | `src/models/route/decision-evidence.ts` | Four-dimension type dependency only; its function, payload and tests stay unchanged |
 | `src/models/route/labels.ts` / `src/hub/inference.ts` | Remaining generic normalization/signal/fingerprint or Conversation consumers; migration/compatibility needs separate path approval |
 
-`parseAdvisorVerdict` and legacy `text.ts` remain R2. Generic normalization,
-signal/observation and outcome-label consumers still exist; R1 does not remove
-those bodies by assuming the stage route was their only consumer. A small newly
-authored compatibility facade may retain an existing type/import boundary where
-required by unchanged consumers. A replaced stage-function file with no remaining
-consumer is removed without reading its removed body. The PR lists retained
-R2/R3 source-port files; R1 does not remove licenses/notices or upstream tooling.
+At R1, `parseAdvisorVerdict` and legacy `text.ts` remained R2 work. Generic
+normalization, signal/observation and outcome-label consumers still existed; R1
+did not remove those bodies by assuming the stage route was their only consumer.
+A small newly authored compatibility facade could retain an existing type/import
+boundary where required by unchanged consumers. A replaced stage-function file
+with no remaining consumer was removed without reading its removed body. The R1 PR listed retained
+R2/R3 source-port files; R1 did not remove licenses/notices or upstream tooling.
+R2 supplies the owned replacements and R3 retires the remaining derived modules
+and vectors without reading or copying their bodies. Nonported integration
+assertions remain in place, with owned type/import bindings where needed.
 
 The precise new exports, compatibility facade and consumer wiring paths were
 pinned in the board plan before production edits. The own unit tests are

@@ -7,8 +7,10 @@ Issue #1381 records the package-only release guard blocking a project with no pa
 On 2026-11-10, #1352 R1 separated newly authored stage evidence, fallback and
 whole-wire sizing from the remaining legacy route modules. The models note
 points at the stage contract and its single switch planner; generic decision
-evidence v1, the remaining route decisions and notice cleanup have separate
-ownership boundaries.
+evidence v1, the remaining route decisions and notice cleanup had separate
+ownership boundaries. R2 supplied the hub-owned decisions and prompts; R3 retires
+the derived modules, their upstream checker and Apache notice while preserving
+the unrelated Tabler Icons notice and the reserved port offset.
 
 R2 keeps optional model selection separate from host decisions: ADEc may suggest
 an alias/effort for an existing plan phase or judge call, while the hub retains

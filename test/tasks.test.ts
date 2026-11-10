@@ -287,12 +287,12 @@ test("a PII task stays on-prem: local only, private envelopes, console review, r
 });
 
 test("briefs: matching observations ride with the task; the same peer is not shown the same id twice", async () => {
-  const { tasks, peers } = await setup(undefined, { claude: ["65001 10:00a decision switchyard sidecar fallback design"] });
-  await tasks.propose("claude", { title: "harden the switchyard sidecar", class: "implement" });
+  const { tasks, peers } = await setup(undefined, { claude: ["65001 10:00a decision retired-route sidecar fallback design"] });
+  await tasks.propose("claude", { title: "harden the retired-route sidecar", class: "implement" });
   await tick();
   const first = peers.local!.got.at(-1)!.body;
   expect(first).toContain("Memory brief");
-  expect(first).toContain("#65001 10:00a decision switchyard sidecar fallback design");
+  expect(first).toContain("#65001 10:00a decision retired-route sidecar fallback design");
   expect(first).toContain("#65002"); // the timeline neighbour
   await tasks.assignTo(1, "local");
   await tick();

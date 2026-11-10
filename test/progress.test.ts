@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { normalizeClaudeObservation, normalizeCodexObservation, progressDimensions, ProgressObserver } from "../src/hub/progress.ts";
 import type { Task } from "../src/hub/board.ts";
 import type { HubEvent } from "../src/hub/events.ts";
-import type { Conversation } from "../src/models/route/normalize.ts";
+import type { ProgressConversation as Conversation } from "../src/hub/progress.ts";
 
 const task: Task = {
   id: 7, owner: "codex", title: "Implement parser", detail: "Add parser handling", class: "implement", reviewer: null,

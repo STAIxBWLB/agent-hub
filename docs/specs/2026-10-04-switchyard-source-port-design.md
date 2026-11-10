@@ -2,11 +2,13 @@
 title: Switchyard 라우팅 로직의 소스 수준 도입 계획 - agent-hub TypeScript 이식
 date: 2026-10-04
 project: agent-hub
-status: approved (implementation requested 2026-10-04)
+status: superseded by docs/design/model-routes.md (#1352)
 related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub-research-v2.md
 ---
 
 # Switchyard 라우팅 로직의 소스 수준 도입 계획
+
+이 문서는 #1352의 [Hub Model Routes](../design/model-routes.md)로 대체된 역사 기록이다. 현재 구현과 변경 계약은 해당 문서를 따른다. 아래 본문은 당시의 도입 계획으로 보존하며, 현재 구현이나 배포 지시가 아니다.
 
 ## 요약
 

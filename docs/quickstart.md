@@ -214,7 +214,7 @@ Restart Claude sessions after upgrading: each keeps the plugin server it started
 
 `ahub jcode` opens its TUI again; on 0.12.39 it stopped after the first hub turn (#564). A busy Jcode now takes an `important` message into its running turn (#572), and `ahub doctor` lists the extra MCP servers the hub-owned Jcode loads from its config files. See [Jcode operations](operations.md#optional-jcode-peer).
 
-The Switchyard sidecar is retired (#553). An existing `routing.toml` keeps working: its `[targets]` and `[routes]` tables are ignored and reported as retired settings, and a route without the `hub/` prefix (such as `sy/coding`) uses the fixed model with one warning. Migrate with the table in [in-process model routes](operations.md#in-process-model-routes); the hub never rewrites the file.
+Model routing runs in process through the hub-owned route implementation, with optional adec model/effort choices. An existing `routing.toml` keeps working: its `[targets]` and `[routes]` tables are ignored and reported as retired settings, and a route without the `hub/` prefix (such as `sy/coding`) uses the fixed model with one warning. Migrate with the table in [in-process model routes](operations.md#in-process-model-routes); the hub never rewrites the file.
 
 Run `ahub init` once per project to refresh the hub block in `AGENTS.md`: it adds the line that tells agents to report a pushed PR with `hub_task_done` and end the turn instead of waiting for CI (#572). Finishing a task now also says when the project root checkout is on a branch other than its default.
 

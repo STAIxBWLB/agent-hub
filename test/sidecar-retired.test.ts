@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { realPath } from "../src/hub/project.ts";
-import { SWITCHYARD, STRIDE } from "../src/hub/ports.ts";
+import { RESERVED_SIDECAR, STRIDE } from "../src/hub/ports.ts";
 import { DEFAULT_INFERENCE, Inference } from "../src/hub/inference.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
@@ -55,7 +55,7 @@ test("#553 retired tables reload without activation, config rewrites or status s
   writeFileSync(file, legacy);
   const result = await person.request({ t: "settings_reload" });
   expect(result.ok).toBe(true);
-  expect((await person.request({ t: "status" })).status).not.toHaveProperty("switchyard");
+  expect((await person.request({ t: "status" })).status).not.toHaveProperty("retired-route");
   expect(readFileSync(file, "utf8")).toBe(legacy);
   const retired = loadConfig(root).retired ?? [];
   expect(retired).toHaveLength(2);
@@ -72,7 +72,7 @@ test("#553 retired tables reload without activation, config rewrites or status s
   writeFileSync(file, legacy);
   expect((await person.request({ t: "settings_reload" })).ok).toBe(true);
   expect(logged()).toHaveLength(4);
-  expect(SWITCHYARD).toBe(3); expect(STRIDE).toBe(10);
+  expect(RESERVED_SIDECAR).toBe(3); expect(STRIDE).toBe(10);
 });
 
 
