@@ -209,3 +209,38 @@ test("a note in the facts is never read: the observation is identical with and w
   expect(evaluateSupervision(withNote)).toEqual(evaluateSupervision(plain));
   expect(JSON.stringify(evaluateSupervision(withNote))).not.toContain("secret");
 });
+
+test("the snapshot is the exported read: observations, gaps in gapKey order and the counts, as a copy", () => {
+  // Task 71 recorded a check pass over a delivered record the hub never measured, and the declared pair 72/73 is
+  // outside the fact set: two gaps, one per rule, in the order gapKey sorts them by.
+  const facts: SupervisionFacts = { tasks: [task(70, ["proposed", "assigned", "accepted"]), task(71, delivered())], overlaps: [{ task: 72, other: 73 }] };
+  const shadow = new ShadowSupervisor();
+  shadow.observe(facts);
+  const snapshot = shadow.snapshot();
+  expect(Object.keys(snapshot).sort()).toEqual(["counts", "gap", "observations"]);
+  expect(snapshot.gap).toEqual([
+    { rule: "declared_overlap_without_integration", version: 1, task: 72, revision: "0:none", reason: "no-history" },
+    { rule: "deliverable_invalidated_check", version: 1, task: 71, revision: "1:none", reason: "no-deliverable-measurement" },
+  ]);
+  expect(snapshot.observations).toEqual([]);
+  expect(snapshot.counts).toEqual({ evaluations: 1, observations: 0, deduped: 0, suppressed: 0, gap: 2, workerTurns: 0, actionWrites: 0, notifications: 0 });
+  // The accessors are reads of the same state, not a second store.
+  expect(shadow.gaps()).toEqual(snapshot.gap);
+  expect(shadow.counts()).toEqual(snapshot.counts);
+  // A snapshot is a copy: a caller that edits its arrays cannot reach the supervisor's state.
+  snapshot.observations.push({} as never);
+  snapshot.gap.length = 0;
+  expect(shadow.gaps()).toHaveLength(2);
+  expect(shadow.snapshot().observations).toEqual([]);
+  // A second reading of the same facts changes no gap and keeps the counts honest about what it did.
+  shadow.observe(facts);
+  expect(shadow.gaps()).toHaveLength(2);
+  expect(shadow.snapshot().counts).toMatchObject({ evaluations: 2, gap: 2, deduped: 0 });
+  // An observation and a gap read together keep their own orders.
+  shadow.observe({ tasks: [task(74, failing())] });
+  const next = shadow.snapshot();
+  expect(next.observations.map((observation) => observation.task)).toEqual([74]);
+  // Gaps sort by rule first, then task: the overlap gap of 72 precedes the deliverable gap of 71.
+  expect(next.gap.map((gap) => gap.task)).toEqual([72, 71]);
+  expect(next.counts).toMatchObject({ observations: 1, gap: 2 });
+});

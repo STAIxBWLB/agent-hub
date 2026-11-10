@@ -277,7 +277,7 @@ export interface ShadowCounts {
  */
 export class ShadowSupervisor {
   private readonly retained = new Map<string, SupervisionObservation>();
-  private readonly gaps = new Map<string, SupervisionGap>();
+  private readonly retainedGaps = new Map<string, SupervisionGap>();
   private readonly perRevision = new Map<string, number>();
   private evaluations = 0;
   private deduped = 0;
@@ -289,9 +289,9 @@ export class ShadowSupervisor {
     const evaluation = evaluateSupervision(facts), added: SupervisionObservation[] = [];
     for (const gap of evaluation.gap) {
       const key = gapKey(gap);
-      if (this.gaps.has(key)) continue;
-      if (this.gaps.size >= MAX_OBSERVATIONS) { this.suppressed += 1; continue; }
-      this.gaps.set(key, gap);
+      if (this.retainedGaps.has(key)) continue;
+      if (this.retainedGaps.size >= MAX_OBSERVATIONS) { this.suppressed += 1; continue; }
+      this.retainedGaps.set(key, gap);
     }
     for (const observation of evaluation.observations) {
       const key = observationKey(observation);
@@ -310,7 +310,20 @@ export class ShadowSupervisor {
     return [...this.retained.values()].sort((a, b) => (observationKey(a) < observationKey(b) ? -1 : observationKey(a) > observationKey(b) ? 1 : 0));
   }
 
+  /** Retained gaps in the evaluator's own `(rule, task, revision, reason)` order: the order `gapKey` sorts by. */
+  gaps(): SupervisionGap[] {
+    return [...this.retainedGaps.values()].sort((a, b) => (gapKey(a) < gapKey(b) ? -1 : gapKey(a) > gapKey(b) ? 1 : 0));
+  }
+
+  /**
+   * Everything this supervisor holds, as one read: the exported contract a consumer reads (agent-research#63) instead of
+   * reaching into the retained maps. A snapshot is a copy, so nothing that happens afterwards reaches it.
+   */
+  snapshot(): { observations: SupervisionObservation[]; gap: SupervisionGap[]; counts: ShadowCounts } {
+    return { observations: this.observations(), gap: this.gaps(), counts: this.counts() };
+  }
+
   counts(): ShadowCounts {
-    return { evaluations: this.evaluations, observations: this.retained.size, deduped: this.deduped, suppressed: this.suppressed, gap: this.gaps.size, workerTurns: 0, actionWrites: 0, notifications: 0 };
+    return { evaluations: this.evaluations, observations: this.retained.size, deduped: this.deduped, suppressed: this.suppressed, gap: this.retainedGaps.size, workerTurns: 0, actionWrites: 0, notifications: 0 };
   }
 }

@@ -77,6 +77,8 @@ Shadow mode has no effect path at all, and the counters are the literal type zer
 
 An observation is a closed shape of codes and ids: rule, version, task, revision, trigger, refs, limits (records read and whether they were truncated), the suggested existing action and the reason code. It carries no prose, no note and no file body.
 
+**The exported read is one snapshot.** `ShadowSupervisor.snapshot()` returns `{ observations: SupervisionObservation[]; gap: SupervisionGap[]; counts: ShadowCounts }`: the retained observations in `(rule, task, revision, trigger)` order, the retained gaps in `(rule, task, revision, reason)` order, and the counts object `counts()` also returns. `observations()` and `gaps()` are the two per-list reads behind it. All three are copies, so a consumer that edits what it received cannot reach the supervisor's state, and none of them adds a fact, a counter or an effect. A consumer reads this shape rather than the retained maps (agent-research#63).
+
 ## Proposals and decisions
 
 A **proposal** is one observation, kept, with its own identity and life. `src/hub/supervision-proposals.ts` owns them: the store (`supervision_proposals` in `hub.db`, `CREATE TABLE IF NOT EXISTS`, no format bump, so an older hub reads its own tables), the decision path, and the startup reconcile. It imports no board write, no bus, no daemon and no peer module; every board and bus fact reaches it through a port, which is what makes "the queue starts nothing by itself" visible in the imports and not only in prose.
