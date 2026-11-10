@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskState } from "../src/hub/board.ts";
-import type { SupervisionFacts, SupervisionHistoryFact } from "../src/hub/supervision-rules.ts";
+import type { SupervisionAction, SupervisionFacts, SupervisionHistoryFact } from "../src/hub/supervision-rules.ts";
 import {
   MAX_PROPOSALS,
   MAX_PROPOSALS_PER_REVISION,
@@ -32,6 +32,9 @@ const failing = (times = 2): readonly Item[] => {
   for (let round = 0; round < times; round += 1) items.push(["check failed", { checkKey: "implement" }], "done");
   return items;
 };
+const RECORD = { id: "d-0123456789ab", path: "src/hub/supervision-proposals.ts", format: "ts", sha256: "a".repeat(64), bytes: 4096 };
+const delivered = (): readonly Item[] => ["proposed", "assigned", "accepted", ["done", { deliverables: [RECORD] }], ["check passed", { checkKey: "implement" }]];
+const ALL_ACTIONS: readonly SupervisionAction[] = ["escalate", "recheck", "request_integration"];
 
 interface Harness {
   dir: string;
@@ -40,9 +43,11 @@ interface Harness {
   proposals: SupervisionProposals;
   ports: ProposalPorts;
   facts: SupervisionFacts;
-  state: { private: boolean; held: boolean; generation: string; decides: boolean; now: number };
+  state: { private: boolean; held: boolean; generation: string; decides: boolean; runs: ReadonlySet<SupervisionAction>; now: number };
   runs: { action: string; actor: string }[];
   answer: { outcome: "ran" | "refused" | "unknown"; detail?: string } | Error;
+  /** Runs after a decision read its facts, before the row is disposed: the board moving while a caller waits. */
+  whileReading?: () => void;
   /** A second daemon start over the same file: the store is closed first, then opened again, as a restart does. */
   restart: () => SupervisionProposals;
   close: () => void;
@@ -52,7 +57,7 @@ function harness(): Harness {
   const dir = mkdtempSync(join(tmpdir(), "ahub-supervision-"));
   const dbPath = join(dir, "hub.db");
   const store = new ProposalStore(dbPath);
-  const state = { private: false, held: false, generation: "qwen@gen-1", decides: true, now: BASE };
+  const state = { private: false, held: false, generation: "qwen@gen-1", decides: true, runs: new Set(ALL_ACTIONS), now: BASE };
   const runs: { action: string; actor: string }[] = [];
   const h: Harness = {
     dir, dbPath, store, state, runs, facts: { tasks: [] }, answer: { outcome: "ran", detail: "escalated" },
@@ -62,10 +67,11 @@ function harness(): Harness {
     close: () => h.store.close(),
   };
   const ports: ProposalPorts = {
-    facts: () => h.facts,
+    facts: () => { h.whileReading?.(); return h.facts; },
     isPrivate: () => state.private,
     generation: () => state.generation,
     mayDecide: () => state.decides,
+    mayRun: (_actor, proposal) => state.runs.has(proposal.action),
     held: () => state.held,
     run: async (proposal, actor) => {
       runs.push({ action: proposal.action, actor });
@@ -84,6 +90,9 @@ const only = (rows: SupervisionProposal[]): SupervisionProposal => {
   expect(rows).toHaveLength(1);
   return rows[0]!;
 };
+
+const UNKNOWN = "unknown supervision proposal: read the pending ones with hub_supervision_list";
+const NOT_MINE = "not yours to decide: the task's owner, reviewer, planner, conductor or the person decides a supervision proposal";
 
 test("a reading becomes one bounded proposal, and a replay of the same records adds nothing", async () => {
   const h = harness();
@@ -123,6 +132,11 @@ test("the queue is bounded: one proposal per key, three per revision, 100 pendin
     await h.proposals.observe(id);
   }
   expect(h.store.pendingCount()).toBe(MAX_PROPOSALS);
+  // A reading a bound refuses is counted instead of disappearing: the queue says so, and the tool result shows it.
+  h.facts = { tasks: [task(400, failing())] };
+  const refused = h.proposals.refusedReadings();
+  expect(await h.proposals.observe(400)).toEqual([]);
+  expect(h.proposals.refusedReadings()).toBe(refused + 1);
   // A read is bounded too, and pending rows come first.
   expect(await h.proposals.read("user")).toHaveLength(MAX_PROPOSAL_READ);
   h.close();
@@ -189,15 +203,13 @@ test("AC3: an id, an actor, a private task, a hold, a revision, a generation and
   const base = only(await h.proposals.observe(20));
 
   // The id grammar, an unknown id, and an id that is not a string.
-  expect(await h.proposals.decide("user", "nope", "accept")).toEqual({ ok: false, error: "unknown supervision proposal" });
-  expect(await h.proposals.decide("user", "sup-zzzzzzzzzzzz", "accept")).toEqual({ ok: false, error: "unknown supervision proposal" });
-  expect(await h.proposals.decide("user", 42, "accept")).toEqual({ ok: false, error: "unknown supervision proposal" });
-  expect(await h.proposals.decide("user", "sup-000000000000", "accept")).toEqual({ ok: false, error: "unknown supervision proposal" });
+  expect(await h.proposals.decide("user", "nope", "accept")).toEqual({ ok: false, error: UNKNOWN });
+  expect(await h.proposals.decide("user", "sup-zzzzzzzzzzzz", "accept")).toEqual({ ok: false, error: UNKNOWN });
+  expect(await h.proposals.decide("user", 42, "accept")).toEqual({ ok: false, error: UNKNOWN });
+  expect(await h.proposals.decide("user", "sup-000000000000", "accept")).toEqual({ ok: false, error: UNKNOWN });
   // A caller with no present role on the task is refused, and the proposal stays for whoever may decide it.
   h.state.decides = false;
-  expect(await h.proposals.decide("kimi", base.id, "accept")).toEqual({
-    ok: false, error: "not yours to decide: the task's owner, reviewer, planner, conductor or the person decides a supervision proposal",
-  });
+  expect(await h.proposals.decide("kimi", base.id, "accept")).toEqual({ ok: false, error: NOT_MINE });
   expect(h.store.get(base.id)!.state).toBe("pending");
   h.state.decides = true;
   // A private task is never decided, whatever the caller's role.
@@ -232,6 +244,47 @@ test("AC3: an id, an actor, a private task, a hold, a revision, a generation and
     expect(await h.proposals.decide("user", fresh.id, "accept")).toEqual({ ok: false, error: `${test.why}; the proposal expired` });
     expect(h.store.get(fresh.id)!.state).toBe("expired");
   }
+  expect(h.runs).toEqual([]);
+  h.close();
+});
+
+test("AC3: a decision's role is not the action's authority: an escalate proposal the owner accepts stays pending", async () => {
+  const h = harness();
+  h.facts = { tasks: [task(90, failing())] };
+  const proposal = only(await h.proposals.observe(90));
+  // The owner may decide, but an escalation is the conductor's move and the person's. Running it would be the action's
+  // own refusal, so the fence refuses first and the question is not spent on it.
+  h.state.runs = new Set<SupervisionAction>(["recheck", "request_integration"]);
+  expect(await h.proposals.decide("qwen", proposal.id, "accept"))
+    .toEqual({ ok: false, error: "the escalate action runs under its own authority and you do not hold it; the proposal stays pending" });
+  expect(h.store.get(proposal.id)!.state).toBe("pending");
+  expect(h.store.get(proposal.id)!.receipt).toBeUndefined();
+  expect(h.runs).toEqual([]);
+  // A dismissal runs nothing, so the action's authority does not fence it.
+  expect(await h.proposals.decide("qwen", proposal.id, "dismiss")).toMatchObject({ ok: true });
+  // The narrowing is the escalate action's own: the hub's owner notice for a recheck runs for whoever may decide.
+  h.facts = { tasks: [task(91, delivered())], deliverables: [{ task: 91, checked: true, changed: [RECORD.id] }] };
+  const notice = only(await h.proposals.observe(91));
+  expect(notice.action).toBe("recheck");
+  expect(await h.proposals.decide("qwen", notice.id, "accept")).toMatchObject({ ok: true, receipt: { outcome: "ran" } });
+  h.close();
+});
+
+test("AC3: authority is read again after the facts are, so a role lost during that read runs nothing", async () => {
+  const h = harness();
+  h.facts = { tasks: [task(92, delivered())], deliverables: [{ task: 92, checked: true, changed: [RECORD.id] }] };
+  const proposal = only(await h.proposals.observe(92));
+  // The facts read is where the caller's role can go away: the decision has already passed its first gate by then.
+  h.whileReading = () => { h.state.decides = false; h.whileReading = undefined; };
+  expect(await h.proposals.decide("qwen", proposal.id, "accept")).toEqual({ ok: false, error: NOT_MINE });
+  expect(h.store.get(proposal.id)!.state).toBe("pending");
+  expect(h.runs).toEqual([]);
+  // The same window for the action's own authority: the role stays, what the action needs does not.
+  h.state.decides = true;
+  h.whileReading = () => { h.state.runs = new Set<SupervisionAction>(["escalate", "request_integration"]); h.whileReading = undefined; };
+  expect(await h.proposals.decide("qwen", proposal.id, "accept"))
+    .toEqual({ ok: false, error: "the recheck action runs under its own authority and you do not hold it; the proposal stays pending" });
+  expect(h.store.get(proposal.id)!.state).toBe("pending");
   expect(h.runs).toEqual([]);
   h.close();
 });
@@ -321,6 +374,47 @@ test("an unknown outcome is reconciled from the board's own record, never from a
   h.close();
 });
 
+test("AC6: an escalation recorded between the intent and a failed action settles, because the boundary is the intent", async () => {
+  const h = harness();
+  h.facts = { tasks: [task(51, failing())] };
+  const proposal = only(await h.proposals.observe(51));
+  // The action escalated and then threw: the intent is stamped at BASE, the unknown receipt one step later. The
+  // escalation is therefore before the receipt and must still settle it.
+  h.ports.run = async () => { h.state.now = BASE + STEP; throw new Error("the conductor escalated, then failed"); };
+  expect(await h.proposals.decide("user", proposal.id, "accept")).toMatchObject({ ok: true, receipt: { outcome: "unknown", at: BASE + STEP } });
+  expect(h.store.get(proposal.id)!.disposedAt).toBe(BASE);
+  h.facts = { tasks: [task(51, [...failing(), ["escalated", { at: BASE }]])] };
+  expect((await h.proposals.read("user"))[0]!.receipt).toMatchObject({ outcome: "ran", detail: "the board recorded escalated" });
+  h.close();
+});
+
+test("AC6: a restart stamps the receipt after the restart, and the escalation before it still settles", async () => {
+  const h = harness();
+  h.facts = { tasks: [task(52, failing())] };
+  const proposal = only(await h.proposals.observe(52));
+  // The intent went in and the hub died before the action reported: the restart is what stamps the receipt.
+  expect(h.store.dispose(proposal.id, "accepted", "user", BASE, { outcome: "pending", at: BASE })).toBe(true);
+  h.state.now = BASE + 2 * STEP;
+  const restarted = h.restart();
+  h.facts = { tasks: [task(52, [...failing(), ["escalated", { at: BASE + STEP }]])] };
+  expect(await restarted.recover()).toEqual({ expired: 0, unknown: 1 });
+  expect(h.store.get(proposal.id)!.receipt).toMatchObject({ outcome: "unknown", at: BASE + 2 * STEP });
+  expect((await restarted.read("user"))[0]!.receipt).toMatchObject({ outcome: "ran", detail: "the board recorded escalated" });
+  expect(h.runs).toEqual([]);
+  h.close();
+});
+
+test("AC6: only an escalation inside the proposal's own revision settles it, never a later one", async () => {
+  const h = harness();
+  h.facts = { tasks: [task(53, failing())] };
+  const proposal = only(await h.proposals.observe(53));
+  expect(h.store.dispose(proposal.id, "accepted", "user", BASE, { outcome: "unknown", at: BASE + STEP })).toBe(true);
+  // A later attempt of the same task was escalated after the intent: another revision's move, so this stays unknown.
+  h.facts = { tasks: [task(53, [...failing(), "reassigned", "accepted", ["escalated", { at: BASE + STEP }]])] };
+  expect((await h.proposals.read("user"))[0]!.receipt).toMatchObject({ outcome: "unknown" });
+  h.close();
+});
+
 test("a read shows only what the caller may decide, never a private task's proposal, and is bounded", async () => {
   const h = harness();
   h.facts = { tasks: [task(60, failing()), task(61, failing())] };
@@ -335,6 +429,26 @@ test("a read shows only what the caller may decide, never a private task's propo
   h.state.private = false;
   expect((await h.proposals.read("user", 61)).map((proposal) => proposal.task)).toEqual([61]);
   expect(MAX_PROPOSAL_ROWS).toBeGreaterThanOrEqual(MAX_PROPOSALS);
+  h.close();
+});
+
+test("a declared pair is proposed on its lower id, and reading that task is how either side invalidates it", async () => {
+  const h = harness();
+  const pair = (extra: readonly Item[] = []) => ({
+    tasks: [task(81, ["proposed", "assigned", "accepted", "done"]), task(82, ["proposed", "assigned", "accepted", ...extra])],
+    overlaps: [{ task: 82, other: 81 }],
+  });
+  h.facts = pair();
+  const proposal = only(await h.proposals.observe(81));
+  expect(proposal).toMatchObject({ task: 81, rule: "declared_overlap_without_integration", trigger: "overlap:81:82", action: "request_integration" });
+  h.facts = pair(["integration requested"]);
+  // The side that changed is the higher id, and the reading is bound to the lower one: nothing is disposed from there.
+  expect(await h.proposals.observe(82)).toEqual([]);
+  expect(h.store.get(proposal.id)!.state).toBe("pending");
+  // Reading the lower id is what sees the integration and expires the question — the reason the daemon re-reads each
+  // partner when either side of a declared pair moves.
+  expect(await h.proposals.observe(81)).toEqual([]);
+  expect(h.store.get(proposal.id)!.state).toBe("expired");
   h.close();
 });
 

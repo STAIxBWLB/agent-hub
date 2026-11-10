@@ -5361,22 +5361,25 @@ The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When e
 inbox row, no notice, no turn. `advisory` may also show a pending proposal in the console's existing inbox, where only
 an explicit accept or dismiss acts. The queue holds at most 100 pending proposals, three per task revision, and keeps
 400 terminal rows for dedupe, so a reading already accepted, dismissed or expired is not proposed again for the same
-rule, task, revision and trigger.
+rule, task, revision and trigger. A reading past a bound is refused and counted: `hub_supervision_list` reports the total
+as `refused`, so a full queue never reads as "nothing to report".
 
 A present role reads and decides them with `hub_supervision_list`, `hub_supervision_accept` and
 `hub_supervision_dismiss`, or with the advisory inbox row: the task's owner, its reviewer, the configured planner, the
 conductor and the person. There is no supervisor role. An acceptance runs the existing action the proposal names,
 through that action's own authority: `escalate` through the conductor for an agent and the board's own escalation for
 the person, and `recheck` or `request_integration` as the hub's notice to the owners, whose check re-run or integration
-is their own action and their own board record. Accepting writes nothing to the board.
+is their own action and their own board record. An `escalate` proposal is therefore accepted by the conductor or the
+person only; another role's acceptance is refused and the proposal stays pending. Accepting writes nothing to the board.
 
 Every refusal names its reason and starts nothing. A stale revision, a closed or vanished task, new input that cleared
 the pattern, or a replaced native session expires the proposal; a private task, a clipped reading (a revision longer
-than one rule reads), an unknown id, a caller with no role on the task, or an owner's `needs_review` delivery refuses
-without spending it. An action whose outcome the hub could not observe is recorded `unknown` and never retried; a later
-read settles it from the board's own record, and a restart keeps the dispositions, the dedupe keys and the unknown
-outcomes. There is no automatic pause, retry, cancel, reroute, approval or rollback, no resident worker and no timer.
-See [supervision rules, proposals and the decision path](design/supervision.md).
+than one rule reads), an unknown id, a caller with no role on the task, a caller that does not hold the action's own
+authority, or an owner's `needs_review` delivery refuses without spending it. An action whose outcome the hub could not
+observe is recorded `unknown` and never retried; a later read settles it from the board's own record at or after the
+intent time and inside the task revision the proposal was read under, and a restart keeps the dispositions, the dedupe
+keys and the unknown outcomes. There is no automatic pause, retry, cancel, reroute, approval or rollback, no resident
+worker and no timer. See [supervision rules, proposals and the decision path](design/supervision.md).
 
 ## Optional Qwen Code peer
 

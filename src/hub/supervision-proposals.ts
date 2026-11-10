@@ -20,6 +20,7 @@ import {
   MAX_OBSERVATIONS,
   MAX_PER_REVISION,
   evaluateSupervision,
+  revisionSpan,
   taskRevision,
   type SupervisionAction,
   type SupervisionFacts,
@@ -200,6 +201,11 @@ export interface ProposalPorts {
   generation: (task: number) => string;
   /** A present role on the task: its owner, its reviewer, the planner, the conductor, or the person. */
   mayDecide: (actor: string, task: number) => boolean;
+  /**
+   * The action's own authority, which a decision does not carry: `escalate` is the conductor's move (the person may
+   * always), while the hub's owner notice runs for whoever may decide. A refusal here leaves the row pending.
+   */
+  mayRun: (actor: string, proposal: SupervisionProposal) => boolean;
   /** The task's owner has a `needs_review` delivery: the person resolves that before this question is taken up. */
   held: (task: number) => boolean;
   /** Run the named existing action, under that action's own authority. */
@@ -211,6 +217,12 @@ export type ProposalDecision =
   | { ok: true; proposal: SupervisionProposal; receipt?: SupervisionReceipt }
   | { ok: false; error: string };
 
+/** A refusal names its next step: the id is wrong or gone, and the pending ones are one read away. */
+const UNKNOWN_PROPOSAL = "unknown supervision proposal: read the pending ones with hub_supervision_list";
+const NOT_A_DECIDER = "not yours to decide: the task's owner, reviewer, planner, conductor or the person decides a supervision proposal";
+const notRunnable = (action: SupervisionAction): string =>
+  `the ${action} action runs under its own authority and you do not hold it; the proposal stays pending`;
+
 const newId = (): string => `sup-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 
 /**
@@ -218,6 +230,9 @@ const newId = (): string => `sup-${randomUUID().replaceAll("-", "").slice(0, 12)
  * `run`, and the board's own method is what records the task's result.
  */
 export class SupervisionProposals {
+  /** Readings a bound refused instead of storing; a full queue is counted, never silently dropped. */
+  private refused = 0;
+
   constructor(private readonly store: ProposalStore, private readonly ports: ProposalPorts) {}
 
   /**
@@ -244,7 +259,7 @@ export class SupervisionProposals {
     for (const observation of reading) {
       const key = proposalKey(observation);
       if (this.store.byKey(key)) continue; // a replay adds nothing and is not counted as advice
-      if (this.store.pendingCount() >= MAX_PROPOSALS || this.store.inRevision(observation.task, observation.revision) >= MAX_PROPOSALS_PER_REVISION) continue;
+      if (this.store.pendingCount() >= MAX_PROPOSALS || this.store.inRevision(observation.task, observation.revision) >= MAX_PROPOSALS_PER_REVISION) { this.refused += 1; continue; }
       const proposal: SupervisionProposal = {
         id: newId(), key, rule: observation.rule, version: observation.version, task: observation.task, revision: observation.revision,
         trigger: observation.trigger, refs: [...observation.refs], records: observation.limits.records, truncated: observation.limits.truncated,
@@ -286,18 +301,27 @@ export class SupervisionProposals {
     return shown;
   }
 
+  /** How many readings a bound refused instead of storing, since this queue was built: a full queue is not silent. */
+  refusedReadings(): number {
+    return this.refused;
+  }
+
   /**
    * Accept or dismiss one pending proposal. Every fence runs before any effect: an unknown or already-decided id, a
    * caller that holds no present role, a private task, a replaced revision or native generation, a reading that no
    * longer holds, and an existing `needs_review` hold for the owner. A refusal that is about the reading expires the
-   * proposal; a refusal about the caller or the hold leaves it pending for whoever can take it up.
+   * proposal; a refusal about the caller, the action's own authority or the hold leaves it pending for whoever can take
+   * it up.
    */
   async decide(actor: string, id: unknown, verb: "accept" | "dismiss"): Promise<ProposalDecision> {
-    if (typeof id !== "string" || !/^sup-[0-9a-f]{12}$/.test(id)) return { ok: false, error: "unknown supervision proposal" };
+    if (typeof id !== "string" || !/^sup-[0-9a-f]{12}$/.test(id)) return { ok: false, error: UNKNOWN_PROPOSAL };
     const proposal = this.store.get(id);
-    if (!proposal) return { ok: false, error: "unknown supervision proposal" };
+    if (!proposal) return { ok: false, error: UNKNOWN_PROPOSAL };
     if (proposal.state !== "pending") return { ok: false, error: `this proposal is already ${proposal.state}` };
-    if (!this.ports.mayDecide(actor, proposal.task)) return { ok: false, error: "not yours to decide: the task's owner, reviewer, planner, conductor or the person decides a supervision proposal" };
+    if (!this.ports.mayDecide(actor, proposal.task)) return { ok: false, error: NOT_A_DECIDER };
+    // The decision's role is not the action's authority: accepting a move this caller cannot make would spend the row on
+    // a refusal the action itself would issue. The row stays pending for an actor that holds it.
+    if (verb === "accept" && !this.ports.mayRun(actor, proposal)) return { ok: false, error: notRunnable(proposal.action) };
     if (this.ports.isPrivate(proposal.task)) return { ok: false, error: "a private task is never proposed on" };
     if (proposal.truncated) return { ok: false, error: "the reading was clipped, so it cannot be acted on; inspect the task and its history first" };
     const facts = await this.ports.facts(proposal.task), side = facts.tasks.find((candidate) => candidate.id === proposal.task);
@@ -308,6 +332,10 @@ export class SupervisionProposals {
     // Recheck the input identity immediately before any effect: the same reading has to still hold now.
     if (!evaluateSupervision(facts).observations.some((observation) => proposalKey(observation) === proposal.key)) return this.stale(proposal, "the reading changed: new input replaced this proposal");
     if (this.ports.held(proposal.task)) return { ok: false, error: "the owner has a needs_review delivery; resolve it before acting on this proposal" };
+    // Authority is read again after the await: the board can move while the facts are being read, and a role or a
+    // session that went away in that window must not run anything.
+    if (!this.ports.mayDecide(actor, proposal.task)) return { ok: false, error: NOT_A_DECIDER };
+    if (verb === "accept" && !this.ports.mayRun(actor, proposal)) return { ok: false, error: notRunnable(proposal.action) };
     const at = this.ports.now();
     if (verb === "dismiss") {
       if (!this.store.dispose(proposal.id, "dismissed", actor, at)) return { ok: false, error: "this proposal was decided meanwhile; read it again" };
@@ -349,15 +377,22 @@ export class SupervisionProposals {
     return { expired, unknown };
   }
 
-  /** An `unknown` acceptance is settled only by the task's own record of the action, never by a guess or a retry. */
+  /**
+   * An `unknown` acceptance is settled only by the task's own record of the action, never by a guess or a retry. The
+   * boundary is the intent time (`disposedAt`), which no later write overwrites — the receipt time is not a boundary at
+   * all: a caught failure stamps it after the action threw and a restart stamps it after the restart. The record also
+   * has to sit inside the revision the proposal was read under, so a later unrelated escalation cannot settle it.
+   */
   private async reconcile(proposal: SupervisionProposal): Promise<SupervisionProposal> {
-    const receipt = proposal.receipt;
-    if (proposal.state !== "accepted" || receipt?.outcome !== "unknown") return proposal;
-    const facts = await this.ports.facts(proposal.task);
-    const side = facts.tasks.find((candidate) => candidate.id === proposal.task);
+    const receipt = proposal.receipt, intent = proposal.disposedAt;
+    if (proposal.state !== "accepted" || receipt?.outcome !== "unknown" || intent === undefined) return proposal;
     const event = proposal.action === "escalate" ? "escalated" : undefined;
-    if (!side || !event) return proposal;
-    const recorded = side.history.some((entry) => entry.event === event && entry.at >= receipt.at);
+    if (!event) return proposal;
+    const side = (await this.ports.facts(proposal.task)).tasks.find((candidate) => candidate.id === proposal.task);
+    if (!side) return proposal;
+    const span = revisionSpan(side.history, proposal.revision);
+    if (!span) return proposal;
+    const recorded = side.history.slice(span.from, span.to + 1).some((entry) => entry.event === event && entry.at >= intent);
     if (!recorded) return proposal;
     this.store.settle(proposal.id, { outcome: "ran", detail: `the board recorded ${event}`, at: receipt.at });
     return this.store.get(proposal.id)!;

@@ -83,9 +83,17 @@ export interface SupervisionGap {
   reason: SupervisionGapReason;
 }
 
+export interface EvaluatedRevision {
+  rule: SupervisionRuleId;
+  task: number;
+  revision: string;
+}
+
 export interface SupervisionEvaluation {
   observations: SupervisionObservation[];
   gap: SupervisionGap[];
+  /** Every `(rule, task, revision)` this evaluation read, deduped and in key order. A closed task is not read at all. */
+  evaluated: EvaluatedRevision[];
 }
 
 export interface SupervisionFacts {
@@ -137,6 +145,22 @@ export function taskRevision(task: Pick<TaskRevisionFacts, "history">): TaskRevi
   return { revision: `${episodes}:${plan}`, from, accepted };
 }
 
+/**
+ * The history indices one revision governs, when the record set still contains it. `taskRevision` names the current
+ * attempt only; this names an attempt the history has moved past, which is the window a stored proposal was read under
+ * (an escalation recorded after an acceptance is itself an episode event, so the current revision is no longer that
+ * one). A record belongs to the revision in force before it, exactly as `taskRevision` counts it.
+ */
+export function revisionSpan(history: readonly SupervisionHistoryFact[], revision: string): { from: number; to: number } | undefined {
+  let episodes = 0, plan = "none", from = -1, to = -1;
+  for (const [index, entry] of history.entries()) {
+    if (`${episodes}:${plan}` === revision) { if (from < 0) from = index; to = index; }
+    if (EPISODE_EVENTS.has(entry.event)) episodes += 1;
+    if (entry.planRevision) plan = String(entry.planRevision.revision);
+  }
+  return from < 0 ? undefined : { from, to };
+}
+
 /** One classified failure, in a closed vocabulary: the kind of failure, never its text. */
 function failureClass(entry: SupervisionHistoryFact): string | undefined {
   if (entry.event === "check failed") return `check:${entry.checkKey ?? "unknown"}`;
@@ -159,6 +183,7 @@ interface Side {
 
 const observationKey = (observation: SupervisionObservation): string => `${observation.rule}:${observation.task}:${observation.revision}:${observation.trigger}`;
 const gapKey = (gap: SupervisionGap): string => `${gap.rule}:${gap.task}:${gap.revision}:${gap.reason}`;
+const evaluatedKey = (evaluated: EvaluatedRevision): string => `${evaluated.rule}:${evaluated.task}:${evaluated.revision}`;
 const gapOf = (rule: SupervisionRuleId, task: number, revision: string, reason: SupervisionGapReason): SupervisionGap => ({ rule, version: SUPERVISION_RULE_VERSION[rule], task, revision, reason });
 
 /**
@@ -209,21 +234,26 @@ const integratedAfter = (side: Side, accepted: number): boolean => side.window.s
  * Persistence is record-based (both sides accepted), never elapsed time: silence proves nothing. The pair is bound to
  * its lower task id, so the same pair named in either direction is one observation and not two.
  */
-function unintegratedOverlap(pair: DeclaredOverlapFact, sides: Map<number, Side>): Reading {
+function unintegratedOverlap(pair: DeclaredOverlapFact, sides: Map<number, Side>): { reading: Reading; evaluated: EvaluatedRevision } {
   const low = Math.min(pair.task, pair.other), high = Math.max(pair.task, pair.other);
   const mine = sides.get(low), theirs = sides.get(high);
-  if (!mine || !theirs) return { gap: gapOf("declared_overlap_without_integration", low, (mine ?? theirs)?.revision ?? "0:none", "no-history") };
-  if (isClosedTaskState(mine.task.state) || isClosedTaskState(theirs.task.state)) return {};
+  // The pair is read as its lower id under that id's revision; a pair whose low side is absent keeps this as its gap revision.
+  const evaluated: EvaluatedRevision = { rule: "declared_overlap_without_integration", task: low, revision: (mine ?? theirs)?.revision ?? "0:none" };
+  if (!mine || !theirs) return { evaluated, reading: { gap: gapOf("declared_overlap_without_integration", low, evaluated.revision, "no-history") } };
+  if (isClosedTaskState(mine.task.state) || isClosedTaskState(theirs.task.state)) return { evaluated, reading: {} };
   const accepted = [mine.accepted, theirs.accepted] as const;
-  if (accepted[0] < 0 || accepted[1] < 0) return {};
-  if (integratedAfter(mine, accepted[0]) || integratedAfter(theirs, accepted[1])) return {};
+  if (accepted[0] < 0 || accepted[1] < 0) return { evaluated, reading: {} };
+  if (integratedAfter(mine, accepted[0]) || integratedAfter(theirs, accepted[1])) return { evaluated, reading: {} };
   // Integration past the read prefix is unknown, not absent: a clipped window cannot report the pair as unintegrated.
-  if (mine.limits.truncated || theirs.limits.truncated) return { gap: gapOf("declared_overlap_without_integration", low, mine.revision, "history-truncated") };
+  if (mine.limits.truncated || theirs.limits.truncated) return { evaluated, reading: { gap: gapOf("declared_overlap_without_integration", low, mine.revision, "history-truncated") } };
   return {
-    observation: {
-      rule: "declared_overlap_without_integration", version: SUPERVISION_RULE_VERSION.declared_overlap_without_integration, task: low, revision: mine.revision,
-      trigger: `overlap:${low}:${high}`, refs: [`task:${high}`, `history:${accepted[0]}`, `history:${accepted[1]}`].slice(0, MAX_REFS),
-      limits: { records: mine.limits.records + theirs.limits.records, truncated: mine.limits.truncated || theirs.limits.truncated }, action: "request_integration", reason: "unintegrated_overlap",
+    evaluated,
+    reading: {
+      observation: {
+        rule: "declared_overlap_without_integration", version: SUPERVISION_RULE_VERSION.declared_overlap_without_integration, task: low, revision: mine.revision,
+        trigger: `overlap:${low}:${high}`, refs: [`task:${high}`, `history:${accepted[0]}`, `history:${accepted[1]}`].slice(0, MAX_REFS),
+        limits: { records: mine.limits.records + theirs.limits.records, truncated: mine.limits.truncated || theirs.limits.truncated }, action: "request_integration", reason: "unintegrated_overlap",
+      },
     },
   };
 }
@@ -231,10 +261,11 @@ function unintegratedOverlap(pair: DeclaredOverlapFact, sides: Map<number, Side>
 /**
  * Every rule's reading of one fact set, in a stable order, with no side effect of any kind. Closed tasks are not
  * supervised: an approved or cancelled task has nothing left to decide. A gap names the rule and the missing record;
- * elapsed silence alone never produces an observation or a gap.
+ * elapsed silence alone never produces an observation or a gap. `evaluated` is the coverage of that read: one entry per
+ * rule and task revision the evaluator looked at, whether or not it found anything.
  */
 export function evaluateSupervision(facts: SupervisionFacts): SupervisionEvaluation {
-  const observations: SupervisionObservation[] = [], gaps: SupervisionGap[] = [], sides = new Map<number, Side>();
+  const observations: SupervisionObservation[] = [], gaps: SupervisionGap[] = [], evaluated: EvaluatedRevision[] = [], sides = new Map<number, Side>();
   for (const task of facts.tasks) {
     const { revision, from, accepted } = taskRevision(task);
     const window = task.history.slice(from, from + MAX_RECORDS);
@@ -244,6 +275,7 @@ export function evaluateSupervision(facts: SupervisionFacts): SupervisionEvaluat
   const measurements = new Map((facts.deliverables ?? []).map((row) => [row.task, row]));
   for (const side of sides.values()) {
     if (isClosedTaskState(side.task.state)) continue;
+    evaluated.push({ rule: "repeated_failure", task: side.task.id, revision: side.revision }, { rule: "deliverable_invalidated_check", task: side.task.id, revision: side.revision });
     const repeated = repeatedFailures(side);
     observations.push(...repeated);
     const check = invalidatedCheck(side, measurements.get(side.task.id));
@@ -253,8 +285,18 @@ export function evaluateSupervision(facts: SupervisionFacts): SupervisionEvaluat
     if (!repeated.length) gaps.push(gapOf("repeated_failure", side.task.id, side.revision, "history-truncated"));
     if (!check.observation && !check.gap) gaps.push(gapOf("deliverable_invalidated_check", side.task.id, side.revision, "history-truncated"));
   }
-  for (const overlap of facts.overlaps ?? []) keep(unintegratedOverlap(overlap, sides));
-  return { observations: observations.sort((a, b) => (observationKey(a) < observationKey(b) ? -1 : observationKey(a) > observationKey(b) ? 1 : 0)), gap: gaps.sort((a, b) => (gapKey(a) < gapKey(b) ? -1 : gapKey(a) > gapKey(b) ? 1 : 0)) };
+  for (const overlap of facts.overlaps ?? []) {
+    const pair = unintegratedOverlap(overlap, sides);
+    evaluated.push(pair.evaluated);
+    keep(pair.reading);
+  }
+  // One entry per rule and revision: a pair named twice, or a task listed twice, is one read and not two.
+  const coverage = new Map(evaluated.map((entry) => [evaluatedKey(entry), entry]));
+  return {
+    observations: observations.sort((a, b) => (observationKey(a) < observationKey(b) ? -1 : observationKey(a) > observationKey(b) ? 1 : 0)),
+    gap: gaps.sort((a, b) => (gapKey(a) < gapKey(b) ? -1 : gapKey(a) > gapKey(b) ? 1 : 0)),
+    evaluated: [...coverage.values()].sort((a, b) => (evaluatedKey(a) < evaluatedKey(b) ? -1 : evaluatedKey(a) > evaluatedKey(b) ? 1 : 0)),
+  };
 }
 
 export interface ShadowCounts {
@@ -264,6 +306,8 @@ export interface ShadowCounts {
   /** Observations and gaps a retention bound refused; they are counted, never stored. */
   suppressed: number;
   gap: number;
+  /** Coverage keys a retention bound refused: a bound never reads as "nothing was evaluated". */
+  evaluatedSuppressed: number;
   /** AC2: shadow mode has no effect path at all, so these are the literal type zero. */
   workerTurns: 0;
   actionWrites: 0;
@@ -278,15 +322,23 @@ export interface ShadowCounts {
 export class ShadowSupervisor {
   private readonly retained = new Map<string, SupervisionObservation>();
   private readonly retainedGaps = new Map<string, SupervisionGap>();
+  private readonly retainedEvaluated = new Map<string, EvaluatedRevision>();
   private readonly perRevision = new Map<string, number>();
   private evaluations = 0;
   private deduped = 0;
   private suppressed = 0;
+  private evaluatedSuppressed = 0;
 
   /** Adds only what is new. Replaying the same facts, or an event that is a duplicate of one already read, adds nothing. */
   observe(facts: SupervisionFacts): SupervisionObservation[] {
     this.evaluations += 1;
     const evaluation = evaluateSupervision(facts), added: SupervisionObservation[] = [];
+    for (const entry of evaluation.evaluated) {
+      const key = evaluatedKey(entry);
+      if (this.retainedEvaluated.has(key)) continue;
+      if (this.retainedEvaluated.size >= MAX_OBSERVATIONS) { this.evaluatedSuppressed += 1; continue; }
+      this.retainedEvaluated.set(key, entry);
+    }
     for (const gap of evaluation.gap) {
       const key = gapKey(gap);
       if (this.retainedGaps.has(key)) continue;
@@ -315,15 +367,20 @@ export class ShadowSupervisor {
     return [...this.retainedGaps.values()].sort((a, b) => (gapKey(a) < gapKey(b) ? -1 : gapKey(a) > gapKey(b) ? 1 : 0));
   }
 
+  /** The `(rule, task, revision)` triples this supervisor read, deduped and in `evaluatedKey` order: coverage, not findings. */
+  evaluated(): EvaluatedRevision[] {
+    return [...this.retainedEvaluated.values()].sort((a, b) => (evaluatedKey(a) < evaluatedKey(b) ? -1 : evaluatedKey(a) > evaluatedKey(b) ? 1 : 0));
+  }
+
   /**
    * Everything this supervisor holds, as one read: the exported contract a consumer reads (agent-research#63) instead of
    * reaching into the retained maps. A snapshot is a copy, so nothing that happens afterwards reaches it.
    */
-  snapshot(): { observations: SupervisionObservation[]; gap: SupervisionGap[]; counts: ShadowCounts } {
-    return { observations: this.observations(), gap: this.gaps(), counts: this.counts() };
+  snapshot(): { observations: SupervisionObservation[]; gap: SupervisionGap[]; counts: ShadowCounts; evaluated: EvaluatedRevision[] } {
+    return { observations: this.observations(), gap: this.gaps(), counts: this.counts(), evaluated: this.evaluated() };
   }
 
   counts(): ShadowCounts {
-    return { evaluations: this.evaluations, observations: this.retained.size, deduped: this.deduped, suppressed: this.suppressed, gap: this.retainedGaps.size, workerTurns: 0, actionWrites: 0, notifications: 0 };
+    return { evaluations: this.evaluations, observations: this.retained.size, deduped: this.deduped, suppressed: this.suppressed, gap: this.retainedGaps.size, evaluatedSuppressed: this.evaluatedSuppressed, workerTurns: 0, actionWrites: 0, notifications: 0 };
   }
 }

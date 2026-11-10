@@ -3088,6 +3088,10 @@ export async function startDaemon(opts: DaemonOptions) {
       if (actor === USER || actor === conductorPeer(config.roles) || plannerPeers().includes(actor)) return true;
       return row.owner === actor || row.reviewer === actor;
     },
+    // The action's own authority, which a decision does not carry: `escalate` is the conductor's move and the person's,
+    // while the hub's owner notice for a recheck or an integration request runs for whoever may decide.
+    mayRun: (actor, proposal) =>
+      proposal.action !== "escalate" || actor === USER || actor === conductorPeer(config.roles),
     // A needs_review delivery holds the owner's advice too; unavailable hold evidence is held, never a pass.
     held: (task) => {
       const owner = board.get(task)?.owner;
@@ -3163,8 +3167,13 @@ export async function startDaemon(opts: DaemonOptions) {
   const proposeObserved = (task: number): void => {
     if (supervisionMode() === "off" || stopping || recoveryActive()) return;
     const row = board.get(task);
-    if (!row || row.state === "backlog" || tasks.isPii(row)) return;
-    void supervisionProposals.observe(task).catch((error: Error) => log(`supervision observe for #${task} failed: ${error.message}`));
+    // A declared pair's reading is bound to its lower task id, so a change on the higher-id side is only read by
+    // re-reading each partner: without that, a pair proposal would be created or invalidated from one side alone.
+    for (const id of new Set([task, ...(row ? tasks.overlapTasks(row) : [])])) {
+      const candidate = board.get(id);
+      if (!candidate || candidate.state === "backlog" || tasks.isPii(candidate)) continue;
+      void supervisionProposals.observe(id).catch((error: Error) => log(`supervision observe for #${id} failed: ${error.message}`));
+    }
   };
   relevantNotice = (peer, env) => {
     if (env.from === HUB && env.refs?.boundedCheck) {
@@ -5408,7 +5417,8 @@ export async function startDaemon(opts: DaemonOptions) {
         if (a && (typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "task") || a.task !== undefined && (!Number.isSafeInteger(a.task) || a.task < 1)))
           throw new PreEffectToolRefusal("hub_supervision_list takes only an optional task id");
         const rows = await supervisionProposals.read(by, a?.task);
-        return JSON.stringify({ mode: supervisionMode(), proposals: rows.map(proposalView),
+        // `refused` is the queue's own count of readings a bound refused instead of storing: a full queue is visible here.
+        return JSON.stringify({ mode: supervisionMode(), proposals: rows.map(proposalView), refused: supervisionProposals.refusedReadings(),
           ...(rows.length ? {} : { note: supervisionMode() === "off" ? "supervision is off; a person turns it on with `ahub settings set supervision.mode advisory`" : "no supervision proposal is pending on your tasks" }) });
       }
       if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "id") || typeof a.id !== "string")
