@@ -175,11 +175,13 @@ test("an authenticated read-only ACP owner cannot create or withdraw valid guida
     mkdirSync(home); mkdirSync(join(home, "kimi")); mkdirSync(join(root, ".agenthub/roles"), { recursive: true });
     process.env.HOME = home;
     expect(hubGitSync(["init", "-q", root], { encoding: "utf8" }).status).toBe(0);
+    expect(hubGitSync(["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "Fixture baseline"], { encoding: "utf8" }).status).toBe(0);
+    expect(hubGitSync(["-C", root, "worktree", "add", "-qb", "fixture-check", join(root, ".worktrees/fixture-check")], { encoding: "utf8" }).status).toBe(0);
     writeFileSync(join(root, ".agenthub/roles/test-engineer.md"), vectors.baseline);
     const adapter = { transport: "acp" as const, command: process.execPath,
       args: [join(import.meta.dir, "fakes/acp-server.ts"), "--agent-name", "Fixture ACP", "--agent-version", "1", "--modes", "default,plan"],
       displayName: "Fixture ACP", roles: ["implementer", "verifier"], identity: { name: "Fixture ACP", version: "1" }, permission: { ask: "default" }, readOnly: "plan" };
-    const local = { adapters: { fixture: adapter }, instances: { "fixture-check": { kind: "fixture", roles: ["implementer"], start_mode: "headless" as const, readOnly: true } }, roster: { fixture: false, "fixture-check": true } };
+    const local = { adapters: { fixture: adapter }, instances: { "fixture-check": { kind: "fixture", roles: ["implementer"], start_mode: "headless" as const, readOnly: true, worktree: ".worktrees/fixture-check" } }, roster: { fixture: false, "fixture-check": true } };
     writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify(local));
     const config: HubConfig = { ...DEFAULT_CONFIG, ...local, start: { agents: [] }, batch_ms: 0,
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
