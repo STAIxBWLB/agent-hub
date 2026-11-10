@@ -11548,8 +11548,7 @@ var init_package = __esm(() => {
       "README.md",
       "LICENSE",
       "CHANGELOG.md",
-      "THIRD_PARTY_NOTICES.md",
-      "LICENSES"
+      "THIRD_PARTY_NOTICES.md"
     ],
     repository: {
       type: "git",
