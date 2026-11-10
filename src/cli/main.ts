@@ -874,6 +874,8 @@ const LOCAL_OPERATION_ARGS: Record<string, () => void> = {
   "source add": () => { const operands = args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color=")); if (operands[0] !== "add" || operands.length !== 2 || !operands[1]) fail(SOURCE_USAGE); },
 };
 
+// Outside the command bodies: test/lifecycle-starting-1232.test.ts runs the `up` body as a plain function, where import.meta does not parse.
+const consoleInstalled = () => installedVersions(join(import.meta.dir, "..", ".."));
 const commands: Record<string, () => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
@@ -1194,7 +1196,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (args.some(arg => arg !== "--panels" && arg !== "--no-pet" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
     const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), { isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
     if (color instanceof Error) return fail("usage: ahub console [--panels] [--no-pet] [--color=auto|always|never]");
-    await runConsole({ client: await connect(), cwd, stateDir, liveTest, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color, installed: installedVersions(join(import.meta.dir, "..", "..")) });
+    await runConsole({ client: await connect(), cwd, stateDir, liveTest, panels: args.includes("--panels"), noPet: args.includes("--no-pet"), color, installed: consoleInstalled() });
   },
 
   up: async () => {
@@ -1211,7 +1213,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         for (const line of await startProjectAgents({ root: cwd, stateDir }, chosen.agents)) console.log(terminalText(line));
       } catch (error) { console.error(`default agents were not started: ${terminalText((error as Error).message)}`); }
     }
-    if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir, liveTest, installed: installedVersions(join(import.meta.dir, "..", "..")) });
+    if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir, liveTest, installed: consoleInstalled() });
   },
 
   ...Object.fromEntries(BUILTIN_CLI_ENTRIES.map(entry => [entry.command, async () => {
