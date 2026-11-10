@@ -1279,12 +1279,12 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (probeCommand.op === "show") {
           const status = parseGuidanceProbePublicStatus(result.status);
           if (!status) return fail("guidance probe status is malformed; refresh its id and current task context");
-          if (probeCommand.json) console.log(JSON.stringify(status, null, 2));
+          if (args.includes("--json")) console.log(JSON.stringify(status, null, 2));
           else console.log(`guidance probe ${status.id}: ${status.state}; revision ${status.revision}; evidence ${status.evidence}; workers ${status.counters.workerAttempts}; editors ${status.counters.editorAttempts}; model calls ${status.counters.modelCalls}; tool calls ${status.counters.toolCalls}; token usage ${status.counters.usageUnknown || status.counters.modelCalls === 0 ? "unknown" : status.counters.tokensObservedKnown}; cancelled ${status.cancelRequested ? "yes" : "no"}`);
         } else {
           const receipt = parseGuidanceProbePublicReceipt(result.receipt);
           if (!receipt) return fail("guidance probe receipt is malformed; inspect retained probe state before retrying");
-          if (probeCommand.json) console.log(JSON.stringify(receipt, null, 2));
+          if (args.includes("--json")) console.log(JSON.stringify(receipt, null, 2));
           else console.log(`guidance probe ${receipt.id}: ${receipt.state}; revision ${receipt.revision}; evidence ${receipt.evidence}${receipt.already ? "; already recorded" : ""}`);
         }
       } finally { hub.close(); }
