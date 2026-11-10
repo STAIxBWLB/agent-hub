@@ -204,9 +204,11 @@ test("the bundled MCP server publishes configured targets and enforces read-only
 
     const readOnly = await session("fixture-check");
     const names = (await readOnly.listTools()).tools.map(tool => tool.name);
-    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_capabilities", "hub_study_show", "hub_experiment_show", "hub_specs", "hub_visual_show"];   // #601: the one study tool that only reads. The three that write are not here, and the next line proves it
+    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_capabilities", "hub_study_show", "hub_experiment_show", "hub_specs", "hub_visual_show", "hub_guidance_list", "hub_guidance_show"];   // #601: the one study tool that only reads. The three that write are not here, and the next line proves it
     expect(names.length).toBeGreaterThan(0);
     expect(names.every(name => allowed.includes(name))).toBe(true);
+    expect(names).toContain("hub_guidance_list"); expect(names).toContain("hub_guidance_show");
+    expect(names).not.toContain("hub_guidance_create"); expect(names).not.toContain("hub_guidance_withdraw");
     expect(names).toContain("hub_review"); expect(names).toContain("hub_task_list");
     expect(names).toContain("hub_source_read");
     expect(names).toContain("hub_specs");

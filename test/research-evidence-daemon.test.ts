@@ -7,7 +7,7 @@ import { projectChain } from "@staix/agent-mem";
 import { Board, taskClaimIdentity, type Task } from "../src/hub/board.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
-import { EVIDENCE_RECORD_TOOL, IMPLEMENTER_HUB_TOOL_NAMES, STUDY_TOOLS, TASK_TOOLS, TASK_TOOL_NAMES, profileTaskTools, projectToolList } from "../src/hub/hub-tools.ts";
+import { EVIDENCE_RECORD_TOOL, GUIDANCE_TOOL_NAMES, IMPLEMENTER_HUB_TOOL_NAMES, STUDY_TOOLS, TASK_TOOLS, TASK_TOOL_NAMES, profileTaskTools, projectToolList } from "../src/hub/hub-tools.ts";
 import { SourceRegistry } from "../src/hub/sources.ts";
 import { readRestartSnapshot } from "../src/hub/restart.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -154,7 +154,7 @@ test("in-process evidence receipts stay JSON when the peer has held-delivery met
   const result = { id: "ev:" + "a".repeat(32), revision: 1, taskId: 7 };
   const unexpected = () => { throw new Error("unrelated authority path reached"); };
   let hints = 0;
-  const context = { Error, PreEffectToolRefusal, conductorPeer, ownerToolEffect, declarations: {}, config: { roles: {} }, turns: new Map(), reviewerToolObservers: new Map(),
+  const context = { Error, PreEffectToolRefusal, conductorPeer, ownerToolEffect, GUIDANCE_TOOL_NAMES, declarations: {}, config: { roles: {} }, turns: new Map(), reviewerToolObservers: new Map(),
     sourceReadCurrent: unexpected, runningReviewAuthority: unexpected, auditConduct: unexpected, readReviewObserverScope: () => undefined,
     ownHeldHint: () => { hints++; return "held-delivery control metadata"; }, taskOpBody: async () => JSON.stringify(result), extracted: undefined as unknown };
   const script = new Bun.Transpiler({ loader: "ts" }).transformSync(`${readOnly}\n${readTools}\nlet taskOpsInFlight=0;\n${source.slice(scopeStart, scopeEnd)}\n${source.slice(start, end)}\nglobalThis.extracted=taskOp;`);
