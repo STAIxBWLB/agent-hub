@@ -201,6 +201,13 @@ Permission decisions are bound to the authenticated caller and current session. 
 
 Subscription-based native CLIs keep their own account authentication; those credentials are not pooled through the hub. Hub-owned inference, including internal summaries and local-worker model calls, uses the in-process model route and OmniRoute provider boundary. Prompt text may inform configured routing, but it cannot grant credential access or replace host routing policy. The optional local-worker adec consumer (#554) releases only bounded host-screened evidence, after campus/privacy and observer admission; native account, TUI, reviewer and task-assignment authority are unchanged. Shadow preserves the gateway model/effort and conversation; enforcement is refused at configuration load and no pair is applied. An explicit live model override bypasses the decision service. Current board/turn privacy and observer authority fence the optional request across waits and its proposal before telemetry; an authority change refuses the stale turn, and the refusal is not converted into a fixed-model fallback. There is no new gateway or native turn/spawn effort path. This separates native subscription identity from hub service credentials ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
+R2 uses that same separation for `plan_execute` phase and `advisor`/`escalation`
+judge model/effort suggestions. The hub retains phase transitions, judge
+triggers and verdicts, escalation confirmation and actual fallback execution;
+the service has no authority over native account identity, peer assignment or
+provider calls. A `decisionTarget: "judge"` event is bounded metadata, not a
+served-model or usage record.
+
 The PII screen is distinct from ordinary optional inference. It may use an on-device model; a gateway screen requires positive on-campus admission and `onCampusOnly`. If no allowed path returns a closed `clear` or PII verdict before the deadline, the result is unknown and handled as private. This keeps network and model uncertainty from becoming a disclosure ([#198](https://github.com/STAIxBWLB/agent-hub/issues/198)).
 
 Runtime memory capture and recall use the in-process `@staix/agent-mem` package, screened and invoked by host integration. claude-mem is off by default and import-only; there is no worker HTTP or model-summary path in the runtime. This avoids a parallel capture route with different privacy checks ([#752](https://github.com/STAIxBWLB/agent-hub/issues/752), [agent-mem#13](https://github.com/STAIxBWLB/agent-mem/issues/13)).

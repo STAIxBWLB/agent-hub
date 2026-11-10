@@ -157,6 +157,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     else delete a.tooling[peer]; // a fingerprint of an earlier attachment does not describe this work: unknown until one comes
   };
   for (const e of events) {
+    if (e.type === "route" && e.decisionTarget === "judge") continue;
     // A crash writes no offline: a new run is a new attachment, and no fingerprint from before it describes later work.
     if (e.type === "hub_start") { online.clear(); tooling.clear(); if (startsAttribution(e)) personReportingSince ??= Date.parse(e.at); continue; }
     if (e.type === "state") {

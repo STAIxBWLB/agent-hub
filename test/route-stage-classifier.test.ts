@@ -3,13 +3,21 @@ import { AMBIGUOUS_BAND_DEFAULT, AMBIGUOUS_BAND_MAX, ambiguousStage, selectFallb
 import { buildStageEvidence } from "../src/models/route/stage-evidence.ts";
 import { captureStageInput } from "../src/models/route/stage-input.ts";
 import { HubRouteRuntime, type RouteEvent, type RouteHost } from "../src/models/route/runtime.ts";
-import { DecisionPolicyChangedError } from "../src/models/route/decision.ts";
+import { DecisionPolicyChangedError, DecisionRouteController } from "../src/models/route/decision.ts";
+import { RouteLabelTracker } from "../src/models/route/labels.ts";
 import { parseHubRoutes, type HubRoute } from "../src/models/route/config.ts";
 import type { ChatMessage } from "../src/omniroute/client.ts";
 
 const close: (() => void)[] = [];
 afterEach(() => { for (const stop of close.splice(0)) stop(); });
 const signal = () => new AbortController().signal;
+
+test("a stage route without a classifier cannot hide service binding or enforce fields", () => {
+  for (const fields of [{ decision_mode: "enforce" }, { decision_mode: "off" }, { decision_mode: "shadow" },
+    { policy_id: "unused" }, { adec_endpoint: "http://127.0.0.1:8740/v1/route" }]) {
+    expect(() => parseHubRoutes({ "hub/stage": { type: "stage", efficient: "fast", capable: "coding", ...fields } })).toThrow("classifier");
+  }
+});
 const at = (score: number, tier: "efficient" | "capable" = "efficient"): FallbackStageResult => ({ tier, source: "dimensions", score, state: { recoveryHoldRemaining: 0 } });
 
 const step = (id: string, name: string, content: string, error = false) => [
@@ -116,6 +124,24 @@ test("adec is asked for the owned ambiguous reading and for nothing else, with t
   expect(JSON.stringify(s.requests[0])).not.toContain("KEEP-GOING-SENTINEL");
   expect(JSON.stringify(s.requests[0])).not.toContain("tool_call_id");
   expect(h.events.at(-1)).toMatchObject({ tier: "fast", source: "default", decisionMode: "shadow", chosenAlias: "coding", chosenEffort: "none", margin: 0.2 });
+});
+
+test("an oversized UTF-8 numeric stage packet is unavailable and sends no HTTP request", async () => {
+  const s = service(), labels = new RouteLabelTracker();
+  labels.beginTurn({ turn: "oversized-packet", pii: false });
+  const turn = labels.captureTurn();
+  // A malformed extension with a numeric value proves byte admission, not a new wire field.
+  const evidence = { ...buildStageEvidence(captureStageInput(SPINNING)!), ["한".repeat(256)]: 0 };
+  const packet = JSON.stringify(evidence);
+  expect(packet.length).toBeLessThanOrEqual(1024);
+  expect(Buffer.byteLength(packet, "utf8")).toBeGreaterThan(1024);
+  const controller = new DecisionRouteController({ onCampus: async () => true }, 1000);
+  const trace = await controller.shadowClassify(s.config, {
+    route: "hub/test", scope: "scope", turn, current: () => labels.captureTurn() === turn,
+    messages: SPINNING, evidence, pii: false, signal: signal(), tier: "efficient",
+  });
+  expect(trace.decisionReason).toBe("unavailable");
+  expect(s.requests).toHaveLength(0);
 });
 
 test("an abstaining service and a failed transport keep the heuristic tier and record the reason", async () => {

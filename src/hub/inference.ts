@@ -3,8 +3,10 @@ import type { MlxHandle } from "../models/mlx.ts";
 import type { ChatMessage, OmniRoute } from "../omniroute/client.ts";
 import { CLASSES, type TaskClass } from "./board.ts";
 import { DIGEST, newEnvelope, type Envelope } from "./envelope.ts";
-import { buildEscalationJudgeRequest, parseEscalationVerdict, type EscalationVerdict } from "../models/route/escalation.ts";
-import type { Conversation } from "../models/route/normalize.ts";
+import { buildEscalationRequest } from "../models/route/hub-prompts.ts";
+import { captureJudgeConversation } from "../models/route/conversation-view.ts";
+import { parseEscalationReply, type EscalationReply } from "../models/route/judge-replies.ts";
+import type { ProgressConversation } from "./progress.ts";
 
 export interface InferenceConfig {
   enabled: boolean;
@@ -148,8 +150,19 @@ export class Inference {
   }
 
   /** A closed escalation verdict, or no verdict when inference is unavailable or malformed. */
-  async escalate(conversation: Conversation, turn: number): Promise<EscalationVerdict | undefined> {
-    const request = buildEscalationJudgeRequest(conversation, turn);
+  async escalate(conversation: ProgressConversation, turn: number): Promise<EscalationReply | undefined> {
+    // This grouped shape is produced by ProgressObserver, not accepted from native model JSON.
+    const messages: ChatMessage[] = conversation.instructions.map(content => ({ role: "system", content }));
+    for (const frame of conversation.messages) {
+      messages.push({ role: frame.role, content: frame.content, ...(frame.toolCalls.length ? {
+        tool_calls: frame.toolCalls.map(call => ({ id: call.id, type: "function" as const,
+          function: { name: call.name, arguments: JSON.stringify(call.arguments) } })),
+      } : {}) });
+      for (const result of frame.toolResults) messages.push({ role: "tool", tool_call_id: result.toolCallId,
+        content: result.content, ...(result.isError === undefined ? {} : { is_error: result.isError }) });
+    }
+    const request = buildEscalationRequest(captureJudgeConversation(messages), turn);
+    if (!request) return undefined;
     const user = request.messages[0]?.content;
     if (!user) return undefined;
     const answer = await this.complete(
@@ -162,7 +175,7 @@ export class Inference {
       "new_evidence (boolean, true only for fresh distinct observations) and reason (short string). Return escalate false and category none when evidence is insufficient.",
       user, request.maxOutputTokens,
     );
-    return answer ? parseEscalationVerdict(answer) : undefined;
+    return answer ? parseEscalationReply(answer) : undefined;
   }
 }
 

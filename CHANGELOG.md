@@ -4,6 +4,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- R2 accepts anchored Markdown/quote-decorated advisor verdicts, an optional `Verdict:` prefix and a surrounding JSON fence for escalation. Escalation uses owned bounds of 12 recent assistant turns, 1500 Unicode code points per serialized message and 16000 points for the assembled transcript, including explicit truncation markers; original discarded points remain counted. These limits provide no quality or eight-second latency guarantee. Arbitrary leading prose, unbalanced markup, more than eight nested decoration groups and malformed/multiple/non-JSON fences remain unparsed.
+- Hub-owned advisor/escalation triggers and judge semantics use newly authored routing units (#1352 R2). Optional plan/execute and judge model/effort questions use the existing adec policy binding in off/shadow mode; fallback model/input are preserved and enforce remains refused. Judge observations use `decisionTarget: judge` and earn no executor, progress, outcome or usage credit. New prompt wording invalidates the former live judge-request digests; prompt-quality live checks remain manual and unrun.
+- R2 explicitly chooses a 512-entry, one-hour scope store: idle expiry is renewed by successful reads and writes, so active escalation latches, execution phase and advisor budgets persist, backward clocks clear retained state, and opaque scope keys are capped at 4096 bytes. Advisor budgets and stalled markers retain separate 1024-entry FIFO lifetimes; only inserting a new key can trim its ledger. Reply input is bounded at 64 KiB and local feedback/reason at 4096 bytes. These declared limits and the ledger-capacity correction are compatibility differences, not claims of measured legacy-default equivalence.
+
 ## 0.36.0
 
 - Claude Code 2.1.322 is a receipt-verified headless implementer version (#888, task 868): the model-free permission-transport and host shell-wrapper producers pass on it with 2.1.319 as the control (`docs/verification/2026-11-10-claude-implementer-2.1.322.md`).
