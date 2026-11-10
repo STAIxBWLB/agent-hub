@@ -139,11 +139,11 @@ The existing ahub report --dogfood command adds a profile section when the selec
 
 Rows include profile totals and class-alias groups with the stored base class. A task keeps its recorded profile across later configuration changes. Public custom aliases remain bounded identifiers; private custom aliases are withheld. Task titles, paths, notes, checklist prose and model text are not exported. Private pii/pii_path tasks are counted by id and number.
 
-A missing, incomplete or unsupported source produces JSON null, rendered as unknown in the readable report. A complete source can prove zero recorded events; it cannot prove zero events for a category that has no recorder. Source completeness and flow scope distinguish history-backed totals from recorded-window observations. Profile bindings, including event-only fallback, are capped at 500; a capped window reports incomplete/unknown totals rather than extrapolating. Automatic approvals are flow transitions, not reviewer rounds or first-pass review samples.
+A missing, incomplete or unsupported source produces JSON null, rendered as unknown in the readable report. A complete source can prove zero recorded events; it cannot prove zero events for a category that has no recorder. Source completeness and flow scope distinguish history-backed totals from recorded-window observations. Profile bindings, including event-only fallback, are capped at 500; a capped window reports incomplete/unknown totals rather than extrapolating. Automatic approvals and merge adoptions (`merged outside the hub`, #1348) are flow transitions, not reviewer rounds or first-pass review samples.
 
 | Row group | Existing evidence | Unmeasured ceiling |
 | --- | --- | --- |
-| Flow | Bound task history and complete task-event windows; observed automatic approvals | Undated approvals, incomplete history and first-pass review without history remain unknown |
+| Flow | Bound task history and complete task-event windows; observed automatic approvals and merge adoptions | Undated approvals, incomplete history and first-pass review without history remain unknown |
 | Review | Explicit verdicts and structured public unmet-criteria ids | Profile checklist prose has no item-id recorder; private criterion ids are withheld |
 | Overlap | Recorded path/section notices and later matching pair/path edit facts | Observed path-edit pairs imply no authorship or causation; section edit confirmation remains unknown |
 | Deliverables | Deduplicated ids in recorded deliverable histories | No new file reads; changed-since-approval and current unknown states remain unknown |

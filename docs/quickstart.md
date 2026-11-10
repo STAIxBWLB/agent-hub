@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.35.0
+bun add -g github:STAIxBWLB/agent-hub#v0.36.0
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -47,6 +47,12 @@ move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
+
+## Upgrading to 0.36.0
+
+The `@staix/agent-mem` pin stays at 0.23.1. In SDLC `advise` or `enforce`, a repository other than `STAIxBWLB/agent-hub` with no configured required checks now reports `required checks unknown` for review readiness and CI watches instead of assuming the native `seeded guards` floor (#1344): set `required_checks` in `.agenthub/sdlc.toml` (`ahub settings edit sdlc.toml`) and restart the hub ([required checks](sdlc.md#required-checks-at-initialization)). After a hub deny, Qwen's dual-output TUI keeps later input fenced until a new personal turn completes in the Qwen terminal or a verified fresh generation starts, and reports offline after 30 s ([Qwen TUI](operations.md#qwens-own-tui-driven-through-dual-output-286-part-3), #1371). `hub_inbox` can also show an agent its own held messages as a read-only view that settles nothing (#1359). Newly verified agent versions: Claude Code 2.1.322 as the headless implementer (#1377), the Qwen dual-output TUI on 0.27.0 and 0.27.1 (#1364, #1378) and Qwen basic ACP on 0.27.0 (#1355); the headless `qwen` ACP entry still refuses 0.27.1. Before saving a machine research default with `ahub setup --research` or `--no-research` (#1347), upgrade every hub and CLI on the machine: a version before 0.36 treats the whole `~/.agenthub/defaults.json` as untrusted, so its machine autonomy preset falls back to off ([research records](operations.md#research-records)). Nothing else changes until you use it: `supervision.mode` (machine-local, off by default) stores bounded supervision proposals in `shadow` and also shows them in the console inbox in `advisory`, where only an explicit accept or dismiss acts ([supervision proposals](operations.md#supervision-proposals), #1362, #1368); `ahub guidance create|list|show|withdraw` records advisory role variants on a task (#1363, #1367, #1376); `ahub lineage show|link` reads bounded execution lineage and admits declared references ([execution lineage](operations.md#execution-lineage-1220-t2), #1341, #1358); a `stage` route with `classifier = "decision"` asks adec only inside its ambiguity band, off or shadow only (#1370, #1373); `ahub sdlc adopt-merge <task> --pr <n>` settles a task whose PR was merged outside the hub (#1348); `ahub init` in `advise` or `enforce` proposes the repository's required checks (#1344) and takes `--research`/`--no-research` (#1347); an explicitly superseding task can carry unchanged spec consent (#1361); and the optional Claude Code companion stays fixture-only with manual session-only placement (#1349, #1365, #1369). N-1 is published 0.35.0 and control remains 16 through 17.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.36.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.35.0
 

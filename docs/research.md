@@ -14,7 +14,9 @@ In a project's `.agenthub/config.json`:
 ```
 
 Off by default; anything but `true` is off. While it is off the hub writes nothing and creates no file. The setting is
-applied live: a config reload takes it without a restart.
+applied live: a config reload takes it without a restart. `ahub init --research` or `--no-research` writes it to the untracked
+`.agenthub/config.local.json` instead; a new project takes the machine default a person saved with `ahub setup --research`
+or `--no-research`, else off (#1347).
 
 ## Where they go
 
@@ -24,7 +26,7 @@ directory, so `ahub research --all` can compare them. `ahub reset --all` does no
 
 ## When a record is written
 
-When a task reaches a terminal board state (a review approves it, its owner reports a task without a reviewer done, or it is cancelled), the hub waits
+When a task reaches a terminal board state (a review approves it, its owner reports a task without a reviewer done, `ahub sdlc adopt-merge` adopts its PR merged outside the hub (#1348), or it is cancelled), the hub waits
 until no open turn is attributed to the task (the turn that approved it ends after the approval, and its usage arrives
 later still), checking every 10 s for at most 30 minutes, then appends one task record built from that project's
 events and the board. A hub that stops first writes it once its peers have stopped. A terminal state is final on the
