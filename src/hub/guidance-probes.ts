@@ -47,8 +47,8 @@ export interface ProbeDataPolicyV1 {
 }
 export interface ProbePrivateSnapshots { task: string; baselineContext: string; dataPolicy: ProbeDataPolicyV1; systemPolicy: string; improverContext?: string }
 export interface ProbeRegistrationV1 { manifest: GuidanceProbeManifestV1; snapshots: ProbePrivateSnapshots }
-export type ProbeState = "declared" | "active" | "closing" | "closed_fixture" | "unknown_held";
-export type ProbeSessionState = "planned" | "reserved" | "running" | "failed_known" | "closed_fixture" | "unknown_held";
+export type ProbeState = "declared" | "active" | "closing" | "closed_fixture" | "failed_fixture" | "unknown_held";
+export type ProbeSessionState = "planned" | "reserved" | "running" | "failed_known" | "closed_fixture" | "not_needed" | "unknown_held";
 export type ProbeBudgetUnit = "model_calls" | "tool_calls" | "tokens" | "input_bytes" | "scratch_bytes" | "output_bytes";
 export interface ProbeKey { projectKey: string; id: string }
 export interface ProbeHostBinding {
@@ -82,7 +82,7 @@ export interface ProbeSession {
 }
 export interface ProbeStoredState {
   registration: ProbeRegistrationV1; binding: ProbeHostBinding; receipt: ProbeReceipt; counters: ProbeCounters;
-  firstReservedAt: number | null; admissionHold: "none" | "elapsed" | "observation" | "usage"; sessions: readonly ProbeSession[];
+  firstReservedAt: number | null; admissionHold: "none" | "elapsed" | "observation" | "usage"; notNeeded: number; sessions: readonly ProbeSession[];
 }
 export interface ProbeIntegrity { experiments: number; sessions: number; digest: string }
 export interface ProbeFakeLaunch { reservation: ProbeReservation; slot: ProbeSlot; manifest: GuidanceProbeManifestV1; inputFrame: string; inputSha256: string; nonGuidanceInputSha256: string; purpose: "guidance_probe" }
@@ -105,7 +105,7 @@ export interface GuidanceProbeFakePorts {
   stop(input: ProbeFakeStop, signal: AbortSignal): Promise<ProbeFakeStopObservation>;
 }
 export interface ProbePublicReceipt extends ProbeReceipt { experimentId: string; taskId: number; evidence: "declaration" | "fixture" | "unknown" }
-export interface ProbePublicStatus extends ProbePublicReceipt { counters: ProbeCounters; comparable: boolean; authoring: "admitted_fixture" | "uncontrolled" | "unknown" }
+export interface ProbePublicStatus extends ProbePublicReceipt { counters: ProbeCounters; notNeeded: number; comparable: boolean; authoring: "admitted_fixture" | "uncontrolled" | "unknown" }
 export type GuidanceProbeCommand = { op: "register"; file: string; json: boolean }
   | { op: "start"; id: string; revision: number; variantId?: string; json: boolean }
   | { op: "show"; id: string; json: boolean } | { op: "cancel"; id: string; revision: number; json: boolean };

@@ -90,10 +90,19 @@ function snapshotBytes(registration: ProbeRegistrationV1): number {
 function completedRetryChain(state: Stored, start: number): boolean {
   for (let index = start; index < state.sessions.length; index++) {
     const session = state.sessions[index]!;
-    if (session.state === "closed_fixture") return true;
+    if (session.state === "closed_fixture" || session.state === "not_needed") return true;
     if (session.state !== "failed_known" || state.registration.manifest.slots[index + 1]?.retryOf !== session.slotId) return false;
   }
   return false;
+}
+function skipUnusedRetries(state: Stored, successful: number): void {
+  let previous = state.sessions[successful]!.slotId;
+  for (let index = successful + 1; index < state.sessions.length; index++) {
+    if (state.registration.manifest.slots[index]!.retryOf !== previous) break;
+    const session = state.sessions[index]!;
+    if (session.state !== "planned") return fail("storage");
+    session.state = "not_needed"; previous = session.slotId;
+  }
 }
 
 /** Private same-db ledger. It never reads G1 tables or owns Task authority. */
@@ -121,7 +130,7 @@ export class GuidanceProbeStore {
     const projected = columns.map(name => `CASE WHEN typeof(${name})='text' AND length(CAST(${name} AS BLOB))<=${GUIDANCE_PROBE_LIMITS.recordBytes} THEN ${name} END AS ${name}`).join(",");
     const row = this.db.query(`SELECT ${projected},CASE WHEN typeof(experiment)='text' AND length(CAST(experiment AS BLOB))<=256 THEN experiment END AS experiment,
       CASE WHEN typeof(revision)='integer' THEN revision END AS revision,
-      CASE WHEN state IN ('declared','active','closing','closed_fixture','unknown_held') THEN state END AS state,
+      CASE WHEN state IN ('declared','active','closing','closed_fixture','failed_fixture','unknown_held') THEN state END AS state,
       CASE WHEN first_reserved IS NULL OR typeof(first_reserved)='integer' THEN first_reserved END AS first_reserved,
       (first_reserved IS NULL OR typeof(first_reserved)='integer') AS first_reserved_valid,
       CASE WHEN last_wall IS NULL OR typeof(last_wall)='integer' THEN last_wall END AS last_wall,
@@ -148,13 +157,20 @@ export class GuidanceProbeStore {
     const sessions = rows.map((item, index) => {
       const session = json<Session>(item.body), slot = registration.manifest.slots[index]!;
       if (item.ordinal !== index || item.slot_id !== slot.id || session.slotId !== slot.id || !probeInteger(session.generation) || !probeInteger(session.revision)
-        || !["planned", "reserved", "running", "failed_known", "closed_fixture", "unknown_held"].includes(session.state)
+        || !["planned", "reserved", "running", "failed_known", "closed_fixture", "not_needed", "unknown_held"].includes(session.state)
         || session.candidateArtifactSha256 !== null && !probeSha256(session.candidateArtifactSha256)) return fail("storage");
       const fields = Object.keys(session);
       if (fields.some(name => !["slotId", "generation", "revision", "state", "candidateArtifactSha256", "child", "host", "effect"].includes(name))
-        || !Object.hasOwn(session, "effect") || session.state === "planned" && (session.effect !== null || session.host !== undefined || session.child !== undefined || session.generation !== 0)) return fail("storage");
+        || !Object.hasOwn(session, "effect") || ["planned", "not_needed"].includes(session.state)
+          && (session.effect !== null || session.host !== undefined || session.child !== undefined || session.generation !== 0 || session.revision !== 0 || session.candidateArtifactSha256 !== null)) return fail("storage");
+      if (session.state === "not_needed") {
+        const prior = rows[index - 1];
+        const priorState = prior ? json<Session>(prior.body).state : undefined;
+        if (registration.manifest.slots[index]!.retryOf !== registration.manifest.slots[index - 1]?.id
+          || !["closed_fixture", "not_needed"].includes(priorState ?? "")) return fail("storage");
+      }
       if (session.host) { host(session.host); if (!invariant(binding, session.host)) return fail("storage"); }
-      else if (session.state !== "planned") return fail("storage");
+      else if (!["planned", "not_needed"].includes(session.state)) return fail("storage");
       if (session.child && (!probeSha256(session.child.variantId) || !probeSha256(session.child.candidateSha256) || !probeSha256(session.child.guidanceSha256) || !same(session.child.task, binding.task)
         || !same(session.child.role, binding.role) || typeof session.child.guidance !== "string" || Buffer.byteLength(session.child.guidance) > GUIDANCE_ROLE_MAX_BYTES
         || probeHash(session.child.guidance) !== session.child.guidanceSha256 || !["admitted_fixture", "uncontrolled"].includes(session.child.authoring))) return fail("storage");
@@ -168,12 +184,13 @@ export class GuidanceProbeStore {
       }
       sessionCanonical(session); return session;
     });
-    if (row.first_reserved_valid !== 1 || row.last_wall_valid !== 1 || !["declared", "active", "closing", "closed_fixture", "unknown_held"].includes(row.state as string)) return fail("storage");
+    if (row.first_reserved_valid !== 1 || row.last_wall_valid !== 1 || !["declared", "active", "closing", "closed_fixture", "failed_fixture", "unknown_held"].includes(row.state as string)) return fail("storage");
     if (!["none", "elapsed", "observation", "usage"].includes(row.admission_hold as string)
       || row.admission_hold !== "none" && !["unknown_held", "closing"].includes(row.state as string)) return fail("storage");
     return { registration, binding, receipt: { id: key.id, revision: checkedInteger(row.revision), state: row.state as ProbeReceipt["state"], already: false },
       counters: totals, firstReservedAt: row.first_reserved === null ? null : checkedInteger(row.first_reserved),
-      lastWall: row.last_wall === null ? null : checkedInteger(row.last_wall), admissionHold: row.admission_hold as Stored["admissionHold"], sessions };
+      lastWall: row.last_wall === null ? null : checkedInteger(row.last_wall), admissionHold: row.admission_hold as Stored["admissionHold"],
+      notNeeded: sessions.filter(item => item.state === "not_needed").length, sessions };
   }
   read(key: ProbeKey): ProbeStoredState | undefined {
     try { const state = this.readStored(key); if (!state) return undefined; const { lastWall: _, ...result } = state; return result; }
@@ -247,12 +264,12 @@ export class GuidanceProbeStore {
           && (input.child ? running.child?.variantId === input.child.variantId : !running.child)) return { kind: "existing", receipt: receipt(state, true) };
         return fail("changed");
       }
-      if (["closing", "closed_fixture", "unknown_held"].includes(state.receipt.state) || state.counters.usageUnknown) return fail("held");
+      if (["closing", "closed_fixture", "failed_fixture", "unknown_held"].includes(state.receipt.state) || state.counters.usageUnknown) return fail("held");
       const lanes = [...this.lanes(input.key.projectKey)]; if (lanes.length > 1) return fail("storage");
       const lane = lanes[0]; if (lane && (lane.manifestId !== input.key.id || lane.slotId !== null)) return fail("held");
       const index = state.sessions.findIndex(item => item.state === "planned"), session = state.sessions[index]; if (!session) return fail("held");
       const slot = state.registration.manifest.slots[index]!, previous = state.sessions[index - 1];
-      if (previous && previous.state !== "closed_fixture" && !(previous.state === "failed_known" && slot.retryOf === previous.slotId)) return fail("held");
+      if (previous && !["closed_fixture", "not_needed"].includes(previous.state) && !(previous.state === "failed_known" && slot.retryOf === previous.slotId)) return fail("held");
       if (slot.retryOf && previous?.state !== "failed_known") return fail("held");
       // No fake launch can begin when a first model/tool call already cannot be admitted.
       const limits = state.registration.manifest.limits;
@@ -366,8 +383,11 @@ export class GuidanceProbeStore {
       if (unknown) state.receipt.state = "unknown_held";
       else {
         this.db.query("UPDATE guidance_probe_lanes SET slot_id=NULL WHERE project=? AND manifest_id=? AND slot_id=?").run(input.reservation.key.projectKey, input.reservation.key.id, session.slotId);
-        if (state.sessions.every((_, index) => completedRetryChain(state, index))) {
-          state.receipt.state = "closed_fixture";
+        const index = state.sessions.indexOf(session);
+        if (session.state === "closed_fixture") skipUnusedRetries(state, index);
+        const failed = session.state === "failed_known" && state.registration.manifest.slots[index + 1]?.retryOf !== session.slotId;
+        if (failed || state.sessions.every((_, index) => completedRetryChain(state, index))) {
+          state.receipt.state = failed ? "failed_fixture" : "closed_fixture";
           this.db.query("DELETE FROM guidance_probe_lanes WHERE project=? AND manifest_id=? AND slot_id IS NULL").run(input.reservation.key.projectKey, input.reservation.key.id);
         }
       }
@@ -378,7 +398,7 @@ export class GuidanceProbeStore {
     return this.transaction(() => {
       const state = this.get(input.key), fresh = revalidate();
       if (!same(input.host, fresh) || !taskEpoch(state.binding, fresh) || state.receipt.revision !== input.expectedRevision) return fail("changed");
-      if (state.receipt.state === "closing" || state.receipt.state === "closed_fixture") return receipt(state, true);
+      if (["closing", "closed_fixture", "failed_fixture"].includes(state.receipt.state)) return receipt(state, true);
       state.receipt.state = "closing"; advance(state); this.save(input.key, state); return receipt(state);
     });
   }

@@ -237,7 +237,9 @@ Both a proposal-produced candidate and a composed successor bind an already exis
 
 The fixed graph orders baseline worker, optional proposal1, candidate1 worker, optional proposal2, optional candidate2 worker, optional compose, optional successor worker, optional select, then optional reflect. An included proposal/compose stage requires its corresponding candidate/successor worker; a preexisting candidate2/successor need not invent an editor stage. Stage role/arm pairs and their order are fixed. A known-failure retry may occupy only an additional preregistered compatible slot immediately following the failed attempt, consuming the same role cap and aggregate budget. No successful attempt can be repeated for statistical sampling, and an ambiguous attempt cannot be replaced/retried. `start` advances only one explicit eligible slot; it is not an autonomous orchestrator. Controlled authoring requires a closed, comparable in-lane editor session with a matching RAW G1 candidate-file artifact hash, never a supplied flag or rationale. External or ordinary G1 authoring remains admissible if otherwise current, but uncontrolled with unknown cost, never fully measured or zero cost.
 
-Fixture completion follows each failed-known attempt's bounded, preregistered adjacent retry chain until its terminal known success, including multiple consecutive failures within the same four/five limits. Every failed outcome and consumed counter remains recorded. A missing, planned, unresolved or unknown terminal attempt cannot complete that chain or release the lane. Only when every planned stage/attempt is covered by known success, directly or through its valid retry chain, and no sticky hold exists may the existing closed-fixture path release its lane. This adds no retry automation, refund, native success proof or hold-reset authority.
+Fixture completion follows each failed-known attempt's bounded, preregistered adjacent retry chain until its terminal known success, including multiple consecutive failures within the same four/five limits. Every failed outcome and consumed counter remains recorded. After known success only its own adjacent preregistered retries become distinct terminal `not_needed` records, with no generation, launch, resource or budget charge. The read view derives a separate not-needed count; these are never failures. This does not start the next stage: a new explicit start selects the next planned non-retry stage.
+
+An exhausted known-failure chain with no remaining compatible retry ends the experiment as `failed_fixture` and releases its lane without launching later stages. Unstarted later stages remain planned records, not fabricated failures or successful work; that terminal experiment cannot start them. When every required stage is covered by known success (possibly after failures/retries) and any unused retries are not-needed, the experiment ends `closed_fixture` and releases its lane. Missing/unresolved or unknown launch/startup/cancel outcomes never skip, retry or release; sticky holds remain held. These rules add no automatic retry, refund, native success proof or hold-reset authority.
 
 G1 `candidateSha256` hashes its raw role-file bytes; `guidanceSha256` separately hashes the exact sanitized rendered guidance handed to a worker. The child commitment retains both. Editor artifact provenance compares the raw candidate hash; worker frame/handoff validation compares the rendered guidance hash. They are not interchangeable, and a matching raw hash does not prove rendered bytes.
 
@@ -269,9 +271,9 @@ interface GuidanceProbeStore {
   integrity(): ProbeIntegrity;
 }
 
-type ProbeState = "declared" | "active" | "closing" | "closed_fixture" | "unknown_held";
+type ProbeState = "declared" | "active" | "closing" | "closed_fixture" | "failed_fixture" | "unknown_held";
 type ProbeSessionState = "planned" | "reserved" | "running" | "failed_known"
-  | "closed_fixture" | "unknown_held";
+  | "closed_fixture" | "not_needed" | "unknown_held";
 type ProbeBudgetUnit = "model_calls" | "tool_calls" | "tokens"
   | "input_bytes" | "scratch_bytes" | "output_bytes";
 interface ProbeKey { projectKey: ProbeId; id: ProbeSha256 }
@@ -372,6 +374,7 @@ interface ProbeStoredState {
   counters: ProbeCounters;
   firstReservedAt: ProbeInteger | null;
   admissionHold: "none" | "elapsed" | "observation" | "usage";
+  notNeeded: ProbeInteger; // Derived from session records, never an attempt/budget counter.
   sessions: readonly {
     slotId: ProbeId;
     generation: ProbeInteger;
@@ -417,6 +420,7 @@ interface ProbePublicReceipt extends ProbeReceipt {
 }
 interface ProbePublicStatus extends ProbePublicReceipt {
   counters: ProbeCounters;
+  notNeeded: ProbeInteger;
   comparable: boolean;
   authoring: "admitted_fixture" | "uncontrolled" | "unknown";
 }

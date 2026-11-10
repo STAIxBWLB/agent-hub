@@ -525,6 +525,45 @@ describe("guidance probe private atomic ledger", () => {
     expect(f.store.reserveSession({ key: nextKey, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate).kind).toBe("granted");
     expect(f.store.read(key)!.counters.workerAttempts).toBe(4);
   });
+  test("original success marks only its preregistered retries not-needed without charge and waits for explicit candidate start", () => {
+    const f = fixture(), baseline = f.registration.manifest.slots[0]!, candidate = f.registration.manifest.slots[2]!;
+    f.registration.manifest.slots = [baseline, { ...baseline, id: "retry1", retryOf: baseline.id }, { ...baseline, id: "retry2", retryOf: "retry1" }, candidate];
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    const first = f.store.reserveSession({ key, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate);
+    if (first.kind !== "granted") throw new Error("expected baseline");
+    const charged = copy(f.store.read(key)!.counters);
+    f.store.settleSession({ reservation: first.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: 100 });
+    const waiting = f.store.read(key)!;
+    expect(waiting.receipt.state).toBe("active"); expect(waiting.notNeeded).toBe(2); expect(waiting.counters).toEqual(charged);
+    expect(waiting.sessions.map(item => item.state)).toEqual(["closed_fixture", "not_needed", "not_needed", "planned"]);
+    for (const skipped of waiting.sessions.slice(1, 3)) expect(skipped).toMatchObject({ generation: 0, revision: 0, candidateArtifactSha256: null });
+    const child: ProbeChildBinding = { variantId: probeHash("current-candidate"), candidateSha256: probeHash("raw-role"), guidanceSha256: probeHash("rendered-role"), guidance: "rendered-role",
+      task: f.host.task, role: f.host.role, authoring: "uncontrolled", sourceSessionId: null };
+    const next = f.store.reserveSession({ key, expectedRevision: waiting.receipt.revision, host: f.host, child, now: 100 }, () => ({ host: f.host, child }));
+    if (next.kind !== "granted") throw new Error("expected explicit candidate"); expect(next.reservation.slotId).toBe(candidate.id);
+    f.store.settleSession({ reservation: next.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: 100 });
+    expect(f.store.read(key)!.receipt.state).toBe("closed_fixture"); expect(f.store.read(key)!.notNeeded).toBe(2);
+    expect(f.store.read(key)!.counters).toMatchObject({ workerAttempts: 2, editorAttempts: 0, modelCalls: 0, toolCalls: 0 });
+  });
+  test("exhausted known-failure retry chain ends failed and releases without starting later stages", () => {
+    const f = fixture(), baseline = f.registration.manifest.slots[0]!, candidate = f.registration.manifest.slots[2]!;
+    f.registration.manifest.slots = [baseline, { ...baseline, id: "retry1", retryOf: baseline.id }, { ...baseline, id: "retry2", retryOf: "retry1" }, candidate];
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, now: 100 }, f.revalidate);
+      if (result.kind !== "granted") throw new Error("expected preregistered attempt");
+      f.store.settleSession({ reservation: result.reservation, outcome: "failed_known", candidateArtifactSha256: null, now: 100 });
+    }
+    const failed = f.store.read(key)!;
+    expect(failed.receipt.state).toBe("failed_fixture"); expect(failed.notNeeded).toBe(0);
+    expect(failed.sessions.map(item => item.state)).toEqual(["failed_known", "failed_known", "failed_known", "planned"]);
+    expect(failed.counters).toMatchObject({ workerAttempts: 3, editorAttempts: 0 });
+    expect(() => f.store.reserveSession({ key, expectedRevision: failed.receipt.revision, host: f.host, now: 100 }, f.revalidate)).toThrow("uncertain");
+    const next = copy(f.registration); next.manifest.experimentId = "independent-after-known-failure";
+    const nextKey = guidanceProbeFixtureKey(next); f.store.register(next, f.host, () => f.host);
+    expect(f.store.reserveSession({ key: nextKey, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate).kind).toBe("granted");
+    expect(f.store.read(key)!.counters.workerAttempts).toBe(3);
+  });
   test("unresolved or unknown adjacent retry chains retain the lane and block another experiment", () => {
     const f = fixture(), baseline = f.registration.manifest.slots[0]!, candidate = f.registration.manifest.slots[2]!;
     f.registration.manifest.slots = [baseline, { ...baseline, id: "retry1", retryOf: baseline.id }, { ...baseline, id: "retry2", retryOf: "retry1" }, candidate];
