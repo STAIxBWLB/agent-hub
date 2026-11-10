@@ -14455,10 +14455,17 @@ function startChoiceWindow(ports) {
         finish = yes;
         fail = no;
       });
-      request.then(done, refuse);
+      request.catch(() => {});
       try {
-        ports.request(prepared, controller.signal, () => closed).then(finish, fail);
+        ports.request(prepared, controller.signal, () => closed).then((answer) => {
+          done(answer);
+          finish(answer);
+        }, (error) => {
+          refuse(error);
+          fail(error);
+        });
       } catch (error) {
+        refuse(error);
         fail(error);
       }
     }, refuse).catch(refuse);
@@ -15294,15 +15301,19 @@ function dataArray(value) {
 function command(argumentsText) {
   try {
     const args = JSON.parse(argumentsText);
-    const value = plain2(args) ? own3(args, "command") : undefined;
-    return typeof value === "string" ? value : undefined;
+    if (!plain2(args))
+      return { explicit: true };
+    const value = own3(args, "command");
+    return { explicit: Object.hasOwn(args, "command"), ...typeof value === "string" ? { value } : {} };
   } catch {
-    return;
+    return { explicit: true };
   }
 }
-function facts2(name, value, nativeError, invocation, readFamily = false) {
+function facts2(name, value, nativeError, invocation, readFamily = false, explicitCommand = invocation !== undefined) {
   const readOnly = readFamily || /^(?:read|read_file|readfile|glob|grep|search|list|ls|lookup)(?:_|$)/i.test(name) || name.toLowerCase() === "text_editor" && invocation === "view";
   return {
+    operation: name && Buffer.byteLength(name) <= OPERATION_BYTES ? name : null,
+    explicitCommand,
     readOnly,
     nativeError,
     text: value,
@@ -15338,7 +15349,8 @@ function associatedResults(messages) {
       if (!result?.associated)
         return;
       pending.seen.add(id);
-      results.push(facts2(call.function.name, message.content, message.is_error === true || message.isError === true, command(call.function.arguments), result.family === "read"));
+      const invocation = command(call.function.arguments);
+      results.push(facts2(call.function.name, message.content, message.is_error === true || message.isError === true, invocation.value, result.family === "read", invocation.explicit));
     } else if (message.role === "user") {
       if (!complete())
         return;
@@ -15351,15 +15363,18 @@ function otherReportedDiagnostic(value) {
   const remainder = value.replace(/\b\d+\s+(?:tests?\s+)?(?:fail(?:ed|ures)?|pass(?:ed)?)\b/gi, "").replace(/\btests?\s+(?:failed|passed|pass|failures?)\b/gi, "");
   return diagnoseStageResult({ text: remainder, error: false, family: "other", associated: true });
 }
-function fold2(results) {
+function fold2(results, prior = []) {
   let failures = [], passed = false;
+  let retained = [...prior];
   for (const [observation, result] of results.entries()) {
     if (result.readOnly && !result.nativeError)
       continue;
     const diagnostic = result.diagnostic, context = result.testInvocation || result.testMention;
-    const genuinePass = context && !result.nativeError && diagnostic.fault === "none" && diagnostic.test === "pass";
+    const inherited = !context && !result.explicitCommand && result.operation !== null && (retained.some((failure) => failure.operation === result.operation) || failures.some((failure) => failure.test && failure.operation === result.operation));
+    const genuinePass = (context || inherited) && !result.nativeError && diagnostic.fault === "none" && diagnostic.test === "pass";
     if (genuinePass) {
-      failures = failures.filter((failure) => !failure.test);
+      failures = failures.filter((failure) => !failure.test || inherited && failure.operation !== result.operation);
+      retained = retained.filter((failure) => failure.operation === undefined || inherited && failure.operation !== result.operation);
       passed = true;
     }
     if (diagnostic.fault === "none" || diagnostic.fingerprint === undefined)
@@ -15370,9 +15385,9 @@ function fold2(results) {
     const testOnly = qualifiedTest && diagnostic.test === "fail" && independent?.fault === "none";
     const severity = diagnostic.fault === "critical" ? 1 : stronger ? 0.7 : testOnly ? 0 : 0.3;
     const fingerprint = digest2(diagnostic.fingerprint);
-    failures.push({ digest: fingerprint, test: qualifiedTest, severity, observation });
+    failures.push({ digest: fingerprint, test: qualifiedTest, severity, observation, operation: result.operation });
     if (qualifiedTest && independent && independent.fault !== "none") {
-      failures.push({ digest: fingerprint, test: false, severity: 0.3, observation });
+      failures.push({ digest: fingerprint, test: false, severity: 0.3, observation, operation: result.operation });
     }
   }
   const severity = failures.reduce((prior, failure) => failure.severity > prior ? failure.severity : prior, 0);
@@ -15380,12 +15395,21 @@ function fold2(results) {
     severity,
     tests: failures.some((failure) => failure.test) ? "fail" : passed ? "pass" : "none",
     failureDigests: [...new Set(failures.map((failure) => failure.digest))]
-  }, failures };
+  }, failures, retained };
 }
-function projectOutcomeBatch(assistant, tools) {
+function projectOutcomeWithContext(assistant, tools, prior = []) {
   try {
-    if (!dataArray(tools) || tools.length > WIRE_BYTES2 / 20)
+    if (!dataArray(tools) || tools.length > WIRE_BYTES2 / 20 || !dataArray(prior) || prior.length > WIRE_BYTES2 / 20)
       return;
+    for (const entry of prior) {
+      if (!plain2(entry) || Object.keys(entry).some((key) => key !== "digest" && key !== "operation") || typeof own3(entry, "digest") !== "string" || !/^[a-f0-9]{64}$/.test(own3(entry, "digest")))
+        return;
+      if (Object.hasOwn(entry, "operation")) {
+        const name = own3(entry, "operation");
+        if (name !== null && (typeof name !== "string" || !name || Buffer.byteLength(name) > OPERATION_BYTES))
+          return;
+      }
+    }
     const source = [assistant];
     for (let index = 0;index < tools.length; index++)
       source.push(own3(tools, String(index)));
@@ -15393,19 +15417,31 @@ function projectOutcomeBatch(assistant, tools) {
     if (!conversation || conversation.messages.length !== source.length || conversation.messages[0]?.role !== "assistant" || conversation.messages.slice(1).some((message) => message.role !== "tool"))
       return;
     const results = associatedResults(conversation.messages);
-    return results && fold2(results).outcome;
+    if (!results)
+      return;
+    const projected = fold2(results, prior);
+    return { outcome: projected.outcome, retained: projected.retained };
   } catch {
     return;
   }
 }
-function priorFailureDigests(messages) {
+function priorFailureContext(messages) {
   const conversation = captureJudgeConversation(messages);
   if (!conversation)
     return;
   const results = associatedResults(conversation.messages);
-  return results && fold2(results).outcome.failureDigests;
+  if (!results)
+    return;
+  const retained = new Map;
+  for (const failure of fold2(results).failures) {
+    const entry = { digest: failure.digest, ...failure.test ? { operation: failure.operation } : {} };
+    retained.set(`${entry.digest}:${failure.test ? JSON.stringify(failure.operation) : "unqualified"}`, entry);
+    if (retained.size > WIRE_BYTES2 / 20)
+      return;
+  }
+  return [...retained.values()];
 }
-var WIRE_BYTES2 = 2000000, unavailable2, digest2 = (value) => createHash7("sha256").update(value).digest("hex"), testName, testCommand;
+var WIRE_BYTES2 = 2000000, OPERATION_BYTES = 256, unavailable2, digest2 = (value) => createHash7("sha256").update(value).digest("hex"), testName, testCommand;
 var init_observation_signals = __esm(() => {
   init_conversation_view();
   init_stage_input();
@@ -15440,8 +15476,8 @@ class RouteLabelTracker {
     if (!turn || turn.closed || this.turns.get(turn.context.turn) !== turn)
       return;
     const id = randomUUID6();
-    const baseline = priorFailureDigests(priorMessages);
-    turn.decisions.set(id, { id, dimensions: { ...dimensions }, baselineFingerprints: baseline === undefined ? undefined : new Set(baseline) });
+    const baseline = priorFailureContext(priorMessages);
+    turn.decisions.set(id, { id, dimensions: { ...dimensions }, baselineFingerprints: baseline });
     this.decisionOwners.set(id, turn);
     return id;
   }
@@ -15456,13 +15492,19 @@ class RouteLabelTracker {
     const decision = turn.decisions.get(decisionId);
     if (!decision)
       return;
-    const outcome = projectOutcomeBatch(assistant, tools);
     const baseline = decision.baselineFingerprints;
-    if (!outcome || !baseline) {
+    if (!baseline) {
       delete decision.next;
       return;
     }
-    const repeat = outcome.failureDigests.some((digest) => baseline.has(digest));
+    const projection = projectOutcomeWithContext(assistant, tools, baseline);
+    if (!projection) {
+      delete decision.next;
+      return;
+    }
+    const outcome = projection.outcome, digests = new Set(baseline.map((entry) => entry.digest));
+    const repeat = outcome.failureDigests.some((digest) => digests.has(digest));
+    decision.baselineFingerprints = projection.retained;
     decision.next = { severity: outcome.severity, tests: outcome.tests, repeat };
   }
   observeAdvisor(decisionId, verdict) {

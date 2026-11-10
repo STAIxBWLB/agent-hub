@@ -93,10 +93,17 @@ export function startChoiceWindow<P, T>(ports: {
       if (prepared === undefined) { done(undefined); return; }
       let finish!: (value: T | undefined) => void, fail!: (error: unknown) => void;
       request = new Promise<T | undefined>((yes, no) => { finish = yes; fail = no; });
-      void request.then(done, refuse);
+      void request.catch(() => {});
       // Publish the owned-task slot before invoking its port, including reentrant close/abort.
-      try { void ports.request(prepared, controller.signal, () => closed).then(finish, fail); }
-      catch (error) { fail(error); }
+      try {
+        void ports.request(prepared, controller.signal, () => closed).then(answer => {
+          done(answer);
+          finish(answer);
+        }, error => {
+          refuse(error);
+          fail(error);
+        });
+      } catch (error) { refuse(error); fail(error); }
     }, refuse).catch(refuse);
   }
   return { result, close, commonSettled };

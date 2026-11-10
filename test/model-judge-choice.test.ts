@@ -180,6 +180,20 @@ test("actual fallback admission port runs first and normal observer close is not
   expect(await running).toEqual({ value: "APPROVE", observation: "checked trace" });
 });
 
+test("fallback close retains a response handled before the owned request settles", async () => {
+  const response = deferred<string>(), requestEntered = deferred<void>();
+  let window: ChoiceWindow<string> | undefined;
+  window = startChoiceWindow({ signal: new AbortController().signal, prepare: async () => 1,
+    request: () => { requestEntered.resolve(undefined); return response.promise; },
+  });
+  await requestEntered.promise;
+  // Register the fallback close after the owned completion handler; it runs in the same microtask turn, before a later reaction.
+  const closing = response.promise.then(() => window!.close());
+  response.resolve("checked trace");
+  expect(await closing).toBe("checked trace");
+  expect(await window!.result).toBe("checked trace");
+});
+
 
 test("host judge aborts its fallback even when observer close rethrows an authority refusal", async () => {
   const failure = new DecisionPolicyChangedError();

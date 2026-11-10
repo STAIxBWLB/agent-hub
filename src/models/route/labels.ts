@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "../../omniroute/client.ts";
-import { projectOutcomeBatch, priorFailureDigests } from "./observation-signals.ts";
+import { projectOutcomeWithContext, priorFailureContext, type RetainedObservationFailure } from "./observation-signals.ts";
 
 export type RouteTurnOutcome = "completed" | "failed";
 export type RouteTestOutcome = "pass" | "fail" | "none";
@@ -21,7 +21,7 @@ export interface RouteLabelEvent {
 interface DecisionLabel {
   id: string;
   dimensions: RouteDimensions;
-  baselineFingerprints: Set<string> | undefined;
+  baselineFingerprints: readonly RetainedObservationFailure[] | undefined;
   next?: RouteLabelEvent["next"];
   advisor?: RouteAdvisorOutcome;
 }
@@ -32,7 +32,7 @@ interface OpenTurn {
   closed: boolean;
 }
 
-/** Holds only identifiers, numeric dimensions, enums, and hashed diagnostic fingerprints. */
+/** Holds identifiers, dimensions, enums, hashes and bounded private operation names; no arguments/results. */
 export class RouteLabelTracker {
   private active: OpenTurn | undefined;
   private readonly turns = new Map<string, OpenTurn>();
@@ -53,8 +53,8 @@ export class RouteLabelTracker {
   addDecision(turn: OpenTurn | undefined, dimensions: RouteDimensions, priorMessages: ChatMessage[] = []): string | undefined {
     if (!turn || turn.closed || this.turns.get(turn.context.turn) !== turn) return undefined;
     const id = randomUUID();
-    const baseline = priorFailureDigests(priorMessages);
-    turn.decisions.set(id, { id, dimensions: { ...dimensions }, baselineFingerprints: baseline === undefined ? undefined : new Set(baseline) });
+    const baseline = priorFailureContext(priorMessages);
+    turn.decisions.set(id, { id, dimensions: { ...dimensions }, baselineFingerprints: baseline });
     this.decisionOwners.set(id, turn);
     return id;
   }
@@ -69,10 +69,13 @@ export class RouteLabelTracker {
     const decision = turn.decisions.get(decisionId);
     if (!decision) return;
 
-    const outcome = projectOutcomeBatch(assistant, tools);
     const baseline = decision.baselineFingerprints;
-    if (!outcome || !baseline) { delete decision.next; return; }
-    const repeat = outcome.failureDigests.some(digest => baseline.has(digest));
+    if (!baseline) { delete decision.next; return; }
+    const projection = projectOutcomeWithContext(assistant, tools, baseline);
+    if (!projection) { delete decision.next; return; }
+    const outcome = projection.outcome, digests = new Set(baseline.map(entry => entry.digest));
+    const repeat = outcome.failureDigests.some(digest => digests.has(digest));
+    decision.baselineFingerprints = projection.retained;
     decision.next = { severity: outcome.severity, tests: outcome.tests, repeat };
   }
 

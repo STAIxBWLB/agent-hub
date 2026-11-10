@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { failureFingerprint, priorFailureDigests, projectOutcomeBatch, repeatedObservationFailure,
+import { failureFingerprint, priorFailureDigests, priorFailureContext, projectOutcomeBatch, projectOutcomeWithContext, repeatedObservationFailure,
   type ToolObservation } from "../src/models/route/observation-signals.ts";
 
 interface Row { name?: string; command?: string; output: string; error?: boolean }
@@ -15,6 +15,46 @@ function outcome(rows: Row[]) {
   const value = batch(rows);
   return projectOutcomeBatch(value.assistant, value.tools);
 }
+
+function commandless(operation: string, result: string) {
+  const assistant = { role: "assistant", content: null, tool_calls: [{ id: "owned-operation", type: "function",
+    function: { name: operation, arguments: "{}" } }] };
+  const tools = [{ role: "tool", tool_call_id: "owned-operation", content: result }];
+  return { assistant, tools, messages: [assistant, ...tools] };
+}
+
+test("a commandless closed pass inherits only the same operation's retained qualified failure", () => {
+  const failed = commandless("fixture_operation", "MemoryError: 1 tests failed"), passed = commandless("fixture_operation", "1 passed, 0 failed");
+  const context = priorFailureContext(failed.messages)!;
+  expect(context).toHaveLength(1);
+  expect(context[0]?.operation).toBe("fixture_operation");
+  expect(context[0]?.digest).toMatch(/^[a-f0-9]{64}$/);
+  expect(JSON.stringify(context)).not.toContain("MemoryError");
+  const projected = projectOutcomeWithContext(passed.assistant, passed.tools, context);
+  expect(projected?.outcome).toEqual({ severity: 0, tests: "pass", failureDigests: [] });
+  expect(projected?.retained).toEqual([]);
+  expect(priorFailureContext([...failed.messages, ...passed.messages])).toEqual([]);
+  expect(projectOutcomeBatch(passed.assistant, passed.tools)?.tests).toBe("none");
+});
+
+test("cross-operation, missing-context and explicitly non-test passes cannot borrow a qualified failure", () => {
+  const failed = commandless("fixture_operation", "2 tests failed"), context = priorFailureContext(failed.messages)!;
+  for (const value of [commandless("other_operation", "9 passed, 0 failed"),
+    batch([{ name: "fixture_operation", command: "migrate records", output: "9 passed, 0 failed" }]),
+    commandless("fixture_operation", "0 passed, 0 failed"), commandless("fixture_operation", "1 failed, 9 passed")]) {
+    const projected = projectOutcomeWithContext(value.assistant, value.tools, context);
+    expect(projected?.outcome.tests).toBe("none");
+    expect(projected?.retained).toEqual(context);
+  }
+  const same = commandless("fixture_operation", "9 passed, 0 failed");
+  expect(projectOutcomeWithContext(same.assistant, same.tools, [])?.outcome.tests).toBe("none");
+  const otherFailure = priorFailureContext(commandless("other_operation", "3 tests failed").messages)!;
+  expect(projectOutcomeWithContext(same.assistant, same.tools, [...context, ...otherFailure])?.retained).toEqual(otherFailure);
+  const longName = "x".repeat(257), unbounded = priorFailureContext(commandless(longName, "1 tests failed").messages)!;
+  expect(unbounded[0]?.operation).toBeNull();
+  const longPass = commandless(longName, "1 passed, 0 failed");
+  expect(projectOutcomeWithContext(longPass.assistant, longPass.tools, unbounded)?.outcome.tests).toBe("none");
+});
 
 test("full batch retains an early qualified assertion failure beyond sixteen results", () => {
   const result = outcome([{ command: "bun test", output: "AssertionError: private early fixture" },

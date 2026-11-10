@@ -666,8 +666,24 @@ or malformed flags do not establish a qualified complete batch.
   an unrelated execution failure is retained separately. Process all results in
   chronological order. Only a non-read, non-error genuine positive test pass
   accepted by R1's closed grammar clears retained test-category failures, not
-  unrelated failures. Numeric failure takes priority over a simultaneous positive
-  pass count. An empty zero/zero run creates no pass and clears no failure.
+  unrelated failures. A commandless result may also inherit a retained qualified
+  failure from the exact same declared tool/operation name, within this batch or
+  across consecutive decisions in the same tracker run. Its own result must pass
+  R1's closed positive-pass grammar, and this inherited pass clears only that
+  operation's qualified failures. No retained failure, a different operation or
+  an explicit non-test command supplies no inherited test context. This preserves
+  recovery labels without turning arbitrary numeric migration summaries into test
+  evidence. Numeric failure takes priority over a simultaneous positive pass
+  count. An empty zero/zero run creates no pass and clears no failure.
+- The tracker's existing private prior-failure entries extend their digest with
+  a declared operation name only for qualified test failures. Names are bounded
+  to 256 UTF-8 bytes; an oversized/unavailable name cannot grant inherited context.
+  Entries retain the existing two-million-byte source admission and at most
+  `2000000 / 20` result-entry ceiling. The metadata has the existing decision/turn
+  lifetime and is removed when cleared or the turn ends. No arguments, result
+  text, diagnostic fingerprint, persisted state, configuration or event field is
+  added. Prior context only qualifies the new batch's observed pass; it does not
+  copy an earlier batch's severity into a later outcome.
 - Retained qualified test failure means `tests: "fail"` even after later plain
   read or `ok` results. With none retained, the latest genuine qualified test pass
   means `pass`; a batch with no eligible test evidence means `none`. Ordinary rows

@@ -17,8 +17,11 @@ export interface ObservationOutcome {
   failureDigests: readonly string[];
 }
 type Severity = ObservationOutcome["severity"];
-interface Failure { digest: string; test: boolean; severity: Severity; observation: number }
+export interface RetainedObservationFailure { digest: string; operation?: string | null }
+interface Failure { digest: string; test: boolean; severity: Severity; observation: number; operation: string | null }
 interface ResultFacts {
+  operation: string | null;
+  explicitCommand: boolean;
   readOnly: boolean;
   nativeError: boolean;
   assertionDiagnostic: boolean;
@@ -28,6 +31,7 @@ interface ResultFacts {
   text: string;
 }
 const WIRE_BYTES = 2_000_000;
+const OPERATION_BYTES = 256;
 const unavailable = Symbol("observation unavailable");
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 const testName = /\b(?:test|tests|spec|specs|pytest|vitest|jest|cargo test|go test)\b|^(?:run_tests|run_test|unittest)$/iu;
@@ -50,17 +54,20 @@ function dataArray(value: unknown): value is unknown[] {
 function text(value: unknown): value is string {
   return typeof value === "string" && value.length <= WIRE_BYTES && Buffer.byteLength(value) <= WIRE_BYTES;
 }
-function command(argumentsText: string): string | undefined {
+function command(argumentsText: string): { value?: string; explicit: boolean } {
   try {
     const args: unknown = JSON.parse(argumentsText);
-    const value = plain(args) ? own(args, "command") : undefined;
-    return typeof value === "string" ? value : undefined;
-  } catch { return undefined; }
+    if (!plain(args)) return { explicit: true };
+    const value = own(args, "command");
+    return { explicit: Object.hasOwn(args, "command"), ...(typeof value === "string" ? { value } : {}) };
+  } catch { return { explicit: true }; }
 }
-function facts(name: string, value: string, nativeError: boolean, invocation?: string, readFamily = false): ResultFacts {
+function facts(name: string, value: string, nativeError: boolean, invocation?: string, readFamily = false,
+  explicitCommand = invocation !== undefined): ResultFacts {
   const readOnly = readFamily || /^(?:read|read_file|readfile|glob|grep|search|list|ls|lookup)(?:_|$)/i.test(name)
     || name.toLowerCase() === "text_editor" && invocation === "view";
   return {
+    operation: name && Buffer.byteLength(name) <= OPERATION_BYTES ? name : null, explicitCommand,
     readOnly, nativeError, text: value,
     assertionDiagnostic: /\bassertion(?:error| failed)\b/i.test(value),
     testInvocation: testName.test(name) || invocation !== undefined && testCommand.test(invocation),
@@ -93,8 +100,9 @@ function associatedResults(messages: readonly JudgeMessage[]): ResultFacts[] | u
       const result = pair?.results[0];
       if (!result?.associated) return undefined;
       pending.seen.add(id);
+      const invocation = command(call.function.arguments);
       results.push(facts(call.function.name, message.content, message.is_error === true || message.isError === true,
-        command(call.function.arguments), result.family === "read"));
+        invocation.value, result.family === "read", invocation.explicit));
     } else if (message.role === "user") {
       if (!complete()) return undefined;
       pending = undefined;
@@ -110,13 +118,23 @@ function otherReportedDiagnostic(value: string): StageDiagnostic {
     .replace(/\btests?\s+(?:failed|passed|pass|failures?)\b/gi, "");
   return diagnoseStageResult({ text: remainder, error: false, family: "other", associated: true });
 }
-function fold(results: readonly ResultFacts[]): { outcome: ObservationOutcome; failures: Failure[] } {
+function fold(results: readonly ResultFacts[], prior: readonly RetainedObservationFailure[] = []): {
+  outcome: ObservationOutcome; failures: Failure[]; retained: RetainedObservationFailure[];
+} {
   let failures: Failure[] = [], passed = false;
+  let retained = [...prior];
   for (const [observation, result] of results.entries()) {
     if (result.readOnly && !result.nativeError) continue;
     const diagnostic = result.diagnostic, context = result.testInvocation || result.testMention;
-    const genuinePass = context && !result.nativeError && diagnostic.fault === "none" && diagnostic.test === "pass";
-    if (genuinePass) { failures = failures.filter(failure => !failure.test); passed = true; }
+    const inherited = !context && !result.explicitCommand && result.operation !== null
+      && (retained.some(failure => failure.operation === result.operation)
+        || failures.some(failure => failure.test && failure.operation === result.operation));
+    const genuinePass = (context || inherited) && !result.nativeError && diagnostic.fault === "none" && diagnostic.test === "pass";
+    if (genuinePass) {
+      failures = failures.filter(failure => !failure.test || inherited && failure.operation !== result.operation);
+      retained = retained.filter(failure => failure.operation === undefined || inherited && failure.operation !== result.operation);
+      passed = true;
+    }
     if (diagnostic.fault === "none" || diagnostic.fingerprint === undefined) continue;
     const qualifiedTest = context;
     const stronger = result.nativeError || result.assertionDiagnostic || diagnostic.fault === "exception";
@@ -125,34 +143,63 @@ function fold(results: readonly ResultFacts[]): { outcome: ObservationOutcome; f
     const testOnly = qualifiedTest && diagnostic.test === "fail" && independent?.fault === "none";
     const severity: Severity = diagnostic.fault === "critical" ? 1 : stronger ? 0.7 : testOnly ? 0 : 0.3;
     const fingerprint = digest(diagnostic.fingerprint);
-    failures.push({ digest: fingerprint, test: qualifiedTest, severity, observation });
+    failures.push({ digest: fingerprint, test: qualifiedTest, severity, observation, operation: result.operation });
     if (qualifiedTest && independent && independent.fault !== "none") {
-      failures.push({ digest: fingerprint, test: false, severity: 0.3, observation });
+      failures.push({ digest: fingerprint, test: false, severity: 0.3, observation, operation: result.operation });
     }
   }
   const severity = failures.reduce<Severity>((prior, failure) => failure.severity > prior ? failure.severity : prior, 0);
   return { outcome: { severity, tests: failures.some(failure => failure.test) ? "fail" : passed ? "pass" : "none",
-    failureDigests: [...new Set(failures.map(failure => failure.digest))] }, failures };
+    failureDigests: [...new Set(failures.map(failure => failure.digest))] }, failures, retained };
 }
 
 export function projectOutcomeBatch(assistant: unknown, tools: readonly unknown[]): ObservationOutcome | undefined {
+  return projectOutcomeWithContext(assistant, tools)?.outcome;
+}
+
+/** Private tracker metadata, never a message/event field or retained result body. */
+export function projectOutcomeWithContext(assistant: unknown, tools: readonly unknown[], prior: readonly RetainedObservationFailure[] = []): {
+  outcome: ObservationOutcome; retained: readonly RetainedObservationFailure[];
+} | undefined {
   try {
-    if (!dataArray(tools) || tools.length > WIRE_BYTES / 20) return undefined;
+    if (!dataArray(tools) || tools.length > WIRE_BYTES / 20 || !dataArray(prior) || prior.length > WIRE_BYTES / 20) return undefined;
+    for (const entry of prior) {
+      if (!plain(entry) || Object.keys(entry).some(key => key !== "digest" && key !== "operation")
+        || typeof own(entry, "digest") !== "string" || !/^[a-f0-9]{64}$/.test(own(entry, "digest") as string)) return undefined;
+      if (Object.hasOwn(entry, "operation")) {
+        const name = own(entry, "operation");
+        if (name !== null && (typeof name !== "string" || !name || Buffer.byteLength(name) > OPERATION_BYTES)) return undefined;
+      }
+    }
     const source: unknown[] = [assistant];
     for (let index = 0; index < tools.length; index++) source.push(own(tools, String(index)));
     const conversation = captureJudgeConversation(source);
     if (!conversation || conversation.messages.length !== source.length || conversation.messages[0]?.role !== "assistant"
       || conversation.messages.slice(1).some(message => message.role !== "tool")) return undefined;
     const results = associatedResults(conversation.messages);
-    return results && fold(results).outcome;
+    if (!results) return undefined;
+    const projected = fold(results, prior);
+    return { outcome: projected.outcome, retained: projected.retained };
   } catch { return undefined; }
 }
 
 export function priorFailureDigests(messages: readonly unknown[]): readonly string[] | undefined {
+  const entries = priorFailureContext(messages);
+  return entries && [...new Set(entries.map(entry => entry.digest))];
+}
+
+export function priorFailureContext(messages: readonly unknown[]): readonly RetainedObservationFailure[] | undefined {
   const conversation = captureJudgeConversation(messages);
   if (!conversation) return undefined;
   const results = associatedResults(conversation.messages);
-  return results && fold(results).outcome.failureDigests;
+  if (!results) return undefined;
+  const retained = new Map<string, RetainedObservationFailure>();
+  for (const failure of fold(results).failures) {
+    const entry = { digest: failure.digest, ...(failure.test ? { operation: failure.operation } : {}) };
+    retained.set(`${entry.digest}:${failure.test ? JSON.stringify(failure.operation) : "unqualified"}`, entry);
+    if (retained.size > WIRE_BYTES / 20) return undefined;
+  }
+  return [...retained.values()];
 }
 
 /** Only the digest escapes; R1's diagnostic/fingerprint text remains transient. */
