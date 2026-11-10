@@ -136,14 +136,16 @@ test("#1380: concurrent viewers share one bounded Space computation", async () =
 test("#1380: unchanged models still expire message links on the wall clock", async () => {
   setSystemTime(Date.now());
   const f = fleet();
-  f.states.get("a")!.events = [{ seq: 1, event: { t: "envelope", env: { from: "codex", to: ["kimi"], kind: "chat", priority: "status", ts: Date.now(), body: "MARKER-1380 private body" } } }];
+  await f.space(); // first-snapshot history is intentionally consumed without animation
+  f.states.get("a")!.cursor++;
+  f.states.get("a")!.events = [{ seq: 2, event: { t: "envelope", env: { from: "codex", to: ["kimi"], kind: "chat", priority: "status", ts: Date.now(), body: "MARKER-1380 private body" } } }];
   const first = await f.space();
   expect(first.scene!.links!.some(l => l.kind === "message")).toBe(true);
   setSystemTime(Date.now() + 10_001);
   const expired = await f.space(first.cursor);
   expect(expired.cursor).not.toBe(first.cursor);
   expect(expired.scene!.links!.filter(l => l.kind === "message")).toEqual([]);
-  expect(f.calls.filter(c => c.full)).toHaveLength(2);
+  expect(f.calls.filter(c => c.full)).toHaveLength(3); // two baselines, then the new event in a only; no full read for expiry
   expect(JSON.stringify(expired)).not.toContain("MARKER-1380");
 });
 
