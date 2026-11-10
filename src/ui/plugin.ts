@@ -177,7 +177,7 @@ function lazyLifecycle(): Lifecycle {
 }
 
 /** Build the provider over an injectable registry and lifecycle (tests use a temp home and fakes). */
-export function createProvider(options: { visualPolicy?: (cwd: string) => Promise<DeliverablePorts>; visualRead?: typeof import("../hub/visual-assets.ts").readVisualAsset; home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void; spaceBudgetMs?: number; features?: readonly string[]; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"]; inboxFreshMs?: number; inboxStaleMs?: number; inboxProjectBudgetMs?: number }): ConsoleProvider {
+export function createProvider(options: { visualPolicy?: (cwd: string) => Promise<DeliverablePorts>; visualRead?: typeof import("../hub/visual-assets.ts").readVisualAsset; home: string; registry?: Registry; lifecycle?: Lifecycle; log?: (line: string) => void; spaceBudgetMs?: number; runningFreshMs?: number; features?: readonly string[]; forwardTimeoutMs?: ManagerOptions["forwardTimeoutMs"]; inboxFreshMs?: number; inboxStaleMs?: number; inboxProjectBudgetMs?: number }): ConsoleProvider {
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
@@ -203,14 +203,23 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
    * One listing is in flight at a time and both callers join it, so a listing that hangs is asked once, not once per poll. A listing that finishes after its budget still becomes the fallback.
    */
   let lastRunning: ProjectRow[] = [];
-  let listingFlight: Promise<ProjectRow[]> | undefined;
-  function runningWithin(ms: number): Promise<ProjectRow[]> {
-    if (!listingFlight) {
-      const flight: Promise<ProjectRow[]> = running().then((rows) => { lastRunning = rows; return rows; }, () => lastRunning)
-        .finally(() => { if (listingFlight === flight) listingFlight = undefined; });
-      listingFlight = flight;
+  const RUNNING_FRESH_MS = options.runningFreshMs ?? 10_000;
+  let runningCache: { generation: number; at: number } | undefined;
+  let listingFlight: { generation: number; promise: Promise<ProjectRow[]> } | undefined;
+  function runningWithin(ms: number, cached = false): Promise<ProjectRow[]> {
+    const generation = inboxGeneration;
+    const reusable = runningCache?.generation === generation;
+    if (cached && reusable && Date.now() - runningCache!.at < RUNNING_FRESH_MS) return Promise.resolve(lastRunning);
+    if (!listingFlight || listingFlight.generation !== generation) {
+      const promise: Promise<ProjectRow[]> = running().then((rows) => {
+        if (generation === inboxGeneration) { lastRunning = rows; runningCache = { generation, at: Date.now() }; }
+        return rows;
+      }, () => lastRunning).finally(() => { if (listingFlight?.promise === promise) listingFlight = undefined; });
+      listingFlight = { generation, promise };
     }
-    return within(listingFlight, ms).then((rows) => rows ?? lastRunning);
+    // Space reuses an expired listing while its one refresh runs; the inbox keeps its existing bounded refresh path.
+    if (cached && reusable) return Promise.resolve(lastRunning);
+    return within(listingFlight.promise, ms).then((rows) => rows ?? lastRunning);
   }
   /**
    * #727: one project's items from its last answer, reused for a project that did not answer in time, so a slow daemon neither blanks its rows nor restarts their `at`.
@@ -357,7 +366,10 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
    * `previous`, as the dashboard keeps it, so desk slots and message arcs persist across polls. A restarted daemon
    * (new instanceId) restarts its event sequence at zero, so its previous model is dropped.
    */
-  const offices = new Map<string, { instanceId: string | null; model: OfficeScene }>();
+  const offices = new Map<string, { instanceId: string | null; cursor: number; model: OfficeScene }>();
+  const officeFlights = new Map<string, { instanceId: string | null; generation: number; promise: Promise<Record<string, unknown> | null> }>();
+  let spaceFlight: { generation: number; promise: Promise<{ scene: ReturnType<typeof mergeSpaces>; cursor: number }> } | undefined;
+  let spaceCursor = 0, spaceFingerprint = "";
   /**
    * acon wants a snapshot within 5 s. The project listing asks every daemon for its status, so it gets its own budget and
    * falls back to the last listing; projects are then read concurrently, and one that has not answered is left out of this poll.
@@ -368,22 +380,57 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
     const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); });
     try { return await Promise.race([work, late]); } catch { return null; } finally { clearTimeout(timer); }
   };
-  async function space() {
-    const projects = await runningWithin(Math.round(SPACE_BUDGET_MS / 2));
-    for (const id of offices.keys()) if (!projects.some((p) => p.id === id)) offices.delete(id);
+  function officeSnapshot(project: ProjectRow, after: number, generation: number) {
+    let flight = officeFlights.get(project.id);
+    if (!flight || flight.instanceId !== project.instanceId || flight.generation !== generation) {
+      const promise: Promise<Record<string, unknown> | null> = Promise.resolve(act({ action: "snapshot", after, projectId: project.id, instanceId: project.instanceId, view: "office" }) as Promise<Record<string, unknown>>)
+        .then(value => value, () => null)
+        .finally(() => { if (officeFlights.get(project.id)?.promise === promise) officeFlights.delete(project.id); });
+      flight = { instanceId: project.instanceId, generation, promise };
+      officeFlights.set(project.id, flight);
+    }
+    return within(flight.promise, SPACE_BUDGET_MS);
+  }
+  async function spaceComputation(generation: number) {
+    const projects = await runningWithin(Math.round(SPACE_BUDGET_MS / 2), true);
+    const previous = new Map(offices);
     const scenes = [];
-    const snaps = await Promise.all(projects.map((project) =>
-      within(act({ action: "snapshot", after: 0, projectId: project.id, instanceId: project.instanceId, view: "office" }) as Promise<Record<string, unknown>>, SPACE_BUDGET_MS)));
+    const cursors: (string | number | null)[][] = [];
+    const next = new Map<string, { instanceId: string | null; cursor: number; model: OfficeScene }>();
+    const snaps = await Promise.all(projects.map(project => officeSnapshot(project,
+      previous.get(project.id)?.instanceId === project.instanceId ? previous.get(project.id)!.cursor : 0, generation)));
     for (const [i, project] of projects.entries()) {
       const snap = snaps[i];
       if (!snap || snap.ok === false) continue;
-      const cached = offices.get(project.id);
-      const model = officeModel(snap as never, cached?.instanceId === project.instanceId ? cached.model : null, { cols: 4, now: Date.now() });
-      offices.set(project.id, { instanceId: project.instanceId, model });
+      const cached = previous.get(project.id);
+      const sameInstance = cached?.instanceId === project.instanceId;
+      // Event cursors do not cover every public status/privacy field on older daemons. Only an explicit
+      // unchanged reply permits model reuse; a full reply is always screened by the unchanged #264 mapper.
+      if (snap.changed === false && !sameInstance) continue;
+      const model = snap.changed === false ? cached!.model
+        : officeModel(snap as never, sameInstance ? cached!.model : null, { cols: 4, now: Date.now() });
+      const cursor = Number.isSafeInteger(snap.cursor) && Number(snap.cursor) >= 0 ? Number(snap.cursor) : 0;
+      next.set(project.id, { instanceId: project.instanceId, cursor, model });
+      cursors.push([project.id, project.instanceId, cursor]);
       const label = projects.length > 1 ? (project.root.split("/").filter(Boolean).pop() ?? project.id) : undefined;
+      // Keep the wall clock here even when the model is reused: message arcs expire without a daemon event.
       scenes.push(officeSpace(model, { id: project.id, ...(label ? { label } : {}) }, Date.now()));
     }
-    return mergeSpaces(scenes);
+    const scene = mergeSpaces(scenes);
+    if (generation !== inboxGeneration) return { scene, cursor: 0 };
+    const fingerprint = createHash("sha256").update(JSON.stringify([projects.map(p => [p.id, p.instanceId, p.root]), cursors, scene])).digest("hex");
+    if (fingerprint !== spaceFingerprint) { spaceFingerprint = fingerprint; spaceCursor++; }
+    offices.clear(); for (const [id, entry] of next) offices.set(id, entry);
+    return { scene, cursor: spaceCursor };
+  }
+  async function space(after: number) {
+    if (!spaceFlight || spaceFlight.generation !== inboxGeneration) {
+      const generation = inboxGeneration;
+      const promise = spaceComputation(generation).finally(() => { if (spaceFlight?.promise === promise) spaceFlight = undefined; });
+      spaceFlight = { generation, promise };
+    }
+    const value = await spaceFlight.promise;
+    return after > 0 && after === value.cursor ? { changed: false, cursor: value.cursor } : value;
   }
 
   /**
@@ -460,7 +507,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         return await consoleControl({ projectId, instanceId }, input.panel, payload);
       }
       if (input.panel === "inbox") return { ...await inboxSnapshot() };
-      if (input.panel === "space") return { scene: await space() };
+      if (input.panel === "space") return await space(input.after);
       // #1220 T3: the execution-lineage read (AC5). A provider port, not a panel id: the shell's own panels are
       // DASHBOARD_VIEWS and neither that list nor the dashboard's action list grows. Reading executes nothing, and
       // an unavailable or unsupported source stays a refusal here rather than an empty successful graph.

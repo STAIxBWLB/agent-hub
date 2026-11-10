@@ -2736,6 +2736,7 @@
   "src/ui/office-model.ts:officeModel:inline:linkTasks.length + linkPeers.length < 2=2#0": "contract",
   "src/ui/office-model.ts:officeModel:inline:links.length > 24=24#0": "contract",
   "src/ui/office-model.ts:waiting:inline:waiting=0#0": "contract",
+  "src/ui/plugin.ts:RUNNING_FRESH_MS:inline:options.runningFreshMs ?? 10_000=10_000#0": "operational",
   "src/ui/plugin.ts:detail:inline:String(p.reason).slice=64#0": "safety floor",
   "src/ui/plugin.ts:detail:inline:String(p.rule).slice=64#0": "safety floor",
   "src/ui/plugin.ts:title:inline:#${p.task}: ${String(p.action).slice(0, 32)}.slice=200#0": "safety floor",
