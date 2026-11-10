@@ -1,9 +1,10 @@
+import { GuidanceVariantError, guidanceVariantMetadata, parseGuidanceVariantV1, validateGuidanceVariantV1, parseGuidanceSelector, type GuidanceVariantV1, type GuidanceStoredRecord, type GuidanceSelector, type GuidanceWriteFence, type GuidanceWriteReceipt, type GuidanceReadResult } from "./guidance-variants.ts";
 import { buildEntryDiagnostic } from "./build-entry.ts";
 import { taskShowAllowed } from "./conductor.ts";
 import { executionOwnerSnapshot, parseOwnerLineageQuery, type ExecutionLineageOwnerPorts } from "./execution-lineage-owner.ts";
 import { readExecutionLineage, type LineageResult } from "./execution-lineage.ts";
-import { parseExecutionLinkInput, taskExecutionReference, executionLinkActor, type ExecutionLinkInput } from "./execution-links.ts";
-import { executionReferenceKey, type ExecutionReferenceV1 } from "./execution-reference.ts";
+import { parseExecutionLinkInput, taskExecutionReference, executionLinkActor, executionReferenceDigest, type ExecutionLinkInput } from "./execution-links.ts";
+import { executionReferenceKey, executionText, EXECUTION_REFERENCE_LIMITS, type ExecutionReferenceV1 } from "./execution-reference.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { parseEvidenceRecord, parseEvidenceLink, evidenceLinkId, evidenceLinkCanonical, type EvidenceRecordInput, type EvidenceReceipt } from "./research-evidence.ts";
 import type { ActionMeta, ReviewAnchor } from "@staix/agent-console/contract";
@@ -55,7 +56,7 @@ import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirr
 import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-scope.ts";
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
-import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
+import { loadRoleCatalog, roleIdentity, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy, matchesPolicyLexically, policyRealPath, insideRoot } from "./path-policy.ts";
 import { isDenied } from "../local/deny.ts";
 import { foldSegment, isHubWritePath } from "./permission-mode.ts";
@@ -4951,6 +4952,156 @@ export class Tasks {
       }
       return readExecutionLineage(snapshot.source, snapshot.query);
     } catch { return { state: "unavailable" }; }
+  }
+
+  private guidanceRequest(by: PeerId): () => void {
+    if (!executionText(by, EXECUTION_REFERENCE_LIMITS.id) || !executionLinkActor(by) || by === HUB || by === "admin")
+      throw new PreEffectToolRefusal("guidance requires a current local task actor; ask the task owner or the person");
+    const request = this.requestCheck(by, () => this.studyHold());
+    const peer = by === USER ? undefined : this.d.bus.peers.get(by), generation = peer?.sessionGeneration, session = peer?.nativeSession;
+    const delivery = () => this.d.bus.lastDeliveredTo(by).map(item => item.id).join("\n"), delivered = delivery();
+    const check = () => {
+      request();
+      if (this.d.privateTurn?.(by) || this.reviewObserverTurn(by))
+        throw new PreEffectToolRefusal("guidance is unavailable during private or review input; retry in a public owner context");
+      if (by !== USER && (!peer || this.d.bus.peers.get(by) !== peer || "sessionGeneration" in peer && generation === undefined
+        || peer.sessionGeneration !== generation || peer.nativeSession !== session || delivery() !== delivered))
+        throw new PreEffectToolRefusal("guidance request session changed or is unavailable; reload the task in the current session before retrying");
+    };
+    check(); return check;
+  }
+  private guidanceTask(by: PeerId, selector: Pick<GuidanceSelector, "taskId" | "taskCreated">, write: boolean): Task {
+    const task = this.guidanceStorage("read", () => this.d.board.get(selector.taskId));
+    if (!task) throw new PreEffectToolRefusal("guidance task is unavailable; read a current task in this project before retrying");
+    if (task.created !== selector.taskCreated || !this.lineageVisible(by, task) || this.reviewObserverTurn(by, task.id))
+      throw new PreEffectToolRefusal("guidance task is unavailable; refresh the current public task and privacy context before retrying");
+    if (write && (isClosedTaskState(task.state) || by !== USER && (task.owner !== by || task.state === "in_review"
+      || !this.d.roles?.[by]?.includes(ownerRoleOfClass(task.class)) || !this.d.bus.isRostered(by))))
+      throw new PreEffectToolRefusal("guidance changes require the current task owner outside review, or the person, on an open task; refresh the task before retrying");
+    return task;
+  }
+  private guidanceProject(): string {
+    const key = this.d.executionLineage?.projectKey;
+    if (!key) throw new PreEffectToolRefusal("guidance project storage is unavailable; inspect hub status before retrying");
+    return key;
+  }
+  private guidanceRole(task: Task) {
+    let role;
+    try { role = taskRole(task.role, task.class, this.d.catalog ?? loadRoleCatalog(this.d.cwd)); }
+    catch { throw new Error("guidance catalog validation is unavailable; inspect the current task role and catalog before retrying"); }
+    if (!role) throw new PreEffectToolRefusal("guidance requires a current catalog task role; select a task role before proposing a variant");
+    return role;
+  }
+  private guidancePublic(record: GuidanceStoredRecord | { variant: GuidanceVariantV1 }): boolean {
+    const { evidenceRefs, ...text } = record.variant;
+    // Opaque evidence addresses never become filesystem/producer lookup instructions.
+    return this.publicMetadataText(JSON.stringify(text)) && evidenceRefs.every(reference => this.lineageMetadata(JSON.stringify(reference)));
+  }
+  /** Unknown storage/readback failures never certify a pre-effect refusal, even when SQLite rolled back. */
+  private guidanceStorage<T>(operation: "read" | "write", action: () => T): T {
+    try { return action(); }
+    catch { throw new Error(`guidance storage ${operation} failed; inspect the retained task experiment and its outcome before retrying`); }
+  }
+  private guidanceFence(by: PeerId, task: Task): GuidanceWriteFence {
+    return { by, at: this.d.now?.() ?? Date.now(), taskId: task.id, taskCreated: task.created, flowRevision: task.history.length,
+      owner: task.owner, state: task.state, roleId: task.role };
+  }
+  private guidancePublicField(text: string): string { return this.lineageMetadata(JSON.stringify(text)) ? text : "withheld"; }
+  private guidanceReceipt(saved: { record: GuidanceStoredRecord; already: boolean }): GuidanceWriteReceipt {
+    const value = saved.record.variant;
+    return { id: value.id, taskId: value.taskId, experimentId: this.guidancePublicField(value.experimentId), status: saved.record.withdrawn ? "withdrawn" : "declared", already: saved.already };
+  }
+  /** Immutable declarations only. Neither creation nor readback changes effective role guidance. */
+  async guidanceVariantCreate(by: PeerId, input: unknown): Promise<GuidanceWriteReceipt> {
+    const check = this.guidanceRequest(by);
+    let variant: Readonly<GuidanceVariantV1>;
+    try { variant = parseGuidanceVariantV1(input); } catch { throw new PreEffectToolRefusal("invalid guidance variant; use the closed V1 record and current task identity before retrying"); }
+    return this.studyWrite(async () => {
+      const context = () => {
+        check();
+        const task = this.guidanceTask(by, variant, true), projectKey = this.guidanceProject(), role = this.guidanceRole(task);
+        if (!this.guidancePublic({ variant })) throw new PreEffectToolRefusal("guidance text or evidence metadata is private; use public task-local metadata before retrying");
+        const experiment = this.guidanceStorage("read", () => this.d.board.guidanceExperiment(projectKey, task.id, task.created, variant.experimentId));
+        const records = this.guidanceStorage("read", () => this.d.board.guidanceVariants(projectKey, task.id, task.created, variant.experimentId));
+        try {
+          validateGuidanceVariantV1(variant, { projectKey, taskId: task.id, taskCreated: task.created, flowRevision: task.history.length,
+            experimentId: variant.experimentId, actor: by, baseline: experiment?.baseline ?? variant.baseline,
+            currentBaseline: roleIdentity(role), variantIds: records.map(item => item.variant.id) });
+        } catch (error) {
+          if (error instanceof GuidanceVariantError) throw new PreEffectToolRefusal("guidance variant or frozen baseline is invalid or changed; reload the task and use a new experiment for a changed baseline");
+          throw new Error("guidance validation is unavailable; inspect the task experiment before retrying");
+        }
+        return { task, key: JSON.stringify([task.created, task.history.length, task.owner, task.state, task.role, roleIdentity(role), experiment?.baseline ?? variant.baseline]) };
+      };
+      const before = context();
+      if (this.screenOn() && (await this.screenCall(JSON.stringify(variant))).label !== "clear")
+        throw new PreEffectToolRefusal("guidance privacy screening did not clear the proposal; retry with public metadata when local screening is available");
+      const current = context();
+      if (before.key !== current.key) throw new PreEffectToolRefusal("guidance context changed during admission; reload the task and experiment before retrying");
+      check();
+      const saved = this.guidanceStorage("write", () => this.d.board.recordGuidanceVariant(variant, this.guidanceFence(by, current.task)));
+      return this.guidanceReceipt(saved);
+    });
+  }
+  async guidanceVariantWithdraw(by: PeerId, input: unknown): Promise<GuidanceWriteReceipt> {
+    const check = this.guidanceRequest(by);
+    let selector: GuidanceSelector;
+    try { selector = parseGuidanceSelector(input, true); } catch { throw new PreEffectToolRefusal("invalid guidance withdrawal; name a current task epoch, flow revision, experiment and variant"); }
+    return this.studyWrite(async () => {
+      check(); const task = this.guidanceTask(by, selector, true), projectKey = this.guidanceProject();
+      if (task.history.length !== selector.flowRevision) throw new PreEffectToolRefusal("guidance task revision changed; reload the task before withdrawing");
+      const record = this.guidanceStorage("read", () => this.d.board.guidanceVariants(projectKey, task.id, task.created, selector.experimentId)).find(item => item.variant.id === selector.id);
+      if (!record) throw new PreEffectToolRefusal("guidance variant is unavailable; refresh the task experiment before withdrawing");
+      check();
+      const saved = this.guidanceStorage("write", () => this.d.board.withdrawGuidanceVariant(projectKey, selector.experimentId, selector.id!, this.guidanceFence(by, task)));
+      return this.guidanceReceipt(saved);
+    });
+  }
+  private guidanceApplicable(by: PeerId, task: Task, record: GuidanceStoredRecord): boolean {
+    try {
+      if (record.withdrawn || isClosedTaskState(task.state) || by !== USER && task.owner !== by || by !== USER && task.state === "in_review") return false;
+      const value = record.variant, role = this.guidanceRole(task);
+      return value.flowRevision === task.history.length && value.baseline.roleId === role.id && value.baseline.layer === role.layer
+        && value.baseline.sha256 === role.hash && (by === USER || this.d.roles?.[by]?.includes(ownerRoleOfClass(task.class)) === true);
+    } catch { return false; }
+  }
+  /** Historical data can be visible without being applicable. No model, external resolver or delivery runs here. */
+  guidanceVariantRead(by: PeerId, input: unknown): GuidanceReadResult {
+    try {
+      const check = this.guidanceRequest(by), selector = parseGuidanceSelector(input);
+      check(); const task = this.guidanceTask(by, selector, false), projectKey = this.guidanceProject();
+      const records = this.d.board.guidanceVariants(projectKey, task.id, task.created, selector.experimentId);
+      const selected = selector.id ? records.filter(item => item.variant.id === selector.id) : records;
+      if (!selected.length) return { state: "unavailable" };
+      const ports = this.lineagePorts(by);
+      const evidence = selected.map(record => record.variant.evidenceRefs.map(reference => {
+        let known = false;
+        if (ports && reference.tool === "ahub" && reference.projectKey === projectKey) {
+          const snapshot = executionOwnerSnapshot(ports, { root: reference, task: { id: task.id, created: task.created } });
+          known = snapshot.source.health === "ready" && snapshot.source.nodes.some(node => executionReferenceKey(node.ref) === executionReferenceKey(reference));
+        }
+        return { key: executionReferenceDigest(reference), status: known ? "declared" as const : "unavailable" as const };
+      }));
+      // A source port may observe a concurrent disposition or task change. Never return its earlier applicability.
+      check(); const current = this.guidanceTask(by, selector, false);
+      if (JSON.stringify([current.created, current.history.length, current.owner, current.reviewer, current.state, current.role])
+        !== JSON.stringify([task.created, task.history.length, task.owner, task.reviewer, task.state, task.role])) return { state: "unavailable" };
+      const fresh = this.d.board.guidanceVariants(projectKey, current.id, current.created, selector.experimentId);
+      const currentSelected = selector.id ? fresh.filter(item => item.variant.id === selector.id) : fresh;
+      if (JSON.stringify(selected) !== JSON.stringify(currentSelected)) return { state: "unavailable" };
+      const result: GuidanceReadResult = { state: "available", records: currentSelected.map((record, index) => ({ ...guidanceVariantMetadata(record.variant),
+        experimentId: this.guidancePublicField(record.variant.experimentId), status: record.withdrawn ? "withdrawn" : "declared", applicable: this.guidanceApplicable(by, current, record),
+        rationale: { problemHypothesis: this.guidancePublicField(record.variant.rationale.problemHypothesis),
+          expectedObservableDifference: this.guidancePublicField(record.variant.rationale.expectedObservableDifference) }, evidence: evidence[index]! })) };
+      check();
+      return result;
+    } catch { return { state: "unavailable" }; }
+  }
+  /** Future probe admission must capture its own current runtime/turn fence; this boolean is no handoff receipt. */
+  guidanceVariantApplicable(by: PeerId, input: unknown): boolean {
+    try { if (parseGuidanceSelector(input).id === undefined) return false; } catch { return false; }
+    const read = this.guidanceVariantRead(by, input);
+    return read.state === "available" && read.records.length === 1 && read.records[0]!.applicable;
   }
 
   /** A declaration carries no resolver, runner attestation, review approval or model-execution authority. */

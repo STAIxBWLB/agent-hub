@@ -198,3 +198,67 @@ export function renderGuidanceVariantV1(value: unknown, review = false): string 
   const parsed = parseGuidanceVariantV1(value);
   return taskRoleText(parseRoleDocument(parsed.candidate.bytes, parsed.baseline.roleId, parsed.baseline.layer).role, review);
 }
+
+/** Local storage metadata never changes the immutable V1 payload or confers execution provenance. */
+export interface GuidanceExperimentRecord {
+  readonly projectKey: string; readonly taskId: number; readonly taskCreated: number; readonly experimentId: string;
+  readonly baseline: GuidanceBaselineV1;
+}
+export interface GuidanceStoredRecord {
+  readonly variant: Readonly<GuidanceVariantV1>; readonly createdBy: string; readonly createdAt: number;
+  readonly withdrawn?: Readonly<{ by: string; at: number }>;
+}
+export interface GuidanceSelector { readonly taskId: number; readonly taskCreated: number; readonly experimentId: string; readonly id?: string; readonly flowRevision?: number }
+export interface GuidanceWriteFence {
+  readonly by: string; readonly at: number; readonly taskId: number; readonly taskCreated: number; readonly flowRevision: number;
+  readonly owner: string | null; readonly state: string; readonly roleId: string | undefined;
+}
+export interface GuidanceWriteReceipt { readonly id: string; readonly taskId: number; readonly experimentId: string; readonly status: "declared" | "withdrawn"; readonly already: boolean }
+export interface GuidanceVariantMetadata {
+  readonly id: string; readonly experimentId: string; readonly taskId: number; readonly taskCreated: number; readonly flowRevision: number;
+  readonly roleId: string; readonly layer: CatalogRole["layer"]; readonly baselineSha256: string; readonly candidateSha256: string;
+  readonly changedSections: readonly ("Scope" | "Deliverables" | "Evidence")[];
+  readonly bytes: Readonly<{ baseline: number; candidate: number; record: number }>;
+  readonly author: string;
+}
+export type GuidanceReadResult = { state: "unavailable" } | { state: "available"; records: (GuidanceVariantMetadata & {
+  status: "declared" | "withdrawn"; applicable: boolean; rationale: GuidanceRationaleV1;
+  evidence: { key: string; status: "declared" | "unavailable" }[];
+})[] };
+/** Structural metadata only: Tasks field-screens the opaque experiment id before public use. No raw snapshots or evidence addresses. */
+export function guidanceVariantMetadata(value: unknown): GuidanceVariantMetadata {
+  const variant = parseGuidanceVariantV1(value), original = parseRoleDocument(variant.baseline.bytes, variant.baseline.roleId, variant.baseline.layer);
+  const candidate = parseRoleDocument(variant.candidate.bytes, variant.baseline.roleId, variant.baseline.layer);
+  const changedSections = original.sections.flatMap((section, index) => EDITABLE.has(section.name) && section.contentRaw !== candidate.sections[index]!.contentRaw
+    ? [section.name as "Scope" | "Deliverables" | "Evidence"] : []);
+  return Object.freeze({ id: variant.id, experimentId: variant.experimentId, taskId: variant.taskId, taskCreated: variant.taskCreated,
+    flowRevision: variant.flowRevision, roleId: variant.baseline.roleId, layer: variant.baseline.layer,
+    baselineSha256: variant.baseline.sha256, candidateSha256: variant.candidate.sha256, changedSections: Object.freeze(changedSections),
+    bytes: Object.freeze({ baseline: Buffer.byteLength(variant.baseline.bytes), candidate: Buffer.byteLength(variant.candidate.bytes), record: Buffer.byteLength(JSON.stringify(variant)) }),
+    author: variant.author });
+}
+export function parseGuidanceSelector(value: unknown, withdraw = false): GuidanceSelector {
+  const fields = object(value, withdraw ? ["taskId", "taskCreated", "experimentId", "id", "flowRevision"] : ["taskId", "taskCreated", "experimentId", "id"]);
+  if (!executionLinkInteger(fields.taskId, 1) || !executionLinkInteger(fields.taskCreated)
+    || withdraw && !executionLinkInteger(fields.flowRevision)) return invalid();
+  return Object.freeze({ taskId: fields.taskId, taskCreated: fields.taskCreated, experimentId: identity(fields.experimentId),
+    ...(fields.id === undefined && !withdraw ? {} : { id: hash(fields.id) }), ...(withdraw ? { flowRevision: fields.flowRevision as number } : {}) });
+}
+export function parseGuidanceExperiment(value: unknown): GuidanceExperimentRecord {
+  const fields = object(value, ["projectKey", "taskId", "taskCreated", "experimentId", "baseline"]);
+  if (!executionText(fields.projectKey, EXECUTION_REFERENCE_LIMITS.projectKey) || !executionLinkInteger(fields.taskId, 1)
+    || !executionLinkInteger(fields.taskCreated)) return invalid();
+  return Object.freeze({ projectKey: fields.projectKey, taskId: fields.taskId, taskCreated: fields.taskCreated,
+    experimentId: identity(fields.experimentId), baseline: baseline(fields.baseline).value });
+}
+export function parseGuidanceStoredRecord(value: unknown): GuidanceStoredRecord {
+  const fields = object(value, ["variant", "createdBy", "createdAt", "withdrawn"]), variant = parseGuidanceVariantV1(fields.variant);
+  if (!actor(fields.createdBy) || fields.createdBy !== variant.author || !executionLinkInteger(fields.createdAt)) return invalid();
+  let withdrawn: GuidanceStoredRecord["withdrawn"];
+  if (fields.withdrawn !== undefined) {
+    const item = object(fields.withdrawn, ["by", "at"]);
+    if (!actor(item.by) || !executionLinkInteger(item.at) || item.at < fields.createdAt) return invalid();
+    withdrawn = Object.freeze({ by: item.by, at: item.at });
+  }
+  return Object.freeze({ variant, createdBy: fields.createdBy, createdAt: fields.createdAt, ...(withdrawn ? { withdrawn } : {}) });
+}

@@ -2274,6 +2274,13 @@ export async function startDaemon(opts: DaemonOptions) {
   } catch {
     board.close(); throw new Error("execution reference state or recovery binding is unavailable; restore trusted project state and choose a compatible recovery target before retrying");
   }
+  try {
+    const retainedGuidance = board.guidanceVariantsIntegrity(), expected = restored?.integrity?.guidanceVariants;
+    if (restored?.integrity && (expected ? expected.experiments !== retainedGuidance.experiments || expected.variants !== retainedGuidance.variants
+      || expected.digest !== retainedGuidance.digest : retainedGuidance.experiments !== 0 || retainedGuidance.variants !== 0)) throw new Error("changed recovery binding");
+  } catch {
+    board.close(); throw new Error("guidance variant state or recovery binding is unavailable; restore trusted project state and choose a supporting target before retrying");
+  }
   const visuals = new VisualStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => visuals.close());
   // Held recovery must compare the source's exact rows before any retention mutation.
@@ -6706,13 +6713,14 @@ export async function startDaemon(opts: DaemonOptions) {
     const researchComparisons = board.researchComparisonIntegrity();
     const researchRunners = board.runnerReceiptIntegrity();
     const researchEvidence = board.researchEvidenceIntegrity();
+    const guidanceVariants = board.guidanceVariantsIntegrity();
     const executionReferences = board.executionReferencesIntegrity();
     const reviewComments = board.reviewCommentsIntegrity();
     const modelState = modelOverrides.integrity();
     const visualIntegrity = visuals.integrity();
     if (!Number.isSafeInteger(visualIntegrity.count) || visualIntegrity.count < 0 || !/^[a-f0-9]{64}$/.test(visualIntegrity.digest))
       throw new Error("visual recovery integrity unavailable; inspect the retained store before recovery");
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(modelState.count ? { modelOverrides: modelState } : {}), ...(research.campaigns || research.units ? { research } : {}), ...(researchDispatch.activations || researchDispatch.handoffs ? { researchDispatch } : {}), ...(researchExperiments.protocols || researchExperiments.attempts || researchExperiments.events || researchExperiments.observations ? { researchExperiments } : {}), ...(researchComparisons.plans || researchComparisons.approvals || researchComparisons.contexts ? { researchComparisons } : {}), ...(researchRunners.count ? { researchRunners } : {}), ...(researchEvidence.links || researchEvidence.revisions ? { researchEvidence } : {}), ...(guidanceVariants.experiments || guidanceVariants.variants ? { guidanceVariants } : {}), ...(executionReferences.count ? { executionReferences } : {}), ...(reviewComments.comments || reviewComments.packages ? { reviewComments } : {}), ...(visualIntegrity.count ? { visuals: visualIntegrity } : {}), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -10189,6 +10197,10 @@ export async function startDaemon(opts: DaemonOptions) {
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
     const incompatibleRecoveryTarget = () => {
+      if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("guidance_variants")) {
+        try { if (board.hasGuidanceVariants()) return "target lacks guidance_variants; retained immutable variants require a supporting daemon; choose a target advertising guidance_variants"; }
+        catch { return "guidance variant compatibility is unknown; inspect retained storage or choose a supporting target"; }
+      }
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("execution_lineage")) {
         try { if (board.hasExecutionReferences()) return "target lacks execution_lineage; retained declared references require a supporting daemon; choose a target advertising execution_lineage"; }
         catch { return "execution reference compatibility is unknown; inspect the retained store or choose a supporting target"; }

@@ -1,5 +1,6 @@
+import { GUIDANCE_VARIANT_LIMITS, GUIDANCE_HASH_HEX_LENGTH, parseGuidanceVariantV1, parseGuidanceExperiment, parseGuidanceStoredRecord, validateGuidanceVariantV1, type GuidanceVariantV1, type GuidanceExperimentRecord, type GuidanceStoredRecord, type GuidanceWriteFence } from "./guidance-variants.ts";
 import { ExecutionLinkError, EXECUTION_LINK_LIMITS, executionLinkActor, executionLinkInteger, executionLinkId, executionLinkReferences, executionReferenceDigest, parseExecutionLinkInput, parseExecutionLinkRecord, type ExecutionLinkInput, type ExecutionLinkRecord, type ExecutionLinkFence } from "./execution-links.ts";
-import { executionReferenceKey } from "./execution-reference.ts";
+import { executionReferenceKey, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
 import { parseAttemptReceipt, parseResearchRunners, verifyAttemptReceipt, type AttemptReceiptV1 } from "./research-runner.ts";
 import { canonicalJson } from "./packs.ts";
 import { parseEvidenceLink, evidenceLinkCanonical, MAX_EVIDENCE_RECORD_BYTES, type EvidenceLinkV1 } from "./research-evidence.ts";
@@ -589,6 +590,14 @@ export class Board {
     this.db.run(`CREATE TABLE IF NOT EXISTS research_evidence_links (
       project TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, task_id INTEGER NOT NULL,
       body TEXT NOT NULL, body_sha256 TEXT NOT NULL, PRIMARY KEY(project,id,revision))`);
+    // Private snapshots stay outside Task and every SELECT * task reader.
+    this.db.run(`CREATE TABLE IF NOT EXISTS guidance_experiments (
+      project_id TEXT NOT NULL,task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,experiment_id TEXT NOT NULL,baseline_json TEXT NOT NULL,
+      PRIMARY KEY(project_id,task_id,task_created,experiment_id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS guidance_variants (
+      project_id TEXT NOT NULL,task_id INTEGER NOT NULL,task_created INTEGER NOT NULL,experiment_id TEXT NOT NULL,id TEXT NOT NULL,
+      body TEXT NOT NULL,body_sha256 TEXT NOT NULL,created_by TEXT NOT NULL,created_at INTEGER NOT NULL,withdrawn_by TEXT,withdrawn_at INTEGER,
+      PRIMARY KEY(project_id,task_id,task_created,experiment_id,id))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS execution_reference_links (
       id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_id INTEGER NOT NULL, task_created INTEGER NOT NULL,
       from_json TEXT NOT NULL, from_sha256 TEXT NOT NULL, reference_json TEXT NOT NULL, reference_sha256 TEXT NOT NULL,
@@ -1066,6 +1075,116 @@ export class Board {
         .run(project, link.id, link.revision, link.taskId, canonical, createHash("sha256").update(canonical).digest("hex")));
       return this.evidenceLink(project, link.id, link.revision)!;
     });
+  }
+
+  /** Fixed experiment scope; SQL bounds JSON before it reaches JavaScript. No caller may widen a page. */
+  guidanceExperiment(projectKey: string, taskId: number, taskCreated: number, experimentId: string): GuidanceExperimentRecord | undefined {
+    const row = this.db.query(`SELECT CASE WHEN typeof(baseline_json)='text' AND length(CAST(baseline_json AS BLOB))<=? THEN baseline_json END AS baseline
+      FROM guidance_experiments WHERE project_id=? AND task_id=? AND task_created=? AND experiment_id=?`)
+      .get(GUIDANCE_VARIANT_LIMITS.recordBytes, projectKey, taskId, taskCreated, experimentId) as { baseline: unknown } | null;
+    if (!row) return undefined;
+    if (typeof row.baseline !== "string") throw new Error("guidance experiment storage is invalid");
+    const record = parseGuidanceExperiment({ projectKey, taskId, taskCreated, experimentId, baseline: JSON.parse(row.baseline) });
+    if (JSON.stringify(record.baseline) !== row.baseline) throw new Error("guidance experiment storage is not canonical");
+    return record;
+  }
+  guidanceVariants(projectKey: string, taskId: number, taskCreated: number, experimentId: string): GuidanceStoredRecord[] {
+    const experiment = this.guidanceExperiment(projectKey, taskId, taskCreated, experimentId);
+    const rows = this.db.query(`SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN id END AS id,CASE WHEN typeof(body)='text' AND length(CAST(body AS BLOB))<=? THEN body END AS body,
+      CASE WHEN typeof(body_sha256)='text' AND length(CAST(body_sha256 AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN body_sha256 END AS body_sha256,
+      CASE WHEN typeof(created_by)='text' AND length(CAST(created_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN created_by END AS created_by,CASE WHEN typeof(created_at)='integer' THEN created_at END AS created_at,
+      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN withdrawn_by END AS withdrawn_by,CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN withdrawn_at END AS withdrawn_at,
+      CASE WHEN withdrawn_at IS NULL OR typeof(withdrawn_at)='integer' THEN 1 ELSE 0 END AS valid_withdrawn_at,
+      CASE WHEN withdrawn_by IS NULL OR typeof(withdrawn_by)='text' AND length(CAST(withdrawn_by AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN 1 ELSE 0 END AS valid_withdrawn_by FROM guidance_variants
+      WHERE project_id=? AND task_id=? AND task_created=? AND experiment_id=? ORDER BY id LIMIT ?`)
+      .all(GUIDANCE_VARIANT_LIMITS.recordBytes, projectKey, taskId, taskCreated, experimentId, GUIDANCE_VARIANT_LIMITS.variants + 1) as Record<string, unknown>[];
+    if (rows.length > GUIDANCE_VARIANT_LIMITS.variants || rows.length && !experiment) throw new Error("guidance variant storage is invalid");
+    return rows.map(row => {
+      if (row.valid_withdrawn_by !== 1 || row.valid_withdrawn_at !== 1 || typeof row.body !== "string" || createHash("sha256").update(row.body).digest("hex") !== row.body_sha256
+        || (row.withdrawn_by === null) !== (row.withdrawn_at === null)) throw new Error("guidance variant storage is invalid");
+      const record = parseGuidanceStoredRecord({ variant: JSON.parse(row.body), createdBy: row.created_by, createdAt: row.created_at,
+        ...(row.withdrawn_by === null ? {} : { withdrawn: { by: row.withdrawn_by, at: row.withdrawn_at } }) });
+      const value = record.variant;
+      if (JSON.stringify(value) !== row.body || value.id !== row.id || value.projectKey !== projectKey || value.taskId !== taskId
+        || value.taskCreated !== taskCreated || value.experimentId !== experimentId
+        || JSON.stringify(value.baseline) !== JSON.stringify(experiment!.baseline)) throw new Error("guidance variant binding is invalid");
+      return record;
+    });
+  }
+  private guidanceWriteTask(fence: GuidanceWriteFence): Task {
+    const task = this.get(fence.taskId);
+    if (!executionLinkActor(fence.by) || !executionLinkInteger(fence.at) || !task || task.created !== fence.taskCreated
+      || task.history.length !== fence.flowRevision || task.owner !== fence.owner || task.state !== fence.state || task.role !== fence.roleId
+      || task.state === "approved" || task.state === "cancelled" || fence.by !== USER && (task.owner !== fence.by || task.state === "in_review")
+      || task.signals.includes("pii") || task.signals.includes("pii_path")) throw new Error("guidance task binding changed");
+    return task;
+  }
+  /** Tasks alone supplies current runtime/privacy/catalog authority; persisted facts are checked again inside this transaction. */
+  recordGuidanceVariant(value: GuidanceVariantV1, fence: GuidanceWriteFence): { record: GuidanceStoredRecord; already: boolean } {
+    const variant = parseGuidanceVariantV1(value);
+    return this.atomic(() => {
+      this.guidanceWriteTask(fence);
+      if (variant.author !== fence.by || variant.taskId !== fence.taskId || variant.taskCreated !== fence.taskCreated
+        || variant.flowRevision !== fence.flowRevision || variant.baseline.roleId !== fence.roleId) throw new Error("guidance task binding changed");
+      const original = this.guidanceExperiment(variant.projectKey, variant.taskId, variant.taskCreated, variant.experimentId);
+      const records = this.guidanceVariants(variant.projectKey, variant.taskId, variant.taskCreated, variant.experimentId);
+      validateGuidanceVariantV1(variant, { projectKey: variant.projectKey, taskId: variant.taskId, taskCreated: variant.taskCreated,
+        experimentId: variant.experimentId, flowRevision: fence.flowRevision, actor: fence.by, baseline: original?.baseline ?? variant.baseline,
+        currentBaseline: { id: variant.baseline.roleId, layer: variant.baseline.layer, hash: variant.baseline.sha256 }, variantIds: records.map(item => item.variant.id) });
+      const known = records.find(item => item.variant.id === variant.id);
+      if (known) {
+        if (JSON.stringify(known.variant) !== JSON.stringify(variant)) throw new Error("guidance variant id has changed content");
+        return { record: known, already: true };
+      }
+      const body = JSON.stringify(variant), stored = parseGuidanceStoredRecord({ variant, createdBy: fence.by, createdAt: fence.at });
+      if (!original) this.taskWrite(() => this.db.query("INSERT INTO guidance_experiments(project_id,task_id,task_created,experiment_id,baseline_json) VALUES(?,?,?,?,?)")
+        .run(variant.projectKey, variant.taskId, variant.taskCreated, variant.experimentId, JSON.stringify(variant.baseline)));
+      this.taskWrite(() => this.db.query(`INSERT INTO guidance_variants(project_id,task_id,task_created,experiment_id,id,body,body_sha256,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(variant.projectKey, variant.taskId, variant.taskCreated, variant.experimentId, variant.id, body, createHash("sha256").update(body).digest("hex"), fence.by, fence.at));
+      return { record: stored, already: false };
+    });
+  }
+  withdrawGuidanceVariant(projectKey: string, experimentId: string, id: string, fence: GuidanceWriteFence): { record: GuidanceStoredRecord; already: boolean } {
+    return this.atomic(() => {
+      this.guidanceWriteTask(fence);
+      const record = this.guidanceVariants(projectKey, fence.taskId, fence.taskCreated, experimentId).find(item => item.variant.id === id);
+      if (!record) throw new Error("guidance variant is unavailable");
+      if (record.withdrawn) return { record, already: true };
+      const next = parseGuidanceStoredRecord({ ...record, withdrawn: { by: fence.by, at: fence.at } });
+      const result = this.taskWrite(() => this.db.query(`UPDATE guidance_variants SET withdrawn_by=?,withdrawn_at=?
+        WHERE project_id=? AND task_id=? AND task_created=? AND experiment_id=? AND id=? AND withdrawn_by IS NULL AND withdrawn_at IS NULL`)
+        .run(fence.by, fence.at, projectKey, fence.taskId, fence.taskCreated, experimentId, id));
+      if (result.changes !== 1) throw new Error("guidance withdrawal binding changed");
+      return { record: next, already: false };
+    });
+  }
+  hasGuidanceVariants(): boolean {
+    return (this.db.query("SELECT EXISTS(SELECT 1 FROM guidance_experiments) OR EXISTS(SELECT 1 FROM guidance_variants) AS present").get() as { present: number }).present === 1;
+  }
+  /** Recovery only. Normal reads always address one indexed experiment. */
+  guidanceVariantsIntegrity(): { experiments: number; variants: number; digest: string } {
+    try { return this.db.transaction(() => {
+      const digest = createHash("sha256").update("agent-hub.guidance-variants/v1\n"); let experiments = 0, variants = 0;
+      // ponytail: recovery streams O(historical experiments), with bounded row/page memory. If measured recovery cost warrants it,
+      // upgrade to keyset pages plus a verification budget; a partial scan must never certify complete integrity.
+      const statement = this.db.prepare(`SELECT CASE WHEN typeof(project_id)='text' AND length(CAST(project_id AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.projectKey} THEN project_id END AS project_id,CASE WHEN typeof(task_id)='integer' THEN task_id END AS task_id,CASE WHEN typeof(task_created)='integer' THEN task_created END AS task_created,
+        CASE WHEN typeof(experiment_id)='text' AND length(CAST(experiment_id AS BLOB))<=${EXECUTION_REFERENCE_LIMITS.id} THEN experiment_id END AS experiment_id FROM guidance_experiments ORDER BY project_id,task_id,task_created,experiment_id`);
+      try {
+        for (const row of statement.iterate() as Iterable<{ project_id: string; task_id: number; task_created: number; experiment_id: string }>) {
+          if (typeof row.project_id !== "string" || typeof row.experiment_id !== "string" || !executionLinkInteger(row.task_id, 1) || !executionLinkInteger(row.task_created)) throw new Error("guidance experiment scope is invalid");
+          const experiment = this.guidanceExperiment(row.project_id, row.task_id, row.task_created, row.experiment_id)!;
+          const records = this.guidanceVariants(row.project_id, row.task_id, row.task_created, row.experiment_id);
+          if (!records.length) throw new Error("guidance experiment is empty");
+          digest.update(JSON.stringify(experiment)).update("\n"); experiments++;
+          for (const record of records) { digest.update(JSON.stringify(record)).update("\n"); variants++; }
+        }
+      } finally { statement.finalize(); }
+      const orphan = this.db.query(`SELECT EXISTS(SELECT 1 FROM guidance_variants AS v WHERE NOT EXISTS(SELECT 1 FROM guidance_experiments AS e
+        WHERE e.project_id=v.project_id AND e.task_id=v.task_id AND e.task_created=v.task_created AND e.experiment_id=v.experiment_id)) AS present`).get() as { present: number };
+      if (orphan.present) throw new Error("guidance variant experiment is unavailable");
+      return { experiments, variants, digest: digest.digest("hex") };
+    })(); }
+    catch { throw new Error("guidance variant integrity is unavailable; inspect retained project state before retrying"); }
   }
 
   private executionReferenceRow(row: Record<string, unknown>): ExecutionLinkRecord {

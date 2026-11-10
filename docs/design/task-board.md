@@ -232,6 +232,18 @@ Review currency retains the exact historical head/hash and never carries to
 changed output. The bounds, unavailable equivalence and source-bound cursors are
 specified in [the execution-reference contract](execution-reference.md).
 
+## Guidance-variant lifecycle (#1225 T2)
+
+Tasks owns immutable guidance proposals, reads and terminal withdrawal through
+its current task-role, actor/session and privacy fences. Snapshot bodies stay
+in separate private experiment/variant tables, never on Task, refs, plan or
+history. A duplicate never revives stale authority or a withdrawn record; reads
+can show authorized history without declaring it currently applicable. These
+operations change no live role, ownership, permission, routing or native input.
+Controlled recovery retains their conditional feature floor and exact digest.
+The closed payload, storage bounds, declared evidence limits and recovery
+streaming ceiling are specified in [the guidance contract](guidance-experiments.md).
+
 ## Read models and policy extensions
 
 Agent list reads return bounded, newest-updated compact pages built from public rows, with a keyset cursor and explicit detail/ID reads. Console compatibility is separate. Pagination is not a frozen snapshot during concurrent edits; its purpose is bounded communication without bypassing private-row projection ([#1083](https://github.com/STAIxBWLB/agent-hub/issues/1083)).
