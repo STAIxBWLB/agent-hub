@@ -691,7 +691,11 @@ does not add an adec path to pure peer assignment or PII screening.
 ### Deadline, currentness and publication ceiling
 
 For optional host judges, fallback has priority and does not wait for the shadow
-model-choice answer. One absolute deadline covers common preparation and the judge/observation window;
+model-choice answer. Priority means invoking the existing fallback execute port
+before observer admission starts, after private common campus/currentness
+preparation. The actual house quota transaction runs before that port's first
+await; this does not attest downstream provider/GPU generation order or a custom
+asynchronous host's physical admission. One absolute deadline covers common preparation and the judge/observation window;
 there is no fresh timeout after a slow admission. The current common budget and
 campus APIs cannot be cancelled: the deadline races them, it does not join them.
 There is no strict physical eight-second completion or zero-pending-common-host
@@ -727,6 +731,32 @@ truthful count of recorded event types, including metadata; it is not business
 or executor credit. Token/cost and SDLC measures retain their separate inputs.
 The closed operational projection already withholds the entire `route` kind,
 while raw event export retains the target; this adds no console/display feature.
+
+### Internal model-free lifecycle proof seams
+
+An optional third `HubRouteRuntime` constructor proof port may receive
+`choicePrepared(ready: Promise<void>)`. The promise is derived from the actual
+owned observation result after selection settles; it exposes no choice data,
+permission or cancel method, and readiness alone does not attest a valid choice.
+The original result is still awaited and confirmed independently. Proof-sink
+failure is isolated. With the port absent, no readiness promise is created.
+There is no RouteHost, LocalWorker, OmniRoute, configuration or event-field change.
+
+`ChoiceWindow.commonSettled` reports consumption of common preparation fulfillment
+or rejection; close does not join it. This lets a controlled late-common test
+release its host barrier and await consumption directly without elapsed-time
+waits or guessed event-loop turns. The separately started owned HTTP task remains
+the only abort-and-join claim.
+
+The owned model-free routing harness has optional `beforeJudgeReply`,
+`choicePrepared` and `observeRoute` proof ports. The first pauses a scripted reply
+only after execute arguments have been recorded; the last receives a detached,
+frozen copy and has no return authority. Absent ports introduce no new await or
+readiness promise in canonical corpus execution. These ports do not change corpus
+cases, expected outputs, splits, guards or scoring. Integration proof must still
+show an actual judge-target event, off-mode absence and identical actual model,
+input, judge-call count and last executor observation; a fulfilled void readiness
+promise alone cannot satisfy it.
 
 ### R2 observation and inspection record
 
