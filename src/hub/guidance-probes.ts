@@ -64,6 +64,7 @@ export interface ProbeSessionAdmission {
   key: ProbeKey; expectedRevision: number; host: ProbeHostBinding; child?: ProbeChildBinding; now: number;
 }
 export interface ProbeReservation { key: ProbeKey; slotId: string; generation: number; revision: number }
+export interface ProbeStartSelector { requestedRevision: number; slotId: string; variantId: string | null; actor: string; sessionGeneration: number; nativeSession: string | null }
 export interface ProbeReceipt { id: string; revision: number; state: ProbeState; already: boolean }
 export type ProbeReservationResult = { kind: "granted"; reservation: ProbeReservation } | { kind: "existing"; receipt: ProbeReceipt };
 export interface ProbeEffectAdmission { reservation: ProbeReservation; sequence: number; unit: ProbeBudgetUnit; amount: number; reservedTokens?: number; descriptorSha256: string; now: number }
@@ -79,6 +80,7 @@ export interface ProbeCounters {
 export interface ProbeSession {
   slotId: string; generation: number; revision: number; state: ProbeSessionState; candidateArtifactSha256: string | null;
   child?: ProbeChildBinding;
+  start?: ProbeStartSelector;
 }
 export interface ProbeStoredState {
   registration: ProbeRegistrationV1; binding: ProbeHostBinding; receipt: ProbeReceipt; counters: ProbeCounters;

@@ -9,7 +9,7 @@ import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MOD
   type ProbeReservation, type ProbeReservationResult, type ProbeEffectAdmission, type ProbeEffectAdmissionResult,
   type ProbeEffectSettlement, type ProbeSessionSettlement, type ProbeUsageObservation, type ProbeCancellation,
   type ProbeIntegrity, type ProbeChildBinding, type GuidanceProbeFakePorts, type ProbeFakeEffects,
-  type ProbeFakeEffectRequest, type ProbeFakeEffectValue, type ProbeFakeEffectResult, type ProbeFakeObservation, type ProbeSlot } from "./guidance-probes.ts";
+  type ProbeFakeEffectRequest, type ProbeFakeEffectValue, type ProbeFakeEffectResult, type ProbeFakeObservation, type ProbeSlot, type ProbeStartSelector } from "./guidance-probes.ts";
 
 interface Effect { admission: ProbeEffectAdmission; state: "pending" | "settled" | "unknown"; usageHash: string | null; observed: number | null }
 interface Session extends ProbeSession { host?: ProbeHostBinding; effect: Effect | null }
@@ -154,15 +154,16 @@ export class GuidanceProbeStore {
       FROM guidance_probe_sessions WHERE project=? AND manifest_id=? ORDER BY ordinal LIMIT ?`)
       .all(GUIDANCE_PROBE_SESSION_BYTES, key.projectKey, key.id, GUIDANCE_PROBE_LIMITS.slots + 1) as Row[];
     if (rows.length !== registration.manifest.slots.length || rows.length > GUIDANCE_PROBE_LIMITS.slots) return fail("storage");
+    const starts = new Set<number>();
     const sessions = rows.map((item, index) => {
       const session = json<Session>(item.body), slot = registration.manifest.slots[index]!;
       if (item.ordinal !== index || item.slot_id !== slot.id || session.slotId !== slot.id || !probeInteger(session.generation) || !probeInteger(session.revision)
         || !["planned", "reserved", "running", "failed_known", "closed_fixture", "not_needed", "unknown_held"].includes(session.state)
         || session.candidateArtifactSha256 !== null && !probeSha256(session.candidateArtifactSha256)) return fail("storage");
       const fields = Object.keys(session);
-      if (fields.some(name => !["slotId", "generation", "revision", "state", "candidateArtifactSha256", "child", "host", "effect"].includes(name))
+      if (fields.some(name => !["slotId", "generation", "revision", "state", "candidateArtifactSha256", "child", "host", "effect", "start"].includes(name))
         || !Object.hasOwn(session, "effect") || ["planned", "not_needed"].includes(session.state)
-          && (session.effect !== null || session.host !== undefined || session.child !== undefined || session.generation !== 0 || session.revision !== 0 || session.candidateArtifactSha256 !== null)) return fail("storage");
+          && (session.effect !== null || session.host !== undefined || session.child !== undefined || session.start !== undefined || session.generation !== 0 || session.revision !== 0 || session.candidateArtifactSha256 !== null)) return fail("storage");
       if (session.state === "not_needed") {
         const prior = rows[index - 1];
         const priorState = prior ? json<Session>(prior.body).state : undefined;
@@ -171,6 +172,16 @@ export class GuidanceProbeStore {
       }
       if (session.host) { host(session.host); if (!invariant(binding, session.host)) return fail("storage"); }
       else if (!["planned", "not_needed"].includes(session.state)) return fail("storage");
+      if (session.host) {
+        const start = session.start;
+        if (!start || Object.keys(start).sort().join(",") !== "actor,nativeSession,requestedRevision,sessionGeneration,slotId,variantId"
+          || !probeInteger(start.requestedRevision) || start.requestedRevision >= checkedInteger(row.revision) || starts.has(start.requestedRevision)
+          || start.slotId !== session.slotId || start.actor !== session.host.actor || !executionText(start.actor, EXECUTION_REFERENCE_LIMITS.id)
+          || !probeInteger(start.sessionGeneration) || start.sessionGeneration !== session.host.sessionGeneration
+          || start.nativeSession !== session.host.nativeSession || start.nativeSession !== null && !executionText(start.nativeSession, EXECUTION_REFERENCE_LIMITS.id)
+          || start.variantId !== (session.child?.variantId ?? null) || start.variantId !== null && !probeSha256(start.variantId)) return fail("storage");
+        starts.add(start.requestedRevision);
+      }
       if (session.child && (!probeSha256(session.child.variantId) || !probeSha256(session.child.candidateSha256) || !probeSha256(session.child.guidanceSha256) || !same(session.child.task, binding.task)
         || !same(session.child.role, binding.role) || typeof session.child.guidance !== "string" || Buffer.byteLength(session.child.guidance) > GUIDANCE_ROLE_MAX_BYTES
         || probeHash(session.child.guidance) !== session.child.guidanceSha256 || !["admitted_fixture", "uncontrolled"].includes(session.child.authoring))) return fail("storage");
@@ -195,6 +206,12 @@ export class GuidanceProbeStore {
   read(key: ProbeKey): ProbeStoredState | undefined {
     try { const state = this.readStored(key); if (!state) return undefined; const { lastWall: _, ...result } = state; return result; }
     catch (error) { if (error instanceof GuidanceProbeError) throw error; throw new GuidanceProbeError("storage"); }
+  }
+  /** Host-private selector only, after Tasks' current outer admission; never a current-authority attestation. */
+  startSelector(key: ProbeKey, requestedRevision: number): ProbeStartSelector | undefined {
+    if (!probeInteger(requestedRevision)) return fail("invalid");
+    const start = this.read(key)?.sessions.find(item => item.start?.requestedRevision === requestedRevision)?.start;
+    return start ? { ...start } : undefined;
   }
   private get(key: ProbeKey): Stored { return this.readStored(key) ?? fail("changed"); }
   private save(key: ProbeKey, state: Stored): void {
@@ -258,12 +275,14 @@ export class GuidanceProbeStore {
       const fresh = revalidate(); if (!same(fresh.host, input.host) || !sameChild(fresh.child, input.child)) return fail("changed");
       const state = this.get(input.key);
       if (!invariant(state.binding, input.host) || !probeInteger(input.expectedRevision)) return fail("changed");
-      if (state.receipt.revision !== input.expectedRevision) {
-        const running = state.sessions.find(item => item.state === "reserved" || item.state === "running");
-        if (running && state.receipt.revision === increment(input.expectedRevision) && same(running.host, input.host)
-          && (input.child ? running.child?.variantId === input.child.variantId : !running.child)) return { kind: "existing", receipt: receipt(state, true) };
-        return fail("changed");
+      const replay = state.sessions.find(item => item.start?.requestedRevision === input.expectedRevision);
+      if (replay) {
+        const expected: ProbeStartSelector = { requestedRevision: input.expectedRevision, slotId: replay.slotId, variantId: input.child?.variantId ?? null,
+          actor: input.host.actor, sessionGeneration: input.host.sessionGeneration, nativeSession: input.host.nativeSession };
+        if (!same(replay.start, expected) || !sameChild(replay.child, input.child)) return fail("changed");
+        return { kind: "existing", receipt: receipt(state, true) };
       }
+      if (state.receipt.revision !== input.expectedRevision) return fail("changed");
       if (["closing", "closed_fixture", "failed_fixture", "unknown_held"].includes(state.receipt.state) || state.counters.usageUnknown) return fail("held");
       const lanes = [...this.lanes(input.key.projectKey)]; if (lanes.length > 1) return fail("storage");
       const lane = lanes[0]; if (lane && (lane.manifestId !== input.key.id || lane.slotId !== null)) return fail("held");
@@ -280,6 +299,8 @@ export class GuidanceProbeStore {
       elapsed(state, now, true); boundChild(state, input, session);
       charge(state, slot.role === "worker" ? "workerAttempts" : "editorAttempts", 1, slot.role === "worker" ? GUIDANCE_PROBE_LIMITS.workerAttempts : GUIDANCE_PROBE_LIMITS.editorAttempts);
       session.host = input.host; session.generation = increment(session.generation); session.revision = increment(session.revision); session.state = "reserved";
+      session.start = { requestedRevision: input.expectedRevision, slotId: slot.id, variantId: input.child?.variantId ?? null,
+        actor: input.host.actor, sessionGeneration: input.host.sessionGeneration, nativeSession: input.host.nativeSession };
       state.receipt.state = "active"; advance(state);
       this.db.query("INSERT INTO guidance_probe_lanes(project,manifest_id,slot_id) VALUES(?,?,?) ON CONFLICT(project) DO UPDATE SET slot_id=excluded.slot_id")
         .run(input.key.projectKey, input.key.id, slot.id);

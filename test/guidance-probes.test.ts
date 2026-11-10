@@ -144,6 +144,79 @@ describe("guidance probe private atomic ledger", () => {
     expect(f.store.read(f.key)!.counters.workerAttempts).toBe(0);
     expect(f.store.integrity().experiments).toBe(1);
   });
+  test("original start selector replays reserved work without another grant or metadata write", () => {
+    const f = fixture(); f.register(); f.reserve(); const before = f.store.integrity();
+    expect(f.store.startSelector(f.key, 0)).toEqual({ requestedRevision: 0, slotId: "baseline", variantId: null, actor: f.host.actor,
+      sessionGeneration: f.host.sessionGeneration, nativeSession: f.host.nativeSession });
+    expect(f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, now: 999999 }, f.revalidate)).toMatchObject({ kind: "existing", receipt: { already: true } });
+    expect(f.store.integrity()).toEqual(before); expect(f.store.read(f.key)!.counters.workerAttempts).toBe(1);
+    expect(JSON.stringify(f.store.startSelector(f.key, 0))).not.toContain(f.registration.snapshots.task);
+  });
+  test("exact original start replays after multiple effects, closed session and reopen without a second launch", async () => {
+    const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider();
+    let ready!: () => void, release!: () => void;
+    const observed = new Promise<void>(resolve => { ready = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    provider.script = async (input, callbacks) => {
+      for (let sequence = 0; sequence < 2; sequence++) {
+        const request = { sequence, unit: "model_calls" as const, descriptorSha256: probeHash(`replay-effect-${sequence}`), reservedTokens: 20 };
+        await callbacks.runEffect(request, async () => fakeEffectValue(request, "fixture", 5));
+      }
+      ready(); await gate;
+      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, inputFrameHash: input.inputSha256,
+        workerEffectiveInputHash: input.inputSha256, nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
+    };
+    const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => f.clock.now });
+    const original = { key: f.key, expectedRevision: 0, host: f.host, now: 100 };
+    let firstError: unknown;
+    const first = runner.start(original, new AbortController().signal).catch(error => { firstError = error; ready(); });
+    await observed;
+    try {
+      if (firstError) throw firstError;
+      const before = f.store.integrity(), replay = await runner.start({ ...original, now: 200 }, new AbortController().signal);
+      expect(replay.already).toBe(true); expect(f.store.integrity()).toEqual(before); expect(provider.launches).toHaveLength(1);
+      expect(f.store.read(f.key)!.counters).toMatchObject({ workerAttempts: 1, modelCalls: 2, tokensReserved: 40, tokensObservedKnown: 10 });
+    } finally { release(); await first; }
+    if (firstError) throw firstError;
+    expect(f.store.read(f.key)!.sessions[0]!.state).toBe("closed_fixture");
+    const before = f.store.integrity();
+    expect((await runner.start(original, new AbortController().signal)).already).toBe(true);
+    const reopened = new GuidanceProbeStore(f.file, () => f.clock.now); cleanup.push(() => reopened.close());
+    const restored = new GuidanceProbeFixtureHost(reopened, { ports: provider, revalidate: f.revalidate, now: () => f.clock.now });
+    expect((await restored.start(original, new AbortController().signal)).already).toBe(true);
+    expect(reopened.integrity()).toEqual(before); expect(provider.launches).toHaveLength(1);
+  });
+  test("original start replay cannot change actor/session/variant and current refusal precedes duplicate lookup", () => {
+    const f = fixture(); f.register(); f.reserve(); const before = f.store.integrity();
+    for (const changed of [{ ...f.host, actor: "pi" }, { ...f.host, sessionGeneration: f.host.sessionGeneration + 1 }, { ...f.host, nativeSession: "changed-session" }]) {
+      expect(() => f.store.reserveSession({ key: f.key, expectedRevision: 0, host: changed, now: 100 }, () => ({ host: changed }))).toThrow("binding");
+      expect(f.store.integrity()).toEqual(before);
+    }
+    const child: ProbeChildBinding = { variantId: probeHash("different-child"), candidateSha256: probeHash("raw"), guidanceSha256: probeHash("rendered"), guidance: "rendered",
+      task: f.host.task, role: f.host.role, authoring: "uncontrolled", sourceSessionId: null };
+    expect(() => f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, child, now: 100 }, () => ({ host: f.host, child }))).toThrow("binding");
+    expect(() => f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, () => { throw new Error("current authority withdrawn"); })).toThrow();
+    expect(f.store.integrity()).toEqual(before);
+  });
+  test("historical candidate selector revalidates the original G1 rather than rebinding today's next slot", () => {
+    const f = fixture(); f.registration.manifest.slots = [f.registration.manifest.slots[0]!, f.registration.manifest.slots[2]!];
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    const baseline = f.store.reserveSession({ key, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate);
+    if (baseline.kind !== "granted") throw new Error("expected baseline");
+    f.store.settleSession({ reservation: baseline.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: 100 });
+    const child: ProbeChildBinding = { variantId: probeHash("original-child"), candidateSha256: probeHash("raw"), guidanceSha256: probeHash("rendered"), guidance: "rendered",
+      task: f.host.task, role: f.host.role, authoring: "uncontrolled", sourceSessionId: null };
+    const originalRevision = f.store.read(key)!.receipt.revision;
+    const request = { key, expectedRevision: originalRevision, host: f.host, child, now: 100 }, check = () => ({ host: f.host, child });
+    const candidate = f.store.reserveSession(request, check); if (candidate.kind !== "granted") throw new Error("expected candidate");
+    f.store.settleSession({ reservation: candidate.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: 100 });
+    expect(f.store.read(key)!.receipt.state).toBe("closed_fixture");
+    expect(f.store.startSelector(key, originalRevision)?.variantId).toBe(child.variantId);
+    const before = f.store.integrity(); expect(f.store.reserveSession(request, check)).toMatchObject({ kind: "existing", receipt: { state: "closed_fixture", already: true } });
+    const different = { ...child, variantId: probeHash("another-current-child") };
+    expect(() => f.store.reserveSession({ ...request, child: different }, () => ({ host: f.host, child: different }))).toThrow("binding");
+    expect(() => f.store.reserveSession(request, () => { throw new Error("original G1 is now withdrawn"); })).toThrow();
+    expect(f.store.integrity()).toEqual(before); expect(f.store.read(key)!.counters.workerAttempts).toBe(2);
+  });
   test("pre-lock changed callback refuses zero writes; competing connection cannot write under lock", () => {
     const f = fixture(); f.register(); const before = f.store.integrity();
     expect(() => f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, () => ({ host: { ...f.host, task: { ...f.host.task, flowRevision: 3 } } }))).toThrow("binding");

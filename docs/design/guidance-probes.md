@@ -187,6 +187,10 @@ Admission requires the current catalog role/baseline to match the frozen commitm
 
 Registration is checked for current admission before deduplication. A stale duplicate does not turn an old declaration into a current permit. A duplicate with the exact current immutable identity returns the existing closed receipt, without a new lane, slot or launch grant. A conflicting declaration refuses. Cancellation intent and historical terminal records never resurrect.
 
+Each reserved session retains its original start selector: requested experiment CAS revision, selected slot, child variant (or null), actual actor and captured session identity. After full fresh actor/Task/G1/privacy/review/operational admission, exact replay of that selector returns the retained experiment receipt with `already: true`, without another grant, bind, launch or counter/revision change. It remains recognizable while reserved/running, after later effects/settlement and after reopening the store. Diagnostic queued time is excluded. Changed actor/session authority or selected variant refuses rather than rebinding. Stored identity is a replay comparator, never current authority or an attestation.
+
+Tasks may use the host-private bounded `startSelector(key, requestedRevision)` read to select the original slot/child for fresh source-owner G1 revalidation. It must not use today's next planned slot for a historical replay, and must perform current caller/Task outer admission before this lookup. Withdrawn/changed original G1 or a now-closed Task can therefore refuse a replay even though the historical selector exists. No new wire operation, public raw snapshot or history scan is introduced.
+
 Cancellation relaxes only frozen flow equality and current G1 applicability to narrow already-owned existing work. It retains current person/configured-conductor authority, session, project, Task epoch, privacy/review-only and operational guards. It persists intent, never launches or releases. Cleanup of an already-owned fake handle after a fence is lost is a separate host duty, not a new caller privilege.
 
 Known input/authority refusals before the first Board/store write may be PreEffectToolRefusal. Storage, hydration, readback and unknown wrapped errors remain plain fixed safe errors, including rollback failures. After a reservation, an unknown outcome is never described as safely retryable.
@@ -257,6 +261,7 @@ interface GuidanceProbeStore {
   register(input: ProbeRegistrationV1, binding: ProbeHostBinding,
     revalidate: () => ProbeHostBinding): ProbeReceipt;
   read(key: ProbeKey): ProbeStoredState | undefined;
+  startSelector(key: ProbeKey, requestedRevision: ProbeInteger): ProbeStartSelector | undefined;
   reserveSession(input: ProbeSessionAdmission,
     revalidate: () => ProbeAdmissionRecheck): ProbeReservationResult;
   checkInvocation(reservation: ProbeReservation, revalidate: () => ProbeAdmissionRecheck): ProbeReceipt;
@@ -312,6 +317,14 @@ interface ProbeReservation {
   slotId: ProbeId;
   generation: ProbeInteger;
   revision: ProbeInteger;
+}
+interface ProbeStartSelector {
+  requestedRevision: ProbeInteger;
+  slotId: ProbeId;
+  variantId: ProbeSha256 | null;
+  actor: PeerId;
+  sessionGeneration: ProbeInteger;
+  nativeSession: ProbeId | null;
 }
 type ProbeReservationResult =
   | { kind: "granted"; reservation: ProbeReservation }
@@ -382,6 +395,7 @@ interface ProbeStoredState {
     state: ProbeSessionState;
     candidateArtifactSha256: ProbeSha256 | null;
     child?: ProbeChildBinding;
+    start?: ProbeStartSelector;
   }[]; // <=9; effect descriptor columns are hydrated separately by exact key.
 }
 interface ProbeIntegrity {
