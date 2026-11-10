@@ -95,8 +95,10 @@ class JsonLines {
   close(): void { this.signal.removeEventListener("abort", this.abort); this.fail(new ReceiptError("cancelled")); }
 }
 
-const MCP_OBSERVER = `import{writeFileSync}from'node:fs';import{createInterface}from'node:readline';
-writeFileSync(process.argv[2],JSON.stringify({peer:process.env.AGENTHUB_PEER_ID,launch:process.env.AGENTHUB_LAUNCH_ID}),{mode:0o600});
+export const MCP_OBSERVER = `import{openSync,writeFileSync,closeSync,renameSync,unlinkSync}from'node:fs';import{createInterface}from'node:readline';
+const target=process.argv[2],temp=target+'.tmp';let fd,owned=false;
+try{fd=openSync(temp,'wx',0o600);owned=true;writeFileSync(fd,JSON.stringify({peer:process.env.AGENTHUB_PEER_ID,launch:process.env.AGENTHUB_LAUNCH_ID}));closeSync(fd);fd=undefined;renameSync(temp,target);owned=false}
+finally{try{if(fd!==undefined)closeSync(fd)}finally{if(owned)unlinkSync(temp)}}
 createInterface({input:process.stdin}).on('line',line=>{let m;try{m=JSON.parse(line)}catch{return}if(m.id===undefined)return;
 const result=m.method==='initialize'?{protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'receipt-observer',version:'1'}}:m.method==='tools/list'?{tools:[]}:{};
 process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n')});process.stdin.on('end',()=>process.exit(0));`;
