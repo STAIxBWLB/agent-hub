@@ -4832,6 +4832,61 @@ it refuses the stale turn, exactly as a decision route does, and the heuristic i
 not executed around that refusal. The PII
 screen, `assign()` and the escalation and advisor triggers never use this path.
 
+#### Optional phase and judge model/effort choices (#1352)
+
+The same separately operated ADEc service can suggest a model/effort pair for
+an existing `plan_execute` phase or an existing `advisor`/`escalation` judge
+call. Add the ordinary service binding to that route and keep
+`decision_mode = "shadow"`; omitted mode remains `off`, and `enforce` is refused
+at configuration load. No new `judge_choice` table or other routing key is
+introduced.
+
+For a phase route, `policy_id = "ahub.plan-execute"` refers to
+[`templates/adec/ahub.plan-execute.json`](../templates/adec/ahub.plan-execute.json).
+The policy's candidates, the route's allowed `candidates`, and the route's
+`efficient`/`capable` fallback aliases must be reviewed together. The route's
+`candidates` allowlist must match the policy options; the host fallback aliases
+remain independent and are what the executor still receives in shadow. For
+example, the syntactically valid placeholders in that template map to a route
+like:
+
+```toml
+[hub_routes."hub/plan-execute"]
+type = "plan_execute"
+decision_backend = "adec"
+decision_mode = "shadow"
+policy_id = "ahub.plan-execute"
+adec_endpoint = "http://127.0.0.1:8740/v1/route"
+efficient = "replace-me-efficient"
+capable = "replace-me-capable"
+candidates = [
+  { alias = "replace-me-efficient", efforts = ["edit-effort"] },
+  { alias = "replace-me-capable", efforts = ["edit-effort"] },
+]
+```
+
+Replace every placeholder with a provider and alias/effort pair from the
+person's own ADEc configuration before using the example. `ahub.stage` is the
+separate R1 ambiguity-band classifier policy; its template is
+[`templates/adec/ahub.stage.json`](../templates/adec/ahub.stage.json) and its
+stage candidates use effort `none`. These templates are pinned to the public
+agent-decide policy schema at commit `008548c5`; their provider, aliases, effort
+and on-prem status are examples only. Each sample candidate sets `onPrem` to
+`false`. A person must verify the model's actual serving location before
+changing that value; loopback service placement alone does not establish it.
+
+Advisor and escalation judge routes may use the same binding shape with a
+person-authored policy for the judge model/effort options. ADEc suggests only a
+pair. The hub still owns whether to review or escalate, the judge prompt and
+reply parsing, escalation confirmation, privacy and campus admission, and the
+existing fallback execution. In shadow the suggested pair is metadata only;
+it does not replace the model/effort actually sent to the executor. Judge
+observations use the `decisionTarget = "judge"` route-event marker and do not
+add a phase or purpose field. The route keeps the existing main model and host
+semantics. No live model-quality, routing-gain or production claim follows from
+the policy files or model-free proof; the manual model-routing receipt/live
+benchmark remains unrun.
+
 Migrate the retired settings as follows:
 
 | Retired setting or route | In-process replacement |

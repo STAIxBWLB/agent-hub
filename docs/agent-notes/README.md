@@ -10,6 +10,12 @@ points at the stage contract and its single switch planner; generic decision
 evidence v1, the remaining route decisions and notice cleanup have separate
 ownership boundaries.
 
+R2 keeps optional model selection separate from host decisions: ADEc may suggest
+an alias/effort for an existing plan phase or judge call, while the hub retains
+phase transitions, review/escalation rules and fallback execution. The off and
+shadow modes preserve that boundary; sample policy text cannot grant authority
+or substantiate a live model-quality claim.
+
 In the #1055 review, the new title-binding lookup preceded invocation,
 pending-delivery and supervision bookkeeping in `Bus.onDelivered`. The bus's
 outer observer catch protected settlement but could not finish bookkeeping

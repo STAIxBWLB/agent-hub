@@ -775,6 +775,7 @@ cases, expected outputs, splits, guards or scoring. Integration proof must still
 show an actual judge-target event, off-mode absence and identical actual model,
 input, judge-call count and last executor observation; a fulfilled void readiness
 promise alone cannot satisfy it.
+
 The test and report name is normalized event parity. In controlled judge-choice
 off/shadow comparisons, executor events must be JSON-byte-identical after canonicalizing only `ms` and the opaque decision UUID
 through a validated one-to-one mapping, with identical presence, count and type.

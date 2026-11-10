@@ -1,0 +1,23 @@
+{
+  "policyId": "ahub.plan-execute",
+  "provider": "replace-me-provider",
+  "instructions": "Choose one model/effort pair from the supplied options for the already-determined planning or execution phase, using only the bounded host-route evidence. This is a shadow recommendation: the hub owns phase transitions, execution authority, and the actual fallback model. Do not decide whether planning is complete, authorize work, infer privacy authority, select a peer, or add options.",
+  "candidates": [
+    {
+      "alias": "replace-me-efficient",
+      "efforts": ["edit-effort"],
+      "onPrem": false
+    },
+    {
+      "alias": "replace-me-capable",
+      "efforts": ["edit-effort"],
+      "onPrem": false
+    }
+  ],
+  "default": {
+    "alias": "replace-me-efficient",
+    "effort": "edit-effort"
+  },
+  "contextLimit": 20000,
+  "minMargin": 0.05
+}

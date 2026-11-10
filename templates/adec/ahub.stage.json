@@ -1,0 +1,23 @@
+{
+  "policyId": "ahub.stage",
+  "provider": "replace-me-provider",
+  "instructions": "Choose one model/effort pair from the supplied options using only the bounded stage evidence. This is a shadow recommendation: the hub keeps its deterministic tier and may ignore the choice. Do not infer task actions, phase transitions, approvals, escalation, peer assignment, privacy authority, or new options.",
+  "candidates": [
+    {
+      "alias": "replace-me-efficient",
+      "efforts": ["none"],
+      "onPrem": false
+    },
+    {
+      "alias": "replace-me-capable",
+      "efforts": ["none"],
+      "onPrem": false
+    }
+  ],
+  "default": {
+    "alias": "replace-me-efficient",
+    "effort": "none"
+  },
+  "contextLimit": 20000,
+  "minMargin": 0.05
+}

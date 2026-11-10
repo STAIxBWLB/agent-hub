@@ -132,6 +132,14 @@ recovery transaction and bus recovery hold are clear.
 
 Peer selection, hub-owned model routing, and provider access are distinct layers. Task routing chooses a peer; the in-process route selects a model for hub-owned inference; OmniRoute owns provider keys, provider fallback, and usage. Native CLIs retain their own account and provider configuration; subscription OAuth credentials are not pooled through the gateway. The former Switchyard sidecar is retired; routing now runs in process. An opt-in `decision` route may consult the loopback agent-decide policy service; execution and provider access remain in the hub and OmniRoute, with the existing heuristic as the consumer fallback. This keeps worker-provider credentials and provider failover in one gateway; the optional policy consult does not proxy the worker's inference traffic ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).
 
+For the later host-route question slice, the same loopback service can suggest
+an alias/effort for an existing `plan_execute` phase or `advisor`/`escalation`
+judge call. The phase, host trigger, verdict parsing, escalation latch and
+executor fallback remain owned by the hub; shadow records the proposal without
+applying it. The judge observation is separately marked in route metadata and
+does not create a served-model or usage claim. The ADEc policy examples are
+placeholders, not deployed configuration or evidence of model quality.
+
 Person-owned live model overrides (#1317) are runtime state in `hub.db`, not
 configuration edits. The host owns person admission, desired-versus-applied
 selection, next-turn fencing, status and audit; adapters acknowledge only their
