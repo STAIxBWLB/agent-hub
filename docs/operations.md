@@ -1038,6 +1038,13 @@ plugin stale when the module changed after setup, so run `ahub setup` again afte
   out of that poll. Only labels and states reach the scene, never message bodies, task details,
   approval titles or reasons; a PII task's card shows the `[pii]` stub.
 
+The companions read ahub only through the companion CLI contract,
+`docs/contracts/companion-cli-v1.json` (#1387): the commands, the `status` and `projects` paths with
+their types and presence rules, the no-hub exit and the `shellQuote` vectors. Adding a field changes
+nothing. Removing or renaming a listed path, changing a closed set, an argv form, the exit code or
+the stderr prefix needs `companion-cli-v2.json` beside v1 and a `hub_task_handoff` to each companion
+repository. `test/companion-contract.test.ts` holds ahub to the file.
+
 ## Install and start
 
 Use Bun <!-- facts:bun-floor -->1.4.2<!-- /facts:bun-floor --> or newer. Source checks and CI use the version pinned in
