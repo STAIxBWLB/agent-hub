@@ -9,10 +9,12 @@ import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MOD
   type ProbeReservation, type ProbeReservationResult, type ProbeEffectAdmission, type ProbeEffectAdmissionResult,
   type ProbeEffectSettlement, type ProbeSessionSettlement, type ProbeUsageObservation, type ProbeCancellation,
   type ProbeIntegrity, type ProbeChildBinding, type GuidanceProbeFakePorts, type ProbeFakeEffects,
-  type ProbeFakeEffectRequest, type ProbeFakeEffectValue, type ProbeFakeEffectResult, type ProbeFakeObservation, type ProbeSlot, type ProbeStartSelector } from "./guidance-probes.ts";
+  type ProbeFakeEffectRequest, type ProbeFakeEffectValue, type ProbeFakeEffectResult, type ProbeFakeObservation, type ProbeSlot, type ProbeStartSelector,
+  type ProbePreparedFrame, type ProbeSessionCoverage } from "./guidance-probes.ts";
 
 interface Effect { admission: ProbeEffectAdmission; state: "pending" | "settled" | "unknown"; usageHash: string | null; observed: number | null }
 interface Session extends ProbeSession { host?: ProbeHostBinding; effect: Effect | null }
+interface EffectLifetime { open(): boolean; track(): () => void }
 interface Stored extends Omit<ProbeStoredState, "sessions"> { sessions: Session[]; lastWall: number | null }
 interface Lane { project: string; manifestId: string; slotId: string | null }
 type Row = Record<string, unknown>;
@@ -50,6 +52,10 @@ function host(value: ProbeHostBinding): void {
 const counters = (): ProbeCounters => ({ workerAttempts: 0, editorAttempts: 0, modelCalls: 0, toolCalls: 0,
   tokensReserved: 0, tokensObservedKnown: 0, inputBytes: 0, scratchBytes: 0, outputBytes: 0,
   elapsedHighWaterMs: 0, usageUnknown: false });
+const sessionCoverage = (frame: ProbePreparedFrame | undefined): ProbeSessionCoverage => ({
+  inputFrameSha256: frame?.sha256 ?? null, inputFrameBytes: frame?.bytes ?? 0, launchExposed: false, preLaunchFailure: false,
+  modelCalls: 0, modelUsageKnown: 0, toolCalls: 0, toolUsageKnown: 0, usageUnknown: false, coverageVerified: false,
+});
 const receipt = (state: Stored, already = false): ProbeReceipt => ({ ...state.receipt, already });
 const advance = (state: Stored): void => { state.receipt.revision = increment(state.receipt.revision); };
 function hold(state: Stored, reason: Exclude<Stored["admissionHold"], "none">): void {
@@ -80,7 +86,8 @@ function boundChild(state: Stored, input: ProbeSessionAdmission, session: Sessio
     || probeHash(child.guidance) !== child.guidanceSha256) return fail("changed");
   if (session.child) { if (!same(session.child, child)) fail("changed"); return; }
   const producerStage = slot.arm === "successor" ? "compose" : slot.arm === "candidate2" ? "proposal2" : "proposal1";
-  const source = state.sessions.findLast(item => state.registration.manifest.slots.find(slot => slot.id === item.slotId)?.stage === producerStage && item.state === "closed_fixture");
+  const source = state.sessions.findLast(item => state.registration.manifest.slots.find(slot => slot.id === item.slotId)?.stage === producerStage
+    && item.state === "closed_fixture" && item.coverage.coverageVerified);
   const controlled = source?.state === "closed_fixture" && source.candidateArtifactSha256 === child.candidateSha256;
   session.child = { ...child, authoring: controlled ? "admitted_fixture" : "uncontrolled", sourceSessionId: controlled ? source.slotId : null };
   charge(state, "inputBytes", Buffer.byteLength(child.guidance), state.registration.manifest.limits.inputBytes);
@@ -177,9 +184,19 @@ export class GuidanceProbeStore {
         || !["planned", "reserved", "running", "failed_known", "closed_fixture", "not_needed", "unknown_held"].includes(session.state)
         || session.candidateArtifactSha256 !== null && !probeSha256(session.candidateArtifactSha256)) return fail("storage");
       const fields = Object.keys(session);
-      if (fields.some(name => !["slotId", "generation", "revision", "state", "candidateArtifactSha256", "child", "host", "effect", "start"].includes(name))
+      if (fields.some(name => !["slotId", "generation", "revision", "state", "candidateArtifactSha256", "child", "host", "effect", "start", "coverage"].includes(name))
         || !Object.hasOwn(session, "effect") || ["planned", "not_needed"].includes(session.state)
-          && (session.effect !== null || session.host !== undefined || session.child !== undefined || session.start !== undefined || session.generation !== 0 || session.revision !== 0 || session.candidateArtifactSha256 !== null)) return fail("storage");
+          && (session.effect !== null || session.host !== undefined || session.child !== undefined || session.start !== undefined || session.generation !== 0 || session.revision !== 0 || session.candidateArtifactSha256 !== null)
+        || !session.coverage || Object.keys(session.coverage).sort().join(",") !== Object.keys(sessionCoverage(undefined)).sort().join(",")
+        || !probeInteger(session.coverage.inputFrameBytes) || session.coverage.inputFrameSha256 !== null && !probeSha256(session.coverage.inputFrameSha256)
+        || ["launchExposed", "preLaunchFailure", "usageUnknown", "coverageVerified"].some(name => typeof session.coverage[name as keyof ProbeSessionCoverage] !== "boolean")
+        || ["modelCalls", "modelUsageKnown", "toolCalls", "toolUsageKnown"].some(name => !probeInteger(session.coverage[name as keyof ProbeSessionCoverage]))
+        || session.coverage.modelUsageKnown > session.coverage.modelCalls || session.coverage.toolUsageKnown > session.coverage.toolCalls
+        || session.coverage.launchExposed && (!session.coverage.inputFrameSha256 || session.coverage.inputFrameBytes === 0)
+        || session.coverage.preLaunchFailure && (session.state !== "failed_known" || session.coverage.launchExposed || session.coverage.modelCalls !== 0 || session.coverage.toolCalls !== 0)
+        || session.coverage.coverageVerified && !["closed_fixture", "failed_known"].includes(session.state)
+        || session.coverage.coverageVerified && (!session.coverage.launchExposed || session.coverage.preLaunchFailure || !session.coverage.inputFrameSha256
+          || session.coverage.modelCalls < 1 || session.coverage.modelUsageKnown !== session.coverage.modelCalls || session.coverage.toolUsageKnown !== session.coverage.toolCalls || session.coverage.usageUnknown)) return fail("storage");
       if (session.state === "not_needed") {
         const prior = rows[index - 1];
         const priorState = prior ? json<Session>(prior.body).state : undefined;
@@ -190,13 +207,14 @@ export class GuidanceProbeStore {
       else if (!["planned", "not_needed"].includes(session.state)) return fail("storage");
       if (session.host) {
         const start = session.start;
-        if (!start || Object.keys(start).sort().join(",") !== "actor,nativeSession,requestConnectionId,requestedRevision,sessionGeneration,slotId,variantId"
+        if (!start || Object.keys(start).sort().join(",") !== "actor,inputFrameBytes,inputFrameSha256,nativeSession,requestConnectionId,requestedRevision,sessionGeneration,slotId,variantId"
           || !probeInteger(start.requestedRevision) || start.requestedRevision >= checkedInteger(row.revision) || starts.has(start.requestedRevision)
           || start.slotId !== session.slotId || start.actor !== session.host.actor || !executionText(start.actor, EXECUTION_REFERENCE_LIMITS.id)
           || !probeSessionGeneration(start.sessionGeneration) || start.sessionGeneration !== session.host.sessionGeneration
           || start.nativeSession !== session.host.nativeSession || start.nativeSession !== null && !executionText(start.nativeSession, EXECUTION_REFERENCE_LIMITS.id)
           || start.requestConnectionId !== session.host.requestConnectionId || !executionText(start.requestConnectionId, EXECUTION_REFERENCE_LIMITS.id)
-          || start.variantId !== (session.child?.variantId ?? null) || start.variantId !== null && !probeSha256(start.variantId)) return fail("storage");
+          || start.variantId !== (session.child?.variantId ?? null) || start.variantId !== null && !probeSha256(start.variantId)
+          || start.inputFrameSha256 !== session.coverage.inputFrameSha256 || start.inputFrameBytes !== session.coverage.inputFrameBytes) return fail("storage");
         starts.add(start.requestedRevision);
       }
       if (session.child && (!probeSha256(session.child.variantId) || !probeSha256(session.child.candidateSha256) || !probeSha256(session.child.guidanceSha256) || !same(session.child.task, binding.task)
@@ -212,6 +230,8 @@ export class GuidanceProbeStore {
       }
       sessionCanonical(session); return session;
     });
+    if (sessions.reduce((sum, item) => increment(sum, item.coverage.modelCalls), 0) !== totals.modelCalls
+      || sessions.reduce((sum, item) => increment(sum, item.coverage.toolCalls), 0) !== totals.toolCalls) return fail("storage");
     if (row.first_reserved_valid !== 1 || row.last_wall_valid !== 1 || !["declared", "active", "closing", "closed_fixture", "failed_fixture", "unknown_held"].includes(row.state as string)) return fail("storage");
     if (!["none", "elapsed", "observation", "usage"].includes(row.admission_hold as string)
       || row.admission_hold !== "none" && !["unknown_held", "closing"].includes(row.state as string)) return fail("storage");
@@ -284,7 +304,7 @@ export class GuidanceProbeStore {
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(key.projectKey, id, manifest.experimentId, canonical(manifest), snap.task, snap.baselineContext,
           canonical(snap.dataPolicy), snap.systemPolicy, snap.improverContext ?? null, canonical(binding), canonical(totals), 0, "declared", "none", 0);
       manifest.slots.forEach((slot, index) => this.db.query("INSERT INTO guidance_probe_sessions(project,manifest_id,ordinal,slot_id,body) VALUES(?,?,?,?,?)")
-        .run(key.projectKey, id, index, slot.id, canonical({ slotId: slot.id, generation: 0, revision: 0, state: "planned", candidateArtifactSha256: null, effect: null })));
+        .run(key.projectKey, id, index, slot.id, canonical({ slotId: slot.id, generation: 0, revision: 0, state: "planned", candidateArtifactSha256: null, effect: null, coverage: sessionCoverage(undefined) })));
       return { id, revision: 0, state: "declared", already: false };
     });
   }
@@ -296,8 +316,11 @@ export class GuidanceProbeStore {
       const replay = state.sessions.find(item => item.start?.requestedRevision === input.expectedRevision);
       if (replay) {
         const expected: ProbeStartSelector = { requestedRevision: input.expectedRevision, slotId: replay.slotId, variantId: input.child?.variantId ?? null,
+          inputFrameSha256: replay.start!.inputFrameSha256, inputFrameBytes: replay.start!.inputFrameBytes,
           actor: input.host.actor, sessionGeneration: input.host.sessionGeneration, nativeSession: input.host.nativeSession, requestConnectionId: input.host.requestConnectionId };
         if (!same(replay.start, expected) || !sameChild(replay.child, input.child)) return fail("changed");
+        if (input.preparedFrame && (input.preparedFrame.slotId !== replay.slotId || input.preparedFrame.sha256 !== expected.inputFrameSha256
+          || input.preparedFrame.bytes !== expected.inputFrameBytes)) return fail("changed");
         return { kind: "existing", receipt: receipt(state, true) };
       }
       if (state.receipt.revision !== input.expectedRevision) return fail("changed");
@@ -306,6 +329,9 @@ export class GuidanceProbeStore {
       const lane = lanes[0]; if (lane && (lane.manifestId !== input.key.id || lane.slotId !== null)) return fail("held");
       const index = state.sessions.findIndex(item => item.state === "planned"), session = state.sessions[index]; if (!session) return fail("held");
       const slot = state.registration.manifest.slots[index]!, previous = state.sessions[index - 1];
+      const frame = input.preparedFrame;
+      if (frame && (frame.slotId !== slot.id || !probeSha256(frame.sha256) || !probeInteger(frame.bytes) || frame.bytes === 0)) return fail("invalid");
+      if (frame) charge(state, "inputBytes", frame.bytes, state.registration.manifest.limits.inputBytes);
       if (previous && !["closed_fixture", "not_needed"].includes(previous.state) && !(previous.state === "failed_known" && slot.retryOf === previous.slotId)) return fail("held");
       if (slot.retryOf && previous?.state !== "failed_known") return fail("held");
       // No fake launch can begin when a first model/tool call already cannot be admitted.
@@ -317,7 +343,9 @@ export class GuidanceProbeStore {
       elapsed(state, now, true); boundChild(state, input, session);
       charge(state, slot.role === "worker" ? "workerAttempts" : "editorAttempts", 1, slot.role === "worker" ? GUIDANCE_PROBE_LIMITS.workerAttempts : GUIDANCE_PROBE_LIMITS.editorAttempts);
       session.host = input.host; session.generation = increment(session.generation); session.revision = increment(session.revision); session.state = "reserved";
+      session.coverage = sessionCoverage(frame);
       session.start = { requestedRevision: input.expectedRevision, slotId: slot.id, variantId: input.child?.variantId ?? null,
+        inputFrameSha256: frame?.sha256 ?? null, inputFrameBytes: frame?.bytes ?? 0,
         actor: input.host.actor, sessionGeneration: input.host.sessionGeneration, nativeSession: input.host.nativeSession, requestConnectionId: input.host.requestConnectionId };
       state.receipt.state = "active"; advance(state);
       this.db.query("INSERT INTO guidance_probe_lanes(project,manifest_id,slot_id) VALUES(?,?,?) ON CONFLICT(project) DO UPDATE SET slot_id=excluded.slot_id")
@@ -339,6 +367,20 @@ export class GuidanceProbeStore {
       const now = this.now();
       if (this.clockLost(reservation.key, state, now)) return receipt(state);
       elapsed(state, now); this.save(reservation.key, state); return receipt(state);
+    });
+  }
+  /** Persisted trusted-host marker immediately before crossing the fake-port launch boundary. */
+  exposeLaunch(reservation: ProbeReservation, revalidate: () => ProbeAdmissionRecheck): ProbeReceipt {
+    return this.transaction(() => {
+      const state = this.get(reservation.key), session = this.owned(state, reservation), fresh = revalidate();
+      if (!same(fresh.host, session.host) || !sameChild(fresh.child, session.child) || !invariant(state.binding, fresh.host)
+        || state.cancelRequested || state.receipt.state !== "active" || state.admissionHold !== "none"
+        || !session.coverage.inputFrameSha256 || session.coverage.inputFrameBytes === 0) return fail("held");
+      if (session.coverage.launchExposed) return receipt(state, true);
+      const now = this.now();
+      if (this.clockLost(reservation.key, state, now)) return receipt(state);
+      elapsed(state, now);
+      session.coverage.launchExposed = true; advance(state); this.save(reservation.key, state); return receipt(state);
     });
   }
   admitEffect(input: ProbeEffectAdmission, revalidate: () => ProbeAdmissionRecheck): ProbeEffectAdmissionResult {
@@ -370,6 +412,8 @@ export class GuidanceProbeStore {
       } else if (input.reservedTokens !== undefined) return fail("invalid");
       const admitted = { ...input, now };
       session.effect = { admission: admitted, state: "pending", usageHash: null, observed: null }; session.state = "running";
+      if (input.unit === "model_calls") session.coverage.modelCalls = increment(session.coverage.modelCalls, input.amount);
+      else if (input.unit === "tool_calls") session.coverage.toolCalls = increment(session.coverage.toolCalls, input.amount);
       advance(state); this.save(input.reservation.key, state); return { kind: "granted", admission: admitted };
     });
   }
@@ -389,11 +433,16 @@ export class GuidanceProbeStore {
       } else if (effect.usageHash === input.observationSha256) return receipt(state, true);
       else {
         effect.usageHash = input.observationSha256; effect.observed = input.observed;
-        if (input.observed === null) state.counters.usageUnknown = true;
+        if (input.observed === null) { state.counters.usageUnknown = true; if (session) session.coverage.usageUnknown = true; }
         else if (input.admission.unit === "model_calls") {
           state.counters.tokensObservedKnown = increment(state.counters.tokensObservedKnown, input.observed);
+          if (session) session.coverage.modelUsageKnown = increment(session.coverage.modelUsageKnown);
           if (input.admission.reservedTokens !== undefined && input.observed > input.admission.reservedTokens) state.counters.usageUnknown = true;
-        } else if (input.admission.unit === "tool_calls" && input.observed > input.admission.amount) state.counters.usageUnknown = true;
+        } else if (input.admission.unit === "tool_calls") {
+          if (session) session.coverage.toolUsageKnown = increment(session.coverage.toolUsageKnown);
+          if (input.observed > input.admission.amount) state.counters.usageUnknown = true;
+        }
+        if (state.counters.usageUnknown && session) session.coverage.usageUnknown = true;
         if (state.counters.usageUnknown) hold(state, "usage");
       }
       advance(state); this.save(input.admission.reservation.key, state); return receipt(state);
@@ -417,7 +466,13 @@ export class GuidanceProbeStore {
       if (this.clockLost(input.reservation.key, state, now)) return receipt(state);
       elapsed(state, now);
       if (input.candidateArtifactSha256 !== null && !probeSha256(input.candidateArtifactSha256)) return fail("invalid");
-      const unknown = state.cancelRequested || state.admissionHold !== "none" || state.receipt.state === "closing" || input.outcome === "unknown" || state.counters.usageUnknown || session.effect?.state === "pending" || session.effect?.state === "unknown";
+      const covered = session.coverage.launchExposed && !!session.coverage.inputFrameSha256 && session.coverage.modelCalls > 0
+        && session.coverage.modelUsageKnown === session.coverage.modelCalls && session.coverage.toolUsageKnown === session.coverage.toolCalls
+        && !session.coverage.usageUnknown;
+      if (session.coverage.launchExposed && !covered) hold(state, "usage");
+      const unknown = state.cancelRequested || state.admissionHold !== "none" || state.receipt.state === "closing" || input.outcome === "unknown" || state.counters.usageUnknown || session.effect?.state === "pending" || session.effect?.state === "unknown"
+        || session.coverage.launchExposed && !covered;
+      session.coverage.coverageVerified = covered && !unknown;
       session.state = unknown ? "unknown_held" : input.outcome === "failed_known" ? "failed_known" : "closed_fixture"; session.candidateArtifactSha256 = input.candidateArtifactSha256;
       if (unknown) state.receipt.state = "unknown_held";
       else {
@@ -432,6 +487,28 @@ export class GuidanceProbeStore {
       }
       advance(state); this.save(input.reservation.key, state); return receipt(state);
     });
+  }
+  /** Trusted host can attest no launch only before invoking the port. */
+  settlePreLaunchFailure(reservation: ProbeReservation, now: number): ProbeReceipt {
+    return this.transaction(() => {
+      const state = this.get(reservation.key), session = this.owned(state, reservation);
+      if (session.coverage.launchExposed || session.coverage.modelCalls !== 0 || session.coverage.toolCalls !== 0
+        || session.effect !== null || state.counters.usageUnknown || state.admissionHold !== "none" || state.cancelRequested || state.receipt.state === "closing") return fail("held");
+      if (this.clockLost(reservation.key, state, now)) return receipt(state);
+      elapsed(state, now);
+      session.coverage.preLaunchFailure = true; session.state = "failed_known"; session.candidateArtifactSha256 = null;
+      this.db.query("UPDATE guidance_probe_lanes SET slot_id=NULL WHERE project=? AND manifest_id=? AND slot_id=?").run(reservation.key.projectKey, reservation.key.id, session.slotId);
+      const index = state.sessions.indexOf(session), failed = state.registration.manifest.slots[index + 1]?.retryOf !== session.slotId;
+      if (failed) {
+        state.receipt.state = "failed_fixture";
+        this.db.query("DELETE FROM guidance_probe_lanes WHERE project=? AND manifest_id=? AND slot_id IS NULL").run(reservation.key.projectKey, reservation.key.id);
+      }
+      advance(state); this.save(reservation.key, state); return receipt(state);
+    });
+  }
+  settleObservedSession(input: ProbeSessionSettlement, usage: "known_fixture" | "unknown"): ProbeReceipt {
+    if (usage !== "known_fixture") this.latchHold(input.reservation, "usage");
+    return this.settleSession(input);
   }
   cancelIntent(input: ProbeCancellation, revalidate: () => ProbeHostBinding): ProbeReceipt {
     return this.transaction(() => {
@@ -488,27 +565,62 @@ export class GuidanceProbeFixtureHost {
     // Production T1 stops here, before even selecting/binding a child or reserving a slot.
     if (!ports) return fail("runner");
     if (signal.aborted) return fail("held");
-    const result = this.store.reserveSession(input, this.options.revalidate);
+    const current = this.store.read(input.key); if (!current) return fail("changed");
+    const original = this.store.startSelector(input.key, input.expectedRevision);
+    const slot = current.registration.manifest.slots.find(item => item.id === (original?.slotId ?? current.sessions.find(item => item.state === "planned")?.slotId));
+    if (!slot) return fail("held");
+    const selectedGuidance = slot.arm === "baseline" ? current.binding.baselineGuidance : input.child?.guidance;
+    const inputFrame = slot.role === "worker" && typeof selectedGuidance === "string"
+      ? guidanceProbeWorkerFrame(current.registration.snapshots.task, current.registration.snapshots.baselineContext, current.registration.snapshots.systemPolicy, selectedGuidance)
+      : this.options.prepareEditorFrame?.(current, slot);
+    if (typeof inputFrame !== "string" || Buffer.byteLength(inputFrame) === 0) return fail("invalid");
+    const preparedFrame: ProbePreparedFrame = { slotId: slot.id, sha256: probeHash(inputFrame), bytes: Buffer.byteLength(inputFrame) };
+    const result = this.store.reserveSession({ ...input, preparedFrame }, this.options.revalidate);
     if (result.kind === "existing") return result.receipt;
     const reservation = result.reservation;
     try {
       const state = this.store.read(input.key)!;
-      const slot = state.registration.manifest.slots.find(item => item.id === reservation.slotId)!;
-      const snapshots = state.registration.snapshots, selected = state.sessions.find(item => item.slotId === slot.id)!;
-      const inputFrame = slot.role === "worker" ? guidanceProbeWorkerFrame(snapshots.task, snapshots.baselineContext, snapshots.systemPolicy,
-        slot.arm === "baseline" ? state.binding.baselineGuidance : selected.child!.guidance) : this.options.prepareEditorFrame?.(state, slot);
-      if (typeof inputFrame !== "string" || Buffer.byteLength(inputFrame) > state.registration.manifest.limits.inputBytes) return fail("invalid");
-      const frame = { inputFrame, nonGuidanceInputSha256: guidanceProbeNonGuidanceInputHash(snapshots.task, snapshots.baselineContext, snapshots.systemPolicy) };
-      const effects = this.effects(reservation, signal);
-      if (signal.aborted || this.store.checkInvocation(reservation, this.options.revalidate).state !== "active" || signal.aborted) return fail("held");
-      const observation = await ports.launch({ reservation, slot, manifest: state.registration.manifest,
-        inputFrame: frame.inputFrame, inputSha256: probeHash(frame.inputFrame), nonGuidanceInputSha256: frame.nonGuidanceInputSha256, purpose: "guidance_probe" }, effects, signal);
+      const snapshots = state.registration.snapshots, frame = { inputFrame, nonGuidanceInputSha256: guidanceProbeNonGuidanceInputHash(snapshots.task, snapshots.baselineContext, snapshots.systemPolicy) };
+      let effectsOpen = true;
+      const pendingEffects = new Set<Promise<void>>();
+      const effects = this.effects(reservation, signal, {
+        open: () => effectsOpen,
+        track: () => {
+          let resolve!: () => void;
+          const joined = new Promise<void>(complete => { resolve = complete; });
+          pendingEffects.add(joined);
+          return () => { if (pendingEffects.delete(joined)) resolve(); };
+        },
+      });
+      if (signal.aborted || this.store.exposeLaunch(reservation, this.options.revalidate).state !== "active" || signal.aborted) return fail("held");
+      let launch: { kind: "observed"; observation: ProbeFakeObservation } | { kind: "failed"; error: unknown };
+      try {
+        const launched = ports.launch({ reservation, slot, manifest: state.registration.manifest,
+          inputFrame: frame.inputFrame, inputSha256: probeHash(frame.inputFrame), nonGuidanceInputSha256: frame.nonGuidanceInputSha256, purpose: "guidance_probe" }, effects, signal);
+        launch = await launched.then(observation => {
+          effectsOpen = false;
+          return { kind: "observed" as const, observation };
+        }, error => {
+          effectsOpen = false;
+          return { kind: "failed" as const, error };
+        });
+      } catch (error) {
+        effectsOpen = false;
+        launch = { kind: "failed", error };
+      }
+      // No effect may be admitted after the port settles. Still join every callback it registered before settling this session.
+      effectsOpen = false;
+      await Promise.allSettled([...pendingEffects]);
+      if (launch.kind === "failed") throw launch.error;
+      const observation = launch.observation;
       const matched = this.matchObservation(observation, reservation, frame, slot.role === "worker");
       if (!matched) this.store.latchHold(reservation, "observation");
-      return this.store.settleSession({ reservation, outcome: matched ? observation.outcome : "unknown",
-        candidateArtifactSha256: matched ? observation.candidateArtifactSha256 : null, now: this.options.now() });
+      return this.store.settleObservedSession({ reservation, outcome: matched ? observation.outcome : "unknown",
+        candidateArtifactSha256: matched ? observation.candidateArtifactSha256 : null, now: this.options.now() }, matched ? observation.usage : "unknown");
     } catch {
-      this.store.settleSession({ reservation, outcome: "unknown", candidateArtifactSha256: null, now: this.options.now() });
+      const saved = this.store.read(input.key)?.sessions.find(item => item.slotId === reservation.slotId);
+      if (saved && !saved.coverage.launchExposed) this.store.settlePreLaunchFailure(reservation, this.options.now());
+      else this.store.settleObservedSession({ reservation, outcome: "unknown", candidateArtifactSha256: null, now: this.options.now() }, "unknown");
       throw new GuidanceProbeError("held");
     }
   }
@@ -520,29 +632,33 @@ export class GuidanceProbeFixtureHost {
         : value.workerEffectiveInputHash === null && value.nonGuidanceInputSha256 === null)
       && (value.candidateArtifactSha256 === null || probeSha256(value.candidateArtifactSha256));
   }
-  private effects(reservation: ProbeReservation, signal: AbortSignal): ProbeFakeEffects {
-    return { runEffect: async <T>(request: ProbeFakeEffectRequest, effect: (signal: AbortSignal) => Promise<ProbeFakeEffectValue<T>>): Promise<ProbeFakeEffectResult<T>> => {
-      if (signal.aborted) return fail("held");
-      if (!request || !["model_calls", "tool_calls"].includes(request.unit)) return fail("invalid");
-      const requested: ProbeEffectAdmission = { reservation, sequence: request.sequence, unit: request.unit, amount: 1,
-        descriptorSha256: request.descriptorSha256, ...(request.reservedTokens === undefined ? {} : { reservedTokens: request.reservedTokens }), now: this.options.now() };
-      const granted = this.store.admitEffect(requested, this.options.revalidate);
-      if (granted.kind === "existing") return granted;
-      const admission = granted.admission;
-      try {
-        if (signal.aborted || this.store.checkInvocation(reservation, this.options.revalidate).state !== "active" || signal.aborted) return fail("held");
-        const result = await effect(signal);
-        const observed = result.usage, visibleHash = probeHash(canonical({ request, usage: observed }));
-        if (result.observationSha256 !== visibleHash) this.store.latchHold(reservation, "observation");
-        this.store.recordUsage({ admission, observed, observationSha256: probeHash(canonical({ admission, observed })) });
-        this.store.settleEffect({ admission, outcome: "settled" });
-        return { kind: "executed", value: result.value };
-      } catch {
-        const observed = null;
-        this.store.recordUsage({ admission, observed, observationSha256: probeHash(canonical({ admission, observed })) });
-        this.store.settleEffect({ admission, outcome: "unknown" });
-        throw new GuidanceProbeError("held");
-      }
+  private effects(reservation: ProbeReservation, signal: AbortSignal, lifetime: EffectLifetime): ProbeFakeEffects {
+    return { runEffect: <T>(request: ProbeFakeEffectRequest, effect: (signal: AbortSignal) => Promise<ProbeFakeEffectValue<T>>): Promise<ProbeFakeEffectResult<T>> => {
+      const operation = (async (): Promise<ProbeFakeEffectResult<T>> => {
+        if (!lifetime.open() || signal.aborted) return fail("held");
+        if (!request || !["model_calls", "tool_calls"].includes(request.unit)) return fail("invalid");
+        const requested: ProbeEffectAdmission = { reservation, sequence: request.sequence, unit: request.unit, amount: 1,
+          descriptorSha256: request.descriptorSha256, ...(request.reservedTokens === undefined ? {} : { reservedTokens: request.reservedTokens }), now: this.options.now() };
+        const granted = this.store.admitEffect(requested, this.options.revalidate);
+        if (granted.kind === "existing") return granted;
+        const admission = granted.admission, release = lifetime.track();
+        try {
+          if (signal.aborted || this.store.checkInvocation(reservation, this.options.revalidate).state !== "active" || signal.aborted) return fail("held");
+          const result = await effect(signal);
+          const observed = result.usage, visibleHash = probeHash(canonical({ request, usage: observed }));
+          if (result.observationSha256 !== visibleHash) this.store.latchHold(reservation, "observation");
+          this.store.recordUsage({ admission, observed, observationSha256: probeHash(canonical({ admission, observed })) });
+          this.store.settleEffect({ admission, outcome: "settled" });
+          return { kind: "executed", value: result.value };
+        } catch {
+          const observed = null;
+          this.store.recordUsage({ admission, observed, observationSha256: probeHash(canonical({ admission, observed })) });
+          this.store.settleEffect({ admission, outcome: "unknown" });
+          throw new GuidanceProbeError("held");
+        } finally { release(); }
+      })();
+      void operation.catch(() => {});
+      return operation;
     } };
   }
 }

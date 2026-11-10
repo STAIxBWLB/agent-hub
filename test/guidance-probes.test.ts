@@ -146,11 +146,30 @@ describe("guidance probe private atomic ledger", () => {
   });
   test("original start selector replays reserved work without another grant or metadata write", () => {
     const f = fixture(); f.register(); f.reserve(); const before = f.store.integrity();
-    expect(f.store.startSelector(f.key, 0)).toEqual({ requestedRevision: 0, slotId: "baseline", variantId: null, actor: f.host.actor,
+    expect(f.store.startSelector(f.key, 0)).toEqual({ requestedRevision: 0, slotId: "baseline", variantId: null, inputFrameSha256: null, inputFrameBytes: 0, actor: f.host.actor,
       sessionGeneration: f.host.sessionGeneration, nativeSession: f.host.nativeSession, requestConnectionId: f.host.requestConnectionId });
     expect(f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, now: 999999 }, f.revalidate)).toMatchObject({ kind: "existing", receipt: { already: true } });
     expect(f.store.integrity()).toEqual(before); expect(f.store.read(f.key)!.counters.workerAttempts).toBe(1);
     expect(JSON.stringify(f.store.startSelector(f.key, 0))).not.toContain(f.registration.snapshots.task);
+  });
+  test("atomically charges exact input frame bytes, rejects cumulative overage, and does not charge replay twice", () => {
+    const f = fixture(), frame = "exact host-prepared frame", bytes = Buffer.byteLength(frame);
+    const baseBytes = Buffer.byteLength(f.registration.snapshots.task) + Buffer.byteLength(f.registration.snapshots.baselineContext)
+      + Buffer.byteLength(guidanceProbeCanonical(f.registration.snapshots.dataPolicy)) + Buffer.byteLength(f.registration.snapshots.systemPolicy)
+      + Buffer.byteLength(f.host.baselineGuidance);
+    f.registration.manifest.limits.inputBytes = baseBytes + bytes;
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    const descriptor = { slotId: "baseline", sha256: probeHash(frame), bytes };
+    const first = f.store.reserveSession({ key: key, expectedRevision: 0, host: f.host, preparedFrame: descriptor, now: 100 }, f.revalidate);
+    expect(first.kind).toBe("granted"); if (first.kind !== "granted") throw new Error("expected fixture reservation");
+    const charged = f.store.read(key)!.counters.inputBytes;
+    expect(charged).toBe(baseBytes + bytes);
+    expect(f.store.reserveSession({ key: key, expectedRevision: 0, host: f.host, preparedFrame: descriptor, now: 100 }, f.revalidate)).toMatchObject({ kind: "existing" });
+    expect(f.store.read(key)!.counters.inputBytes).toBe(charged);
+    f.store.settleSession({ reservation: first.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: 100 });
+    expect(() => f.store.reserveSession({ key: key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host,
+      preparedFrame: { slotId: "proposal1", sha256: probeHash(frame), bytes }, now: 100 }, f.revalidate)).toThrow("budget");
+    expect(f.store.read(key)!.counters.inputBytes).toBe(charged);
   });
   test("exact original start replays after multiple effects, closed session and reopen without a second launch", async () => {
     const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider();
@@ -242,6 +261,82 @@ describe("guidance probe private atomic ledger", () => {
     const host = new GuidanceProbeFixtureHost(f.store, { revalidate: f.revalidate, now: () => 100 });
     await expect(host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal)).rejects.toThrow("runner is unavailable");
     expect(f.store.integrity()).toEqual(before);
+  });
+  test("post-launch zero effects or unknown usage stays held even when the fake claims known fixture", async () => {
+    for (const mode of ["no-effects", "unknown-usage"] as const) {
+      const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider();
+      provider.script = async (input, effects) => {
+        if (mode === "unknown-usage") {
+          const request = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("unknown-usage"), reservedTokens: 20 };
+          await effects.runEffect(request, async () => fakeEffectValue(request, "result", null));
+        }
+        return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, inputFrameHash: input.inputSha256,
+          workerEffectiveInputHash: input.inputSha256, nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
+      };
+      const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => f.clock.now });
+      await runner.start({ key: f.key, expectedRevision: 0, host: f.host, now: f.clock.now }, new AbortController().signal);
+      const session = f.store.read(f.key)!.sessions[0]!;
+      expect(session.state).toBe("unknown_held"); expect(session.coverage.launchExposed).toBe(true); expect(session.coverage.coverageVerified).toBe(false);
+      expect(f.store.read(f.key)!.counters.usageUnknown).toBe(true);
+    }
+  });
+  test("host-attested pre-launch failure retains its registered retry without becoming comparable", async () => {
+    const f = fixture(), original = f.registration.manifest.slots[0]!;
+    f.registration.manifest.slots = [{ ...original }, { ...original, id: "baseline-retry", retryOf: original.id }, f.registration.manifest.slots[2]!];
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    f.store.exposeLaunch = () => { throw new Error("host refused before exposing launch"); };
+    const provider = new FakeGuidanceProbeProvider(), runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => f.clock.now });
+    await expect(runner.start({ key, expectedRevision: 0, host: f.host, now: f.clock.now }, new AbortController().signal)).rejects.toThrow("uncertain");
+    const state = f.store.read(key)!;
+    expect(state.sessions[0]!.state).toBe("failed_known"); expect(state.sessions[0]!.coverage).toMatchObject({ preLaunchFailure: true, launchExposed: false });
+    expect(state.sessions[1]!.state).toBe("planned"); expect(provider.launches).toHaveLength(0);
+    expect(state.receipt.state).toBe("active");
+    expect(state.sessions[0]!.coverage.coverageVerified).toBe(false);
+    expect(f.store.reserveSession({ key, expectedRevision: state.receipt.revision, host: f.host, now: f.clock.now }, f.revalidate).kind).toBe("granted");
+    expect(f.store.read(key)!.counters.workerAttempts).toBe(2);
+  });
+  test("a terminal host-attested pre-launch failure releases only its known empty lane", async () => {
+    const f = fixture(); f.register();
+    f.store.exposeLaunch = () => { throw new Error("host refused before exposing launch"); };
+    const provider = new FakeGuidanceProbeProvider(), runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => f.clock.now });
+    await expect(runner.start({ key: f.key, expectedRevision: 0, host: f.host, now: f.clock.now }, new AbortController().signal)).rejects.toThrow("uncertain");
+    expect(provider.launches).toHaveLength(0);
+    expect(f.store.read(f.key)!.receipt.state).toBe("failed_fixture");
+    expect(f.store.read(f.key)!.sessions[0]!.coverage.preLaunchFailure).toBe(true);
+    expect(f.store.integrity().experiments).toBe(1);
+    const another = copy(f.registration); another.manifest.experimentId = "after-known-startup-failure";
+    const key = guidanceProbeFixtureKey(another); f.store.register(another, f.host, () => f.host);
+    expect(f.store.reserveSession({ key, expectedRevision: 0, host: f.host, now: f.clock.now }, f.revalidate).kind).toBe("granted");
+  });
+  test("fully covered controlled fake fixture is the only route to comparable status", async () => {
+    const f = fixture(), source = f.registration.manifest.slots;
+    f.registration.manifest.slots = [source[0]!, source[1]!, source[2]!];
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    const candidate = "Controlled fixture candidate.";
+    const child: ProbeChildBinding = { variantId: probeHash("controlled-variant"), candidateSha256: probeHash(candidate), guidanceSha256: probeHash(candidate),
+      guidance: candidate, task: f.host.task, role: f.host.role, authoring: "uncontrolled", sourceSessionId: null };
+    const provider = new FakeGuidanceProbeProvider();
+    provider.script = async (input, effects) => {
+      const request = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash(`covered-${input.slot.id}`), reservedTokens: 20 };
+      await effects.runEffect(request, async () => fakeEffectValue(request, "covered result", 10));
+      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, inputFrameHash: input.inputSha256,
+        workerEffectiveInputHash: input.slot.role === "worker" ? input.inputSha256 : null,
+        nonGuidanceInputSha256: input.slot.role === "worker" ? input.nonGuidanceInputSha256 : null,
+        candidateArtifactSha256: input.slot.id === "proposal1" ? child.candidateSha256 : null, usage: "known_fixture" };
+    };
+    let activeChild: ProbeChildBinding | undefined;
+    const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: () => ({ host: f.host, ...(activeChild ? { child: activeChild } : {}) }),
+      now: () => f.clock.now, prepareEditorFrame: () => "bounded editor frame" });
+    await runner.start({ key, expectedRevision: 0, host: f.host, now: f.clock.now }, new AbortController().signal);
+    const proposalRevision = f.store.read(key)!.receipt.revision;
+    await runner.start({ key, expectedRevision: proposalRevision, host: f.host, now: f.clock.now }, new AbortController().signal);
+    const candidateRevision = f.store.read(key)!.receipt.revision;
+    activeChild = child;
+    await runner.start({ key, expectedRevision: candidateRevision, host: f.host, child, now: f.clock.now }, new AbortController().signal);
+    const sessions = f.store.read(key)!.sessions;
+    expect(sessions[0]!.coverage.coverageVerified).toBe(true); expect(sessions[1]!.coverage.coverageVerified).toBe(true);
+    expect(sessions[2]!.child!.authoring).toBe("admitted_fixture"); expect(sessions[2]!.coverage.coverageVerified).toBe(true);
+    expect(f.store.read(key)!.receipt.state).toBe("closed_fixture");
   });
   test("reservation precedes launch, actual wrapper accounting separates reserved and observed tokens", async () => {
     const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider(); let observedReservation = false;
@@ -579,7 +674,7 @@ describe("guidance probe private atomic ledger", () => {
     expect(f.store.cancelIntent({ key, expectedRevision: terminal.receipt.revision, host: f.host }, () => f.host).already).toBe(true);
     expect(f.store.read(key)!.cancelRequested).toBe(false);
     expect(() => f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, now: 100 }, f.revalidate)).toThrow("uncertain");
-    expect(f.store.read(key)!.sessions[2]!.child!.authoring).toBe("admitted_fixture");
+    expect(f.store.read(key)!.sessions[2]!.child!.authoring).toBe("uncontrolled");
   });
   test("known failure consumes its preregistered retry slot and the same aggregate call/token budgets", () => {
     const f = fixture(), original = f.registration.manifest.slots[0]!;

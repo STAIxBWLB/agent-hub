@@ -62,17 +62,27 @@ export interface ProbeChildBinding {
   authoring: "admitted_fixture" | "uncontrolled"; sourceSessionId: string | null;
 }
 export interface ProbeAdmissionRecheck { host: ProbeHostBinding; child?: ProbeChildBinding }
+/** Hash/size of the exact frame built once by the trusted host before atomic admission. */
+export interface ProbePreparedFrame { slotId: string; sha256: string; bytes: number }
 export interface ProbeSessionAdmission {
-  key: ProbeKey; expectedRevision: number; host: ProbeHostBinding; child?: ProbeChildBinding; now: number;
+  key: ProbeKey; expectedRevision: number; host: ProbeHostBinding; child?: ProbeChildBinding; preparedFrame?: ProbePreparedFrame; now: number;
 }
 export interface ProbeReservation { key: ProbeKey; slotId: string; generation: number; revision: number }
-export interface ProbeStartSelector { requestedRevision: number; slotId: string; variantId: string | null; actor: string; sessionGeneration: number | string; nativeSession: string | null; requestConnectionId: string }
+export interface ProbeStartSelector {
+  requestedRevision: number; slotId: string; variantId: string | null; inputFrameSha256: string | null; inputFrameBytes: number;
+  actor: string; sessionGeneration: number | string; nativeSession: string | null; requestConnectionId: string;
+}
 export interface ProbeReceipt { id: string; revision: number; state: ProbeState; already: boolean }
 export type ProbeReservationResult = { kind: "granted"; reservation: ProbeReservation } | { kind: "existing"; receipt: ProbeReceipt };
 export interface ProbeEffectAdmission { reservation: ProbeReservation; sequence: number; unit: ProbeBudgetUnit; amount: number; reservedTokens?: number; descriptorSha256: string; now: number }
 export type ProbeEffectAdmissionResult = { kind: "granted"; admission: ProbeEffectAdmission } | { kind: "existing"; state: "pending" | "settled" | "unknown" };
 export interface ProbeEffectSettlement { admission: ProbeEffectAdmission; outcome: "settled" | "unknown" }
 export interface ProbeSessionSettlement { reservation: ProbeReservation; outcome: "closed_fixture" | "failed_known" | "unknown"; candidateArtifactSha256: string | null; now: number }
+export interface ProbeSessionCoverage {
+  inputFrameSha256: string | null; inputFrameBytes: number; launchExposed: boolean; preLaunchFailure: boolean;
+  modelCalls: number; modelUsageKnown: number; toolCalls: number; toolUsageKnown: number;
+  usageUnknown: boolean; coverageVerified: boolean;
+}
 export interface ProbeUsageObservation { admission: ProbeEffectAdmission; observed: number | null; observationSha256: string }
 export interface ProbeCancellation { key: ProbeKey; expectedRevision: number; host: ProbeHostBinding }
 export interface ProbeCounters {
@@ -83,6 +93,7 @@ export interface ProbeSession {
   slotId: string; generation: number; revision: number; state: ProbeSessionState; candidateArtifactSha256: string | null;
   child?: ProbeChildBinding;
   start?: ProbeStartSelector;
+  coverage: ProbeSessionCoverage;
 }
 export interface ProbeStoredState {
   registration: ProbeRegistrationV1; binding: ProbeHostBinding; receipt: ProbeReceipt; counters: ProbeCounters;

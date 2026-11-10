@@ -1550,6 +1550,7 @@
   "src/hub/github-import.ts:selectionText:inline:value.length<=100=100#0": "contract",
   "src/hub/guidance-probe-store.ts:<anonymous>:inline:this.db.query(INSERT INTO guidance_probe_manifests(project,id,experiment,manifest,task_input,baseline_context,data_policy,system_policy,improver_context,binding,counters,revision,state,admission_hold,cancel_requested) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)).run=0#0": "contract",
   "src/hub/guidance-probe-store.ts:<anonymous>:inline:this.db.query(INSERT INTO guidance_probe_manifests(project,id,experiment,manifest,task_input,baseline_context,data_policy,system_policy,improver_context,binding,counters,revision,state,admission_hold,cancel_requested) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)).run=0#1": "contract",
+  "src/hub/guidance-probe-store.ts:amount:inline:amount=1#0": "contract",
   "src/hub/guidance-probe-store.ts:editorAttempts:inline:editorAttempts=0#0": "contract",
   "src/hub/guidance-probe-store.ts:save:inline:this.db.query(UPDATE guidance_probe_manifests SET counters=?,revision=?,state=?,first_reserved=?,last_wall=?,admission_hold=?,cancel_requested=? WHERE project=? AND id=?) .run=0#0": "contract",
   "src/hub/guidance-probe-store.ts:save:inline:this.db.query(UPDATE guidance_probe_manifests SET counters=?,revision=?,state=?,first_reserved=?,last_wall=?,admission_hold=?,cancel_requested=? WHERE project=? AND id=?) .run=1#0": "contract",

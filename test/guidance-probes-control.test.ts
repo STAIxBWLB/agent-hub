@@ -14,12 +14,12 @@ import { guidanceVariantKey, type GuidanceVariantPayloadV1 } from "../src/hub/gu
 import { GuidanceProbeStore } from "../src/hub/guidance-probe-store.ts";
 import { GUIDANCE_PROBE_MODEL, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_STOP_TIMEOUT_MS, parseGuidanceProbePublicReceipt,
   parseGuidanceProbePublicStatus, parseGuidanceProbeRegistration, parseGuidanceProbeSubcommand, probeHash, probeSessionGeneration,
-  type ProbeFakeLaunch, type ProbeFakeObservation, type ProbePublicReceipt, type ProbePublicStatus } from "../src/hub/guidance-probes.ts";
+  type GuidanceProbeFakePorts, type ProbeFakeLaunch, type ProbeFakeObservation, type ProbePublicReceipt, type ProbePublicStatus } from "../src/hub/guidance-probes.ts";
 import { CONDUCTOR_DAEMON_OPERATIONS, conductorOperation, operationalRequestLabel } from "../src/hub/operational-authority.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 import { DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
-import { FakeGuidanceProbeProvider, guidanceProbeFixture } from "./fakes/guidance-probe-provider.ts";
+import { FakeGuidanceProbeProvider, fakeEffectValue, guidanceProbeFixture } from "./fakes/guidance-probe-provider.ts";
 import vectors from "./fixtures/guidance-variant-v1.json";
 
 const clean: (() => unknown | Promise<unknown>)[] = [];
@@ -278,6 +278,61 @@ test("noncooperative owned launch rejects the named drain bound, retains handles
   release(); await running; await f.tasks.stopGuidanceProbes();
   expect(f.tasks.guidanceProbesPending()).toBe(0); expect(f.timer.jobs.size).toBe(0);
   expect(f.store.read({ projectKey: f.projectKey, id: receipt.id })!.admissionHold).not.toBe("none");
+});
+
+test("port settlement joins a fire-and-forget effect callback before session settlement and shutdown drain", async () => {
+  const f = await fixture(), receipt = await f.tasks.guidanceProbeRegister(USER, f.registration());
+  let effectStarted!: () => void, release!: () => void, portSettled!: () => void;
+  const started = new Promise<void>(resolve => { effectStarted = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const settled = new Promise<void>(resolve => { portSettled = resolve; });
+  clean.push(release);
+  const launch = f.provider.launch.bind(f.provider);
+  f.provider.launch = (input, effects, signal) => launch(input, effects, signal).then(observation => {
+    queueMicrotask(portSettled); return observation;
+  });
+  const request = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("port-returned-effect"), reservedTokens: 20 };
+  f.provider.script = async (input, effects) => {
+    // The port intentionally returns without awaiting its still-owned callback.
+    void effects.runEffect(request, async () => {
+      effectStarted(); await gate; return fakeEffectValue(request, "late fixture result", 5);
+    });
+    return closed(input);
+  };
+  const running = f.tasks.guidanceProbeStart(USER, receipt.id, 0).then(value => ({ value }), error => ({ error }));
+  await started; await settled;
+  const key = { projectKey: f.projectKey, id: receipt.id };
+  expect(f.store.read(key)!.sessions[0]!.state).toBe("running");
+  const stopping = f.tasks.stopGuidanceProbes().then(() => ({ stopped: true }), error => ({ error }));
+  f.clock.now += GUIDANCE_PROBE_STOP_TIMEOUT_MS;
+  f.timer.fireDelay(GUIDANCE_PROBE_STOP_TIMEOUT_MS);
+  const drained = await stopping;
+  expect("error" in drained).toBe(true); expect(f.tasks.guidanceProbesPending()).toBeGreaterThan(0);
+  expect(f.store.read(key)!.receipt.state).toBe("unknown_held");
+  release(); await running; await f.tasks.stopGuidanceProbes();
+  expect(f.tasks.guidanceProbesPending()).toBe(0);
+  expect(f.store.read(key)!.sessions[0]!.state).toBe("unknown_held");
+});
+
+test("an unknown launch receipt owns stop; unknown stop evidence retains the active-map handle", async () => {
+  const f = await fixture(), receipt = await f.tasks.guidanceProbeRegister(USER, f.registration());
+  const request = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("unknown-launch-observation"), reservedTokens: 20 };
+  f.provider.script = async (input, effects) => {
+    await effects.runEffect(request, async () => fakeEffectValue(request, "fixture result", 5));
+    return { ...closed(input), outcome: "unknown", usage: "unknown" };
+  };
+  let stops = 0;
+  const fakePorts: GuidanceProbeFakePorts = {
+    launch: (input, effects, signal) => f.provider.launch(input, effects, signal),
+    stop: async input => ({ reservation: input.reservation, stopped: ++stops === 1 ? "unknown" : "known_fixture" }),
+  };
+  f.dependency.fakePorts = fakePorts;
+  await expect(f.tasks.guidanceProbeStart(USER, receipt.id, 0)).rejects.toThrow("guidance probe attempt outcome is unconfirmed");
+  const key = { projectKey: f.projectKey, id: receipt.id };
+  expect(stops).toBe(1); expect(f.tasks.guidanceProbesPending()).toBe(1);
+  expect(f.store.read(key)!.receipt.state).toBe("unknown_held");
+  await f.tasks.stopGuidanceProbes();
+  expect(stops).toBe(2); expect(f.tasks.guidanceProbesPending()).toBe(0);
+  expect(f.store.read(key)!.receipt.state).toBe("unknown_held");
 });
 test("cancel after G1 withdrawal/flow change preserves intent without rescreening stored prose and drains only its owned fake handle", async () => {
   const f = await fixture(), variant = await f.variant(), receipt = await f.tasks.guidanceProbeRegister(USER, f.registration()), key = { projectKey: f.projectKey, id: receipt.id };

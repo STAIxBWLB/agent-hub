@@ -274,11 +274,15 @@ interface GuidanceProbeStore {
   startSelector(key: ProbeKey, requestedRevision: ProbeInteger): ProbeStartSelector | undefined;
   reserveSession(input: ProbeSessionAdmission,
     revalidate: () => ProbeAdmissionRecheck): ProbeReservationResult;
+  exposeLaunch(reservation: ProbeReservation,
+    revalidate: () => ProbeAdmissionRecheck): ProbeReceipt;
   checkInvocation(reservation: ProbeReservation, revalidate: () => ProbeAdmissionRecheck): ProbeReceipt;
   admitEffect(input: ProbeEffectAdmission,
     revalidate: () => ProbeAdmissionRecheck): ProbeEffectAdmissionResult;
   settleEffect(input: ProbeEffectSettlement): ProbeReceipt;
   settleSession(input: ProbeSessionSettlement): ProbeReceipt;
+  settlePreLaunchFailure(reservation: ProbeReservation, now: ProbeInteger): ProbeReceipt;
+  settleObservedSession(input: ProbeSessionSettlement, usage: "known_fixture" | "unknown"): ProbeReceipt;
   latchHold(reservation: ProbeReservation, reason: "elapsed" | "observation" | "usage"): ProbeReceipt;
   recordUsage(input: ProbeUsageObservation): ProbeReceipt;
   cancelIntent(input: ProbeCancellation,
@@ -317,8 +321,10 @@ interface ProbeSessionAdmission {
   expectedRevision: ProbeInteger;
   host: ProbeHostBinding;
   child?: ProbeChildBinding;
+  preparedFrame?: ProbePreparedFrame; // Host-only metadata for the exact frame later passed to the fake port.
   now: ProbeInteger; // Queued diagnostic only; Store samples its trusted clock after locking.
 }
+interface ProbePreparedFrame { slotId: ProbeId; sha256: ProbeSha256; bytes: ProbeInteger }
 interface ProbeAdmissionRecheck {
   host: ProbeHostBinding;
   child?: ProbeChildBinding;
@@ -333,6 +339,8 @@ interface ProbeStartSelector {
   requestedRevision: ProbeInteger;
   slotId: ProbeId;
   variantId: ProbeSha256 | null;
+  inputFrameSha256: ProbeSha256 | null;
+  inputFrameBytes: ProbeInteger;
   actor: PeerId;
   sessionGeneration: ProbeInteger | ProbeId;
   nativeSession: ProbeId | null;
@@ -362,6 +370,18 @@ interface ProbeSessionSettlement {
   outcome: "closed_fixture" | "failed_known" | "unknown";
   candidateArtifactSha256: ProbeSha256 | null;
   now: ProbeInteger;
+}
+interface ProbeSessionCoverage {
+  inputFrameSha256: ProbeSha256 | null;
+  inputFrameBytes: ProbeInteger;
+  launchExposed: boolean;
+  preLaunchFailure: boolean;
+  modelCalls: ProbeInteger;
+  modelUsageKnown: ProbeInteger;
+  toolCalls: ProbeInteger;
+  toolUsageKnown: ProbeInteger;
+  usageUnknown: boolean;
+  fixtureVerified: boolean;
 }
 interface ProbeUsageObservation {
   admission: ProbeEffectAdmission;
@@ -409,6 +429,7 @@ interface ProbeStoredState {
     candidateArtifactSha256: ProbeSha256 | null;
     child?: ProbeChildBinding;
     start?: ProbeStartSelector;
+    coverage: ProbeSessionCoverage;
   }[]; // <=9; effect descriptor columns are hydrated separately by exact key.
 }
 interface ProbeIntegrity {
@@ -433,7 +454,7 @@ interface ProbeFakeObservation {
   workerEffectiveInputHash: ProbeSha256 | null;
   nonGuidanceInputSha256: ProbeSha256 | null;
   candidateArtifactSha256: ProbeSha256 | null;
-  usage: "known_fixture" | "unknown";
+  usage: "known_fixture" | "unknown"; // A status claim only; host effect accounting must independently cover every model/tool effect.
 }
 interface ProbeFakeStop { reservation: ProbeReservation }
 interface ProbeFakeStopObservation {
@@ -499,7 +520,22 @@ The fixture effect value's observation hash binds its visible request and numeri
 
 `tokensReserved` is the consumed upper-bound reservation, never refunded or double-charged by settlement. `tokensObservedKnown` sums only numeric attributed fixture observations once; it is not a replacement for reservations or a claim of complete coverage. Sticky unknown coverage and the current pending effect remain separate from both numbers. With a token limit, a missing trusted upper bound refuses before the effect. Without a token limit, a missing upper bound does not imply hard token enforcement. Fixture providers may supply known fixture upper bounds; actual provider-bound proof belongs to future T2, not this fake ledger.
 
-The fake-launch frame is prepared for the selected role under the declared input matrix and charged against the input reservation. The fake port never receives the entire private snapshots bundle. A worker frame cannot directly contain improver context, other arm outputs or selector material; its only variable arm field is the admitted guidance slot. Preparation/frame equality tests establish fixture separation only, not semantic absence of hidden information or native confinement. Session settlement changes only the private ledger and cannot create a Task review/completion event. Registration receipts have `evidence: "declaration"`; they cannot become `"fixture"` merely because a runner exists or start was requested. Only actual closed fake-port observations have fixture strength, still with no native or model attestation.
+The fake port never receives the entire private snapshots bundle. A worker frame cannot directly contain improver context, other arm outputs or selector material; its only variable arm field is the admitted guidance slot. Preparation/frame equality tests establish fixture separation only, not semantic absence of hidden information or native confinement. Session settlement changes only the private ledger and cannot create a Task review/completion event. Registration receipts have `evidence: "declaration"`; they cannot become `"fixture"` merely because a runner exists or start was requested. Only actual closed fake-port observations have fixture strength, still with no native or model attestation.
+
+The host builds each exact frame once and passes only its slot id, SHA-256 and UTF-8 byte count into the fresh Store reservation. `reserveSession` verifies that descriptor against the selected slot and charges it against the remaining aggregate `inputBytes` budget inside the same `BEGIN IMMEDIATE`, before granting a lane or session. The exact start selector retains that frame descriptor; replay must match it and returns before charging again. A low-level synthetic Store reservation may omit the descriptor for ledger-only tests, but cannot yield public fixture evidence or comparability without a host-verified frame and coverage.
+
+The Store persists per-session frame, launch-exposure and effect-coverage metadata. Immediately before invoking `ports.launch`, the trusted host atomically rechecks current binding, cancellation and the elapsed deadline, then persists `launchExposed`; no provider field attests to whether launch occurred. Before that marker only, the host may settle a known failed startup with zero model/tool effects and no hold, leaving only its already-preregistered retry eligible. Once launch was exposed, a fake `failed_known` or `closed_fixture` label is accepted only with at least one admitted model effect and complete correlated numeric usage for every admitted model/tool effect. Missing model effects, missing/unknown usage and pending effects stay unknown-held, including when the fake labels them `known_fixture` or `failed_known`. `comparable` and public fixture evidence require the persisted host-verified frame/coverage; a closed label alone is never evidence.
+
+Each fake `runEffect` promise is owned by the host before invoking its callback,
+even if the fake port does not await it. Port settlement closes admission for
+further effect calls; `start` joins its registered effect callbacks before it can
+settle. A resolved port promise does not prove callback or process quiescence. An
+unknown returned receipt enters the existing owned abort/stop path, and uncertain
+stop evidence retains the runtime handle. A noncooperative callback therefore
+keeps `guidanceProbesPending` nonzero and the database open; the existing five-second
+stop bound rejects until those owned callbacks and matching stop evidence settle.
+This joins owned promises and never attests physical cancellation.
+
 
 Phase1's host-only `GuidanceProbeFixtureHost` composes Store reservations and fake ports for fixtures; its constructor is not a config/wire factory. `start(admission, signal)` derives worker bytes from the retained frozen task/baseline/system policy and selected rendered guidance, with no caller-supplied frame/hash. `guidanceProbeWorkerFrame(task, baselineContext, systemPolicy, guidance)` includes all four mandatory worker-visible fields, with no reservation/arm ids; its non-guidance hash derives from the first three. Editor frames come only from a host constructor callback, not wire data. Tasks integration later owns complete role-specific editor preparation; Phase1 does not claim that builder or native materialization.
 
@@ -523,6 +559,6 @@ Source inspection confirms G1 creation writes only private guidance tables and B
 
 ## Proof boundary and planned fixtures
 
-Fake-only tests must prove closed parsing and exact model literals; zero writes on known refusals; production no-runner refusal before reservations; current authority/privacy/task/G1 fences across awaits; one project lane and serialized CAS under concurrent admission; exact duplicate no-effect behavior; four/five aggregate ceilings including failures; reservation before fake launch; unknown-held restart/cancel behavior; immutable successor binding; no ordinary observer/progress/completion effects; bounded SQL hydration and recovery integrity. Cross-await callback fixtures must prove shared model/tool/token budget exhaustion before fake invocation, no second effect on replay, new-call refusal after G1 withdrawal or actor/session loss, and pre-reservation exhausted budgets without a launch. Separate controls prove correlated bookkeeping after fence loss, missing/conflicting/late numeric usage remaining sticky unknown before descriptor replacement, and that a `known_fixture` label alone never certifies coverage.
+Fake-only tests must prove closed parsing and exact model literals; zero writes on known refusals; production no-runner refusal before reservations; current authority/privacy/task/G1 fences across awaits; one project lane and serialized CAS under concurrent admission; exact duplicate no-effect behavior; four/five aggregate ceilings including failures; reservation before fake launch; unknown-held restart/cancel behavior; immutable successor binding; no ordinary observer/progress/completion effects; bounded SQL hydration and recovery integrity. Cross-await callback fixtures must prove shared model/tool/token/input-frame budgets including the frame bytes, refusal before fake invocation on exhausted capacity, no second effect or double frame charge on replay, new-call refusal after G1 withdrawal or actor/session loss, and pre-reservation exhausted budgets without a launch. Separate controls prove correlated bookkeeping after fence loss, missing/conflicting/late numeric usage remaining sticky unknown before descriptor replacement, zero model calls or unknown post-launch usage not becoming `comparable`, a host-attested known pre-launch failure retaining only its preregistered retry, a fully covered controlled fixture, and that a `known_fixture` label alone never certifies coverage. Direct low-level Store fixtures retain their lifecycle/counter assertions while lacking checked frame/coverage proof and therefore cannot yield comparable public evidence.
 
 Control fixtures use scratch daemon/database and host-injected fake ports only. They must exercise older/unknown rid replies and privileged direct-call refusal. Recovery fixtures must prove present-state integrity, missing legacy compatibility, tamper/unknown refusal, retained counters/lane and no auto-respawn. No real hub, account, model, worker or native process is part of this proof. Measurements, if later recorded, identify source/fake evidence separately from unimplemented native guarantees.

@@ -5055,12 +5055,16 @@ export class Tasks {
     const holds = state.admissionHold !== "none" || state.counters.usageUnknown;
     const authoring: ProbePublicStatus["authoring"] = state.sessions.some(item => item.child?.authoring === "uncontrolled") ? "uncontrolled"
       : state.sessions.some(item => item.child?.authoring === "admitted_fixture") ? "admitted_fixture" : "unknown";
+    const launchedSessions = state.sessions.filter(item => item.coverage.launchExposed);
+    const verifiedCoverage = launchedSessions.length > 0 && launchedSessions.every(item => item.coverage.coverageVerified)
+      && state.sessions.filter(item => item.state === "closed_fixture").every(item => item.coverage.coverageVerified)
+      && state.sessions.every(item => item.state !== "failed_known" || item.coverage.preLaunchFailure || item.coverage.coverageVerified);
     const evidence: ProbePublicReceipt["evidence"] = state.counters.workerAttempts + state.counters.editorAttempts === 0 ? "declaration"
-      : holds || state.sessions.some(item => ["reserved", "running", "unknown_held"].includes(item.state)) ? "unknown" : "fixture";
+      : holds || !verifiedCoverage || state.sessions.some(item => ["reserved", "running", "unknown_held"].includes(item.state)) ? "unknown" : "fixture";
     return { ...state.receipt, already, taskId: state.registration.manifest.task.id,
       experimentId: this.guidancePublicField(state.registration.manifest.experimentId), evidence,
       counters: { ...state.counters }, cancelRequested: state.cancelRequested, notNeeded: state.notNeeded, authoring,
-      comparable: state.receipt.state === "closed_fixture" && !holds && authoring === "admitted_fixture" };
+      comparable: state.receipt.state === "closed_fixture" && !holds && verifiedCoverage && authoring === "admitted_fixture" };
   }
   private guidanceProbeReceipt(state: ProbeStoredState, already = false): ProbePublicReceipt {
     const { counters: _counters, cancelRequested: _cancelRequested, notNeeded: _notNeeded, comparable: _comparable, authoring: _authoring, ...result } = this.guidanceProbeProjection(state, already);
@@ -5165,10 +5169,16 @@ export class Tasks {
       },
       stop: (input, signal) => dependency.fakePorts!.stop(input, signal),
     };
-    const runner = new GuidanceProbeFixtureHost(dependency.store, { ports, revalidate: current, now: () => this.d.now?.() ?? Date.now(), prepareEditorFrame: dependency.prepareEditorFrame });
+    const runner = new GuidanceProbeFixtureHost(dependency.store, { ports, revalidate: current, now: () => this.d.now?.() ?? Date.now(),
+      prepareEditorFrame: dependency.prepareEditorFrame });
     entry.promise = (async () => {
       try {
         const saved = await runner.start({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, entry.controller.signal);
+        if (saved.state === "unknown_held" && entry.launched) {
+          this.guidanceProbeAbort(entry, "observation", true);
+          if (!entry.stopPromise) throw new Error("owned probe stop was not recorded; retain the held lane and explicitly inspect its outcome");
+          await entry.stopPromise;
+        }
         request.check();
         if (entry.failure) throw entry.failure;
         return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), saved.already);
