@@ -16,6 +16,7 @@ export const EVENTS_SCHEMA = 1;
 export type HubEvent =
   | { type: "model_change"; peer: string; previousModel: string | null; model: string | null; by: "person"; source: "cli" | "dashboard"; appliesFrom: "next_turn"; afterTurn?: string }
   | { type: "release_authorization"; by: PeerId; authorization: string; commit: string; version: string; docsDigest: string; documents: number }
+  | { type: "release_authorization"; by: PeerId; authorization: string; commit: string; version: string; docs: "none" }
   | { type: "permission_mode"; peer: string; from: import("./permission-mode.ts").PermissionMode; to: import("./permission-mode.ts").PermissionMode }
   | { type: "role"; peer?: string; task?: number; actor: string; stage: "prepared" | "assigned"; roles: { id: string; layer: "shipped" | "project"; hash: string }[] }
   /** A settings change (#269): the registry key, the bounded registry values before/after and their source; an optional person reason is sanitized and capped at 400 UTF-8 bytes. */

@@ -55,7 +55,7 @@ import { adoptMergeGates, guardedMerge, mergeModeFor, mergeView, readAdoptMergeE
 import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
 import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-scope.ts";
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
-import { readReleaseReadiness } from "./sdlc-release.ts";
+import { readReleaseReadiness, type ReleaseReportPolicy } from "./sdlc-release.ts";
 import { loadRoleCatalog, roleIdentity, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy, matchesPolicyLexically, policyRealPath, insideRoot } from "./path-policy.ts";
 import { isDenied } from "../local/deny.ts";
@@ -186,7 +186,8 @@ export interface TasksDeps {
   specsRead?: (action: "check" | "covers", paths: readonly string[]) => SpecsCheckReport | SpecsCoverReport;
   /** Host-verified existing symbols at this task's admitted completion head; never plan guesses. */
   memorySymbolNodes?: (task: Task) => MemorySymbolNodes | undefined;
-  sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
+  /** Host-only release report selector; derives its answer from committed policy and the in-memory authorization ledger. */
+  sdlc?: { config: () => SdlcConfig; gh?: SdlcGh; reportPolicy?: (head: string, repo: string) => ReleaseReportPolicy | undefined };
   /** #785 P1b: the per-head CI watcher's bounds; tests shorten them, the defaults are `CI_WATCH_*` in `ci-watch.ts`. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   /** #785 P1c: `tasks.auto_pull`, read at each capacity release so a reload applies to the next one; absent or false pulls nothing. */
@@ -6331,7 +6332,7 @@ export class Tasks {
     } catch { /* an approval never fails because of the merge check */ }
   }
   async releaseReadiness(repo: string, liveIssues: number[]) {
-    const report = await readReleaseReadiness(this.d.cwd, repo, liveIssues, { gh: this.d.sdlc?.gh });
+    const report = await readReleaseReadiness(this.d.cwd, repo, liveIssues, { gh: this.d.sdlc?.gh, reportPolicy: this.d.sdlc?.reportPolicy });
     if (report.documents) report.documents.documents = report.documents.documents.map(d => {
       if (d.path && (!this.nameable(d.path) || matchesPolicy(this.d.cwd, d.path, this.d.piiPaths ?? [], true))) { const { path: _privatePath, ...metadata } = d; return metadata; }
       return d;
