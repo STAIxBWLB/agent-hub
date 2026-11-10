@@ -169,17 +169,21 @@ export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.n
   const r = (reply as any)?.report ?? {};
   const out: Line[] = [...heading(`Release readiness ${r.repo ?? "unknown repository"}`, columns)];
   const w = 12;
-  out.push(...pair("version", r.version ?? "unknown", columns, w), ...pair("head", short(r.head), columns, w), ...pair("tag", r.tag ? `${r.tag} at ${short(r.tagCommit)}` : "none", columns, w));
+  out.push(...pair("version", r.version ?? (r.releasePolicy ? "undetermined" : "unknown"), columns, w), ...pair("head", short(r.head), columns, w), ...pair("tag", r.tag ? `${r.tag} at ${short(r.tagCommit)}` : "none", columns, w));
   out.push(...pair("source ready", yes(r.sourceReady), columns, w, readyTone(r.sourceReady)), ...pair("native", String(r.native ?? "unverified"), columns, w, "attention"), ...pair("release ready", yes(r.ready), columns, w, readyTone(r.ready)));
   out.push(...pair("commits", `${plural(list(r.commits).length, "commit")} since the last tag`, columns, w));
   if (list(r.mergedPrs).length) out.push(...pair("merged PRs", list(r.mergedPrs).map((p: any) => `#${p.pr}`).join(", "), columns, w));
   const docs = r.documents;
-  out.push(blank, ...pair("documents", docs ? `${docs.fresh ? "fresh" : "not fresh"}, ${plural(docs.errors ?? 0, "error")}, ${plural(list(docs.documents).length, "document")}` : "not read", columns, w, docs?.fresh ? "success" : "attention"));
-  for (const d of list(docs?.documents)) if (d.state !== "fresh") out.push(...pair(d.state, `${d.path ?? "(path withheld)"}${d.dirty ? " (uncommitted changes)" : ""}`, columns, w, "attention", "  "));
+  if (r.releasePolicy?.docsSource === "none") out.push(blank, ...pair("documents", r.releasePolicy.authorization === "matched" ? "none (explicit exemption recorded)" : "none (configured exemption; no matching authorization)", columns, w, "muted"));
+  else {
+    out.push(blank, ...pair("documents", docs ? `${docs.fresh ? "fresh" : "not fresh"}, ${plural(docs.errors ?? 0, "error")}, ${plural(list(docs.documents).length, "document")}` : "not read", columns, w, docs?.fresh ? "success" : "attention"));
+    for (const d of list(docs?.documents)) if (d.state !== "fresh") out.push(...pair(d.state, `${d.path ?? "(path withheld)"}${d.dirty ? " (uncommitted changes)" : ""}`, columns, w, "attention", "  "));
+  }
+  if (r.releasePolicy) out.push(...pair("release policy", `version ${r.releasePolicy.versionSource}, docs ${r.releasePolicy.docsSource}, authorization ${r.releasePolicy.authorization}`, columns, w, r.releasePolicy.authorization === "matched" ? "success" : "attention"));
   if (list(r.liveIssues).length) out.push(blank, ...grid(["ISSUE", "STATE"], list(r.liveIssues).map((i: any) => [s(`#${i.id}`, "issueRef"), s(i.state, i.state === "closed" ? "success" : "attention")]), columns));
   const a = r.authorization;
   if (a) out.push(blank, ...pair("authorization", `${a.state}: version ${a.receipt?.version ?? "unknown"} at ${short(a.receipt?.commit)}, approved ${moment(a.receipt?.at, now)}`, columns, w, a.state === "matched" ? "success" : "attention"));
-  else out.push(blank, ...pair("authorization", "none recorded: run ahub sdlc authorize-release <version>", columns, w, "muted"));
+  else out.push(blank, ...pair("authorization", r.releasePolicy ? `none recorded for ${r.releasePolicy.versionSource}: run ahub sdlc authorize-release <version>` : "none recorded: run ahub sdlc authorize-release <version>", columns, w, "muted"));
   for (const t of list(r.trains)) out.push(...pair(`train #${t.release?.id ?? "?"}`, `${t.readiness?.trigger ?? "unknown"}${list(t.readiness?.blockers).length ? `, ${list(t.readiness.blockers).join("; ")}` : ""}`, columns, w, list(t.readiness?.blockers).length ? "attention" : undefined));
   const rm = r.releaseMetrics;
   if (rm) {

@@ -22,9 +22,18 @@ const sdlcGh: SdlcGh = async (...args) => {
   catch { return { code: 1, stdout: "" }; }
 };
 export interface DocEvidence { schemaVersion: 1; head?: string; version?: string; documents: { path?: string; state: "fresh" | "stale" | "nonancestor" | "unknown"; verifiedAgainst?: string; commits?: number; dirty?: boolean }[]; errors: number; fresh: boolean; }
-export interface ReleaseReadiness { /** #481 AC12: interval, approval-to-release lead time and hotfix rate over shipped releases, filled by Tasks.releaseReadiness. */ releaseMetrics?: ReturnType<typeof releaseMetrics>; repo: string; head?: string; version?: string; tag?: string; tagCommit?: string; commits: string[]; mergedPrs: { pr: number; commit: string }[]; documents?: DocEvidence; liveIssues: { id: number; state: "open" | "closed" | "unknown" }[]; blockers: string[]; sourceReady: boolean; native: "unverified"; ready: false; }
+export type ReleaseReportSource = "package.json" | "release-notes" | "none" | "unknown";
+export type ReleaseReportDocsSource = "checker" | "none" | "unknown";
+export type ReleaseReportAuthorizationState = "matched" | "missing" | "stale" | "unavailable";
+export interface ReleaseReportPolicy {
+  versionSource: ReleaseReportSource;
+  docsSource: ReleaseReportDocsSource;
+  authorization: ReleaseReportAuthorizationState;
+  version?: string;
+}
+export interface ReleaseReadiness { /** #481 AC12: interval, approval-to-release lead time and hotfix rate over shipped releases, filled by Tasks.releaseReadiness. */ releaseMetrics?: ReturnType<typeof releaseMetrics>; releasePolicy?: ReleaseReportPolicy; repo: string; head?: string; version?: string; tag?: string; tagCommit?: string; commits: string[]; mergedPrs: { pr: number; commit: string }[]; documents?: DocEvidence; liveIssues: { id: number; state: "open" | "closed" | "unknown" }[]; blockers: string[]; sourceReady: boolean; native: "unverified"; ready: false; }
 export type ReleaseGit = (args: string[]) => { code: number; stdout: string };
-export interface ReleaseReaders { gh?: SdlcGh; git?: ReleaseGit; docs?: (root: string, timeoutMs: number) => Promise<DocEvidence | undefined>; /** Test seam (#1120): the checker program the default docs reader spawns. */ checker?: string; }
+export interface ReleaseReaders { gh?: SdlcGh; git?: ReleaseGit; docs?: (root: string, timeoutMs: number) => Promise<DocEvidence | undefined>; /** Host-only selected authorization/config metadata; absent preserves standalone package.json behavior. */ reportPolicy?: (head: string, repo: string) => ReleaseReportPolicy | undefined; /** Test seam (#1120): the checker program the default docs reader spawns. */ checker?: string; }
 const SHA = /^[0-9a-f]{40}$/;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -72,7 +81,34 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
   const git: ReleaseGit = readers.git ?? (args => { const r = hubGitSync(args, { cwd: root, encoding: "utf8", timeout: Math.max(1, Math.min(1000, deadline - performance.now())), maxBuffer: 256 * 1024 }); return { code: r.status ?? 1, stdout: r.stdout ?? "" }; });
   const first = git(["rev-parse","--verify","HEAD"]); const head = first.stdout.trim();
   if (first.code !== 0 || !SHA.test(head)) { report.blockers.push("local HEAD unknown"); return report; } report.head = head;
-  try { const r = git(["show",`${head}:package.json`]), pkg = JSON.parse(r.stdout); if (r.code === 0 && typeof pkg.version === "string" && VERSION.test(pkg.version)) report.version = pkg.version; else report.blockers.push("package version unknown"); } catch { report.blockers.push("package version unknown"); }
+  let releasePolicy: ReleaseReportPolicy | undefined;
+  if (readers.reportPolicy) {
+    try { releasePolicy = readers.reportPolicy(head, repo); } catch { releasePolicy = { versionSource: "unknown", docsSource: "unknown", authorization: "unavailable" }; }
+    if (releasePolicy) {
+      report.releasePolicy = { versionSource: releasePolicy.versionSource, docsSource: releasePolicy.docsSource, authorization: releasePolicy.authorization };
+      if (releasePolicy.versionSource === "package.json") {
+        try { const r = git(["show",`${head}:package.json`]), pkg = JSON.parse(r.stdout); if (r.code === 0 && typeof pkg.version === "string" && VERSION.test(pkg.version)) report.version = pkg.version; else report.blockers.push("package version unknown"); } catch { report.blockers.push("package version unknown"); }
+        if (releasePolicy.authorization === "unavailable") report.blockers.push("committed release policy unavailable; commit a valid release policy and authorize the candidate");
+        else if (releasePolicy.authorization === "stale") report.blockers.push("release authorization source is stale; authorize the exact candidate version again");
+        else if (releasePolicy.authorization === "missing") report.blockers.push("release authorization not recorded for the committed package.json version; run ahub sdlc authorize-release <version>");
+      } else if (releasePolicy.authorization === "matched" && typeof releasePolicy.version === "string" && VERSION.test(releasePolicy.version)) {
+        report.version = releasePolicy.version;
+      } else if (releasePolicy.authorization === "unavailable" || releasePolicy.versionSource === "unknown") {
+        report.blockers.push("committed release policy unavailable; commit a valid release policy and authorize the candidate");
+      } else if (releasePolicy.authorization === "stale") {
+        report.blockers.push(releasePolicy.versionSource === "release-notes"
+          ? "release-notes source is stale; commit the configured notes file and authorize the exact version"
+          : "release authorization source is stale; authorize the exact candidate version again");
+      } else {
+        report.blockers.push(`release version undetermined from configured ${releasePolicy.versionSource} source; run ahub sdlc authorize-release <version>`);
+      }
+    } else {
+      // The committed package.json/checker default keeps its existing report shape.
+      try { const r = git(["show",`${head}:package.json`]), pkg = JSON.parse(r.stdout); if (r.code === 0 && typeof pkg.version === "string" && VERSION.test(pkg.version)) report.version = pkg.version; else report.blockers.push("package version unknown"); } catch { report.blockers.push("package version unknown"); }
+    }
+  } else {
+    try { const r = git(["show",`${head}:package.json`]), pkg = JSON.parse(r.stdout); if (r.code === 0 && typeof pkg.version === "string" && VERSION.test(pkg.version)) report.version = pkg.version; else report.blockers.push("package version unknown"); } catch { report.blockers.push("package version unknown"); }
+  }
   const published = await gh(["release","list","--repo",repo,"--exclude-drafts","--order","desc","--limit","1","--json","tagName,isDraft,isPrerelease"]);
   let tag: string | undefined;
   try { const rows = JSON.parse(published.stdout), p = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined; if (published.code === 0 && p && typeof p.tagName === "string" && p.tagName.startsWith("v") && VERSION.test(p.tagName.slice(1)) && p.isDraft === false && typeof p.isPrerelease === "boolean") tag = p.tagName; } catch { /* unknown metadata */ }
@@ -91,7 +127,8 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
       if (work.code !== 0 || commits.length > 1000 || commits.some(c => !SHA.test(c))) report.blockers.push("merged work coverage unknown or truncated"); else report.commits = commits;
       let advanced = false;
       try { advanced = !!report.version && Bun.semver.order(report.version, tag.slice(1)) > 0; } catch { /* invalid version remains blocked */ }
-      if (!advanced) report.blockers.push("package version has not advanced past published release");
+      if (!advanced && (!report.releasePolicy || report.releasePolicy.versionSource === "package.json")) report.blockers.push("package version has not advanced past published release");
+      else if (!advanced && report.version) report.blockers.push("release version has not advanced past published release");
     }
   }
   if (report.tagCommit) {
@@ -112,10 +149,13 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
       } catch { report.blockers.push("merged PR coverage unknown or truncated"); break; }
     }
   }
-  const left = deadline - performance.now(); report.documents = left > 0 ? await (readers.docs ?? ((dir, ms) => readDocEvidenceDetailed(dir, ms, readers.checker).then(read => "evidence" in read ? read.evidence : undefined)))(root,Math.min(10_000,left)) : undefined;
-  const checkerMissing = !readers.docs && !existsSync(readers.checker ?? CHECKER_PATH); // #1120: a hub without the checker says so instead of calling the documents stale
+  const skipDocs = report.releasePolicy?.docsSource === "none" || report.releasePolicy?.authorization === "unavailable"
+    || !!report.releasePolicy && report.releasePolicy.versionSource !== "package.json" && report.releasePolicy.authorization !== "matched";
+  const left = deadline - performance.now();
+  report.documents = !skipDocs && left > 0 ? await (readers.docs ?? ((dir, ms) => readDocEvidenceDetailed(dir, ms, readers.checker).then(read => "evidence" in read ? read.evidence : undefined)))(root,Math.min(10_000,left)) : undefined;
+  const checkerMissing = !skipDocs && !readers.docs && !existsSync(readers.checker ?? CHECKER_PATH); // #1120: a hub without the checker says so instead of calling the documents stale
   if (checkerMissing) report.blockers.push("documentation checker unavailable in the running hub: " + CHECKER_MISSING);
-  else if (!report.documents || report.documents.head !== head || !report.documents.fresh || report.documents.errors || report.documents.documents.some(d => d.state !== "fresh")) report.blockers.push("documentation freshness or ancestry is unknown or stale");
+  else if (!skipDocs && (!report.documents || report.documents.head !== head || !report.documents.fresh || report.documents.errors || report.documents.documents.some(d => d.state !== "fresh"))) report.blockers.push("documentation freshness or ancestry is unknown or stale");
   if (!liveIssues.length) report.blockers.push("native verification ledger unspecified");
   for (const id of liveIssues) {
     const reply = await gh(["issue","view",String(id),"--repo",repo,"--json","number,state"]); let state: "open"|"closed"|"unknown" = "unknown";

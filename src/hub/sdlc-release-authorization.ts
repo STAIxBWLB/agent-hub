@@ -2,7 +2,7 @@ import { releaseTrackedClean } from "./release-worktree.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { USER, type PeerId } from "./envelope.ts";
 import { hubGitEnv, hubGitSync } from "./git.ts";
-import { readDocEvidenceDetailed, type DocEvidence, type ReleaseGit, type ReleaseReadiness } from "./sdlc-release.ts";
+import { readDocEvidenceDetailed, type DocEvidence, type ReleaseGit, type ReleaseReadiness, type ReleaseReportPolicy } from "./sdlc-release.ts";
 import { DEFAULT_RELEASE_POLICY, hasCommittedReleaseNotes, type ReleasePolicy } from "./sdlc-release-policy.ts";
 import type { SdlcGh } from "./sdlc.ts";
 import type { ReleaseGuardRequest, ReleasePushUpdate } from "../cli/sdlc-release-guard.ts";
@@ -32,7 +32,7 @@ export interface ReleaseAuthorizationPorts {
 }
 export type ReleaseGuardVerdict = { ok: true; receipts: ReleaseAuthorization[] } | { ok: false; error: string };
 interface Origin { hash: string; urls: string[]; repo?: string }
-interface Entry { receipt: ReleaseAuthorization; origin: Origin; policy: ReleasePolicy }
+interface Entry { receipt: ReleaseAuthorization; origin: Origin; policy: ReleasePolicy; order: number }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function docsVerdict(value: DocEvidence | undefined, commit: string, version: string): ReleaseDocsVerdict | undefined {
   if (!value || value.schemaVersion !== 1 || value.head !== commit || value.version !== version || value.fresh !== true || value.errors !== 0
@@ -50,6 +50,7 @@ function githubRepo(url: string): string | undefined {
 export class ReleaseAuthorizations {
   private readonly entries = new Map<string, Entry>();
   private latest?: Entry;
+  private authorizationOrder = 0;
   constructor(private readonly root: string, private readonly ports: ReleaseAuthorizationPorts) {}
   private current(): void { if (this.ports.current?.() === false) throw new ReleaseAuthorizationError("release authorization unavailable during lifecycle transition"); }
   /** #1120: a checker that is missing or failed is its own refusal; only evidence that is read and not fresh is "stale documentation". An injected reader keeps its undefined meaning (no evidence). */
@@ -151,11 +152,48 @@ export class ReleaseAuthorizations {
     this.current(); this.actor(by);
     const receipt: ReleaseAuthorization = { schemaVersion: 1, id: randomUUID(), by, commit, version, at: (this.ports.now ?? Date.now)(), docs };
     if (!this.ports.record(structuredClone(receipt))) throw new ReleaseAuthorizationError("release approval audit could not be recorded");
-    const entry = { receipt, origin, policy: structuredClone(policy) };
+    const entry = { receipt, origin, policy: structuredClone(policy), order: ++this.authorizationOrder };
     this.entries.set(`${version}:${commit}`, entry); this.latest = entry;
     // ponytail: retain at most 64 approvals in this daemon generation; older candidates need a new person approval.
     if (this.entries.size > 64) this.entries.delete(this.entries.keys().next().value!);
     return structuredClone(receipt);
+  }
+  /** Host-only report source selector. It reads no caller-selected version and never writes the ledger. */
+  reportPolicy(head: string, repo: string): ReleaseReportPolicy | undefined {
+    const unavailable = (versionSource: ReleaseReportPolicy["versionSource"] = "unknown", docsSource: ReleaseReportPolicy["docsSource"] = "unknown"): ReleaseReportPolicy => ({ versionSource, docsSource, authorization: "unavailable" });
+    if (!SHA.test(head) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return unavailable();
+    const git = this.git();
+    let policy: ReleasePolicy;
+    try { policy = this.policy(git, head); } catch { return unavailable(); }
+    if (policy.version.source === "package.json" && policy.docs.source === "checker") return;
+    let packageVersion: string | undefined;
+    if (policy.version.source === "package.json") {
+      try { packageVersion = this.packageVersion(git, head, policy); } catch { return unavailable(policy.version.source, policy.docs.source); }
+    }
+    let origin: Origin;
+    try {
+      if (this.commit(git, "HEAD") !== head) return { versionSource: policy.version.source, docsSource: policy.docs.source, authorization: "stale", ...(packageVersion ? { version: packageVersion } : {}) };
+      origin = this.origin(git);
+    } catch { return unavailable(policy.version.source, policy.docs.source); }
+    const candidates = [...this.entries.values()].filter(entry => entry.receipt.commit === head
+      && entry.origin.hash === origin.hash && entry.origin.repo?.toLowerCase() === repo.toLowerCase()
+      && JSON.stringify(entry.policy) === JSON.stringify(policy)
+      && (packageVersion === undefined || entry.receipt.version === packageVersion));
+    const entry = candidates.reduce<Entry | undefined>((latest, current) => !latest || current.order > latest.order ? current : latest, undefined);
+    if (!entry) return { versionSource: policy.version.source, docsSource: policy.docs.source, authorization: "missing", ...(packageVersion ? { version: packageVersion } : {}) };
+    const version = policy.version.source === "package.json" ? packageVersion : entry.receipt.version;
+    if (!version || !validReleaseVersion(version) || entry.receipt.version !== version) return { versionSource: policy.version.source, docsSource: policy.docs.source, authorization: "stale" };
+    if (policy.version.source === "release-notes") {
+      const notes = policy.version.notesPath.replace("{version}", version);
+      if (!hasCommittedReleaseNotes(git, head, notes)) return { versionSource: policy.version.source, docsSource: policy.docs.source, authorization: "stale" };
+    }
+    if (policy.docs.source === "none" ? !("source" in entry.receipt.docs) : !("digest" in entry.receipt.docs)) {
+      return { versionSource: policy.version.source, docsSource: policy.docs.source, authorization: "stale" };
+    }
+    try {
+      if (this.commit(git, "HEAD") !== head || this.origin(git).hash !== origin.hash) return { versionSource: policy.version.source, docsSource: policy.docs.source, authorization: "stale" };
+    } catch { return unavailable(policy.version.source, policy.docs.source); }
+    return { versionSource: policy.version.source, docsSource: policy.docs.source, authorization: "matched", version };
   }
   private matched(git: ReleaseGit, version: string, commit: string, remote?: string, url?: string): ReleaseAuthorization {
     this.current();
@@ -228,6 +266,31 @@ export class ReleaseAuthorizations {
     } catch (error) { return { ok: false, error: releaseAuthorizationError(error) }; }
   }
   report<T extends ReleaseReadiness>(report: T): T & { authorization?: { state: "matched" | "stale"; receipt: ReleaseAuthorization } } {
+    if (report.releasePolicy) {
+      const policy = report.releasePolicy;
+      if (policy.authorization !== "matched" || !report.head || !report.version) return report;
+      let current: ReleaseReportPolicy | undefined;
+      try { current = this.reportPolicy(report.head, report.repo); }
+      catch { current = { versionSource: policy.versionSource, docsSource: policy.docsSource, authorization: "unavailable" }; }
+      const entry = this.entries.get(`${report.version}:${report.head}`);
+      let matched = !!entry && current?.authorization === "matched" && current.version === report.version
+        && current.versionSource === policy.versionSource && current.docsSource === policy.docsSource;
+      try {
+        if (matched) {
+          const git = this.git(), candidatePolicy = this.policy(git, entry!.receipt.commit);
+          const verdict = report.documents ? docsVerdict(report.documents, report.head, report.version) : undefined;
+          matched = JSON.stringify(candidatePolicy) === JSON.stringify(entry!.policy)
+            && ("source" in entry!.receipt.docs ? candidatePolicy.docs.source === "none" : !!verdict && verdict.digest === entry!.receipt.docs.digest)
+            && this.origin(git).hash === entry!.origin.hash;
+        }
+      } catch { matched = false; }
+      const releasePolicy = { ...policy, authorization: matched ? "matched" as const : "stale" as const };
+      if (!matched) return { ...report, releasePolicy, sourceReady: false, ready: false,
+        blockers: [...new Set([...report.blockers, "release authorization source is stale; authorize the exact candidate version again"])],
+        ...(entry ? { authorization: { state: "stale" as const, receipt: structuredClone(entry.receipt) } } : {}) };
+      const blockers = report.blockers.map(item => item === "native acceptance and person release decision unverified" ? "native acceptance unverified" : item);
+      return { ...report, releasePolicy, blockers, authorization: { state: "matched", receipt: structuredClone(entry!.receipt) } };
+    }
     if (!this.latest) return report;
     const entry = this.entries.get(`${report.version}:${report.head}`), verdict = report.head && report.version ? docsVerdict(report.documents, report.head, report.version) : undefined;
     let matched = !!entry && !!entry.origin.repo && entry.origin.repo.toLowerCase() === report.repo.toLowerCase();

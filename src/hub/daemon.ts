@@ -41,7 +41,7 @@ import type { FloorFacts } from "./action-class.ts";
 import { ReleaseAuthorizations, releaseAuthorizationError } from "./sdlc-release-authorization.ts";
 import { readCommittedReleasePolicy } from "./sdlc-release-policy.ts";
 import { parseReleaseGuardArgv, parseReleasePushUpdates } from "../cli/sdlc-release-guard.ts";
-import type { DocEvidence } from "./sdlc-release.ts";
+import type { DocEvidence, ReleaseReportPolicy } from "./sdlc-release.ts";
 import { loadExternalAdapterDefinitions, readAdapterModuleDeclarations, externalModuleIdentity, externalModuleIdentityCurrent, type AdapterModuleDeclaration } from "../adapters/external-modules.ts";
 import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
@@ -2869,6 +2869,7 @@ export async function startDaemon(opts: DaemonOptions) {
     && left.cwd === right.cwd && left.socket === right.socket && left.launchId === right.launchId && left.generation === right.generation && left.repo === right.repo;
   const projectSpecs = specInspectorAt(opts.cwd);
   let specsMissingBlockHintShown = false;
+  let releaseReportPolicy: ((head: string, repo: string) => ReleaseReportPolicy | undefined) | undefined;
   const tasks: Tasks = new Tasks({
     releaseWindow,
     researchRunners: () => {
@@ -2972,7 +2973,12 @@ export async function startDaemon(opts: DaemonOptions) {
       return report;
     },
     specsRead: (action, paths) => projectSpecs.read(action, paths),
-    sdlc: { config: () => lifecycleConfig, gh: (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound) },
+    sdlc: {
+      config: () => lifecycleConfig,
+      gh: (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound),
+      reportPolicy: (head, repo) => releaseReportPolicy ? releaseReportPolicy(head, repo)
+        : { versionSource: "unknown", docsSource: "unknown", authorization: "unavailable" },
+    },
     board,
     bus,
     executionBudget,
@@ -6530,6 +6536,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ? { type: "release_authorization", by: receipt.by, authorization: receipt.id, commit: receipt.commit, version: receipt.version, docs: "none" }
       : { type: "release_authorization", by: receipt.by, authorization: receipt.id, commit: receipt.commit, version: receipt.version, docsDigest: receipt.docs.digest, documents: receipt.docs.documents }),
   });
+  releaseReportPolicy = (head, repo) => releaseAuthorizations.reportPolicy(head, repo);
   const terminalReads = terminalOwnerReads();
   const terminalLaunches = new TerminalLaunches({
     owner: row => {
