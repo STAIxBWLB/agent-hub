@@ -188,6 +188,8 @@ test("#1381 committed release-notes policy authorizes the real CLI and pre-push 
     writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ release: { version: "release-notes", docs: "none" } }) + "\n");
     writeFileSync(join(root, "docs/releases/v1.2.3.md"), "Committed release notes\n");
     init(root, undefined, false, true);
+    // This release-only fixture has no model routes; generated MLX pins conflict with its disabled inference stack.
+    writeFileSync(join(root, ".agenthub/routing.toml"), "");
     runGit("add", "--all");
     runGit("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "release candidate without package manifest");
     const commit = runGit("rev-parse", "HEAD");
