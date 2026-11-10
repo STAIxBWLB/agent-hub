@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.35.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
+Status: 0.36.0, control protocol 17 (accepts 16). Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 Inspect bounded task and attempt metadata with `ahub lineage show`; admit external
@@ -170,7 +170,7 @@ Agent CLIs update themselves. `ahub agents` shows which installed versions the h
 accepts, `ahub agents trust <id> <version>` accepts an untested one on this
 machine, and the hub tells the planner when an installed version is not verified.
 
-Qwen Code dual-output 0.27.0 and 0.27.1 are qualified by source and account-free macOS arm64 checks ([0.27.0](docs/verification/2026-11-10-qwen-0270-dual-output.md), [0.27.1](docs/verification/2026-11-10-qwen-0271-dual-output.md)) (support takes effect after release and upgrade); real-model turns and live TUI use here remain unverified. A hub deny keeps later input fenced until a new personal turn completes or a verified fresh generation starts; see [Qwen TUI operations](docs/operations.md#qwens-own-tui-driven-through-dual-output-286-part-3).
+Qwen Code dual-output 0.27.0 and 0.27.1 are qualified by source and account-free macOS arm64 checks ([0.27.0](docs/verification/2026-11-10-qwen-0270-dual-output.md), [0.27.1](docs/verification/2026-11-10-qwen-0271-dual-output.md)) (supported from 0.36.0 once a hub is upgraded); real-model turns and live TUI use here remain unverified. A hub deny keeps later input fenced until a new personal turn completes or a verified fresh generation starts; see [Qwen TUI operations](docs/operations.md#qwens-own-tui-driven-through-dual-output-286-part-3).
 
 Before you migrate a memory home with `amem`, read
 [memory profiles and rollout](docs/memory.md#selected-memory-profile). Every hub that
@@ -189,7 +189,7 @@ show an unverified writer's cause and the person-run next step.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-11-09-0.35.0.md) and the
+[release verification report](docs/verification/2026-11-10-0.36.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

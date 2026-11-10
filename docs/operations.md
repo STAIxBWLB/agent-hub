@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.35.0 and control protocols 16 through 17. Live verification
+This guide describes ahub 0.36.0 and control protocols 16 through 17. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -1084,7 +1084,10 @@ Settings flags (#1100) set the main project settings without a file edit.
 `--agents <a,b,...|none>` (`start.agents`) and `--autonomy inherit|off` (whether a
 new project inherits the machine autonomy preset), plus `--research`/`--no-research`
 (`research.enabled`), go to the untracked `config.local.json`. `--sdlc off|advise|enforce` sets `mode` in `sdlc.toml` (`off`
-writes no file on a new project). `--coordination advisory|turn-free`,
+writes no file on a new project); advise or enforce also proposes `required_checks`,
+discovered from the repository's CI or literal workflow job names, and
+`--required-checks <a,b,...>` replaces discovery. Enforce with no known names refuses
+before any write ([required checks](sdlc.md#required-checks-at-initialization)). `--coordination advisory|turn-free`,
 `--memory`/`--no-memory`, `--snapshots`/`--no-snapshots` and `--pi`/`--no-pi` set
 their keys in `config.json`. On an existing project only a flag you give changes
 anything: `--dry-run` shows each change as `old -> new` (`--dry-run --json` adds a
@@ -1095,7 +1098,8 @@ and permissions have no flags; they stay file edits.
 
 A person at a terminal who runs `ahub init` on a new project with no flag that
 sets anything and no `--yes` is asked each setting in turn (#1065 T2): profile,
-the agents `ahub up` starts, design specs and their review mode, SDLC mode,
+the agents `ahub up` starts, design specs and their review mode, SDLC mode (with
+advise or enforce, the discovered required checks to confirm or edit),
 coordination, shared memory, research records, snapshots, the Pi peer, the machine autonomy
 preset, the release guard, and shadow history (asked in a folder with no Git
 work tree, and kept for an existing shadow repository, never in a Git
@@ -1420,8 +1424,9 @@ missing and denied reads have the same unavailable shape for ordinary callers;
 only an authorized diagnostic operator sees a reason. Pages are at most 100 nodes,
 200 edges and 256 KiB, with explicit truncation. Historical reviews retain their
 old head/hash binding; a changed output or head does not inherit that currency.
-The console panel and large-board performance receipt belong to T3; native causal
-coverage remains unverified. See [the address contract](design/execution-reference.md).
+The acon console reads the same page through a provider port, with no new panel,
+action or protocol message, and a fixture receipt measures large boards (T3); native
+causal coverage remains unverified. See [the address contract](design/execution-reference.md).
 
 ## A two-agent task and review
 
@@ -3694,7 +3699,7 @@ The [0.27.0 ACP receipt](verification/2026-11-09-qwen-0270-acp.md) records passi
 ACP/permission/lifecycle checks after explicit runtime-state fence rulings, separately preserving earlier
 controller preflight failures. Its [model-setter check](verification/2026-11-09-qwen-0270-model-setter-1317.md)
 observed A/B/B after acknowledged B/A setters, so baseline clear failed. Basic ACP 0.27.0 is exact-receipt admitted independently of that failed optional live-setter contract.
-The production Qwen setter remains unavailable; `qwen-dual` remains separate at 0.26.1.
+The production Qwen setter remains unavailable; `qwen-dual` is verified separately (0.26.1, 0.27.0 and 0.27.1).
 
 ### Receipt automation audit (#1248 T0)
 
@@ -3901,7 +3906,7 @@ or the plugin is older than the daemon it installed (#1179). It prints nothing w
 | Runtime | Control protocol window | Legacy status field |
 | --- | --- | --- |
 | 0.12.20 through 0.25.0 | 16 only | `protocol: 16` |
-| 0.26.0 through 0.35.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
+| 0.26.0 through 0.36.0 | 16 through 17 | `protocol: 16`, `protocolMin: 16`, `protocolMax: 17` |
 
 New clients choose the highest common protocol. The protocol window remains 16
 through 17, so the published protocol-16 client and channel plugin remain usable; unrelated feature
@@ -3909,7 +3914,10 @@ capabilities still require their own labels. A disjoint window refuses with 4426
 The compatibility-floor `protocol` field remains readable by old clients.
 
 Release N-1 is counted in minor versions, separately from this protocol window
-(#1164, family contract entelecheia/ai-workspace#70). For 0.35.x, N-1 is 0.34.1,
+(#1164, family contract entelecheia/ai-workspace#70). For 0.36.x, N-1 is 0.35.0,
+the latest published patch of 0.35.x (exact `@staix/agent-mem` 0.23.1, control
+protocol 17 with descriptor floor 16). Every patch on 0.36.x keeps that release
+baseline. For 0.35.x, N-1 is 0.34.1,
 the latest published patch of 0.34.x (exact `@staix/agent-mem` 0.22.1, control
 protocol 17 with descriptor floor 16). Every patch on 0.35.x keeps that release
 baseline. For 0.34.x, N-1 is 0.33.0,
@@ -5411,7 +5419,7 @@ that the file is untracked; a dropped value is reported by the settings result.
 
 ## SDLC artifact receipts and gates
 
-The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). `ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]` (the planner tool `hub_sdlc_metrics`, planner or person, read-only) reports lead times, first-pass approval and check rates, rework rounds, stale-head re-reviews and open stalls from board history, with `unknown` counted and never 0; optional `[bands.<metric>]` in `sdlc.toml` add control bands that the daemon checks every five minutes in advise or enforce, writing a hub notice (`log`), a read-only `triage` backlog task (`diagnose`) or a `plan` backlog card (`propose`), one per breach episode and never a GitHub issue (S7, see [metrics](sdlc.md#sdlc-metrics-and-control-bands-481-s7)). With the lifecycle on, a task's issue identity is linked when it is proposed or accepted, from the one issue it names (an imported GitHub issue, or a `#N`, `owner/repo#N` or issue URL in its title); a title that names a sibling repository (`agent-mem#13`) links only when `refs.repo` names it, and without `refs.repo` the propose result says to set it. `ahub backlog groom` also backfills up to 32 links per call, within 1 s (#723). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S3 structured review findings (an open Important finding blocks approval in enforce; `max_nits` in `sdlc.toml` caps nits) and S2 literal-path plan conformance with the person-only `ahub sdlc accept-departure <task> <head> <reason...>` are in source; see [findings](sdlc.md#structured-review-findings-481-s3) and [plan conformance](sdlc.md#plan-conformance-481-s2). S4 [test integrity](sdlc.md#test-integrity-481-s4) and S6 [release authorization](#release-approval-and-optional-tag-guard) are in source too. S5 is in source as an [eval gate mechanism](sdlc.md#eval-gate-for-agent-configuration-481-s5) with no suite chosen, and S7 adds merge-time readback, [release metrics](sdlc.md#release-metrics-481-ac12) and an opt-in security baseline; a full live advise/release cycle and the per-release gates-run record remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
+The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). A PR merged outside the hub is recorded with `ahub sdlc adopt-merge <task> --pr <n>` (person or current conductor), which approves the task and releases dependents only at its recorded head with green required checks ([adoption](sdlc.md#adopting-a-pr-merged-outside-the-hub-1328-t3)). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). `ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]` (the planner tool `hub_sdlc_metrics`, planner or person, read-only) reports lead times, first-pass approval and check rates, rework rounds, stale-head re-reviews and open stalls from board history, with `unknown` counted and never 0; optional `[bands.<metric>]` in `sdlc.toml` add control bands that the daemon checks every five minutes in advise or enforce, writing a hub notice (`log`), a read-only `triage` backlog task (`diagnose`) or a `plan` backlog card (`propose`), one per breach episode and never a GitHub issue (S7, see [metrics](sdlc.md#sdlc-metrics-and-control-bands-481-s7)). With the lifecycle on, a task's issue identity is linked when it is proposed or accepted, from the one issue it names (an imported GitHub issue, or a `#N`, `owner/repo#N` or issue URL in its title); a title that names a sibling repository (`agent-mem#13`) links only when `refs.repo` names it, and without `refs.repo` the propose result says to set it. `ahub backlog groom` also backfills up to 32 links per call, within 1 s (#723). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S3 structured review findings (an open Important finding blocks approval in enforce; `max_nits` in `sdlc.toml` caps nits) and S2 literal-path plan conformance with the person-only `ahub sdlc accept-departure <task> <head> <reason...>` are in source; see [findings](sdlc.md#structured-review-findings-481-s3) and [plan conformance](sdlc.md#plan-conformance-481-s2). S4 [test integrity](sdlc.md#test-integrity-481-s4) and S6 [release authorization](#release-approval-and-optional-tag-guard) are in source too. S5 is in source as an [eval gate mechanism](sdlc.md#eval-gate-for-agent-configuration-481-s5) with no suite chosen, and S7 adds merge-time readback, [release metrics](sdlc.md#release-metrics-481-ac12) and an opt-in security baseline; a full live advise/release cycle and the per-release gates-run record remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
 ## Supervision proposals
 
 `supervision.mode` is off by default and machine-local (`ahub settings set supervision.mode advisory`); a committed
@@ -5450,7 +5458,7 @@ selected roster and existing capabilities; the TUI is always a person's start.
 
 ### Qwen's own TUI, driven through dual output (#286 Part 3)
 
-`ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the terminal you ran it from. The daemon prepares the two files (mode 0600, under `<state dir>/qwen/qwen-dual/`) and returns the launch; the hub then appends one `submit` line per delivery and tails the event file from a saved offset. It needs a Qwen the dual-output compat entry verifies (`ahub agents` shows `qwen-dual`, verified 0.26.1 and exact 0.27.0; the headless `qwen` entry has its own ACP receipts) and refuses another version before it creates a file. The TUI is explicit only: `ahub qwen` without `--mode` is still headless, Qwen is not a start-mode peer, and the hub never opens this terminal by itself. The TUI start is refused for an extra Qwen instance, off roster, outside a terminal, and while a headless Qwen runs (`ahub stop qwen` first); a headless start is refused while the TUI holds its terminal.
+`ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the terminal you ran it from. The daemon prepares the two files (mode 0600, under `<state dir>/qwen/qwen-dual/`) and returns the launch; the hub then appends one `submit` line per delivery and tails the event file from a saved offset. It needs a Qwen the dual-output compat entry verifies (`ahub agents` shows `qwen-dual`, verified 0.26.1 and exact 0.27.0 and 0.27.1; the headless `qwen` entry has its own ACP receipts) and refuses another version before it creates a file. The TUI is explicit only: `ahub qwen` without `--mode` is still headless, Qwen is not a start-mode peer, and the hub never opens this terminal by itself. The TUI start is refused for an extra Qwen instance, off roster, outside a terminal, and while a headless Qwen runs (`ahub stop qwen` first); a headless start is refused while the TUI holds its terminal.
 
 - What the hub does: a delivery becomes a `submit`; the last assistant message of the turn (an `assistant` event whose `stop_reason` is not `tool_use`, then `message_stop`) is shared as the answer; busy and idle follow the events. A `can_use_tool` request goes to the console approval path (`ahub permit`, the dashboard), and the hub's own tools are approved only by their exact `mcp__agent-hub__<tool>` name. If you answer a prompt in the Qwen terminal first, the hub's pending approval is withdrawn.
 - **Limit 1, a deny is not a readiness ACK.** The known denied delivery completes without a shared answer, but queued messages remain unsubmitted behind a durable input fence. The denied turn's own assistant/Stop does not release it. After 30 s without recovery proof the peer reports offline, keeping the fence. Type a new plain, tool-free prompt (or press Esc first) in the Qwen terminal and finish that personal turn; its same-session final assistant/message_stop can restore readiness even after timeout. Alternatively, end Qwen in that terminal and run `ahub qwen --mode tui` for a verified new native generation. Merely making the event file readable, replaying session_start or restarting the hub does not release a deny fence. A new personal USER must be observed after adoption. An uncertain original turn still settles `needs_review`; a deny retains its known `completed` disposition. Background task-notification events are not personal USER recovery proof.
@@ -5475,7 +5483,7 @@ turns, this repository's live dual-output TUI use, Linux and lifetime containmen
 remain unverified; the basic ACP/setter contracts and automation eligibility are
 separate.
 
-Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)), 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)), 0.26.4 ([0.26.4 ACP receipt](verification/2026-10-31-qwen-0264-acp.md)), 0.26.5 ([0.26.5 ACP receipt](verification/2026-11-03-qwen-0265-acp.md)) and 0.26.8 ([0.26.8 ACP receipt](verification/2026-11-06-qwen-0268-acp.md)). The separate [0.26.4](verification/2026-10-31-qwen-0264-dual-output.md), [0.26.5](verification/2026-11-03-qwen-0265-dual-output.md), and [0.26.8](verification/2026-11-06-qwen-0268-dual-output.md) dual-output attempts did not establish their queued-turn criterion, those versions remain unverified by `qwen-dual`; exact 0.27.0 has the separate matched receipt above. A CLI version label alone
+Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)), 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)), 0.26.4 ([0.26.4 ACP receipt](verification/2026-10-31-qwen-0264-acp.md)), 0.26.5 ([0.26.5 ACP receipt](verification/2026-11-03-qwen-0265-acp.md)), 0.26.8 ([0.26.8 ACP receipt](verification/2026-11-06-qwen-0268-acp.md)), 0.26.9 ([0.26.9 ACP receipt](verification/2026-11-08-qwen-0269-acp.md)) and 0.27.0 ([0.27.0 ACP receipt](verification/2026-11-09-qwen-0270-acp.md)). The separate [0.26.4](verification/2026-10-31-qwen-0264-dual-output.md), [0.26.5](verification/2026-11-03-qwen-0265-dual-output.md), and [0.26.8](verification/2026-11-06-qwen-0268-dual-output.md) dual-output attempts did not establish their queued-turn criterion, those versions remain unverified by `qwen-dual`; exact 0.27.0 and 0.27.1 have the separate matched receipts above. A CLI version label alone
 is insufficient: startup verifies its native identity/version and advertised mode
 ids before any prompt. The earlier local installation reported CLI 0.25.0 while
 its package/ACP source said 0.24.1; that was not a ready identity. The 0.26.0 receipt
