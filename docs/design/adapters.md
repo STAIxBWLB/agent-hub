@@ -241,8 +241,12 @@ its existing native-identity admission, independently of Kimi reviewer isolation
 compatibility. Only Kimi Code CLI 2.5.2 headless is currently enabled, through
 `session/set_config_option` with `configId: model` and the
 [model-free setter receipt](../verification/2026-11-08-kimi-252-model-setter-1317.md).
-Qwen remains unavailable because its native clear fixture observed A/B/B after
-ACKs for B then A. Jcode headless A/B/A passed, but its shared-TUI turn fence
+Qwen remains unavailable pending a separate setter admission. Its historical
+A/B/B evidence did not retain the third request's purpose. The
+[suggestions-off receipt](../verification/2026-11-11-qwen-setter-suggestions-off.md)
+records ordinary A/B/A on exact 0.26.9 and 0.27.0 under isolated normal settings;
+this adds candidate evidence, without enabling a production setter or qualifying
+real accounts, default-on suggestions, TUI or Linux. Jcode headless A/B/A passed, but its shared-TUI turn fence
 across failover remains unqualified; its production setter stays unavailable. A native TUI or external adapter cannot acquire a setter from an
 advertisement or a registry label.
 
