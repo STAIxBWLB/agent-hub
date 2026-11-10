@@ -87,6 +87,14 @@ function boundChild(state: Stored, input: ProbeSessionAdmission, session: Sessio
 function snapshotBytes(registration: ProbeRegistrationV1): number {
   return Object.entries(registration.snapshots).reduce((total, [key, value]) => total + Buffer.byteLength(key === "dataPolicy" ? canonical(value) : value as string), 0);
 }
+function completedRetryChain(state: Stored, start: number): boolean {
+  for (let index = start; index < state.sessions.length; index++) {
+    const session = state.sessions[index]!;
+    if (session.state === "closed_fixture") return true;
+    if (session.state !== "failed_known" || state.registration.manifest.slots[index + 1]?.retryOf !== session.slotId) return false;
+  }
+  return false;
+}
 
 /** Private same-db ledger. It never reads G1 tables or owns Task authority. */
 export class GuidanceProbeStore {
@@ -358,8 +366,7 @@ export class GuidanceProbeStore {
       if (unknown) state.receipt.state = "unknown_held";
       else {
         this.db.query("UPDATE guidance_probe_lanes SET slot_id=NULL WHERE project=? AND manifest_id=? AND slot_id=?").run(input.reservation.key.projectKey, input.reservation.key.id, session.slotId);
-        if (state.sessions.every((item, index) => item.state === "closed_fixture" || item.state === "failed_known"
-          && state.registration.manifest.slots[index + 1]?.retryOf === item.slotId && state.sessions[index + 1]?.state === "closed_fixture")) {
+        if (state.sessions.every((_, index) => completedRetryChain(state, index))) {
           state.receipt.state = "closed_fixture";
           this.db.query("DELETE FROM guidance_probe_lanes WHERE project=? AND manifest_id=? AND slot_id IS NULL").run(input.reservation.key.projectKey, input.reservation.key.id);
         }

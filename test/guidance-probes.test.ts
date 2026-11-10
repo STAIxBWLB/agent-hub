@@ -503,6 +503,48 @@ describe("guidance probe private atomic ledger", () => {
     expect(f.store.read(key)!.counters).toMatchObject({ workerAttempts: 2, modelCalls: 2, tokensReserved: 40, tokensObservedKnown: 20 });
     expect(f.store.read(key)!.sessions.slice(0, 2).map(item => item.state)).toEqual(["failed_known", "closed_fixture"]);
   });
+  test("two adjacent known failures followed by success complete the four-worker zero-editor chain without refunds", () => {
+    const f = fixture(), baseline = f.registration.manifest.slots[0]!, candidate = f.registration.manifest.slots[2]!;
+    f.registration.manifest.slots = [baseline, { ...baseline, id: "retry1", retryOf: baseline.id }, { ...baseline, id: "retry2", retryOf: "retry1" }, candidate];
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    const child: ProbeChildBinding = { variantId: probeHash("existing-g1"), candidateSha256: probeHash("raw-role"), guidanceSha256: probeHash("rendered-role"), guidance: "rendered-role",
+      task: f.host.task, role: f.host.role, authoring: "uncontrolled", sourceSessionId: null };
+    for (const [index, outcome] of ["failed_known", "failed_known", "closed_fixture", "closed_fixture"].entries()) {
+      const selected = index === 3 ? child : undefined, check = () => ({ host: f.host, ...(selected ? { child: selected } : {}) });
+      const result = f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, ...(selected ? { child: selected } : {}), now: 100 }, check);
+      if (result.kind !== "granted") throw new Error("expected preregistered attempt");
+      f.store.settleSession({ reservation: result.reservation, outcome: outcome as "failed_known" | "closed_fixture", candidateArtifactSha256: null, now: 100 });
+    }
+    expect(f.store.read(key)!.receipt.state).toBe("closed_fixture");
+    expect(f.store.read(key)!.sessions.map(item => item.state)).toEqual(["failed_known", "failed_known", "closed_fixture", "closed_fixture"]);
+    expect(f.store.read(key)!.counters).toMatchObject({ workerAttempts: 4, editorAttempts: 0 });
+    const db = openHubDatabase(f.file); cleanup.push(() => db.close());
+    expect((db.query("SELECT COUNT(*) AS n FROM guidance_probe_lanes WHERE project=?").get(key.projectKey) as { n: number }).n).toBe(0);
+    const next = copy(f.registration); next.manifest.experimentId = "independent-after-completed-chain";
+    const nextKey = guidanceProbeFixtureKey(next); f.store.register(next, f.host, () => f.host);
+    expect(f.store.reserveSession({ key: nextKey, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate).kind).toBe("granted");
+    expect(f.store.read(key)!.counters.workerAttempts).toBe(4);
+  });
+  test("unresolved or unknown adjacent retry chains retain the lane and block another experiment", () => {
+    const f = fixture(), baseline = f.registration.manifest.slots[0]!, candidate = f.registration.manifest.slots[2]!;
+    f.registration.manifest.slots = [baseline, { ...baseline, id: "retry1", retryOf: baseline.id }, { ...baseline, id: "retry2", retryOf: "retry1" }, candidate];
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    for (let index = 0; index < 2; index++) {
+      const result = f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, now: 100 }, f.revalidate);
+      if (result.kind !== "granted") throw new Error("expected failed attempt");
+      f.store.settleSession({ reservation: result.reservation, outcome: "failed_known", candidateArtifactSha256: null, now: 100 });
+    }
+    const next = copy(f.registration); next.manifest.experimentId = "blocked-by-unresolved-chain";
+    const nextKey = guidanceProbeFixtureKey(next); f.store.register(next, f.host, () => f.host);
+    expect(f.store.read(key)!.receipt.state).toBe("active");
+    expect(() => f.store.reserveSession({ key: nextKey, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate)).toThrow("uncertain");
+    const result = f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, now: 100 }, f.revalidate);
+    if (result.kind !== "granted") throw new Error("expected last preregistered retry");
+    f.store.settleSession({ reservation: result.reservation, outcome: "unknown", candidateArtifactSha256: null, now: 100 });
+    expect(f.store.read(key)!.sessions.map(item => item.state)).toEqual(["failed_known", "failed_known", "unknown_held", "planned"]);
+    expect(f.store.read(key)!.counters).toMatchObject({ workerAttempts: 3, editorAttempts: 0 });
+    expect(() => f.store.reserveSession({ key: nextKey, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate)).toThrow("uncertain");
+  });
   test("oversize stored JSON is refused before hydration and recovery digest detects persisted state", () => {
     const f = fixture(); f.register(); const before = f.store.integrity(); f.reserve(); expect(f.store.integrity().digest).not.toBe(before.digest);
     const db = openHubDatabase(f.file); cleanup.push(() => db.close());
