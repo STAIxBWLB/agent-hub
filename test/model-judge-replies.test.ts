@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseAdvisorReply, parseEscalationReply } from "../src/models/route/judge-replies.ts";
+import { parseAdvisorReply, parseEscalationReply, type EscalationReply } from "../src/models/route/judge-replies.ts";
 
 describe("owned host judge replies", () => {
   test("requires an anchored advisor word, with case-insensitive affirmative replies", () => {
@@ -36,8 +36,8 @@ describe("owned host judge replies", () => {
   });
 
   test("accepts documented escalation fields from raw JSON or one surrounding JSON fence", () => {
-    const value = { escalate: true, category: "repetition", new_evidence: true, reason: "synthetic distinct observations" };
-    const expected = { escalate: true, category: "repetition", newEvidence: true, reason: value.reason };
+    const value = { escalate: true, category: "repetition" as const, new_evidence: true, reason: "synthetic distinct observations" };
+    const expected: EscalationReply = { escalate: true, category: "repetition", newEvidence: true, reason: value.reason };
     expect(parseEscalationReply(JSON.stringify(value))).toEqual(expected);
     expect(parseEscalationReply("```json\n" + JSON.stringify(value) + "\n``` ")).toEqual(expected);
     expect(parseEscalationReply("\n```\r\n" + JSON.stringify(value) + "\r\n```\n")).toEqual(expected);
@@ -46,7 +46,7 @@ describe("owned host judge replies", () => {
   });
 
   test("escalation JSON fences reject commentary, multiple objects and malformed consumed fields", () => {
-    const value = { escalate: true, category: "repetition", new_evidence: true, reason: "synthetic distinct observations" };
+    const value = { escalate: true, category: "repetition" as const, new_evidence: true, reason: "synthetic distinct observations" };
     expect(parseEscalationReply(JSON.stringify({ ...value, category: "unsupported_fixture" }))).toBeUndefined();
     expect(parseEscalationReply(JSON.stringify({ ...value, new_evidence: "true" }))).toBeUndefined();
     expect(parseEscalationReply(JSON.stringify({ ...value, reason: null }))).toBeUndefined();

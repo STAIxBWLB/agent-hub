@@ -59,7 +59,7 @@ test("active advisor scope does not re-arm its completed review budget after one
 
 test("an authority fence after execution names the executor-reply step", async () => {
   const controller = new AbortController(); let calls = 0;
-  const runtime = new HubRouteRuntime({ onCampus: async () => true, admitDecision: async () => false, execute: async () => {
+  const runtime = new HubRouteRuntime({ onCampus: async () => true, admitDecision: async () => { throw new Error("fixture denies service admission"); }, execute: async () => {
     calls++; controller.abort(); return { message: { role: "assistant", content: "completed before abort" } };
   } });
   await expect(runtime.call("scope/ended", { type: "plan_execute", efficient: "fast", capable: "coding",
