@@ -2,6 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, lstatSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import { MCP_OBSERVER } from "../scripts/compat-receipts/proofs/jcode.ts";
+import { stopOwnedProcess, trackGroup } from "../src/hub/child-process.ts";
+import type { Readable, Writable } from "node:stream";
 import { realPath } from "../src/hub/project.ts";
 import { runBoundedReceiptCommand } from "../scripts/compat-receipts/runner.ts";
 import type { ProofContext, ProofResults } from "../scripts/compat-receipts/types.ts";
@@ -163,3 +168,84 @@ test("a third completion attempt fails even when only two request bodies are ret
   expect(result["active-turn-soft-interrupt"]).toEqual({ status: "fail", cause: "proof-failed" });
   expect(result["serve-cleanup"]).toEqual({ status: "pass", cause: "ok" });
 }, 20000);
+
+/** Runs the actual observer program with only its filesystem import bound to a pipe-gated real I/O port. */
+async function observerPublication(program: string, fault: "none" | "write" | "existing" = "none", expected: "atomic" | "legacy" = "atomic") {
+  const root = realPath(mkdtempSync(join(tmpdir(), "jcode-observer-publication-"))); roots.push(root);
+  const target = join(root, "observed.json"), temp = target + ".tmp", port = join(root, "fs-port.mjs"), script = join(root, "observer.mjs");
+  const existing = "preexisting private temporary file";
+  if (fault === "existing") writeFileSync(temp, existing, { mode: 0o600, flag: "wx" });
+  writeFileSync(port, `import * as fs from 'node:fs';
+export const {openSync,closeSync,renameSync,unlinkSync}=fs;
+export function writeFileSync(file,data,options){
+  const own=typeof file!=='number',fd=own?fs.openSync(file,options?.flag??'w',options?.mode):file;
+  const wait=()=>{const token=Buffer.alloc(1);if(fs.readSync(4,token,0,1,null)!==1)throw Error('gate closed')};
+  try{wait();fs.writeSync(3,'opened\\n');wait();
+    if(${JSON.stringify(fault)}==='write')throw Error('injected write failure');fs.writeFileSync(fd,data);
+  }finally{if(own)fs.closeSync(fd)}
+}`, { mode: 0o600, flag: "wx" });
+  // Import substitution supplies the real fs operations and one controlled write barrier;
+  // the observer's publication, ownership, cleanup and MCP code remain byte-identical.
+  expect(program.split("from'node:fs'")).toHaveLength(2);
+  writeFileSync(script, program.replace("from'node:fs'", `from${JSON.stringify(port)}`), { mode: 0o600, flag: "wx" });
+  const child = spawn(process.execPath, [script, target], { cwd: root, detached: true, signal: AbortSignal.timeout(15000),
+    env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, AGENTHUB_PEER_ID: "fixture-peer", AGENTHUB_LAUNCH_ID: "fixture-launch" },
+    stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"] });
+  const ended = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject); child.once("exit", resolve);
+    if (child.exitCode !== null || child.signalCode !== null) resolve(child.exitCode);
+  });
+  trackGroup(child); child.stderr!.resume();
+  const markers = createInterface({ input: child.stdio[3] as Readable }), replies = createInterface({ input: child.stdout! });
+  try {
+    if (fault === "existing") {
+      expect(await ended).toBe(1);
+      expect(readFileSync(temp, "utf8")).toBe(existing);
+      expect(() => lstatSync(target)).toThrow();
+      return;
+    }
+    const opened = new Promise<string>(resolve => markers.once("line", resolve));
+    (child.stdio[4] as Writable).write("1");
+    expect(await Promise.race([opened, ended.then(() => { throw new Error("observer exited before the write barrier"); })])).toBe("opened");
+    const published = (() => { try { return lstatSync(target); } catch { return undefined; } })();
+    if (expected === "legacy") {
+      expect(published?.size).toBe(0);
+      expect(() => JSON.parse(readFileSync(target, "utf8"))).toThrow();
+    } else {
+      expect(published).toBeUndefined();
+      expect(lstatSync(temp).mode & 0o777).toBe(0o600);
+    }
+    (child.stdio[4] as Writable).end("1");
+    if (fault === "write") {
+      expect(await ended).toBe(1);
+      expect(() => lstatSync(temp)).toThrow(); expect(() => lstatSync(target)).toThrow();
+      return;
+    }
+    const response = new Promise<string>(resolve => replies.once("line", resolve));
+    child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } }) + "\n");
+    const line = await Promise.race([response, ended.then(() => { throw new Error("observer exited before its MCP reply"); })]);
+    expect(JSON.parse(line)).toEqual({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "receipt-observer", version: "1" } } });
+    expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ peer: "fixture-peer", launch: "fixture-launch" });
+    expect(lstatSync(target).mode & 0o777).toBe(0o600);
+    child.stdin!.end(); expect(await ended).toBe(0);
+  } finally {
+    markers.close(); replies.close();
+    await stopOwnedProcess(child, { group: true });
+  }
+}
+
+test("the old observer exposes an incomplete final JSON file at a consumed write barrier", async () => {
+  await observerPublication(OLD_MCP_OBSERVER, "none", "legacy");
+}, 20000);
+test("the observer publishes complete environment JSON atomically before its MCP reply", async () => {
+  await observerPublication(MCP_OBSERVER);
+}, 20000);
+test("observer write failure removes only its own temporary file and publishes nothing", async () => {
+  await observerPublication(MCP_OBSERVER, "write");
+}, 20000);
+test("observer exclusive temporary-open refusal preserves a preexisting file", async () => {
+  await observerPublication(MCP_OBSERVER, "existing");
+}, 20000);
+
+// Exact observer program from 0ef961fa40269c4204a0dfcd7b0b16472a6d268f, before atomic publication.
+const OLD_MCP_OBSERVER = "import{writeFileSync}from'node:fs';import{createInterface}from'node:readline';\nwriteFileSync(process.argv[2],JSON.stringify({peer:process.env.AGENTHUB_PEER_ID,launch:process.env.AGENTHUB_LAUNCH_ID}),{mode:0o600});\ncreateInterface({input:process.stdin}).on('line',line=>{let m;try{m=JSON.parse(line)}catch{return}if(m.id===undefined)return;\nconst result=m.method==='initialize'?{protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'receipt-observer',version:'1'}}:m.method==='tools/list'?{tools:[]}:{};\nprocess.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n')});process.stdin.on('end',()=>process.exit(0));";

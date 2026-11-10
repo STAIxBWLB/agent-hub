@@ -66,7 +66,10 @@ including [a new project with SDLC advise or enforce](docs/quickstart.md#a-new-p
   restarts.
 - **Optional decision routing.** Hub-owned routes can consult a loopback adec
   policy in shadow mode while keeping the existing model choice unchanged.
-  See [configuration and privacy limits](docs/operations.md#optional-adec-decision-route-554).
+  Stage routes use bounded numeric evidence and a deterministic fallback;
+  whole-wire sizing conservatively counts UTF-8 JSON bytes, including Unicode.
+  See the [stage contract](docs/design/model-routes.md) and
+  [configuration and privacy limits](docs/operations.md#optional-adec-decision-route-554).
 - **Live model selection.** A person can set a supported peer's next-turn model
   with `ahub model set`, without restart or reload. Headless Kimi 2.5.2 has an
   exact-version ACP setter receipt; other ACP kinds remain unsupported.

@@ -5357,6 +5357,33 @@ that the file is untracked; a dropped value is reported by the settings result.
 ## SDLC artifact receipts and gates
 
 The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). `ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]` (the planner tool `hub_sdlc_metrics`, planner or person, read-only) reports lead times, first-pass approval and check rates, rework rounds, stale-head re-reviews and open stalls from board history, with `unknown` counted and never 0; optional `[bands.<metric>]` in `sdlc.toml` add control bands that the daemon checks every five minutes in advise or enforce, writing a hub notice (`log`), a read-only `triage` backlog task (`diagnose`) or a `plan` backlog card (`propose`), one per breach episode and never a GitHub issue (S7, see [metrics](sdlc.md#sdlc-metrics-and-control-bands-481-s7)). With the lifecycle on, a task's issue identity is linked when it is proposed or accepted, from the one issue it names (an imported GitHub issue, or a `#N`, `owner/repo#N` or issue URL in its title); a title that names a sibling repository (`agent-mem#13`) links only when `refs.repo` names it, and without `refs.repo` the propose result says to set it. `ahub backlog groom` also backfills up to 32 links per call, within 1 s (#723). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S3 structured review findings (an open Important finding blocks approval in enforce; `max_nits` in `sdlc.toml` caps nits) and S2 literal-path plan conformance with the person-only `ahub sdlc accept-departure <task> <head> <reason...>` are in source; see [findings](sdlc.md#structured-review-findings-481-s3) and [plan conformance](sdlc.md#plan-conformance-481-s2). S4 [test integrity](sdlc.md#test-integrity-481-s4) and S6 [release authorization](#release-approval-and-optional-tag-guard) are in source too. S5 is in source as an [eval gate mechanism](sdlc.md#eval-gate-for-agent-configuration-481-s5) with no suite chosen, and S7 adds merge-time readback, [release metrics](sdlc.md#release-metrics-481-ac12) and an opt-in security baseline; a full live advise/release cycle and the per-release gates-run record remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
+## Supervision proposals
+
+`supervision.mode` is off by default and machine-local (`ahub settings set supervision.mode advisory`); a committed
+`.agenthub/config.json` cannot turn it on. `shadow` stores bounded proposals on the queue and does nothing else: no
+inbox row, no notice, no turn. `advisory` may also show a pending proposal in the console's existing inbox, where only
+an explicit accept or dismiss acts. The queue holds at most 100 pending proposals, three per task revision, and keeps
+400 terminal rows for dedupe, so a reading already accepted, dismissed or expired is not proposed again for the same
+rule, task, revision and trigger. A reading past a bound is refused and counted: `hub_supervision_list` reports the total
+as `refused`, so a full queue never reads as "nothing to report".
+
+A present role reads and decides them with `hub_supervision_list`, `hub_supervision_accept` and
+`hub_supervision_dismiss`, or with the advisory inbox row: the task's owner, its reviewer, the configured planner, the
+conductor and the person. There is no supervisor role. An acceptance runs the existing action the proposal names,
+through that action's own authority: `escalate` through the conductor for an agent and the board's own escalation for
+the person, and `recheck` or `request_integration` as the hub's notice to the owners, whose check re-run or integration
+is their own action and their own board record. An `escalate` proposal is therefore accepted by the conductor or the
+person only; another role's acceptance is refused and the proposal stays pending. Accepting writes nothing to the board.
+
+Every refusal names its reason and starts nothing. A stale revision, a closed or vanished task, new input that cleared
+the pattern, or a replaced native session expires the proposal; a private task, a clipped reading (a revision longer
+than one rule reads), an unknown id, a caller with no role on the task, a caller that does not hold the action's own
+authority, or an owner's `needs_review` delivery refuses without spending it. An action whose outcome the hub could not
+observe is recorded `unknown` and never retried; a later read settles it from the board's own record at or after the
+intent time and inside the task revision the proposal was read under, and a restart keeps the dispositions, the dedupe
+keys and the unknown outcomes. There is no automatic pause, retry, cancel, reroute, approval or rollback, no resident
+worker and no timer. See [supervision rules, proposals and the decision path](design/supervision.md).
+
 ## Optional Qwen Code peer
 
 Select Qwen per project with `ahub roster add qwen`; it defaults off and is absent
@@ -7125,3 +7152,13 @@ C1 now provides a separate [fixture-only read-only mod](../integrations/claude-c
 The optional [companion](../integrations/claude-code/README.md) adds a declared AbovePrompt attention band for fresh positive held-count, budget-record and first-active-permission facts, plus compact ToolUse views for four hub tools with the unchanged original behind a bounded session toggle. Missing fields are gaps in the pane, never waiting lines. Exact offline-owned-in_progress work cannot be inferred from current status WIP or offline-summary fields. The same single status read and canonical-root/pinned-projectId ceiling apply; no status line, channel row or additional CLI read is added.
 
 Actual registered fake-host chains compare model results, queued channel text and composed system sections with the mod on/off, while render/toggle views change; counterfactual mutations prove the comparator can detect all three kinds of drift. This is source evidence. The native needs_review band raised/cleared, row UX, action counts and disable proof remain person-run NOT RUN; support remains fixture_only.
+
+### Claude Code companion C3 manual qualification (#1338)
+
+The [manual-only placement procedure](../integrations/claude-code/README.md#manual-session-only-placement) uses a scratch folder and person-run session `--plugin-dir` opt-in in isolated HOME/config with a scratch hub. Copying files is not a registered CLI installation. Exit and restart without the flag to disable; discard only the owned scratch copy to remove. No persistent installation identifiers or second marketplace entry are qualified. The separate channel entry stays unchanged.
+
+The [matrix](../integrations/claude-code/support-matrix.json) keeps terminal/desktop fixture_only and VS Code/mobile unsupported for the full AbovePrompt journey, without claiming their pane/tool rows proven or impossible. Each surface has its own native receipt, all NOT RUN; no native supported version or minimum is claimed. The support test rejects missing, placeholder, version/head-mismatched or incomplete receipts. Source declarations, fake-host equality and isolated static validation are separate from native painting, disable independence and version-boundary evidence.
+
+For "what needs me?", the complete separate-console baseline is 2 procedure actions (open terminal, submit command). A fresh known-subset band can be noticed with 0 further actions or requested by 1 submitted refresh; complete console follow-up is still 2. Target selection/consent is additional. No observed action count or UX reduction is claimed until the person records it in the matching surface receipt.
+
+C3's guarded static CLI leg is UNVERIFIED/person-run: version-only diagnostic child exit -6 / signal 6, zero stdout/stderr bytes, with unchanged file fences and no owned group remaining. Cause is UNKNOWN; `plugin validate` was NOT RUN and probing stopped without relaxing isolation. The path label 2.1.321 is metadata only, separate from the immutable 2.1.319 declarations and historical validation. No native support or minimum follows.

@@ -261,6 +261,16 @@ export const ASK_TOOL: HubTool = tool("hub_ask",
 /** Question and answer text are the person's and the peer's words: never memory capture evidence, like the study tools. */
 export const QUESTION_TOOLS = new Set([ASK_TOOL.name]);
 TASK_TOOLS.push(ASK_TOOL);
+/**
+ * #1221 T2: the bounded supervision queue. Reading and deciding are open to every peer because the authority is the
+ * task's own present roles, checked in the daemon, and an accepted proposal runs an existing action under that action's
+ * own authority. Codes and ids only: no title, note, path or file body crosses either tool.
+ */
+TASK_TOOLS.push(
+  tool("hub_supervision_list", "Read the bounded supervision proposals on tasks you hold a role on, pending first. Codes and ids only, plus `refused`, the readings a queue bound refused instead of storing. Shadow mode stores proposals without showing them anywhere else; a decided or expired proposal keeps its receipt.", { task: id }),
+  tool("hub_supervision_accept", "Accept one pending supervision proposal: the existing action it names runs under that action's own authority, and its intent, receipt and the task's own result stay separate records. An escalate proposal is accepted by the conductor or the person only; any other acceptance is refused and the proposal stays pending. Refuses a stale revision or generation, a reading that no longer holds, another actor's task, a private task and an owner's needs_review hold.", { id: str }, ["id"]),
+  tool("hub_supervision_dismiss", "Dismiss one pending supervision proposal. Same fences as accept, and it records the decision; nothing runs.", { id: str }, ["id"]),
+);
 export const TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name]);
 
 /** Separately published: serving a schema grants no authority, only the daemon's explicit role does. */

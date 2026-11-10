@@ -228,6 +228,13 @@ test("an authenticated read-only ACP owner cannot create or withdraw valid guida
     expect<boolean>(listed.ok, listed.error).toBe(true); expect(parseGuidancePageResult(listed.guidance).state).toBe("available");
     const shown = await tools.request({ t: "guidance_show", ...selector }); expect<boolean>(shown.ok, shown.error).toBe(true);
     expect(parseGuidanceDiffResult(shown.guidance).state).toBe("available");
+    const supervision = await tools.request({ t: "task", op: "hub_supervision_list", args: {} });
+    expect<boolean>(supervision.ok, supervision.error).toBe(true);
+    expect(Array.isArray(JSON.parse(supervision.text).proposals)).toBe(true);
+    for (const op of ["hub_supervision_accept", "hub_supervision_dismiss"]) {
+      const refused = await tools.request({ t: "task", op, args: { id: "sup-0123456789ab" } });
+      expect(refused.ok).toBe(false); expect(refused.error).toContain("read-only");
+    }
     expect(board.guidanceVariants(projectKey, current.id, current.created, variant.experimentId)).toEqual(stored);
     expect(board.get(current.id)).toEqual(current);
   } finally {

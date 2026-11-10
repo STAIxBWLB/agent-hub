@@ -187,6 +187,8 @@ import { effectiveClass, listedCapabilities, PublishRefusal, readShare, shareVie
 import { invocationApproval, checkArgs, DEFAULT_TIMEOUT_S, InvocationLedger, invocationRefusal, refusedBy, renderInvocationResult, requestText, type InvocationOutcome, type InvocationRow } from "./invocations.ts";
 import { Conductor, ConductorHolds, conductorPeer, requireConductor, conductorProgressSink, publicConductorTask, publicPeerBudget, taskShowAllowed, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
+import { MAX_REFS, taskRevision, type SupervisionFacts, type SupervisionHistoryFact } from "./supervision-rules.ts";
+import { ProposalStore, SupervisionProposals, type SupervisionProposal } from "./supervision-proposals.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
 import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
@@ -301,6 +303,8 @@ export interface HubConfig {
   specs: SpecsConfig;
   catalog_roles?: Record<string, string[]>;
   conductor: { feed: "own" | "all" | "off"; approval_wait_s: number };
+  /** #1221 T2: what the supervision queue may do. `off` evaluates nothing, `shadow` stores bounded proposals with no inbox row or notice, `advisory` may also show a pending one in the console inbox. Machine-local and off by default. */
+  supervision: { mode: "off" | "shadow" | "advisory" };
   budget: BudgetConfig;
   context: ContextConfig;
   inference: InferenceConfig;
@@ -381,6 +385,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   roster: {},
   roles: DEFAULT_ROLES,
   conductor: { feed: "own", approval_wait_s: 30 },
+  supervision: { mode: "off" },
   budget: DEFAULT_BUDGET,
   context: DEFAULT_CONTEXT,
   model_relay: { cooldown_failures: MODEL_COOLDOWN_FAILURES_SETTING.defaultValue, cooldown_s: MODEL_COOLDOWN_SETTING.defaultValue, cooldown_cap_s: MODEL_COOLDOWN_CAP_SETTING.defaultValue, terminal_history_limit: MODEL_TERMINAL_HISTORY_SETTING.defaultValue },
@@ -419,7 +424,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const READ_ONLY_HUB_TOOLS = new Set(["hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs"]);
+const READ_ONLY_HUB_TOOLS = new Set(["hub_guidance_list", "hub_guidance_show", "hub_lineage_show", "hub_visual_show", "hub_capabilities", "hub_inbox", "hub_send", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_study_show", "hub_experiment_show", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status", "hub_specs", "hub_supervision_list"]);
 const BASE_RESERVED_IDS = new Set<string>([USER, ...SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.attach?.externalHello !== true), HUB, DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -3069,6 +3074,115 @@ export async function startDaemon(opts: DaemonOptions) {
     failing: () => ({ ...bus.failingPeers(), ...Object.fromEntries(reviewerUnavailable) }),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
+  /**
+   * #1221 T2: the bounded proposal queue. The store is built even while the mode is off (its tables are additive and a
+   * person may turn the mode on at the next reload), and nothing in it runs until an explicit decision arrives: reading
+   * the board is the only thing this side does on its own.
+   */
+  const proposalStore = new ProposalStore(join(opts.stateDir, "hub.db"));
+  startupCleanup.push(() => proposalStore.close());
+  const supervisionProposals = new SupervisionProposals(proposalStore, {
+    facts: (task) => proposalFacts(task),
+    isPrivate: (task) => { const row = board.get(task); return !row || tasks.isPii(row); },
+    // The native generation this reading was made under: the owner's session, or `hub` when no agent owns the task.
+    generation: (task) => {
+      const owner = board.get(task)?.owner;
+      return !owner || owner === USER || owner === HUB ? "hub" : `${owner}@${bus.peers.get(owner)?.sessionGeneration ?? "unknown"}`;
+    },
+    // Present roles only, and no new one: the task's owner and reviewer, the configured planner, the conductor, the person.
+    mayDecide: (actor, task) => {
+      const row = board.get(task);
+      if (!row) return false;
+      if (actor === USER || actor === conductorPeer(config.roles) || plannerPeers().includes(actor)) return true;
+      return row.owner === actor || row.reviewer === actor;
+    },
+    // The action's own authority, which a decision does not carry: `escalate` is the conductor's move and the person's,
+    // while the hub's owner notice for a recheck or an integration request runs for whoever may decide.
+    mayRun: (actor, proposal) =>
+      proposal.action !== "escalate" || actor === USER || actor === conductorPeer(config.roles),
+    // A needs_review delivery holds the owner's advice too; unavailable hold evidence is held, never a pass.
+    held: (task) => {
+      const owner = board.get(task)?.owner;
+      if (!owner || owner === USER || owner === HUB) return false;
+      const hints = bus.heldDeliveryHints(owner);
+      return hints === undefined || hints.count > 0;
+    },
+    run: (proposal, actor) => runSupervisionProposal(proposal, actor),
+    now: () => Date.now(),
+  });
+  /** The bounded fact set one proposal reads: the task, its declared overlap partners, and its own measurement. */
+  async function proposalFacts(task: number): Promise<SupervisionFacts> {
+    const row = board.get(task);
+    if (!row) return { tasks: [] };
+    const partners = tasks.overlapTasks(row).filter((id) => id !== row.id).slice(0, MAX_REFS);
+    const read = [row, ...partners.map((id) => board.get(id)).filter((candidate): candidate is typeof row => !!candidate)];
+    const facts: SupervisionFacts = {
+      tasks: read.map((candidate) => ({ id: candidate.id, state: candidate.state, history: candidate.history as SupervisionHistoryFact[] })),
+      overlaps: partners.map((other) => ({ task: row.id, other })),
+    };
+    const side = facts.tasks[0]!;
+    const window = side.history.slice(taskRevision(side).from);
+    // Hashing is only owed when this revision recorded a check pass over delivered ids; otherwise the rule says so itself.
+    if (!tasks.isPii(row) && window.some((entry) => entry.event === "check passed") && window.some((entry) => (entry.deliverables?.length ?? 0) > 0)) {
+      const status = await tasks.deliverableStatus(row);
+      if (status) {
+        facts.deliverables = [{
+          task: row.id, checked: status.files.every((file) => file.state !== "unknown"),
+          changed: status.files.filter((file) => file.state === "changed").map((file) => file.id),
+          missing: status.files.filter((file) => file.state === "missing").map((file) => file.id),
+        }];
+      }
+    }
+    return facts;
+  }
+  /**
+   * The existing action a proposal names, through that action's own authority. `escalate` is the conductor's move (the
+   * person may always escalate, exactly as the console does); the other two are the hub's own owner notice, whose own
+   * authority is the delivery path: the check re-run and the integration stay the owner's actions, and their results
+   * land on the board as their own records.
+   */
+  async function runSupervisionProposal(proposal: SupervisionProposal, actor: string): Promise<{ outcome: "ran" | "refused" | "unknown"; detail?: string }> {
+    if (proposal.action === "escalate") {
+      try {
+        if (actor === USER) await tasks.escalate(USER, proposal.task, "a supervision proposal the person accepted", "manual", true);
+        else await conductor.execute(actor, "hub_task_escalate", { id: proposal.task });
+      } catch (error) {
+        // An action's own pre-effect refusal is a certain outcome: nothing ran. Anything else may have had an effect, and
+        // the queue records it `unknown` instead of pretending either way.
+        if (error instanceof PreEffectToolRefusal) return { outcome: "refused", detail: error.message.slice(0, 200) };
+        throw error;
+      }
+      return { outcome: "ran", detail: "escalate" };
+    }
+    const partner = proposal.refs.find((ref) => ref.startsWith("task:"));
+    const other = proposal.action === "request_integration" && partner ? Number(partner.slice("task:".length)) : undefined;
+    const stale = proposal.refs.filter((ref) => ref.startsWith("deliverable:")).join(", ");
+    const body = proposal.action === "recheck"
+      ? `Task #${proposal.task}: supervision recheck. The files delivered before the recorded check pass changed since then${stale ? ` (${stale})` : ""}. Run the check again and re-file hub_task_done with its result.`
+      : `Task #${proposal.task}: supervision integration. #${proposal.task} and #${other ?? "?"} declared overlapping work, both owners accepted, and no integration is recorded since. Land the integration, or record why the overlap does not need one.`;
+    const told = tasks.supervisionNotice(proposal.task, other, body);
+    return told.sent.length ? { outcome: "ran", detail: `notice to ${told.sent.join(", ")}` } : { outcome: "refused", detail: told.refused ?? "no owner to tell" };
+  }
+  /** `off` evaluates nothing; `shadow` stores bounded proposals with no console row or notice; `advisory` may show one. */
+  const supervisionMode = () => config.supervision?.mode ?? "off";
+  /** What a tool result and the inbox show: codes and ids only, never a title, a note or a path. */
+  const proposalView = (proposal: SupervisionProposal) => ({
+    id: proposal.id, task: proposal.task, rule: proposal.rule, version: proposal.version, revision: proposal.revision, trigger: proposal.trigger,
+    refs: proposal.refs, limits: { records: proposal.records, truncated: proposal.truncated }, action: proposal.action, reason: proposal.reason,
+    state: proposal.state, created: proposal.createdAt, ...(proposal.actor ? { actor: proposal.actor } : {}),
+    ...(proposal.disposedAt === undefined ? {} : { decided: proposal.disposedAt }), ...(proposal.receipt ? { receipt: proposal.receipt } : {}),
+  });
+  const proposeObserved = (task: number): void => {
+    if (supervisionMode() === "off" || stopping || recoveryActive()) return;
+    const row = board.get(task);
+    // A declared pair's reading is bound to its lower task id, so a change on the higher-id side is only read by
+    // re-reading each partner: without that, a pair proposal would be created or invalidated from one side alone.
+    for (const id of new Set([task, ...(row ? tasks.overlapTasks(row) : [])])) {
+      const candidate = board.get(id);
+      if (!candidate || candidate.state === "backlog" || tasks.isPii(candidate)) continue;
+      void supervisionProposals.observe(id).catch((error: Error) => log(`supervision observe for #${id} failed: ${error.message}`));
+    }
+  };
   relevantNotice = (peer, env) => {
     if (env.from === HUB && env.refs?.boundedCheck) {
       const run = env.refs.boundedCheck, binding = checkBindings.get(run);
@@ -3096,6 +3210,9 @@ export async function startDaemon(opts: DaemonOptions) {
     return true;
   };
   tasks.recoverIntegrations();
+  // #1221 T2 AC6: a restart keeps the dedupe keys, the dispositions and an action outcome the hub never observed. A
+  // pending proposal whose task moved or closed expires here, once, with nothing replayed.
+  void supervisionProposals.recover().catch((error: Error) => log(`supervision reconcile failed: ${error.message}`));
   /** Peers told, at their first attach, what the cohorts lost in the restart held for them (issue #107). */
   const replayed = new Set<PeerId>();
   // Turn-free facts (issue #108): what the others changed in an owner's files, at its tool calls. Scopes are read from
@@ -3334,6 +3451,8 @@ export async function startDaemon(opts: DaemonOptions) {
       }
     }
     supervision.taskChanged(t, h);
+    // #1221 T2: the rules read only after the board has the record; a mode that is off costs one string comparison.
+    proposeObserved(t.id);
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
     const turn = t.owner ? turns.get(t.owner) : undefined;
     if (turn) turnTasks.set(turn.id, [...new Set([...(turnTasks.get(turn.id) ?? []), t.id])]);
@@ -5317,6 +5436,24 @@ export async function startDaemon(opts: DaemonOptions) {
     if (op === "hub_set_title") {
       if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "title")) return JSON.stringify({ ok: false, reason: "invalid", error: "hub_set_title accepts only title; provide a public name of 1-80 normalized characters" });
       return JSON.stringify(await setSessionTitle(by, a.title, true, piiTurn));
+    }
+    if (op === "hub_supervision_list" || op === "hub_supervision_accept" || op === "hub_supervision_dismiss") {
+      // #1221 T2: the queue carries public board facts only, so a private turn neither reads nor decides one.
+      if (piiTurn || turns.get(by)?.private || contextPii(by)) throw new PreEffectToolRefusal("supervision proposals are unavailable during a private or PII turn");
+      if (op === "hub_supervision_list") {
+        if (a && (typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "task") || a.task !== undefined && (!Number.isSafeInteger(a.task) || a.task < 1)))
+          throw new PreEffectToolRefusal("hub_supervision_list takes only an optional task id");
+        const rows = await supervisionProposals.read(by, a?.task);
+        // `refused` is the queue's own count of readings a bound refused instead of storing: a full queue is visible here.
+        return JSON.stringify({ mode: supervisionMode(), proposals: rows.map(proposalView), refused: supervisionProposals.refusedReadings(),
+          ...(rows.length ? {} : { note: supervisionMode() === "off" ? "supervision is off; a person turns it on with `ahub settings set supervision.mode advisory`" : "no supervision proposal is pending on your tasks" }) });
+      }
+      if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "id") || typeof a.id !== "string")
+        throw new PreEffectToolRefusal(`${op} takes only a proposal id`);
+      if (stopping || recoveryActive()) throw new PreEffectToolRefusal("recovery or shutdown is holding supervision decisions");
+      const decision = await supervisionProposals.decide(by, a.id, op === "hub_supervision_accept" ? "accept" : "dismiss");
+      if (!decision.ok) throw new PreEffectToolRefusal(decision.error);
+      return JSON.stringify({ ok: true, proposal: proposalView(decision.proposal), ...(decision.receipt ? { receipt: decision.receipt } : {}) });
     }
     if (inProcess && (op === "hub_task_propose" || op === "hub_review") && a && typeof a === "object" && Object.hasOwn(a, "request_id")) throw new PreEffectToolRefusal("request_id replay keys require the control-protocol task transport");
     if (BOUNDED_TASK_TOOLS.has(op)) {
@@ -9263,6 +9400,10 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(attentionStatus.taskWip[id] ? { wip: attentionStatus.taskWip[id]!.wip, wipLimit: attentionStatus.taskWip[id]!.wipLimit, wipBreakdown: { active: attentionStatus.taskWip[id]!.active, reviewWait: attentionStatus.taskWip[id]!.reviewWait, reserved: attentionStatus.taskWip[id]!.reserved } } : { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }),
         activeTasks: boardTasks.filter(task => task.owner === id && ["in_progress", "changes_requested"].includes(task.state)).map(task => task.id),
       })),
+      // #1221 T2 AC5: the advisory row set for the console's existing inbox. Codes and ids only, never a title or a note;
+      // a private task's proposal is not in the list at all, and `off` or `shadow` adds no field, so an older page and a
+      // console that never opted in see exactly what they saw before.
+      ...(supervisionMode() === "advisory" ? { supervision: { mode: "advisory" as const, proposals: supervisionProposals.awaiting(USER).map(proposalView) } } : {}),
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
@@ -10071,6 +10212,16 @@ export async function startDaemon(opts: DaemonOptions) {
         const option = req.options.find((o: { optionId: string }) => o.optionId === a.option);
         if (!option || (definitionOf(req.peer)?.trust.hubSandboxed === true && option.kind !== "reject_once")) return bad;
         return pending.done(option.optionId, "dashboard") ? { ok: true } : { ok: false, error: "permission expired or already answered" };
+      }
+      case "supervision": {
+        // #1221 T2 AC5: an advisory inbox row decides one proposal as the person, through the same fence the hub tool
+        // uses (`decide`); the console supplies the verb and the id, never an actor, a task or an action.
+        if (typeof a.id !== "string" || (a.verb !== "accept" && a.verb !== "dismiss")) return bad;
+        if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding supervision decisions" };
+        const decision = await supervisionProposals.decide(USER, a.id, a.verb);
+        return decision.ok
+          ? { ok: true, proposal: proposalView(decision.proposal), ...(decision.receipt ? { receipt: decision.receipt } : {}) }
+          : { ok: false, error: decision.error };
       }
       case "send": {
         if (!text("body", 8000)) return bad;

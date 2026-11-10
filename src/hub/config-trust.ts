@@ -30,6 +30,7 @@ export const MACHINE_LOCAL = [
   "local.web_fetch", // #515b: lets a model request pages from listed hosts; a committed config may not choose where a model's requests go on someone else's machine
   "terminal.open", // the command a hub-made TUI start runs to open a terminal (#269)
   "tasks.auto_pull", // #785 P1c: lets the hub start work on its own; a committed config may not turn it on for someone else's machine
+  "supervision.mode", // #1221 T2: lets the hub propose existing actions to a person's console and agents; an opt-in only the person's own machine sets
   "folder_triggers", // #512c: entries make the hub read a folder and propose a task per new file; a committed config may not point the hub at a folder on someone else's machine
   "schedules", // #512: entries make the hub propose tasks on a timer; a committed config may not create work on someone else's machine
   "corpus.paths", // #510: folders the hub reads as evidence; a committed config may not point the hub at a folder on someone else's machine

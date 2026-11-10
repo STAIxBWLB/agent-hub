@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "verdict": "fixture_only",
   "declaredVersion": "2.1.319",
   "minimumSupportedVersion": null,
@@ -8,22 +8,58 @@
     {
       "name": "terminal",
       "status": "NOT RUN",
-      "receipt": "receipts/terminal.md"
+      "receipt": "receipts/terminal.md",
+      "verdict": "fixture_only",
+      "qualifiedVersion": null,
+      "reason": "Declared/source fixtures only; native pane, band, origins, rows and disable workflow have not been observed.",
+      "features": {
+        "pane": "unqualified",
+        "attentionBand": "declared-only",
+        "compactRows": "unqualified"
+      },
+      "qualifiedSourceHead": null
     },
     {
       "name": "desktop",
       "status": "NOT RUN",
-      "receipt": "receipts/desktop.md"
+      "receipt": "receipts/desktop.md",
+      "verdict": "fixture_only",
+      "qualifiedVersion": null,
+      "reason": "Declared/source fixtures only; native pane, band, origins, rows and disable workflow have not been observed.",
+      "features": {
+        "pane": "unqualified",
+        "attentionBand": "declared-only",
+        "compactRows": "unqualified"
+      },
+      "qualifiedSourceHead": null
     },
     {
       "name": "vscode",
       "status": "NOT RUN",
-      "receipt": "receipts/vscode.md"
+      "receipt": "receipts/vscode.md",
+      "verdict": "unsupported",
+      "qualifiedVersion": null,
+      "reason": "The full attention-band journey is unsupported here: AbovePrompt is not declared on this surface. Pane/tool rows have no qualified native receipt; this neither proves them working nor proves them impossible.",
+      "features": {
+        "pane": "unqualified",
+        "attentionBand": "not-declared",
+        "compactRows": "unqualified"
+      },
+      "qualifiedSourceHead": null
     },
     {
       "name": "mobile",
       "status": "NOT RUN",
-      "receipt": "receipts/mobile.md"
+      "receipt": "receipts/mobile.md",
+      "verdict": "unsupported",
+      "qualifiedVersion": null,
+      "reason": "The full attention-band journey is unsupported here: AbovePrompt is not declared on this surface. Pane/tool rows have no qualified native receipt; this neither proves them working nor proves them impossible.",
+      "features": {
+        "pane": "unqualified",
+        "attentionBand": "not-declared",
+        "compactRows": "unqualified"
+      },
+      "qualifiedSourceHead": null
     }
   ],
   "included": [
@@ -63,10 +99,55 @@
       "ceiling": "One sourceCLI observation; first-id pin, not independent registry/cross-refresh attestation; no raw packet retained"
     },
     "c2ModelInput": "Actual registered fake-host model chains ON/OFF plus three counterfactual mutation controls; source proof only",
-    "nativeBandRaisedCleared": "NOT RUN"
+    "nativeBandRaisedCleared": "NOT RUN",
+    "c3StaticValidation": {
+      "status": "UNVERIFIED",
+      "validateStatus": "NOT RUN",
+      "selfReportedVersion": null,
+      "installedPathVersionLabel": "2.1.321 (metadata only)",
+      "kind": "One static phase and one explicitly authorized scalar-only diagnostic under unchanged default-deny isolation; no native UI or minimum-version evidence",
+      "initialPhase": {
+        "helperExit": 1,
+        "versionStdoutBytes": 0,
+        "versionStderrBytes": 0,
+        "childExit": null,
+        "ceiling": "Child exit was not retained before parsing; unknown, not inferred from the later diagnostic"
+      },
+      "diagnostic": {
+        "phase": "version only",
+        "helperExit": 1,
+        "childExit": -6,
+        "signal": 6,
+        "stdoutBytes": 0,
+        "stderrBytes": 0,
+        "wallMs": 1902.276,
+        "collectorProblem": null,
+        "fencesEqual": true,
+        "ownedGroupAbsent": true
+      },
+      "sourceBinarySha256": "abc9feeeca8091d51b623291e044cf0528c2f6b74e0c1d6ef671d52c73f7cd3c",
+      "diagnosticHelperSha256": "bceebf37f4752ea409e8b3a6958ad8fe9f89b1158391c61c3ab4882dce36c1a8",
+      "isolationPolicySha256": "6e5f5172d00a8b000f45fe3e5706d4dd61cd06bb1f6ee93a32870830d7e7a914",
+      "ceiling": "Termination cause UNKNOWN. No isolation relaxation, further probe or validate attempt. Static validation remains person-run; historical 2.1.319 validation is not a substitute."
+    }
   },
   "readSetRevision": 2,
   "readCommands": [
     "status --json only"
-  ]
+  ],
+  "issue": 1338,
+  "stage": "C3",
+  "verdicts": [
+    "supported",
+    "fixture_only",
+    "unsupported"
+  ],
+  "rule": "A surface is supported only by its own completed native receipt with matching surface/version/head and no missing or NOT RUN evidence. Source fixtures, static CLI validation and declared types never establish support or a minimum version.",
+  "minimumVersionEvidence": null,
+  "distribution": {
+    "mode": "manual_session_only",
+    "marketplaceCompanionEntry": false,
+    "profileInstallationQualified": false,
+    "channelPluginEntry": "byte-identical; separate channel plugin unchanged"
+  }
 }

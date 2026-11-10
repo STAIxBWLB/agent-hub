@@ -4,7 +4,8 @@ import { buildDecisionEvidence } from "./decision-evidence.ts";
 import type { HubRoute } from "./config.ts";
 import type { ChatMessage } from "../../omniroute/client.ts";
 import type { RouteLabelTracker } from "./labels.ts";
-import { estimateInputTokens, type CodingAgentDimensions } from "./stage.ts";
+import { estimateInputTokens } from "./stage-input.ts";
+import type { CodingAgentDimensions } from "./stage-evidence.ts";
 import { SessionState } from "./state.ts";
 
 export interface DecisionHost {

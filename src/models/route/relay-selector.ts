@@ -1,7 +1,7 @@
 import type { ModelBackend, ModelRelayOptions, RelayRequest } from "../relay.ts";
-import { normalizeConversation } from "./normalize.ts";
-import { extractToolSignals, turnKind } from "./signals.ts";
-import { selectStage, stayOrSwitch, type StageState, type SwitchTrace, type Tier } from "./stage.ts";
+import { captureStageInput } from "./stage-input.ts";
+import { buildStageEvidence } from "./stage-evidence.ts";
+import { selectFallbackStage, planStageSwitch, type FallbackStageState as StageState, type StageSwitchTrace as SwitchTrace, type StageTier as Tier } from "./stage-fallback.ts";
 import { SessionState } from "./state.ts";
 
 type RelaySelectorOptions = Pick<ModelRelayOptions, "mlx" | "selectBackend" | "routeSessionKey" | "allowedDGXmodels" | "staySwitch"> & { dgxMaxInputTokens: number };
@@ -44,11 +44,12 @@ export class AutoRouteSelector {
     let movable = true;
     let prefer: string | undefined;
     try {
-      const conversation = normalizeConversation(body);
-      const decision = selectStage(extractToolSignals(conversation), { mode: "efficient_first", confidenceThreshold: 0.5, capableHoldTurns: 2 }, prior?.stage ?? { capableHoldTurnsRemaining: 0 });
+      const input = captureStageInput(body);
+      if (!input) throw new Error("stage input is unavailable");
+      const decision = selectFallbackStage(buildStageEvidence(input), { confidenceThreshold: 0.5, holdTurns: 2 }, prior?.stage);
       const inputTokens = this.estimateInputTokens(body.messages, body.tools);
       const fits = (candidate: Tier) => { const staged = this.stageBackend(candidate, body, inputTokens); return !!staged && (staged.kind === "mlx" || inputTokens <= this.options.dgxMaxInputTokens); };
-      const staged = stayOrSwitch(this.options.staySwitch?.(), prior?.pin?.tier, decision, turnKind(conversation), { inputTokens, fits });
+      const staged = planStageSwitch(this.options.staySwitch?.(), prior?.pin?.tier, decision, input.turn, { inputTokens, fits });
       next = { stage: decision.state, ...(staged.pin ? { pin: { tier: staged.pin, alias: "" } } : {}) };
       trace = staged.trace;
       score = decision.score;
@@ -106,7 +107,7 @@ export class AutoRouteSelector {
   }
 
   private sourceOf(source: string): RouteSource {
-    if (source === "capable_hold") return "hold";
+    if (source === "hold") return "hold";
     if (source === "override" || source === "dimensions") return source;
     if (source === "llm-classifier") return "classifier";
     return "default";

@@ -2,6 +2,12 @@
 
 Human explanation. Agent instructions: the area notes in this directory.
 
+On 2026-11-10, #1352 R1 separated newly authored stage evidence, fallback and
+whole-wire sizing from the remaining legacy route modules. The models note
+points at the stage contract and its single switch planner; generic decision
+evidence v1, the remaining route decisions and notice cleanup have separate
+ownership boundaries.
+
 In the #1055 review, the new title-binding lookup preceded invocation,
 pending-delivery and supervision bookkeeping in `Bus.onDelivered`. The bus's
 outer observer catch protected settlement but could not finish bookkeeping

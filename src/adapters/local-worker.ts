@@ -5,7 +5,7 @@ import { DecisionPolicyChangedError, type DecisionHost } from "../models/route/d
 import { HubRouteRuntime, type RouteEvent, type AdvisorEvent } from "../models/route/runtime.ts";
 import type { HubRoute } from "../models/route/config.ts";
 import type { RouteLabelEvent, RouteTurnOutcome } from "../models/route/labels.ts";
-import type { StaySwitchPolicy } from "../models/route/stage.ts";
+import type { StaySwitchPolicy } from "../models/route/stage-fallback.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { randomUUID } from "node:crypto";
 import { MAX_HOP, remoteEnvelope, renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";

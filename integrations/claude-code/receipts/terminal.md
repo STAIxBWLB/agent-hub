@@ -1,29 +1,44 @@
 # Claude Code terminal native receipt
 
-Status: **NOT RUN**. No support or native UX claim. C0 CLI evidence is separate in [c0-cli.md](c0-cli.md).
+Status: **NOT RUN**. This is an uncompleted person-run receipt, not support evidence. Source/static CLI facts belong to the support matrix or [C0 receipt](c0-cli.md).
 
-- Date, OS and exact Claude Code version: NOT RUN
-- Isolated HOME and CLAUDE_CONFIG_DIR, scratch project outside Git: NOT RUN
-- Real settings.json SHA-256 before and after (must match): NOT RUN
-- Credentials copied and which model turn required them: none in C0; native leg NOT RUN
-- Exact canonical root and stable daemon projectId binding/refusal: NOT RUN; registry existence/uniqueness NOT VERIFIED
-- Pane and AbovePrompt band visible, hold raised and cleared: NOT RUN
-- composer, model and plugin origin captures; non-composer effects absent: NOT RUN
-- Channel receive origin and unchanged model inputs with companion on/off: NOT RUN
-- User statusLine plus statusline-tee coexistence (only if a status entry is proposed): NOT RUN
-- What-needs-me actions and observed result: NOT RUN
-- Peer-liveness actions and observed result: NOT RUN
-- Disable/remove leaves channel, peers, hub and standalone CLI working: NOT RUN
-- Process argv, timeout and combined byte cap enforced in native host: NOT RUN
+```json
+{
+  "schema": 1,
+  "surface": "terminal",
+  "status": "NOT RUN",
+  "observedAt": null,
+  "platform": null,
+  "claudeCodeVersion": null,
+  "sourceHead": null,
+  "native": {
+    "pane": "NOT RUN",
+    "attentionBand": "NOT RUN",
+    "compactOriginal": "NOT RUN",
+    "composerOrigin": "NOT RUN",
+    "modelInputsOnOff": "NOT RUN",
+    "disableRemove": "NOT RUN",
+    "standaloneHub": "NOT RUN",
+    "statusReadBounds": "NOT RUN"
+  },
+  "actionCounts": {
+    "knownNotice": null,
+    "refresh": null,
+    "completeConsole": null
+  },
+  "minimumVersionEvidence": null,
+  "evidenceRefs": []
+}
+```
 
-Use only an isolated profile. Stop if this surface needs the real home. Record each missing leg as unknown; never turn a fixture result into UI evidence.
+# Qualification scope
 
-# C1 fixture-only boundary
+- Record the exact surface, platform, Claude Code version, source head, date and observed evidence independently for this leg.
+- Use an isolated HOME and CLAUDE_CONFIG_DIR with a scratch hub. No mod was installed/enabled/loaded or removed by the C3 implementation task, no account was copied and no native/model turn was run.
+- Check canonical-root/pinned-daemon-projectId refusal, status-only bounds, genuine composer versus non-composer behavior, model-input preservation and clear/exit behavior. Registry existence/uniqueness is not verified by this mod.
+- Observe the pane and original/compact/verbose rows; where AbovePrompt is declared, raise and clear a genuine needs_review hold. Record native paint and actual behavior rather than a fixture result.
+- Record disable/remove and standalone channel/peers/hub independence separately. No status-line or channel-row qualification is claimed.
+- Count actions with C0's rule. Known-subset notice, explicit refresh and complete console follow-up are different endpoints; keep actual counts null until observed.
+- A working tested version does not by itself prove a minimum. Record an explicit native version boundary before making that separate claim.
 
-The amended C1 ships a read-only pane and /hub, /hub refresh, /hub console against declared 2.1.319 types and a fake host. Native installation, painting, genuine origins, process behavior and action counts remain NOT RUN. Attention band, channel rows, status-line coexistence and delivery refresh are excluded from C1 and remain separate future legs. Do not mark this receipt passed from source validation. Native support requires the person to record exact head, host version, scratch profile and project, root/daemon-projectId refusals, bounded reads, visible pane, read-only gestures and disable/remove independence.
-
-C1 read-set revision 2 has counts/peers/version only: no board or global project inventory is requested and no task/role list is displayed. Any recorded source-CLI byte/time/spawn measurement is separate from this NOT RUN native receipt.
-
-# C2 native leg
-
-Status: **NOT RUN**. A person must observe a genuine needs_review hold raise and clear the AbovePrompt band, verify a source-reading failure/staleness leaves no false waiting band, inspect the exact separate-terminal guidance, and open/close the original four ToolUse rows including verbose mode. Action counts, actual paint, genuine origins, disable/remove and on/off native model-input behavior remain unmeasured. Synthetic registered-hook equality and mutation controls do not satisfy this native leg. No status-line or channel-row receipt is claimed.
+The declared API/source fixtures are the current ceiling. Native pane, band, original-row toggle, gesture origins and disable behavior remain unobserved.
