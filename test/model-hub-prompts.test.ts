@@ -3,6 +3,16 @@ import { captureJudgeConversation } from "../src/models/route/conversation-view.
 import { buildAdvisorRequest, buildEscalationRequest, planningInstruction, redoFeedback } from "../src/models/route/hub-prompts.ts";
 
 describe("new host judge request wording and preserved transcript envelope", () => {
+  test("an exact-cap transcript stays unchanged without a marker", () => {
+    const conversation = captureJudgeConversation([{ role: "assistant", content: "a".repeat(300) }]);
+    const cap = Array.from(conversation!.transcript).length;
+    const request = buildAdvisorRequest(conversation, undefined, cap);
+    expect(request?.messages[0]?.content).toBe(`Work record:\n${conversation!.transcript}`);
+    expect(request?.discardedChars).toBe(0);
+    expect(buildAdvisorRequest(conversation, undefined, cap + 1)?.messages[0]?.content).toBe(request?.messages[0]?.content);
+    expect(buildAdvisorRequest(conversation, undefined, cap - 1)?.messages[0]?.content).toContain("...<middle of the conversation truncated>...");
+  });
+
   test("preserves the explicit codepoint middle-drop marker/rounding before latest suffix", () => {
     const conversation = captureJudgeConversation([{ role: "assistant", content: "😀".repeat(400) }]);
     expect(conversation).toBeDefined();
