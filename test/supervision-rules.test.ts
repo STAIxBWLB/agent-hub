@@ -33,7 +33,7 @@ test("AC1: equal classified failures repeat once per revision, and a replay or a
   expect(shadow.observe(facts)).toEqual([]); // the same records read again are the same observation
   expect(evaluateSupervision({ tasks: [task(7, failing(3))] }).observations).toHaveLength(1); // a longer equal run is still one pattern
   expect(shadow.observe({ tasks: [task(7, failing(3))] })).toEqual([]);
-  expect(shadow.counts()).toEqual({ evaluations: 3, observations: 1, deduped: 2, suppressed: 0, gap: 0, workerTurns: 0, actionWrites: 0, notifications: 0 });
+  expect(shadow.counts()).toEqual({ evaluations: 3, observations: 1, deduped: 2, suppressed: 0, gap: 0, evaluatedSuppressed: 0, workerTurns: 0, actionWrites: 0, notifications: 0 });
 });
 
 test("AC1: ordinary progress, unequal failures and a cleared streak trigger nothing", () => {
@@ -47,7 +47,11 @@ test("AC1: ordinary progress, unequal failures and a cleared streak trigger noth
 
 test("elapsed silence alone is never a trigger: the same records a long time later read the same", () => {
   const quiet = { tasks: [{ id: 13, state: "in_progress" as TaskState, history: [{ at: 0, event: "accepted" }, { at: 9_999_999_999_999, event: "assigned" }] }] };
-  expect(evaluateSupervision(quiet)).toEqual({ observations: [], gap: [] });
+  // Nothing fired, and the coverage says both rules read this revision: "nothing found" is not "nothing looked at".
+  expect(evaluateSupervision(quiet)).toEqual({
+    observations: [], gap: [],
+    evaluated: [{ rule: "deliverable_invalidated_check", task: 13, revision: "1:none" }, { rule: "repeated_failure", task: 13, revision: "1:none" }],
+  });
   expect(taskRevision(quiet.tasks[0]!)).toEqual({ revision: "1:none", from: 1, accepted: 0 });
 });
 
@@ -64,10 +68,14 @@ test("a changed deliverable invalidates the check recorded on that revision", ()
 
 test("a check whose files were never measured is unknown, not clean and not a trigger", () => {
   const unmeasured: SupervisionFacts = { tasks: [task(15, delivered())] };
-  expect(evaluateSupervision(unmeasured)).toEqual({ observations: [], gap: [{ rule: "deliverable_invalidated_check", version: 1, task: 15, revision: "1:none", reason: "no-deliverable-measurement" }] });
-  expect(evaluateSupervision({ tasks: [task(15, delivered())], deliverables: [{ task: 15, checked: false, changed: [RECORD.id] }] })).toEqual({ observations: [], gap: [{ rule: "deliverable_invalidated_check", version: 1, task: 15, revision: "1:none", reason: "no-deliverable-measurement" }] });
+  const coverage = [{ rule: "deliverable_invalidated_check", task: 15, revision: "1:none" }, { rule: "repeated_failure", task: 15, revision: "1:none" }] as const;
+  expect(evaluateSupervision(unmeasured)).toEqual({ observations: [], gap: [{ rule: "deliverable_invalidated_check", version: 1, task: 15, revision: "1:none", reason: "no-deliverable-measurement" }], evaluated: [...coverage] });
+  expect(evaluateSupervision({ tasks: [task(15, delivered())], deliverables: [{ task: 15, checked: false, changed: [RECORD.id] }] })).toEqual({ observations: [], gap: [{ rule: "deliverable_invalidated_check", version: 1, task: 15, revision: "1:none", reason: "no-deliverable-measurement" }], evaluated: [...coverage] });
   // A task that recorded no check at all has nothing to invalidate: no trigger and no gap.
-  expect(evaluateSupervision({ tasks: [task(16, ["proposed", "assigned", "accepted", "done"])] })).toEqual({ observations: [], gap: [] });
+  expect(evaluateSupervision({ tasks: [task(16, ["proposed", "assigned", "accepted", "done"])] })).toEqual({
+    observations: [], gap: [],
+    evaluated: [{ rule: "deliverable_invalidated_check", task: 16, revision: "1:none" }, { rule: "repeated_failure", task: 16, revision: "1:none" }],
+  });
 });
 
 test("declared overlap that outlived both acceptances and recorded no integration is observed once per pair", () => {
@@ -105,7 +113,14 @@ test("an overlap whose window is clipped reports unknown coverage instead of ass
 
 test("an overlap naming a task outside the fact set is unknown coverage, never a silent pass", () => {
   const facts: SupervisionFacts = { tasks: [task(28, ["proposed", "assigned", "accepted"])], overlaps: [{ task: 28, other: 29 }] };
-  expect(evaluateSupervision(facts)).toEqual({ observations: [], gap: [{ rule: "declared_overlap_without_integration", version: 1, task: 28, revision: "1:none", reason: "no-history" }] });
+  expect(evaluateSupervision(facts)).toEqual({
+    observations: [], gap: [{ rule: "declared_overlap_without_integration", version: 1, task: 28, revision: "1:none", reason: "no-history" }],
+    evaluated: [
+      { rule: "declared_overlap_without_integration", task: 28, revision: "1:none" },
+      { rule: "deliverable_invalidated_check", task: 28, revision: "1:none" },
+      { rule: "repeated_failure", task: 28, revision: "1:none" },
+    ],
+  });
 });
 
 test("a hand-over starts a new revision, so the failures before it and after it are two observations", () => {
@@ -176,7 +191,7 @@ test("AC2: shadow mode keeps counts and bounded ids, with zero worker turns, act
   const shadow = new ShadowSupervisor();
   shadow.observe({ tasks: [task(50, failing()), task(51, delivered())], deliverables: [{ task: 51, checked: true, changed: [RECORD.id] }] });
   expect(shadow.observations().map((observation) => observation.rule)).toEqual(["deliverable_invalidated_check", "repeated_failure"]);
-  expect(shadow.counts()).toEqual({ evaluations: 1, observations: 2, deduped: 0, suppressed: 0, gap: 0, workerTurns: 0, actionWrites: 0, notifications: 0 });
+  expect(shadow.counts()).toEqual({ evaluations: 1, observations: 2, deduped: 0, suppressed: 0, gap: 0, evaluatedSuppressed: 0, workerTurns: 0, actionWrites: 0, notifications: 0 });
   expect(MAX_OBSERVATIONS).toBeGreaterThan(MAX_PER_REVISION);
   // Nothing a rule reports can carry a note, a finding or a file body: the record is a closed shape of codes and ids.
   expect(JSON.stringify(shadow.observations())).not.toContain("secret");
@@ -208,4 +223,68 @@ test("a note in the facts is never read: the observation is identical with and w
   const withNote = { tasks: [{ ...plain.tasks[0]!, history: plain.tasks[0]!.history.map((entry) => ({ ...entry, note: "secret review words", withheld: true })) }] } as unknown as SupervisionFacts;
   expect(evaluateSupervision(withNote)).toEqual(evaluateSupervision(plain));
   expect(JSON.stringify(evaluateSupervision(withNote))).not.toContain("secret");
+});
+
+test("the snapshot is the exported read: observations, gaps in gapKey order, the counts and the coverage, as a copy", () => {
+  // Task 71 recorded a check pass over a delivered record the hub never measured, and the declared pair 72/73 is
+  // outside the fact set: two gaps, one per rule, in the order gapKey sorts them by.
+  const facts: SupervisionFacts = { tasks: [task(70, ["proposed", "assigned", "accepted"]), task(71, delivered())], overlaps: [{ task: 72, other: 73 }] };
+  const shadow = new ShadowSupervisor();
+  shadow.observe(facts);
+  const snapshot = shadow.snapshot();
+  expect(Object.keys(snapshot).sort()).toEqual(["counts", "evaluated", "gap", "observations"]);
+  expect(snapshot.gap).toEqual([
+    { rule: "declared_overlap_without_integration", version: 1, task: 72, revision: "0:none", reason: "no-history" },
+    { rule: "deliverable_invalidated_check", version: 1, task: 71, revision: "1:none", reason: "no-deliverable-measurement" },
+  ]);
+  expect(snapshot.observations).toEqual([]);
+  expect(snapshot.counts).toEqual({ evaluations: 1, observations: 0, deduped: 0, suppressed: 0, gap: 2, evaluatedSuppressed: 0, workerTurns: 0, actionWrites: 0, notifications: 0 });
+  // Both rules read task 70 even though it fired nothing, and the pair 72/73 is covered as its gap names it.
+  expect(snapshot.evaluated).toEqual([
+    { rule: "declared_overlap_without_integration", task: 72, revision: "0:none" },
+    { rule: "deliverable_invalidated_check", task: 70, revision: "1:none" },
+    { rule: "deliverable_invalidated_check", task: 71, revision: "1:none" },
+    { rule: "repeated_failure", task: 70, revision: "1:none" },
+    { rule: "repeated_failure", task: 71, revision: "1:none" },
+  ]);
+  // The accessors are reads of the same state, not a second store.
+  expect(shadow.gaps()).toEqual(snapshot.gap);
+  expect(shadow.evaluated()).toEqual(snapshot.evaluated);
+  expect(shadow.counts()).toEqual(snapshot.counts);
+  // A snapshot is a copy: a caller that edits its arrays cannot reach the supervisor's state.
+  snapshot.observations.push({} as never);
+  snapshot.gap.length = 0;
+  expect(shadow.gaps()).toHaveLength(2);
+  expect(shadow.snapshot().observations).toEqual([]);
+  // A second reading of the same facts changes no gap and keeps the counts honest about what it did.
+  shadow.observe(facts);
+  expect(shadow.gaps()).toHaveLength(2);
+  expect(shadow.evaluated()).toHaveLength(5); // coverage dedupes the replay: the same revision is not read twice
+  expect(shadow.snapshot().counts).toMatchObject({ evaluations: 2, gap: 2, deduped: 0 });
+  // An observation and a gap read together keep their own orders.
+  shadow.observe({ tasks: [task(74, failing())] });
+  const next = shadow.snapshot();
+  expect(next.observations.map((observation) => observation.task)).toEqual([74]);
+  // Gaps sort by rule first, then task: the overlap gap of 72 precedes the deliverable gap of 71.
+  expect(next.gap.map((gap) => gap.task)).toEqual([72, 71]);
+  expect(next.counts).toMatchObject({ observations: 1, gap: 2 });
+  expect(next.evaluated.filter((entry) => entry.task === 74)).toHaveLength(2);
+});
+
+test("the coverage list is bounded like the rest, and what a bound refused is counted", () => {
+  // Two rules read each open task, so 51 tasks are 102 coverage entries: the bound keeps 100 and counts the overflow.
+  const tasks = Array.from({ length: MAX_OBSERVATIONS / 2 + 1 }, (_, index) => task(300 + index, ["proposed", "assigned", "accepted"]));
+  const shadow = new ShadowSupervisor();
+  shadow.observe({ tasks });
+  expect(shadow.evaluated()).toHaveLength(MAX_OBSERVATIONS);
+  expect(shadow.counts()).toMatchObject({ evaluations: 1, evaluatedSuppressed: 2, suppressed: 0 });
+  // A closed task is not read at all: no coverage, no gap and no observation.
+  shadow.observe({ tasks: [task(400, ["proposed", "assigned", "accepted"], "cancelled" as TaskState)] });
+  expect(shadow.evaluated().some((entry) => entry.task === 400)).toBe(false);
+  // A pair named twice in one read is one coverage entry, and its observation is still deduplicated.
+  const pair = { tasks: [task(410, ["proposed", "assigned", "accepted"]), task(411, ["proposed", "assigned", "accepted"])], overlaps: [{ task: 410, other: 411 }, { task: 411, other: 410 }] };
+  const second = new ShadowSupervisor();
+  second.observe(pair);
+  expect(second.evaluated().filter((entry) => entry.rule === "declared_overlap_without_integration")).toEqual([{ rule: "declared_overlap_without_integration", task: 410, revision: "1:none" }]);
+  expect(second.observations()).toHaveLength(1);
 });
