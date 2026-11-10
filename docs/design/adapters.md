@@ -83,6 +83,23 @@ bytes cannot bind a later owner as fresh generation proof.
 Detach, changed file/session/owner and adoption invalidate an unfinished personal
 proof; restored buffered frames cannot supply a new personal USER. Same-generation
 readability and replayed session_start never supply fresh launch proof.
+Every fenced reattachment moves the watermark to restored EOF, including when
+the inode is unchanged. A buffered partial USER completed after reattachment is
+also excluded. Use a plain, tool-free clearing prompt and wait for its final
+Stop: tool/control activity can invalidate the pending final-assistant candidate;
+recovery through a tool-assisted turn is not promised.
+Fenced personal and fresh-generation recovery only mark a RAM completion
+candidate; neither the parser nor the owner monitor reopens input. Release waits
+until the whole observed read frontier has been processed, no partial/discarded frame
+remains, fresh FD EOF equals the consumed offset, the named file still matches
+that FD, and owner/session/generation remain current. A later USER/tool/control
+or lost frame invalidates or replaces the candidate before release. This proves
+only the observed frontier: a future personal input after the final observation
+would require an explicit serialized native idle ACK for an atomic guarantee,
+which this protocol does not provide.
+Fresh candidates bind the actual new launch generation, verified empty source,
+first accepted session header and new owner. A replayed header cannot reset
+activity or manufacture fresh idle proof after a later USER/tool/control frame.
 
 `QWEN_DENY_QUIESCENCE_MS` is a 30 s operational wait. Expiry reports offline,
 keeps the latch and queued messages unsubmitted, and directs the person to their

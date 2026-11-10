@@ -152,6 +152,11 @@ export class QwenDualPeer extends BasePeer {
   private eventStart = 0;
   private freshFenceOwner?: string;
   private personalProof?: { generation: number; session: string; owner: string; assistant: boolean };
+  private readCompletion?: { kind: "personal" | "fresh"; generation: number; session: string; owner: string; source: string; personal?: object };
+  private freshCompletionAllowed = false;
+  private freshRead?: { generation: number; source: string; session?: string; activity: boolean };
+  private freshEventIdentity?: string;
+  private polling = false;
   private fenceFile?: string;
   private denyStorageFailure = false;
   private inputBlocked = false;
@@ -238,6 +243,7 @@ export class QwenDualPeer extends BasePeer {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const dir = lstatSync(this.dir);
     if (!dir.isDirectory() || dir.isSymbolicLink() || (typeof process.getuid === "function" && dir.uid !== process.getuid()) || (dir.mode & 0o077) !== 0) throw new Error("Qwen dual-output directory is not private to the person running the hub");
+    this._launch = undefined;
     this.loadState();
     for (const path of [this.inputFile, this.eventFile]) this.ensureFile(path, true);
     this.checkInputTail();
@@ -251,12 +257,12 @@ export class QwenDualPeer extends BasePeer {
       // ponytail: a Qwen turn that was running when the hub went away is not known here, so the adopted peer reads idle until the next event says otherwise.
       // Upgrade: record the open hub turn in state.json and settle it on adoption.
       this.sessionSeen = this.state_.sessionId !== undefined; this.primed = true;
-      if (this.state_.denyPending) { this.denyCursor = size; }
+      if (this.state_.denyPending || this.freshInputPending) { this.denyCursor = size; }
       this.saveState();
     } else {
       // A fresh or resumed launch. Qwen opens an existing event file without truncating or appending, so it would overwrite it from byte 0: start from empty files.
       this.adopting = false;
-      const fenced = this.state_.denyPending || this.inputBlocked;
+      const fenced = this.state_.denyPending || this.inputBlocked || this.freshInputPending;
       if (fenced) {
         const rows = (this.opts.table ?? processTable)();
         const flag = `--input-file ${this.inputFile}`;
@@ -284,6 +290,12 @@ export class QwenDualPeer extends BasePeer {
           this.inputBlocked = false;
           this.state_ = { v: 1, offset: 0, generation: this.state_.generation + 1, ...(resumeId ? { sessionId: resumeId } : {}), ...(denyPending ? { denyPending } : {}) };
           this.sessionSeen = false;
+          if (fenced) {
+            this.discardReadProof();
+            this.fenceFile = this.freshEventIdentity; this.denyCursor = 0; this.eventCursor = 0; this.eventStart = 0;
+            this.detached = false; this.discarding = false; this.pollFailures = 0;
+            this.freshRead = { generation: this.state_.generation, source: this.freshEventIdentity!, activity: false };
+          }
           this.saveState();
           this.writeLaunch(resumeId);
         }
@@ -292,7 +304,7 @@ export class QwenDualPeer extends BasePeer {
     this.poller = setInterval(() => this.poll(), this.opts.pollMs ?? 100); this.poller.unref?.();
     if (!this.monitor) { this.monitor = setInterval(() => this.checkOwner(), this.opts.ownerMs ?? 1_000); this.monitor.unref?.(); }
     this.poll();
-    if (this.adopting && !this.detached && this.sessionSeen && !this.state_.denyPending && !this.inputBlocked) this.setState("idle");
+    if (this.adopting && !this.detached && this.sessionSeen && !this.state_.denyPending && !this.inputBlocked && !this.freshInputPending) this.setState("idle");
     // A TUI that has not announced itself yet is not attached: the hub treats the peer as offline until session_start.
   }
 
@@ -302,6 +314,7 @@ export class QwenDualPeer extends BasePeer {
       if (previous.size > 0) { try { renameSync(this.eventFile, join(this.dir, "events.prev.jsonl")); } catch { /* preserve the legacy nonfenced rotation ceiling */ } this.ensureFile(this.eventFile, true); }
       return true;
     }
+    this.freshEventIdentity = undefined;
     let fd: number | undefined;
     let ready = false;
     try {
@@ -311,8 +324,10 @@ export class QwenDualPeer extends BasePeer {
       fd = openSync(this.eventFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const info = fstatSync(fd);
       ready = info.isFile() && info.size === 0;
+      if (ready) this.freshEventIdentity = `${info.dev}:${info.ino}`;
     } catch { /* no verified empty source */ }
     finally { if (fd !== undefined) try { closeSync(fd); } catch { ready = false; } }
+    if (!ready) this.freshEventIdentity = undefined;
     return ready;
   }
 
@@ -351,12 +366,10 @@ export class QwenDualPeer extends BasePeer {
     if (this.state_.ownerPid === undefined) {
       if (this.sessionSeen) this.discoverOwner();
       this.verifyFreshInput();
-      if (this.state_.denyPending && this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && this.sessionSeen && this.ownerAlive() && this.ownerIdentity() !== this.freshFenceOwner) this.clearDenyFence();
       return;
     }
     if (this.ownerAlive()) {
       this.verifyFreshInput();
-      if (this.state_.denyPending && this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && this.ownerIdentity() !== this.freshFenceOwner) this.clearDenyFence();
       return;
     }
     if (this.state === "offline" && !this.sessionSeen) return;
@@ -379,10 +392,16 @@ export class QwenDualPeer extends BasePeer {
     return readSync(fd, last, 0, last.length, info.size - last.length) === last.length && last[0] === 10;
   }
 
+  private freshRecoveryCurrent(): boolean {
+    const launch = this.freshRead;
+    return this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined
+      && !!launch && launch.generation === this.state_.generation && launch.session === this.state_.sessionId
+      && this.sessionSeen && this.ownerIdentity() !== this.freshFenceOwner;
+  }
+
   private verifyFreshInput(): void {
-    if (!this.freshInputPending || !this.freshEventReady || !this.freshBaselineAbsent || !this.sessionSeen || !this.ownerAlive() || this.ownerIdentity() === this.freshFenceOwner) return;
-    this.freshInputPending = false;
-    if (!this.state_.denyPending && !this.inputBlocked && !this.stopping && !this.detached && !this.exited) this.setState("idle");
+    if (!(this.state_.denyPending || this.freshInputPending) || !this.freshCompletionAllowed || !this.freshRecoveryCurrent() || !this.ownerAlive()) return;
+    this.readCompletion = { kind: "fresh", generation: this.state_.generation, session: this.state_.sessionId!, owner: this.ownerIdentity(), source: this.freshRead!.source };
   }
 
   private checkInputTail(): void {
@@ -396,7 +415,7 @@ export class QwenDualPeer extends BasePeer {
 
   private blockInput(): void {
     const newlyBlocked = !this.inputBlocked;
-    this.inputBlocked = true; this.personalProof = undefined;
+    this.inputBlocked = true; this.discardReadProof();
     this.failTurn(QWEN_INPUT_UNCERTAIN_NOTE, true);
     this.setState("offline");
     if (newlyBlocked) try { this.opts.onNotice?.(`${this.id}: ${QWEN_INPUT_UNCERTAIN_NOTE}`); } catch { /* already fenced */ }
@@ -466,28 +485,29 @@ export class QwenDualPeer extends BasePeer {
     if (this.detached) return;
     this.detached = true;
     this.opts.log?.(`[${this.id}] event file ${reason}: detached`);
-    this.personalProof = undefined;
+    this.discardReadProof();
     this.failTurn("the Qwen event file became unreadable before the turn settled; inspect the Qwen terminal before retrying", true);
     this.abortApprovals();
     if (this.state !== "offline") this.setState("offline"); // detached is never idle: nothing can be delivered to a TUI nobody can read
   }
 
   private poll(): void {
-    if (this.stopping) return;
-    this.checkInputTail();
+    if (this.stopping || this.polling) return;
+    this.polling = true;
     let fd: number | undefined;
     try {
+      this.checkInputTail();
       fd = openSync(this.eventFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const info = fstatSync(fd);
       if (!info.isFile()) throw new Error("not a regular file");
-      if (this.state_.denyPending) {
+      if (this.state_.denyPending || this.freshInputPending) {
         const identity = `${info.dev}:${info.ino}`;
-        if (this.fenceFile !== undefined && identity !== this.fenceFile) { this.personalProof = undefined; this.denyCursor = info.size; }
+        if (this.detached || this.fenceFile !== undefined && identity !== this.fenceFile) { this.discardReadProof(); this.denyCursor = info.size; }
         this.fenceFile = identity;
       }
       if (this.detached) { this.detached = false; this.pollFailures = 0; this.opts.log?.(`[${this.id}] event file readable again: reattached`); if (this.sessionSeen && this.state === "offline" && !this.exited && !this.state_.denyPending && !this.inputBlocked && !this.freshInputPending) this.setState("idle"); }
       let offset = this.state_.offset;
-      if (info.size < offset) { offset = 0; this.discarding = false; this.state_.generation++; this.personalProof = undefined; this.denyCursor = info.size; this.opts.log?.(`[${this.id}] event file was replaced; reading from its start`); }
+      if (info.size < offset) { offset = 0; this.discarding = false; this.state_.generation++; this.discardReadProof(); this.denyCursor = info.size; this.opts.log?.(`[${this.id}] event file was replaced; reading from its start`); }
       while (offset < info.size) {
         const want = Math.min(info.size - offset, READ_CAP), buffer = Buffer.alloc(want);
         const got = readSync(fd, buffer, 0, want, offset);
@@ -503,7 +523,7 @@ export class QwenDualPeer extends BasePeer {
         const end = buffer.subarray(0, got).lastIndexOf(10) + 1;
         if (end === 0) {
           if (got < READ_CAP) break;   // a partial line waits for its newline
-          this.personalProof = undefined;
+          this.discardReadProof();
           this.opts.log?.(`[${this.id}] dropped an event line over ${READ_CAP} bytes`);
           this.discarding = true; offset += got; this.state_.offset = offset; continue;
         }
@@ -517,30 +537,38 @@ export class QwenDualPeer extends BasePeer {
           this.eventStart = start + cursor;
           cursor = newline + 1;
           this.eventCursor = start + cursor;
-          if (!Buffer.from(line).equals(rawLine)) { this.personalProof = undefined; continue; }
+          if (!Buffer.from(line).equals(rawLine)) { this.discardReadProof(); continue; }
           if (line.trim()) this.parse(line);
         }
         if (this.stopping) break;
       }
+      this.finishFencedRead(fd);
       this.saveState();
     } catch (error) {
       this.pollFailures++;
       if (!this.detached) this.detach(`could not be read (${(error as NodeJS.ErrnoException).code ?? "error"})`);
-    } finally { if (fd !== undefined) try { closeSync(fd); } catch { /* nothing to close */ } }
+    } finally {
+      if (fd !== undefined) try { closeSync(fd); } catch { /* nothing to close */ }
+      this.polling = false;
+    }
   }
 
   private parse(line: string): void {
     let event: Json;
-    try { event = JSON.parse(line) as Json; } catch { this.personalProof = undefined; this.opts.log?.(`[${this.id}] skipped an unreadable event line`); return; }
-    if (!event || typeof event !== "object" || typeof event.type !== "string") { this.personalProof = undefined; return; }
-    try { this.handle(event); } catch (error) { this.personalProof = undefined; this.opts.log?.(`[${this.id}] event handling failed: ${sanitize((error as Error).message)}`); }
+    try { event = JSON.parse(line) as Json; } catch { this.discardReadProof(); this.opts.log?.(`[${this.id}] skipped an unreadable event line`); return; }
+    if (!event || typeof event !== "object" || typeof event.type !== "string") { this.discardReadProof(); return; }
+    try { this.handle(event); } catch (error) { this.discardReadProof(); this.opts.log?.(`[${this.id}] event handling failed: ${sanitize((error as Error).message)}`); }
   }
 
   private handle(event: Json): void {
     if (this.inputBlocked) return;
-    if (this.freshInputPending && event.type !== "system") return;
-    if (this.state_.denyPending && this.eventStart < this.denyCursor) { this.personalProof = undefined; return; }
-    if (this.state_.denyPending && event.type !== "system") { this.observeDenied(event); return; }
+    const fenced = this.state_.denyPending || this.freshInputPending;
+    if (fenced && this.eventStart < this.denyCursor) { this.discardReadProof(); return; }
+    if (fenced && event.type !== "system") {
+      this.readCompletion = undefined; this.freshCompletionAllowed = false;
+      if (this.freshRead) this.freshRead.activity = true;
+      this.observeDenied(event); return;
+    }
     this.alive();
     switch (event.type) {
       case "system": return this.onSystem(event);
@@ -555,25 +583,31 @@ export class QwenDualPeer extends BasePeer {
   }
 
   private onSystem(event: Json): void {
-    if (this.state_.denyPending) this.personalProof = undefined;
-    if (event.subtype !== "session_start") return;
+    const fenced = this.state_.denyPending || this.freshInputPending;
+    if (fenced) { this.personalProof = undefined; this.readCompletion = undefined; this.freshCompletionAllowed = false; }
+    if (event.subtype !== "session_start") { if (fenced && this.freshRead) this.freshRead.activity = true; return; }
     const data = event.data ?? {};
     const id = event.session_id ?? data.session_id;
-    if (!qwenSessionId(id)) return;
+    if (!qwenSessionId(id)) { if (fenced && this.freshRead) this.freshRead.activity = true; return; }
     // The TUI states its own contract: a version, protocol or event set the hub did not verify is refused, however it was launched.
     const verdict = assessVersion("qwen-dual", data.version);
     const supported: unknown = data.supported_events;
     if (!verdict.ok || data.protocol_version !== 2 || !Array.isArray(supported) || !["user", "assistant", "stream_event", "control_request", "control_response"].every(name => supported.includes(name))) {
+      if (fenced && this.freshRead) this.freshRead.activity = true;
       this.opts.log?.(`[${this.id}] the Qwen TUI's dual-output contract is not verified; not attached`);
       try { this.opts.onNotice?.(`${this.id}: this Qwen's dual-output contract is not verified (${verdict.ok ? "protocol or event set" : verdict.reason}); the hub did not attach it`); } catch { /* notice only */ }
       return;
     }
-    if (this.state_.denyPending && this.freshFenceOwner === undefined && id !== this.state_.sessionId) { this.personalProof = undefined; return; }
-    this.state_.sessionId = id; this.sessionSeen = true; this.saveState();
+    if (this.state_.denyPending && this.freshFenceOwner === undefined && id !== this.state_.sessionId) { this.discardReadProof(); return; }
+    this.state_.sessionId = id; this.sessionSeen = true;
+    if (fenced && this.freshRead) {
+      if (this.freshRead.session === undefined) { this.freshRead.session = id; this.freshCompletionAllowed = !this.freshRead.activity; }
+      else this.freshRead.activity = true; // a replay never re-arms an invalidated fresh-header candidate
+    }
+    this.saveState();
     // Bind the owner now, not on the next tick: a hub that stops in between would record no owner and relaunch over a Qwen that is still running.
     this.discoverOwner();
     this.verifyFreshInput();
-    if (this.state_.denyPending && this.freshEventReady && this.freshBaselineAbsent && this.freshFenceOwner !== undefined && this.ownerAlive() && this.ownerIdentity() !== this.freshFenceOwner) this.clearDenyFence();
     if (!this.stopping && !this.detached && this.state === "offline" && !this.state_.denyPending && !this.freshInputPending) this.setState("idle");
   }
 
@@ -671,9 +705,9 @@ export class QwenDualPeer extends BasePeer {
   private observeDenied(event: Json): void {
     if (this.stopping || this.exited || this.detached || this.eventCursor <= this.denyCursor) return;
     const session = this.state_.sessionId;
-    if (!session || event.session_id !== session || !this.ownerAlive()) { this.personalProof = undefined; return; }
+    if (!session || event.session_id !== session || !this.ownerAlive()) { this.discardReadProof(); return; }
     if (event.type === "user") {
-      if (this.isNotificationEvent(event) || this.promptText(event) === undefined) { this.personalProof = undefined; return; }
+      if (this.isNotificationEvent(event) || this.promptText(event) === undefined) { this.discardReadProof(); return; }
       this.personalProof = { generation: this.state_.generation, session, owner: this.ownerIdentity(), assistant: false };
       return;
     }
@@ -683,9 +717,33 @@ export class QwenDualPeer extends BasePeer {
       const message = event.message;
       proof.assistant = message?.stop_reason === "end_turn" && Array.isArray(message.content) && !message.content.some((block: Json) => block?.type === "tool_use");
     } else if (event.type === "stream_event" && event.event?.type === "message_stop") {
-      if (proof.assistant) this.clearDenyFence();
-      else proof.assistant = false;
+      if (proof.assistant && this.fenceFile !== undefined) this.readCompletion = { kind: "personal", generation: proof.generation, session: proof.session, owner: proof.owner, source: this.fenceFile, personal: proof };
+      proof.assistant = false;
     } else proof.assistant = false;
+  }
+
+  private discardReadProof(): void {
+    this.personalProof = undefined; this.readCompletion = undefined; this.freshCompletionAllowed = false;
+    if (this.freshRead) this.freshRead.activity = true;
+  }
+
+  private finishFencedRead(fd: number): void {
+    const candidate = this.readCompletion;
+    if (!(this.state_.denyPending || this.freshInputPending) || !candidate || this.discarding) return;
+    if (!this.ownerAlive()) { this.discardReadProof(); return; }
+    if (this.readCompletion !== candidate || this.stopping || this.exited || this.detached || this.inputBlocked
+      || candidate.generation !== this.state_.generation || candidate.session !== this.state_.sessionId || candidate.owner !== this.ownerIdentity()
+      || candidate.kind === "personal" && candidate.personal !== this.personalProof
+      || candidate.kind === "fresh" && !this.freshCompletionAllowed
+      || this.freshInputPending && !this.freshRecoveryCurrent()) { this.discardReadProof(); return; }
+    const current = fstatSync(fd), named = lstatSync(this.eventFile);
+    if (!current.isFile() || !named.isFile() || named.isSymbolicLink() || current.dev !== named.dev || current.ino !== named.ino
+      || `${current.dev}:${current.ino}` !== candidate.source
+      || this.freshInputPending && candidate.source !== this.freshRead?.source
+      || current.size !== this.state_.offset || named.size !== current.size) { this.discardReadProof(); return; }
+    // ponytail: this proves only the observed frontier; atomic exclusion of future person input needs a serialized native idle ACK.
+    this.readCompletion = undefined; this.freshInputPending = false;
+    this.clearDenyFence();
   }
 
   private clearDenyFence(): void {
@@ -694,13 +752,13 @@ export class QwenDualPeer extends BasePeer {
     if (this.turn) this.failTurn("the approval outcome was not confirmed before Qwen recovered; inspect the terminal and held delivery before retrying", true);
     delete this.state_.denyPending;
     if (!this.saveState()) {
-      this.state_.denyPending = true; this.personalProof = undefined; this.denyStorageFailure = true;
+      this.state_.denyPending = true; this.discardReadProof(); this.denyStorageFailure = true;
       this.setState("offline");
       try { this.opts.onNotice?.(`${this.id}: ${QWEN_DENY_STORAGE_NOTE}`); } catch { /* advisory only, the fence is already restored */ }
       return;
     }
     if (this.denyTimer) clearTimeout(this.denyTimer);
-    this.denyTimer = undefined; this.personalProof = undefined; this.freshFenceOwner = undefined;
+    this.denyTimer = undefined; this.discardReadProof(); this.freshFenceOwner = undefined;
     this.denyStorageFailure = false; this.stalled_ = false; this.lastAssistant = undefined;
     this.opts.onStalled?.(false);
     if (!this.stopping && !this.detached && !this.exited) this.setState("idle");
@@ -715,7 +773,7 @@ export class QwenDualPeer extends BasePeer {
       this.denyCursor = info.size; this.fenceFile = `${info.dev}:${info.ino}`;
       this.state_.denyPending = true;
       if (!this.saveState()) throw new Error("could not persist fence");
-      this.personalProof = undefined; this.lastAssistant = undefined;
+      this.discardReadProof(); this.lastAssistant = undefined;
       return true;
     } catch {
       // No deny is appended without its restart fence. Keep any saved marker conservative as well.
@@ -811,7 +869,7 @@ export class QwenDualPeer extends BasePeer {
     if (reason !== undefined) this.requestedStopReason = reason;
     this.stopping = true;
     if (this.denyTimer) clearTimeout(this.denyTimer); this.denyTimer = undefined;
-    this.personalProof = undefined;
+    this.discardReadProof();
     if (this.poller) clearInterval(this.poller); this.poller = undefined;
     if (this.monitor) clearInterval(this.monitor); this.monitor = undefined;
     this.abortApprovals();

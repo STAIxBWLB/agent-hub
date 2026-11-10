@@ -12,6 +12,7 @@ import type { DeliveryReceipt } from "../src/hub/peers.ts";
 import type { ProcRow } from "../src/hub/child-process.ts";
 import type { PermissionRequest } from "../src/adapters/acp.ts";
 import type { NativeCliEntryContext } from "../src/adapters/definitions/native-cli-entry-types.ts";
+import { processSignature } from "../src/pi/process-signature.ts";
 
 const FAKE = join(import.meta.dir, "fakes/qwen-dual.ts");
 const cleanups: (() => unknown)[] = [];
@@ -290,6 +291,172 @@ test("deny fence survives detach and same-owner adoption; only a newly observed 
   await adopted.peer.start(); expect(adopted.peer.adopted).toBe(true);
   expect(adopted.peer.state).toBe("offline"); expect(adopted.peer.launch).toBeUndefined();
   await personalCompletion(adopted);
+});
+
+for (const partial of [false, true]) test(`same-inode reattach rejects buffered personal completions${partial ? " and a USER crossing restored EOF" : ""} before the Bus can submit queued input`, async () => {
+  const r = await attached(), { bus, journal } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const second = newEnvelope("user", "second after reattach", { to: ["qwen"] }); bus.publish(second);
+  const file = join(r.dir, "events.jsonl"), held = `${file}.unreadable`, inode = statSync(file).ino;
+  renameSync(file, held); await until(() => r.peer.isDetached);
+  const states: string[] = [], busState = r.peer.onState;
+  r.peer.onState = state => { states.push(state); busState?.(state); };
+  const laterUser = { type: "user", message: { role: "user", content: [{ type: "text", text: "a later personal turn still running" }] } };
+  appendFileSync(held, [personalUser, personalFinal, personalStop, laterUser].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n");
+  const crossing = JSON.stringify({ session_id: r.peer.sessionId, ...personalUser }), split = Math.floor(crossing.length / 2);
+  if (partial) appendFileSync(held, crossing.slice(0, split));
+  renameSync(held, file); expect(statSync(file).ino).toBe(inode);
+  await until(() => !r.peer.isDetached);
+  if (partial) {
+    appendFileSync(file, crossing.slice(split) + "\n");
+    await appendObserved(r, [personalFinal, personalStop]);
+  } else await until(() => r.peer.offset >= statSync(file).size);
+  expect(states).not.toContain("idle");
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1);
+  expect(bus.queueIds("qwen")).toContain(second.id); expect(r.answers).toHaveLength(0);
+  const completed = r.receipts.filter(receipt => receipt.state === "completed");
+  expect(completed).toHaveLength(1); expect(journal.get(completed[0]!.id)?.state).toBe("completed");
+  await personalCompletion(r);
+  await until(() => r.answers.length === 1 && r.receipts.filter(receipt => receipt.state === "completed").length === 2);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
+  expect(r.answers[0]!.body).toContain("second after reattach");
+  expect(bus.queueIds("qwen")).not.toContain(second.id);
+  expect(new Set(r.receipts.filter(receipt => receipt.state === "completed").map(receipt => receipt.id)).size).toBe(2);
+});
+
+test("an attached read frontier with a completed personal turn and later USER never drains the Bus between those buffered frames", async () => {
+  const r = await attached(), { bus } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const second = newEnvelope("user", "second after current frontier", { to: ["qwen"] }); bus.publish(second);
+  const states: string[] = [], busState = r.peer.onState;
+  r.peer.onState = state => { states.push(state); busState?.(state); };
+  const activeUser = { type: "user", message: { role: "user", content: [{ type: "text", text: "a later active personal turn" }] } };
+  await appendObserved(r, [personalUser, personalFinal, personalStop, activeUser]);
+  expect(states).not.toContain("idle"); expect(bus.queueIds("qwen")).toContain(second.id);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1); expect(r.answers).toHaveLength(0);
+  await personalCompletion(r);
+  await until(() => r.answers.length === 1 && r.receipts.filter(receipt => receipt.state === "completed").length === 2);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
+  expect(r.answers[0]!.body).toContain("second after current frontier");
+});
+
+test("a partial later USER at the read frontier keeps a completed personal candidate from releasing queued input", async () => {
+  const r = await attached(), { bus } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const queued = newEnvelope("user", "after partial frontier", { to: ["qwen"] }); bus.publish(queued);
+  const file = join(r.dir, "events.jsonl"), crossing = JSON.stringify({ session_id: r.peer.sessionId, ...personalUser }), split = Math.floor(crossing.length / 2);
+  const prefix = [personalUser, personalFinal, personalStop].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n";
+  const consumed = statSync(file).size + Buffer.byteLength(prefix);
+  appendFileSync(file, prefix + crossing.slice(0, split));
+  await until(() => r.peer.offset >= consumed);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1); expect(bus.queueIds("qwen")).toContain(queued.id);
+  appendFileSync(file, crossing.slice(split) + "\n"); await appendObserved(r, [personalStop]);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1); expect(r.answers).toHaveLength(0);
+  await personalCompletion(r); await until(() => r.answers.length === 1);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
+});
+
+test("a named event source replaced after its bytes were read cannot release a candidate from the old FD", async () => {
+  let current: Rig | undefined, rotateAt = Infinity, rotated = false;
+  const r = await attached({}, { signature: pid => {
+    const signature = processSignature(pid);
+    if (signature && current && !rotated && current.peer.offset >= rotateAt) {
+      const file = join(current.dir, "events.jsonl"), bytes = readFileSync(file);
+      renameSync(file, `${file}.old-fd`);
+      writeFileSync(file, bytes, { flag: "wx", mode: 0o600 }); rotated = true;
+    }
+    return signature;
+  } }); current = r;
+  const { bus } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const queued = newEnvelope("user", "after named source check", { to: ["qwen"] }); bus.publish(queued);
+  const file = join(r.dir, "events.jsonl"), frames = [personalUser, personalFinal, personalStop].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n";
+  rotateAt = statSync(file).size + Buffer.byteLength(frames);
+  appendFileSync(file, frames); await until(() => rotated);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1); expect(bus.queueIds("qwen")).toContain(queued.id);
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  await appendObserved(r, [personalStop]); // consume the new named source before starting a genuinely new turn
+  await personalCompletion(r); await until(() => r.answers.length === 1);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
+});
+
+test("a fresh header followed by active USER or a replayed header cannot manufacture idle before a wholly new personal completion", async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  const header = events(r).find(frame => frame.type === "system");
+  await r.peer.stop(); r.kill(); await r.child!.exited;
+  const fresh = rig({}, { root: r.root, fakeArgs: ["--no-events"] });
+  await fresh.peer.start(); fresh.launch();
+  const { bus } = observedBus(fresh), queued = newEnvelope("user", "fresh frontier queued", { to: ["qwen"] });
+  bus.publish(queued);
+  const states: string[] = [], busState = fresh.peer.onState;
+  fresh.peer.onState = state => { states.push(state); busState?.(state); };
+  await appendObserved(fresh, [header, personalUser]);
+  expect(states).not.toContain("idle"); expect(bus.queueIds("qwen")).toContain(queued.id);
+  expect(inputLines(fresh).filter(frame => frame.type === "submit")).toHaveLength(0);
+  await appendObserved(fresh, [header]);
+  expect(states).not.toContain("idle"); expect(bus.queueIds("qwen")).toContain(queued.id);
+  expect(JSON.parse(readFileSync(join(fresh.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  await personalCompletion(fresh);
+  await until(() => fresh.answers.length === 1 && fresh.receipts.some(receipt => receipt.state === "completed"));
+  expect(inputLines(fresh).filter(frame => frame.type === "submit")).toHaveLength(1);
+  expect(fresh.answers[0]!.body).toContain("fresh frontier queued");
+});
+
+for (const detached of [false, true]) test(`the same stopped adapter resets its old read boundary before a verified fresh header${detached ? " after detachment" : ""}`, async () => {
+  let live = true;
+  const r: Rig = rig({ table: () => live && r.child && r.peer.launch ? [{ pid: r.child.pid, ppid: process.pid, pgid: r.child.pid, started: "x", command: `bun qwen ${r.peer.launch.args.join(" ")}` }] : [] });
+  await r.peer.start(); r.launch();
+  await until(() => r.peer.state === "idle" && JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).ownerPid === r.child!.pid);
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  if (detached) { renameSync(join(r.dir, "events.jsonl"), join(r.dir, "events.before-stop")); await until(() => r.peer.isDetached); }
+  await r.peer.stop(); live = false; r.kill(); await r.child!.exited;
+  await r.peer.start(); expect(r.peer.adopted).toBe(false); expect(r.peer.launch).toBeDefined();
+  r.launch(); live = true;
+  await until(() => r.peer.state === "idle" && !r.peer.isDetached);
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBeUndefined();
+  expect(r.answers).toHaveLength(0);
+  await r.peer.deliver(env("same adapter fresh generation"), "d2"); await until(() => r.answers.length === 1);
+  expect(r.answers[0]!.body).toContain("same adapter fresh generation");
+});
+
+test("an owner unavailable at final read discards the candidate instead of reusing it on a later empty poll", async () => {
+  let unknown = false;
+  const r = await attached({}, { signature: pid => unknown ? undefined : processSignature(pid) });
+  const { bus } = observedBus(r);
+  bus.publish(newEnvelope("user", 'TOOL:run_shell_command:{"command":"touch x"}', { to: ["qwen"] }));
+  await until(() => r.requests.length === 1); answered(r, 1, "deny");
+  await until(() => r.receipts.filter(receipt => receipt.state === "completed").length === 1);
+  const queued = newEnvelope("user", "only after new owner proof", { to: ["qwen"] }); bus.publish(queued);
+  const file = join(r.dir, "events.jsonl"), frames = [personalUser, personalFinal, personalStop].map(frame => JSON.stringify({ session_id: r.peer.sessionId, ...frame })).join("\n") + "\n";
+  const end = statSync(file).size + Buffer.byteLength(frames);
+  const reader = r.peer as unknown as { finishFencedRead(fd: number): void }, original = reader.finishFencedRead.bind(r.peer);
+  let finalReads = 0;
+  reader.finishFencedRead = fd => {
+    if (r.peer.offset < end) { original(fd); return; }
+    finalReads++;
+    if (finalReads === 1) { unknown = true; try { original(fd); } finally { unknown = false; } }
+    else original(fd);
+  };
+  appendFileSync(file, frames); await until(() => finalReads >= 2);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(1);
+  expect(bus.queueIds("qwen")).toContain(queued.id); expect(r.answers).toHaveLength(0);
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).denyPending).toBe(true);
+  await personalCompletion(r); await until(() => r.answers.length === 1);
+  expect(inputLines(r).filter(frame => frame.type === "submit")).toHaveLength(2);
 });
 
 test("a deny is not appended when its restart fence cannot be persisted", async () => {
