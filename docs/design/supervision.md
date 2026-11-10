@@ -1,7 +1,7 @@
 ---
 id: supervision
 type: module
-title: Supervision Rules and the Shadow Evaluator
+title: Supervision Rules, Proposals and the Decision Path
 status: draft
 parent: agent-hub-architecture
 depends-on: [task-board]
@@ -11,16 +11,19 @@ covers: [supervision]
 tags: [agent-hub]
 paths:
   - src/hub/supervision-rules.ts
+  - src/hub/supervision-proposals.ts
   - test/supervision-rules.test.ts
+  - test/supervision-proposals.test.ts
+  - test/acon-supervision-inbox-1221.test.ts
 ---
 
-# Supervision Rules and the Shadow Evaluator
+# Supervision Rules, Proposals and the Decision Path
 
 The hub already records what happens to a task: an append-only history of accepted, failed, handed-over and integrated events, its own deliverable measurement, and its own declared-overlap reading. Supervision asks a narrow question of exactly those records: does one of a closed set of conditions hold, and if so which existing hub operation would address it.
 
-This stage answers that question and nothing else. It is deterministic, it is off unless a caller evaluates it, and it has no effect path: no proposal, no console page, no inbox entry, no worker turn, no action write, no notification. A later stage may carry an observation to a person; this one only proves the reading.
+The reading stage answers that question and nothing else. It is deterministic, and it has no effect path: no proposal, no console page, no inbox entry, no worker turn, no action write, no notification. The proposals stage (#1221 T2) carries a bounded set of those readings to a present role and runs an existing action only when that role says so; what it stores and what it decides is the second half of this document.
 
-The module is `src/hub/supervision-rules.ts`. Its neighbour `src/hub/supervision.ts` turns board milestones into conductor notices and owns their batching, retry and native turns. That module is the milestone producer; this one is a pure rule layer over facts already admitted to the public project view. They are not merged, and the rule layer is not wired to the feed here.
+The module is `src/hub/supervision-rules.ts` for the reading and `src/hub/supervision-proposals.ts` for the queue and the decision path. Their neighbour `src/hub/supervision.ts` turns board milestones into conductor notices and owns their batching, retry and native turns. That module is the milestone producer; these are a pure rule layer over facts already admitted to the public project view, plus the one bounded queue those readings may reach. They are not merged, and the proposal queue starts nothing by itself.
 
 ## Facts the rules may read
 
@@ -74,6 +77,39 @@ Shadow mode has no effect path at all, and the counters are the literal type zer
 
 An observation is a closed shape of codes and ids: rule, version, task, revision, trigger, refs, limits (records read and whether they were truncated), the suggested existing action and the reason code. It carries no prose, no note and no file body.
 
+## Proposals and decisions
+
+A **proposal** is one observation, kept, with its own identity and life. `src/hub/supervision-proposals.ts` owns them: the store (`supervision_proposals` in `hub.db`, `CREATE TABLE IF NOT EXISTS`, no format bump, so an older hub reads its own tables), the decision path, and the startup reconcile. It imports no board write, no bus, no daemon and no peer module; every board and bus fact reaches it through a port, which is what makes "the queue starts nothing by itself" visible in the imports and not only in prose.
+
+Modes come from `supervision.mode`, machine-local and `off` by default:
+
+| Mode | What it does |
+| --- | --- |
+| `off` | evaluates nothing; a board event costs one string comparison |
+| `shadow` | stores bounded proposals on the queue and does nothing else: no inbox row, no notice, no turn, no action |
+| `advisory` | the same, and may present a pending proposal in the console's existing inbox, where only an explicit accept or dismiss acts |
+
+Observation attaches to the board events the daemon already handles, after the history entry is written, plus one reconcile pass at startup. Nothing polls and nothing is scheduled. A private or unknown task is never observed, and a `backlog` or closed task is not supervised.
+
+**Identity and invalidation.** A proposal keeps the reading's dedupe key `(rule, task, revision, trigger)`, unique in the store, so a replayed event or a second read adds nothing and is not counted as advice. A key outlives its proposal: a reading already disposed of (accepted, dismissed or expired) is not proposed again, because the pattern it named has not changed. The queue expires what the current reading no longer produces (new input cleared the pattern, the task moved to another revision, closed, left the board, or the owner's native session was replaced), and a clipped reading, a revision longer than one rule reads, proposes nothing of its own and invalidates nothing, because a prefix proves neither.
+
+**The decision path.** A pending proposal is decided by an explicit verb, `accept` or `dismiss`, from the hub tools (`hub_supervision_list`, `hub_supervision_accept`, `hub_supervision_dismiss`) or from the advisory inbox row. Every fence runs before any effect, in this order: the id's own grammar, an existing pending row, a present role on the task (its owner, its reviewer, the configured planner, the conductor, or the person; no new supervisor role exists), a non-private task, a non-clipped reading, the task still on the board, open and on the same revision, the same native generation it was read under, the reading still holding when re-evaluated, and no `needs_review` delivery holding the owner. A refusal about the reading expires the proposal; a refusal about the caller or the hold leaves it pending for whoever can take it up. The disposition is a compare-and-set on `state = 'pending'`, so of two deciders racing on one proposal exactly one wins and a decided proposal can never be run twice.
+
+**What an acceptance runs.** An existing action, through that action's own authority, never a new one: `escalate` is the conductor's own move for an agent and the board's own escalation for the person, and `recheck` and `request_integration` are the hub's own notice to the owners, whose own record is the check re-run or the integration. Accepting writes nothing to the board: a board acceptance would be a new episode and would replace the acceptance that governs the revision the proposal was read under. Four records stay separate: the intent (this row's disposition, written before the action runs), the receipt (what the action reported: `ran`, `refused`, `unknown`), the task's own result (whatever the board's own method records), and a later review.
+
+**An uncertain outcome is never retried.** An action that throws without a synchronous pre-effect refusal leaves the receipt `unknown`. A read settles such a receipt only from the board's own record of that action at or after the receipt time, and a restart settles an outcome the hub never observed as `unknown` rather than replaying it.
+
+**Restart (AC6).** Dedupe keys, dispositions and unknown receipts all live in the table, so a restart keeps them. The one reconcile pass at startup expires pending proposals whose task moved, closed or left the board, and marks an acceptance whose action never reported as `unknown`. Nothing is replayed and nothing is retried.
+
+**Bounds.** A proposal is a closed shape of codes and ids: rule, version, task, revision, trigger, refs, records read and whether it was clipped, the existing action, the reason code, the native generation, and later the disposition and its receipt. It carries no prose, no note, no title and no file body, and nothing about a private task reaches it.
+
+| Bound | Value | Meaning |
+| --- | --- | --- |
+| `MAX_PROPOSALS` | 100 | pending proposals the queue holds; a further reading is refused, never counted as advice |
+| `MAX_PROPOSALS_PER_REVISION` | 3 | proposals one task revision gets, decisions included |
+| `MAX_PROPOSAL_ROWS` | 400 | terminal rows kept for dedupe and history; past it the oldest terminal row goes and a pending row is never pruned |
+| `MAX_PROPOSAL_READ` | 50 | proposals one read returns, pending first |
+
 ## Deliberately outside this contract
 
-Bounded proposals and their accept/dismiss decision path, a console or tool surface, inbox presentation, advisory delivery, automatic pause, retry, cancel, reroute or rollback, and any import of an external supervision runtime. Those need their own authorization and their own spec. agent-research#63 builds on the reading and bounds above, not on an acceptance path here.
+Automatic pause, retry, cancel, reroute, approval or rollback, any automatic acceptance, any import of an external supervision runtime, and any resident worker or recurring timer. The queue proposes an existing action and runs it only when a present role says so. agent-research#63 builds on the reading and bounds above, not on an acceptance path here.

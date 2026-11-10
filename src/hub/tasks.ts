@@ -8544,6 +8544,24 @@ export class Tasks {
     }
   }
 
+  /**
+   * #1221 T2: one accepted supervision proposal's notice, to the owners of the tasks it names. A delivery through the
+   * same owner path `tell` uses, never a board write: the task's own result stays in its history and a later review of
+   * that result stays a separate record. The person is not told here (the console owns that), and a private task is
+   * refused, so nothing about one leaves the machine.
+   */
+  supervisionNotice(task: number, other: number | undefined, body: string): { sent: PeerId[]; refused?: string } {
+    const primary = this.d.board.get(task);
+    if (!primary) return { sent: [], refused: `task #${task} is not on the board` };
+    if (this.isPii(primary)) return { sent: [], refused: "a private task is never proposed on" };
+    const partner = other === undefined ? undefined : this.d.board.get(other);
+    if (other !== undefined && partner && this.isPii(partner)) return { sent: [], refused: "a private task is never proposed on" };
+    const targets = [...new Set([primary.owner, partner?.owner].filter((peer): peer is PeerId => !!peer && peer !== USER && peer !== HUB))];
+    if (!targets.length) return { sent: [], refused: "the task has no owner to tell" };
+    for (const peer of targets) this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", priority: "important", refs: { task: String(task), taskRecipient: "owner" } }));
+    return { sent: targets };
+  }
+
   private tell(task: Task, body: string, pii: boolean, audience: "owner" | "withdrawal" = "owner", reviewObserverExcluded = false): void {
     if (!task.owner || task.owner === USER) return;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner], kind: reviewObserverExcluded ? "review" : "task", priority: "important", refs: { task: String(task.id), ...(reviewObserverExcluded ? { reviewPackage: `finding-${crypto.randomUUID()}` } : {}), ...(audience === "owner" ? { taskRecipient: "owner" as const } : {}) }, ...(pii ? { private: true } : {}) }));

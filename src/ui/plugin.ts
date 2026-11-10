@@ -63,9 +63,13 @@ const QUESTION_ACTIONS = ["answer"] as const;
 /** #1054 T6: the receipt actions, advertised so acon lets the inbox and the page send them, never forwarded: `action()` checks the console's person meta, then calls the dedicated `projectConsole(...).receipt` port (`receiptVerb`). */
 const RESULT_ADVERTISED = RESULT_ACTIONS;
 const REVIEW_ACTIONS = ["review_comment_put", "review_comment_delete", "review_comment_send"] as const;
-const INBOX_VERBS = ["approve", "deny", "open"] as const;
+/** #1221 T2 AC5: the two verbs an advisory supervision row offers; both reach the hub's own `decide`, as the person. */
+const SUPERVISION_VERBS = ["supervision_accept", "supervision_dismiss"] as const;
+const SUPERVISION_ITEM = /^supervision:([^:]+):(sup-[0-9a-f]{12})$/;
+const INBOX_VERBS = ["approve", "deny", "open", ...SUPERVISION_VERBS] as const;
 /** Outward or destructive: answered needsConfirm first (agent-console AGENTS.md); previews are read-only and stay direct. */
-const CONFIRMED = new Set(["review_comment_delete", "review_comment_send", "stop", "permit", "setting", "setting_undo", "setting_reload", "config_edit_apply", "start_peer", "backlog_split", "send", "approve", "deny", "worktree_override_set", "worktrees_refresh_prs"]);
+// A supervision acceptance runs the proposal's existing action, so it is confirmed like an approval; a dismissal runs nothing and is not.
+const CONFIRMED = new Set(["review_comment_delete", "review_comment_send", "stop", "permit", "setting", "setting_undo", "setting_reload", "config_edit_apply", "start_peer", "backlog_split", "send", "approve", "deny", "worktree_override_set", "worktrees_refresh_prs", "supervision_accept"]);
 const fingerprintOf = (input: Record<string, unknown>) => {
   const { confirmed: _c, fingerprint: _f, reason: _r, ...rest } = input;
   return createHash("sha256").update(JSON.stringify(Object.keys(rest).sort().map((key) => [key, rest[key]]))).digest("hex");
@@ -283,6 +287,20 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         items.push({ id, group: "review", kind: "review", title: `#${t.id} ${t.title}`.slice(0, 200), ...(t.owner ? { actor: t.owner } : {}), project: name, at,
           chip: { text: "review", tone: "neutral" }, verbs: [{ id: "open", label: "Open board", primary: true }], link: { panel: "board", params: { project: project.id } } });
       }
+      // #1221 T2 AC5: an advisory supervision proposal. The hub sends this field only in advisory mode, and it never
+      // carries a private task or task text; the row offers the hub's own two verbs and nothing else.
+      const advisory = snap.supervision as { mode?: string; proposals?: { id: string; task: number; rule: string; action: string; reason: string; created?: number }[] } | undefined;
+      for (const p of advisory?.mode === "advisory" && Array.isArray(advisory.proposals) ? advisory.proposals : []) {
+        if (!p || typeof p.id !== "string" || !/^sup-[0-9a-f]{12}$/.test(p.id) || !Number.isSafeInteger(p.task)) continue;
+        const id = `supervision:${project.id}:${p.id}`;
+        const at = typeof p.created === "number" ? new Date(p.created).toISOString() : (seen.get(id) ?? new Date().toISOString());
+        seen.set(id, at);
+        items.push({ id, group: "candidate", kind: "supervision", title: `#${p.task}: ${String(p.action).slice(0, 32)}`.slice(0, 200),
+          detail: `${String(p.rule).slice(0, 64)} (${String(p.reason).slice(0, 64)})`, project: name, at,
+          chip: { text: "supervision", tone: "neutral" },
+          verbs: [{ id: "supervision_accept", label: "Accept", primary: true }, { id: "supervision_dismiss", label: "Dismiss" }],
+          link: { panel: "board", params: { project: project.id } } });
+      }
       if (generation === inboxGeneration) lastProjectItems.set(project.id, { generation, items: items.slice(firstItem) });
     }
     for (const id of lastProjectItems.keys()) if (!projects.some((project) => project.id === id)) lastProjectItems.delete(id);
@@ -392,8 +410,21 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
     return { ok: true, message: name === "result_seen" ? "Marked read" : name === "results_read_all" ? `Marked ${Number(result.marked) || 0} read` : "Marked unread again" };
   }
 
-  /** approve/deny resolve to the hub's own `permit` with the request's option; nothing else is reachable from an item. */
+  /**
+   * approve/deny resolve to the hub's own `permit` with the request's option, and a supervision verb to the hub's own
+   * `supervision` action as the person; nothing else is reachable from an item, and the page never names the task, the
+   * actor or the action.
+   */
   async function inboxVerb(input: Record<string, unknown>): Promise<ActionResult> {
+    const supervision = typeof input.id === "string" ? SUPERVISION_ITEM.exec(input.id) : null;
+    if (supervision && (input.action === "supervision_accept" || input.action === "supervision_dismiss")) {
+      const project = (await running()).find((p) => p.id === supervision[1]);
+      if (!project) return { ok: false, error: "project is not running" };
+      const result = await act({ action: "supervision", projectId: project.id, instanceId: project.instanceId, id: supervision[2], verb: input.action === "supervision_accept" ? "accept" : "dismiss" }) as Record<string, unknown>;
+      if (result.ok !== true) return { ok: false, error: String(result.error ?? "the supervision decision was refused") };
+      const receipt = result.receipt as { outcome?: string; detail?: string } | undefined;
+      return { ok: true, message: input.action === "supervision_dismiss" ? "Dismissed" : receipt?.outcome === "ran" ? "Accepted and run" : receipt?.outcome === "unknown" ? "Accepted; the outcome is unconfirmed, check the task" : "Accepted" };
+    }
     const m = typeof input.id === "string" ? /^perm:([^:]+):(.+)$/.exec(input.id) : null;
     if (input.action === "open") return { ok: true, message: typeof input.id === "string" && (input.id.startsWith("worktrees:") || input.id.startsWith("question:") || input.id.startsWith("result:")) ? `Open the Agents panel to ${input.id.startsWith("question:") ? "answer" : input.id.startsWith("result:") ? "read the result" : "review the shelf"}.` : "Open the Board panel to review." };
     if (!m) return { ok: false, error: "unknown inbox item" };
@@ -522,6 +553,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         const preview = name === "review_comment_delete" ? [`Delete or dismiss this review comment on task #${String(input.task ?? "?")}.`]
           : name === "approve" || name === "deny" ? [`${name === "approve" ? "Allow" : "Deny"} this tool request once.`]
           : name === "send" ? [`Send a message as you${target ? ` in ${target}` : ""}.`]
+          : name === "supervision_accept" ? [`Accept a supervision proposal${target ? ` in ${target}` : ""} and run the action it names once.`]
           : [`Run ${name}${target ? ` in ${target}` : ""}.`];
         return { ok: false, needsConfirm: true, preview, fingerprint, verb: name === "approve" ? "Allow once" : name === "deny" ? "Deny" : name };
       }
@@ -530,7 +562,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
         return await consoleControl({ projectId, instanceId }, name as typeof REVIEW_ACTIONS[number], payload, meta) as ActionResult;
       }
       const { confirmed: _c, fingerprint: _f, ...forward } = input;
-      if (name === "approve" || name === "deny" || name === "open") return await inboxVerb(forward);
+      if (name === "approve" || name === "deny" || name === "open" || (SUPERVISION_VERBS as readonly string[]).includes(name)) return await inboxVerb(forward);
       const result = await act(forward) as Record<string, unknown>;
       return (result.ok === false ? { ok: false, error: String(result.error ?? "action failed"), ...(result.unconfirmed === true ? { unconfirmed: true as const } : {}) } : { ...result, ok: true }) as ActionResult;
     }

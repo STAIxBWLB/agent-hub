@@ -15465,6 +15465,7 @@ var init_hub_tools = __esm(() => {
   }, ["questions"]);
   QUESTION_TOOLS = new Set([ASK_TOOL.name]);
   TASK_TOOLS.push(ASK_TOOL);
+  TASK_TOOLS.push(tool2("hub_supervision_list", "Read the bounded supervision proposals on tasks you hold a role on, pending first. Codes and ids only. Shadow mode stores proposals without showing them anywhere else; a decided or expired proposal keeps its receipt.", { task: id2 }), tool2("hub_supervision_accept", "Accept one pending supervision proposal: the existing action it names runs under that action's own authority (the conductor's escalate, or the hub's owner notice for a recheck or an integration request), and its intent, receipt and the task's own result stay separate records. Refuses a stale revision or generation, a reading that no longer holds, another actor's task, a private task and an owner's needs_review hold.", { id: str2 }, ["id"]), tool2("hub_supervision_dismiss", "Dismiss one pending supervision proposal. Same fences as accept, and it records the decision; nothing runs.", { id: str2 }, ["id"]));
   TASK_TOOL_NAMES = new Set([...TASK_TOOLS.map((t) => t.name), SESSION_TITLE_TOOL.name, EVIDENCE_RECORD_TOOL.name]);
   CONDUCTOR_TOOLS = [
     tool2("hub_status", "Inspect public team state, holds, quota windows, task counts and pending approval peer/tool/age. Only the configured conductor may use this tool.", {}),
@@ -27315,6 +27316,7 @@ var MACHINE_LOCAL = [
   "local.web_fetch",
   "terminal.open",
   "tasks.auto_pull",
+  "supervision.mode",
   "folder_triggers",
   "schedules",
   "corpus.paths",
