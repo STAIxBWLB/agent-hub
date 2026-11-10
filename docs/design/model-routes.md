@@ -26,6 +26,7 @@ paths:
   - test/model-observation-signals.test.ts
   - test/model-judge-choice.test.ts
   - test/model-route-event-parity.test.ts
+  - test/benchmarks/model-routing-gate.test.ts
   - test/model-route-public-api-scalars.test.ts
   - test/fixtures/model-route-public-api-scalars-v1.json
   - test/route-stage-classifier.test.ts
@@ -996,3 +997,12 @@ independently authored cases from this contract. Existing relay/local-worker/dec
 no source-port golden cases are read or copied. Seed review uses id/path/test
 metadata only. Current route-directory seed count is zero; any consumer anchor
 that wiring touches is reviewed/rebound without weakening its named guard.
+
+### Owned benchmark binding migration (R2)
+
+The existing model-routing benchmark binds its prompt identities to the fresh
+exported host prompt constants. This is the R2 test-binding migration: assertions,
+corpus vectors, splits, guards, scores and thresholds remain unchanged. The receipt
+request builder captures the same completed advisor conversation and latest-turn
+suffix as the runtime, and preserves the public conversation-turn marker. This
+checks measurement fidelity; it supplies no live quality or promotion evidence.

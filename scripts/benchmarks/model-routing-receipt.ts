@@ -47,8 +47,9 @@ export function judgeRequestFor(routing: Routing, c: JudgeCase): { alias: string
   const config = routing.hub_routes?.[c.route];
   if (!config) return undefined;
   const alias = judgeAlias(routing, c)!;
-  const conversation = captureJudgeConversation(c.messages);
-  const request = c.judge === "advisor" ? buildAdvisorRequest(conversation, c.latest, config.transcript_max_chars) : buildEscalationRequest(conversation, c.turn ?? 1);
+  const conversation = captureJudgeConversation(c.judge === "advisor"
+    ? [...c.messages, { role: "assistant", content: c.latest ?? "" }] : c.messages);
+  const request = c.judge === "advisor" ? buildAdvisorRequest(conversation, c.latest ?? "", config.transcript_max_chars) : buildEscalationRequest(conversation, c.turn ?? 1);
   if (!request) return undefined;
   return { alias, request, digest: sha256(canonicalJson({ alias, systemPrompt: request.systemPrompt, messages: request.messages, maxOutputTokens: request.maxOutputTokens })) };
 }
