@@ -188,6 +188,18 @@ export async function readReleaseReadiness(root: string, repo: string, liveIssue
     if (!issuesStable) report.blockers.push("live issue states changed or could not be reverified");
   }
   const last = git(["rev-parse","--verify","HEAD"]); if (last.code !== 0 || last.stdout.trim() !== head) report.blockers.push("local HEAD changed during release readback");
+  if (report.releasePolicy?.authorization === "matched" && readers.reportPolicy) {
+    let current: ReleaseReportPolicy | undefined;
+    try { current = readers.reportPolicy(head, repo); } catch { /* a report recheck failure is stale authorization */ }
+    const prior = report.releasePolicy;
+    if (!current || current.authorization !== "matched" || current.versionSource !== prior.versionSource
+      || current.docsSource !== prior.docsSource || current.version !== report.version) {
+      report.releasePolicy = { ...prior, authorization: "stale" };
+      if (prior.versionSource !== "package.json") report.version = undefined;
+      report.sourceReady = false;
+      report.blockers.push("release authorization source changed during release readback; authorize the exact candidate version again");
+    }
+  }
   report.blockers = [...new Set(report.blockers)]; report.sourceReady = report.blockers.length === 0;
   // Closed issue metadata is not a native receipt or permission to publish.
   report.blockers.push("native acceptance and person release decision unverified");

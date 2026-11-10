@@ -32,7 +32,7 @@ function releaseProject(source: "release-notes" | "none", packageVersion?: strin
   run(["add", "--all"]);
   run(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "release candidate"]);
   const head = run(["rev-parse", "HEAD"]);
-  let hideNotes = false, docsCalls = 0, now = 100;
+  let hideNotes = false, docsCalls = 0, now = 100, changePushOriginOnReleaseList = false;
   const gitCalls: string[][] = [];
   const git: ReleaseGit = args => {
     gitCalls.push([...args]);
@@ -48,7 +48,13 @@ function releaseProject(source: "release-notes" | "none", packageVersion?: strin
     record: () => true,
   });
   const fakeGh: SdlcGh = async args => {
-    if (args[0] === "release") return { code: 0, stdout: JSON.stringify([{ tagName: "v1.2.2", isDraft: false, isPrerelease: false }]) };
+    if (args[0] === "release") {
+      if (changePushOriginOnReleaseList) {
+        changePushOriginOnReleaseList = false;
+        run(["remote", "set-url", "--push", "origin", "ssh://git@github.com/example/repo.git"]);
+      }
+      return { code: 0, stdout: JSON.stringify([{ tagName: "v1.2.2", isDraft: false, isPrerelease: false }]) };
+    }
     if (args[0] === "issue") return { code: 0, stdout: JSON.stringify({ number: 273, state: "CLOSED" }) };
     const query = args.find(arg => arg.startsWith("query=")) ?? "";
     if (query.includes("associatedPullRequests")) {
@@ -63,7 +69,9 @@ function releaseProject(source: "release-notes" | "none", packageVersion?: strin
   };
   const readers = () => ({ git, gh: fakeGh, reportPolicy: (candidate: string, repo: string) => host.reportPolicy(candidate, repo),
     docs: async () => { docsCalls++; return undefined; } });
-  return { root, run, host, head, predecessor, readers, gitCalls, docsCalls: () => docsCalls, hideNotes: (value: boolean) => { hideNotes = value; }, setNow: (value: number) => { now = value; } };
+  return { root, run, host, head, predecessor, readers, gitCalls, docsCalls: () => docsCalls,
+    hideNotes: (value: boolean) => { hideNotes = value; }, setNow: (value: number) => { now = value; },
+    changePushOriginOnReleaseList: () => { changePushOriginOnReleaseList = true; } };
 }
 
 test("#1381 release-notes report uses the exact authorized version without package.json and skips docs:none evidence", async () => {
@@ -170,4 +178,14 @@ test("#1381 a notes source becoming unavailable after report collection leaves s
   expect(report.sourceReady).toBe(false); expect(report.ready).toBe(false);
   expect(report.releasePolicy?.authorization).toBe("stale");
   expect(report.blockers).toContain("release authorization source is stale; authorize the exact candidate version again");
+});
+
+test("#1381 an origin change during remote readback invalidates a previously selected authorization", async () => {
+  const f = releaseProject("release-notes"); await f.host.authorize("user", "1.2.3", f.head);
+  f.changePushOriginOnReleaseList();
+  const report = await readReleaseReadiness(f.root, REPO, [273], f.readers());
+  expect(report.version).toBeUndefined(); expect(report.sourceReady).toBe(false); expect(report.ready).toBe(false);
+  expect(report.releasePolicy?.authorization).toBe("stale");
+  expect(report.blockers).toContain("release authorization source changed during release readback; authorize the exact candidate version again");
+  expect(f.docsCalls()).toBe(0);
 });
