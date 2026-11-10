@@ -30,7 +30,7 @@ function tree(directory) {
 // Compare runtime assets and the public operating guides against npm's own pack list.
 const expected = new Set([
   'package.json', 'README.md', 'LICENSE', 'CHANGELOG.md', 'THIRD_PARTY_NOTICES.md', 'scripts/check-docs.mjs',
-  ...['src', 'templates', 'plugins', '.claude-plugin', 'docs', 'LICENSES'].flatMap(tree),
+  ...['src', 'templates', 'plugins', '.claude-plugin', 'docs'].flatMap(tree),
 ]);
 const npmOut = (...args) => execFileSync('npm', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
 // #1257: an npm whose `pack --json` shape differs is refused by name (the CI npm is pinned in check.yml), not with a TypeError.

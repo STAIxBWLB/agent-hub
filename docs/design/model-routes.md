@@ -900,7 +900,9 @@ This replacement removes the observer's dependency on the former stage helper.
 At the R1 boundary, generic decision evidence v1 and the remaining legacy route
 signal/judge code were unchanged. R2 supplies the owned signal/judge replacements;
 R3 removes the replaced modules. Generic decision evidence v1 stays unchanged,
-and the existing owned progress tests remain acceptance authority.
+and the existing owned progress tests remain acceptance authority. The existing
+progress observation type is exported as `NativeToolObservation`, including its
+optional native `turn`, for host callers; this adds no runtime or event field.
 
 ## Privacy, authority and events
 

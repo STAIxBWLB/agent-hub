@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { ProgressObserver, type ProgressDeps } from "../src/hub/progress.ts";
-import type { ToolObservation } from "../src/models/route/observation-signals.ts";
+import type { NativeToolObservation as ToolObservation } from "../src/hub/progress.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
 import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { Tasks } from "../src/hub/tasks.ts";
