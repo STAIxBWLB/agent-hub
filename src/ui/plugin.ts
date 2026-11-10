@@ -369,7 +369,6 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
   const offices = new Map<string, { instanceId: string | null; cursor: number; model: OfficeScene }>();
   const officeFlights = new Map<string, { instanceId: string | null; generation: number; promise: Promise<Record<string, unknown> | null> }>();
   let spaceFlight: { generation: number; promise: Promise<{ scene: ReturnType<typeof mergeSpaces>; cursor: number }> } | undefined;
-  let spaceCursor = 0, spaceFingerprint = "";
   /**
    * acon wants a snapshot within 5 s. The project listing asks every daemon for its status, so it gets its own budget and
    * falls back to the last listing; projects are then read concurrently, and one that has not answered is left out of this poll.
@@ -422,9 +421,10 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
     const scene = mergeSpaces(scenes);
     if (generation !== inboxGeneration) return { scene, cursor: 0 };
     const fingerprint = createHash("sha256").update(JSON.stringify([projects.map(p => [p.id, p.instanceId, p.root]), cursors, scene])).digest("hex");
-    if (fingerprint !== spaceFingerprint) { spaceFingerprint = fingerprint; spaceCursor++; }
+    // Thirteen hex digits fit exactly in a safe integer; provider reopen cannot alias a local counter's first value.
+    const cursor = Number.parseInt(fingerprint.slice(0, 13), 16) || 1;
     offices.clear(); for (const [id, entry] of next) offices.set(id, entry);
-    return { scene, cursor: spaceCursor };
+    return { scene, cursor };
   }
   async function space(after: number) {
     if (!spaceFlight || spaceFlight.generation !== inboxGeneration) {

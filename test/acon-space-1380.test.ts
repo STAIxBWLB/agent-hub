@@ -122,6 +122,15 @@ test("#1380: legacy full replies are screened even when their event cursor is un
   expect(changed.cursor).not.toBe(first.cursor);
 });
 
+test("#1380: a viewer's old cursor cannot hide a changed scene when the provider is reopened", async () => {
+  const first = await fleet().space();
+  const reopened = fleet(); reopened.states.get("a")!.title = "Changed after reopen";
+  const changed = await reopened.space(first.cursor);
+  expect(Number.isSafeInteger(changed.cursor)).toBe(true);
+  expect(changed.cursor).not.toBe(first.cursor);
+  expect(changed.scene!.cards.find(c => c.id === "a:1")!.title).toBe("#1 Changed after reopen");
+});
+
 test("#1380: concurrent viewers share one bounded Space computation", async () => {
   const f = fleet(); const held = gate(); for (const s of f.states.values()) s.hold = held;
   const pending = Array.from({ length: 10 }, () => f.space());
