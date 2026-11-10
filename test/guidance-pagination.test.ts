@@ -82,7 +82,8 @@ test("forty experiments page by content id with thirty-two rows plus one SQL sen
   expect(new Set([...first.records, ...second.records].map(record => record.id)).size).toBe(40);
   // These are actual fixture observations when the authorized test run happens,
   // not a synthetic latency budget or native/model-consumption acceptance.
-  console.info("guidance source fixture metrics", JSON.stringify({ variants: 40, experiments: 40, firstReplyBytes: Buffer.byteLength(JSON.stringify(first)), secondReplyBytes: Buffer.byteLength(JSON.stringify(second)), storedVariantBytes: inputs.reduce((sum, input) => sum + Buffer.byteLength(JSON.stringify(input)), 0), firstReadMs, secondReadMs }));
+  const canonicalVariantBytes = inputs.map(input => Buffer.byteLength(JSON.stringify(input)));
+  console.info("guidance source fixture metrics", JSON.stringify({ variants: 40, experiments: 40, firstReplyBytes: Buffer.byteLength(JSON.stringify(first)), secondReplyBytes: Buffer.byteLength(JSON.stringify(second)), storedVariantBytes: canonicalVariantBytes.reduce((sum, bytes) => sum + bytes, 0), minVariantBytes: Math.min(...canonicalVariantBytes), maxVariantBytes: Math.max(...canonicalVariantBytes), firstReadMs, secondReadMs }));
 });
 
 test("actual page and location queries use the task-id index, bounded LIMIT and keyset comparison", async () => {
