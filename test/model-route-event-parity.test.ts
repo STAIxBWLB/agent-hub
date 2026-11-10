@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { runCase, type RouteCase } from "../scripts/benchmarks/model-routing-corpus.ts";
+import { runCase, type RouteCase, type TurnResult } from "../scripts/benchmarks/model-routing-corpus.ts";
 import type { Routing } from "../src/hub/routing.ts";
 import type { RouteEvent } from "../src/models/route/runtime.ts";
 
@@ -257,7 +257,7 @@ test("normalized event parity for advisor/escalation and plan-execute fallback c
 
 function assertParity(off: Observation, shadow: Observation, expected: {
   executorEvents: number; judgeRows: number; executeCalls: number;
-  judgeMaxTokens: number; judgeCallsByTurn: number[]; tiers: string[]; outcomes: string[];
+  judgeMaxTokens: number; judgeCallsByTurn: number[]; tiers: TurnResult["tier"][]; outcomes: TurnResult["outcome"][];
 }): void {
   expect(off.choicePreparedCalls).toBe(0);
   expect(shadow.choicePreparedCalls).toBe(expected.judgeRows);

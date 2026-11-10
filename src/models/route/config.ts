@@ -99,7 +99,7 @@ function parseServiceConfig(id: string, r: Record<string, unknown>): Pick<HubRou
   if (r.decision_mode !== undefined && !["off", "shadow"].includes(String(r.decision_mode))) problem("decision_mode", 'use "off" or "shadow"');
   if (typeof r.policy_id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,49}$/.test(r.policy_id)) problem("policy_id", "name a configured adec policy with 1 to 50 lowercase identifier characters");
   const endpoint = r.adec_endpoint ?? "http://127.0.0.1:8740/v1/route";
-  if (!isAdecRouteEndpoint(endpoint)) problem("adec_endpoint", "use an HTTP numeric loopback /v1/route URL without credentials, query or fragment");
+  if (!isAdecRouteEndpoint(endpoint)) return problem("adec_endpoint", "use an HTTP numeric loopback /v1/route URL without credentials, query or fragment");
   if (r.decision_timeout_ms !== undefined && (!Number.isSafeInteger(r.decision_timeout_ms) || Number(r.decision_timeout_ms) < 1 || Number(r.decision_timeout_ms) > 30_000)) problem("decision_timeout_ms", "use 1 to 30000 milliseconds");
   return { decision_backend: "adec", decision_mode: (r.decision_mode ?? "off") as "off" | "shadow", adec_endpoint: endpoint };
 }
