@@ -44,11 +44,14 @@ export class DecisionPolicyChangedError extends Error {
 }
 interface State { fingerprint: string; failure?: { turn: string; result: AdecResult }; held?: { turn: string; trace: Partial<DecisionTrace>; privacy: Privacy } }
 const ended = () => new Error("model route turn ended before execution; retry in the current turn");
+const STAGE_PACKET_BYTES = 1024;
 /** R1's stage packet: numeric and categorical fields only, never a conversation fragment. */
 function stagePacket(context: Context, sensitive: boolean): string {
   const evidence = context.stageEvidence;
   if (!evidence) throw new Error("stage routing needs R1's stage evidence; inspect the route call before retrying");
-  return JSON.stringify(sensitive ? sensitiveStageEvidence(evidence) : evidence);
+  const packet = JSON.stringify(sensitive ? sensitiveStageEvidence(evidence) : evidence);
+  if (Buffer.byteLength(packet, "utf8") > STAGE_PACKET_BYTES) throw new Error("stage evidence exceeds the numeric packet bound");
+  return packet;
 }
 
 /** Optional decision work never changes the baseline on failure; valid pins/rules remain owned by adec. */

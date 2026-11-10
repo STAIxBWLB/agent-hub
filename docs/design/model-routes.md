@@ -159,6 +159,10 @@ implementation measurements or permission for an undocumented behavior change:
 - A stage packet has at most 1024 serialized UTF-8 bytes. Counts reflect inspected
   observations only. Malformed/over-cap input is incomplete or unavailable;
   neither a source fragment nor an arbitrary property enters the packet.
+  Before service HTTP, measure the serialized non-generic numeric packet with
+  `Buffer.byteLength`; overflow is unavailable and sends no request. This is a
+  whole-packet refusal, not truncation, and does not change generic decision
+  evidence v1 or its separate 8 KiB contract.
 
 The local input view is separate from provider transport. It captures supported
 roles, call/result association, explicit outcome flags and bounded local text for
