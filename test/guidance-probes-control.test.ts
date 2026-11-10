@@ -343,8 +343,9 @@ test("port settlement joins a fire-and-forget effect callback before session set
   expect(f.store.read(key)!.sessions[0]!.state).toBe("running");
   let lateCallback = false;
   const beforeLateCall = f.store.integrity();
-  await expect(portEffects.runEffect({ sequence: 1, unit: "model_calls", descriptorSha256: probeHash("effect-after-port-settlement"), reservedTokens: 20 }, async () => {
-    lateCallback = true; return fakeEffectValue("late-effect", "must not run", 1);
+  const lateRequest = { sequence: 1, unit: "model_calls" as const, descriptorSha256: probeHash("effect-after-port-settlement"), reservedTokens: 20 };
+  await expect(portEffects.runEffect(lateRequest, async () => {
+    lateCallback = true; return fakeEffectValue(lateRequest, "must not run", 1);
   })).rejects.toThrow();
   expect(lateCallback).toBe(false); expect(f.store.integrity()).toEqual(beforeLateCall);
   const stopping = f.tasks.stopGuidanceProbes().then(() => ({ stopped: true }), error => ({ error }));

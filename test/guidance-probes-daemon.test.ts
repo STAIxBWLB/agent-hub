@@ -63,7 +63,7 @@ test("daemon returns fixed probe refusals with every request rid, including prod
   value.manifest.role = { id: role.id, layer: "project", baselineSha256: role.hash };
   value.manifest.guidance.baselineSha256 = probeHash(taskRoleText(role));
   const registered = await person.request({ t: "guidance_probe_register", registration: value });
-  expect(registered.ok, registered.error).toBe(true);
+  expect(registered.ok === true, String(registered.error ?? "expected a registration receipt")).toBe(true);
   expect(Number.isSafeInteger(registered.rid)).toBe(true);
   await expectRefusal({ t: "guidance_probe_start", id: registered.receipt.id, revision: registered.receipt.revision },
     "guidance probe runner is unavailable in production T1");
