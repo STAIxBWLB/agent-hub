@@ -4759,12 +4759,67 @@ service-error fallback; inspect current task policy and retry. A returned propos
 execution path and its privacy/budget checks are unchanged. Source text, tool arguments, credentials
 and server error prose never enter route events.
 
-This delivery is the adec consumer slice of #554. The direct System One backend,
-enforcement application and optional stage classifier remain separate
-unimplemented legs; the manual offline triage evaluation is the by-hand script
+This delivery is the adec consumer slice of #554. The direct System One backend
+and enforcement application remain separate unimplemented legs; the optional
+stage classifier is the ambiguity-band subsection below; the manual offline
+triage evaluation is the by-hand script
 below. Offline fake-service tests establish protocol and shadow
 behavior; no routing gain, native service/model run or production rollout is
 claimed.
+
+#### Optional stage classifier band (#554)
+
+An optional `stage` route can ask the same loopback service one classification
+question, and only when its own deterministic score is ambiguous. It is opt-in
+and off by default:
+
+```toml
+[hub_routes."hub/stage"]
+type = "stage"
+classifier = "decision"
+decision_backend = "adec"
+decision_mode = "shadow"
+policy_id = "ahub.stage"
+adec_endpoint = "http://127.0.0.1:8740/v1/route"
+efficient = "fast"
+capable = "coding"
+ambiguous_band = 0.05
+```
+
+`classifier` has one value, `"decision"`, and both `efficient` and `capable` are
+then required: they are the two options the question offers. A `stage` route
+without `classifier` keeps the deterministic picker and sends nothing.
+`ambiguous_band` is accepted only together with `classifier`, defaults to `0.05`
+and must be a finite number from 0 to 0.5. The band is measured against the
+route's own threshold: `abs(score - confidence_threshold) <= ambiguous_band` is
+ambiguous, with the threshold defaulting to 0.5. The default therefore asks only
+for the indecisive middle: the owned repeated-execution reading 0.46 lies four
+hundredths from the 0.5 default, inside the band, while a single reported
+failure (0.3) and an exception or critical failure (0.7 and 1) lie two tenths or
+more outside. `ambiguous_band = 0` asks nothing; the maximum 0.5 covers the whole
+score range at the default threshold. A value outside its range fails at load
+rather than silently widening or narrowing the band.
+
+The two tiers are the whole question: candidates are `efficient` and `capable`
+with effort `none`, and the heuristic's own tier is sent as `current`. An answer
+is recorded in the route event as the decision fields (mode, chosen alias and
+effort, margin, latency, reason, screened decider) and changes no tier, model,
+effort or conversation: shadow keeps the exact heuristic routing. Abstain or
+`no_candidate`, a transport failure or timeout, `decision_mode = off` and an
+off-campus decider for a PII or private turn each keep the heuristic tier and
+record a closed reason in that event. `enforce` stays refused at load with the
+same message as a decision route. One question is asked per user turn, reused
+through the tool loop, and it dies with the turn: a turn that ends while the
+question is outstanding applies no answer and is not failed by it. The question
+carries R1's closed stage evidence (numeric signals, dimensions and scores),
+never the generic decision v1 conversation projection; a PII or private turn
+sends only the dimensions view. A held answer is reused only while the privacy
+and observer facts it was recorded with still hold: a changed reading drops it,
+and an unreadable one refuses the turn. A privacy or
+observer change detected across the request is different from a service failure:
+it refuses the stale turn, exactly as a decision route does, and the heuristic is
+not executed around that refusal. The PII
+screen, `assign()` and the escalation and advisor triggers never use this path.
 
 Migrate the retired settings as follows:
 

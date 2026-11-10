@@ -37,7 +37,7 @@ implementation equivalence or runtime behavior.
 
 | Question | Owner | R1 status |
 | --- | --- | --- |
-| Which eligible model and reasoning effort should serve a stage or plan/execute request? | adec's configured policy, candidate constraints, pins and decider | Preserve the existing optional consumer; future stage-specific questions use the new evidence contract |
+| Which eligible model and reasoning effort should serve a stage or plan/execute request? | adec's configured policy, candidate constraints, pins and decider | Existing optional consumer for `decision`; S2 asks the stage question only inside the ambiguity band (below); plan/execute choice stays future |
 | Which model/effort should serve an optional judge choice? | adec where separately configured, with an in-house fallback | R2 question design and wiring; no R1 judge request |
 | Whether to escalate, request an advisor review, or issue redo feedback | Hub route policy | Preserve the caller boundary; implementation replacement belongs to R2 |
 | Whether a task is PII and which peer receives it | PII screen and pure `assign()` | Outside model-choice routing; no adec delegation |
@@ -50,13 +50,15 @@ refusal naming the #554 follow-up. Shadow preserves the exact fallback model,
 effort and forwarded conversation. This is separate from `stay_switch`, whose
 existing off/shadow/enforce behavior remains supported. R1 adds no service-call
 path, classifier option, gateway effort application, service launch or credential
-reader. #554 S2 and judge/plan-execute choice questions require later reviewed
-wiring.
+reader. #554 S2 adds the opt-in stage classifier option and its ambiguity band
+below; judge/plan-execute choice questions require later reviewed wiring (R2).
 
 ## Route contracts and compatibility
 
 - `stage` produces stage evidence, a deterministic efficient/capable fallback and
-  the existing session-aware switch plan.
+  the existing session-aware switch plan. With `classifier = "decision"` it may
+  also ask adec, and only when its own score sits in the ambiguity band; the
+  answer is recorded and never replaces the fallback tier.
 - `decision` currently uses the same fallback while optionally recording an adec
   proposal through the existing #813 consumer. A failed request, abstention,
   `no_candidate`, invalid pair or unavailable service leaves that fallback.
@@ -71,8 +73,9 @@ wiring.
   existing diagnostics. Loading configuration never rewrites operator files.
 
 Keep the current configuration keys: route `type`, `efficient`, `capable`,
-`judge`, `confidence_threshold`, `hold_turns`, advisor/escalation settings and the
-existing adec endpoint/policy/candidate/timeout keys. Default stage configuration
+`judge`, `confidence_threshold`, `hold_turns`, advisor/escalation settings, the
+existing adec endpoint/policy/candidate/timeout keys and the S2 stage
+`classifier` / `ambiguous_band`. Default stage configuration
 remains efficient `fast`, capable `coding`, confidence threshold 0.5 and hold 2.
 Candidate aliases/efforts remain constrained by the existing route parser and
 response allowlist; R1 does not create a new policy alias. Doctor and
@@ -239,6 +242,7 @@ Pure API, with state explicit and no I/O:
 interface FallbackStagePolicy {
   confidenceThreshold?: number;
   holdTurns?: number;
+  ambiguousBand?: number;
 }
 interface FallbackStageState { recoveryHoldRemaining: number }
 interface FallbackStageResult {
@@ -254,11 +258,16 @@ selectFallbackStage(
   policy?: FallbackStagePolicy,
   state?: FallbackStageState,
 ): FallbackStageResult;
+ambiguousStage(
+  result: FallbackStageResult,
+  policy?: FallbackStagePolicy,
+): boolean;
 ```
 
 Omitted fallback policy fields use the existing confidence 0.5 and hold 2
 defaults; an omitted policy is the same convenience. This changes no serialized
-evidence field or configuration grammar.
+evidence field or configuration grammar. `ambiguousBand` belongs to the
+question trigger below, not to the tier picker.
 
 `StageInput` is a local-only bounded view, not a service DTO. Capture accepts the
 existing message-array and relay-body-with-messages forms; unsupported source
@@ -309,6 +318,41 @@ size. An incomplete inspection cannot masquerade as a smaller complete input.
 Its compatibility behavior and supported message/tool shapes must be pinned from
 owned caller expectations before replacement; no route gains permission to trim
 input or silently reduce output headroom.
+
+### Ambiguity band, the question trigger (S2)
+
+`ambiguousStage` answers one question: may this stage route ask the service at
+all? It is `abs(score - confidenceThreshold) <= band`, with
+`confidenceThreshold` defaulting to 0.5 and `AMBIGUOUS_BAND_DEFAULT` 0.05
+(`AMBIGUOUS_BAND_MAX` 0.5 for the `ambiguous_band` key). At the default
+threshold the owned repeated-execution reading 0.46 lies four hundredths inside
+the band, while a reported failure 0.3 and an exception or critical failure 0.7
+and 1 lie two tenths or more outside, so the default asks only for the
+indecisive middle. A band outside `[0, 0.5]` and a non-finite threshold or band
+are never ambiguous: an invalid value can only reduce asking, never invent one.
+`ambiguous_band = 0` asks nothing, and `0.5` covers the whole score range at the
+default threshold.
+
+Membership is the whole of the band's effect. It never changes the fallback
+tier, the fallback state or the source category, and the answer is recorded as
+the route event's decision fields while the heuristic's model, effort and
+forwarded conversation stand. The key is accepted only with
+`classifier = "decision"`, whose one value is `"decision"`; a `stage` route
+without it has no classifier and builds no service payload. The question offers
+exactly the route's two tiers, since a tier carries no effort: `efficient` and
+`capable` with effort `none`, the heuristic's own tier sent as `current`. One
+question is asked per user turn, reused through the tool loop and dropped at the
+turn's end.
+
+The question carries R1's own closed `stage-route-evidence` packet
+(`schemaVersion`, `kind`, `turn`, `incomplete`, `signals`, `dimensions`,
+`scores`), never the generic `routing-decision-evidence` v1 projection, whose
+quoted conversation fragments that contract does not allow; a PII or private
+turn carries the `sensitiveStageEvidence` view of `schemaVersion`, `kind` and
+`dimensions` only. The per-turn reuse keeps the privacy and observer facts an
+answer was computed under: a later call republishes the held answer only while
+those facts still hold, drops it when they change, and lets an unreadable
+authority read propagate as `DecisionPolicyChangedError`.
 
 ### Secondary API pins
 
@@ -474,6 +518,18 @@ classifier/default/decision categories (relay reorder sources remain owned by
 the relay). Add no text, arguments, prompt, credential, server error prose or new
 unbounded diagnostic field. Labels and telemetry remain optional and cannot
 change a route or turn through a sink failure.
+
+The S2 stage question uses those fields and adds none. `source` already carries
+the escalation judge's reclassification under `classifier`, so a stage answer
+never sets it: the fallback's own category stands and the answer rides the
+decision mode, alias, effort, margin, latency, reason and screened decider
+fields. Shadow records and changes no tier; abstain, `no_candidate`, a transport
+failure or timeout, `decision_mode = off` and an off-campus decider for a
+PII/private turn each keep the fallback tier and record a closed reason. An
+optional question cannot refuse a turn by itself: a service failure or an ended
+turn records nothing to apply. Changed or unavailable privacy or observer
+authority is not a service failure, so it keeps refusing the stale turn exactly
+as on a `decision` route, never as a model fallback around that refusal.
 
 ## Bounded public sizing characterization
 
