@@ -3,9 +3,9 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
-import { HUB, newEnvelope } from "../src/hub/envelope.ts";
+import { HUB, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Registry } from "../src/hub/registry.ts";
@@ -21,6 +21,10 @@ const contract = JSON.parse(readFileSync(join(ROOT, "docs/contracts/companion-cl
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 
+async function until(ready: () => boolean, label: string) {
+  for (let n = 0; n < 600 && !ready(); n++) await Bun.sleep(5);
+  expect(ready(), label).toBe(true);
+}
 const plain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const count = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
 function check(rule: Rule, value: unknown): boolean {
@@ -38,10 +42,19 @@ function check(rule: Rule, value: unknown): boolean {
     default: throw new Error(`unknown contract type ${rule.type}`);
   }
 }
-/** Every listed path that is present has its listed type; every "always" path is present. `<id>` and `[]` expand over the rows. */
+const hasPath = (doc: unknown, path: string): boolean => {
+  let node: unknown = doc;
+  for (const part of path.split(".")) { if (!plain(node) || !Object.hasOwn(node, part)) return false; node = node[part]; }
+  return true;
+};
+/** A presence of "with <path>" (up to a ";") is conditional: the path is required exactly when <path> is present. */
+const conditionOf = (rule: Rule): string | undefined => /^with ([A-Za-z0-9_.<>]+)/.exec(rule.presence)?.[1];
+/** Every listed path that is present has its listed type; every "always" path is present; a "with <path>" path is present whenever <path> is. `<id>` and `[]` expand over the rows. */
 function conform(rules: Record<string, Rule>, doc: unknown): string[] {
   const bad: string[] = [];
   for (const [path, rule] of Object.entries(rules)) {
+    const condition = conditionOf(rule);
+    if (condition !== undefined && !condition.includes("<") && hasPath(doc, condition) && !hasPath(doc, path)) bad.push(`${path}: missing while ${condition} is present`);
     let nodes: { at: string; value: unknown; present: boolean }[] = [{ at: "", value: doc, present: true }];
     for (const part of path.split(".")) {
       nodes = nodes.flatMap(n => {
@@ -68,7 +81,7 @@ async function fixture() {
   cleanups.push(() => { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
   mkdirSync(join(cwd, ".agenthub"));
   expect(hubGitSync(["init", "-q"], { cwd, encoding: "utf8", timeout: 1000 }).status).toBe(0);
-  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, research: { enabled: false }, pi: { auto_start: false } }));
+  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ batch_ms: 0, memory: { enabled: false }, research: { enabled: false }, pi: { auto_start: false } }));
   // A declared channel instance nobody attached: the detached peer row.
   writeFileSync(join(cwd, ".agenthub/config.local.json"), JSON.stringify({ instances: { "claude-2": { kind: "claude", roles: ["reviewer"] } } }));
   const registry = new Registry(join(home, "registry.db")), project = registry.register(cwd); cleanups.push(() => registry.close());
@@ -77,7 +90,20 @@ async function fixture() {
   class Busy extends BasePeer { async deliver() {} async start() { this.setState("busy"); } async stop() { this.setState("offline"); } }
   const busy = new Busy("local"); daemon.bus.add(busy); await busy.start();
   daemon.bus.publish(newEnvelope(HUB, "contract fixture", { to: ["local"], priority: "status" }));
+  // A delivery that failed without safe-failure evidence is held for review: the peer row gets a positive needsReview and the hub has something that needs the person (needs.first).
+  class Failing extends BasePeer { readonly acceptedSettlement = "explicit" as const; async start() { this.setState("idle"); } async stop() { this.setState("offline"); } async deliver(envs: Envelope[]) { this.setState("busy"); this.onFailed?.(envs); } }
+  const failing = new Failing("held"); daemon.bus.add(failing); await failing.start();
+  daemon.bus.publish(newEnvelope("user", "contract fixture held delivery", { to: ["held"] }));
   const person = await ControlClient.connect(project.stateDir, { role: "console" }); cleanups.push(() => person.close());
+  // A pull-only session (a channel-less hello) is the peer row with pullOnly: true; a manually paused peer is the row with paused: "manual" (the hub reports it only while that peer is offline).
+  const token = readFileSync(join(project.stateDir, "control-token"), "utf8").trim();
+  const socket = new WebSocket(`ws://127.0.0.1:${daemon.port}`); cleanups.push(() => socket.close());
+  const frames: { t?: string }[] = []; socket.onmessage = event => frames.push(JSON.parse(String(event.data)));
+  await new Promise<void>((resolve, reject) => { socket.onerror = () => reject(new Error("fixture websocket failed")); socket.onopen = () => { socket.send(JSON.stringify({ t: "hello", v: PROTOCOL, token, role: "peer", peer: "claude", channel: false, rid: 1 })); resolve(); }; });
+  await until(() => frames.some(row => row.t === "welcome"), "pull-only attach");
+  const gone = new Busy("paused-away"); daemon.bus.add(gone); await gone.start(); await gone.stop();
+  const paused = await person.request({ t: "pause", peer: "paused-away" }); expect(paused.ok, JSON.stringify(paused)).toBe(true);
+  await until(() => daemon.bus.queueSummary("held").needsReview === 1, "held delivery");
   return { home, project, person, stop };
 }
 
@@ -94,11 +120,20 @@ test("status reply and ahub status/projects --json carry every contract path wit
   const f = await fixture();
   const reply = (await f.person.request({ t: "status", specs: true })).status;
   expect(conform(contract.status, reply)).toEqual([]);
-  // The fixture exercises the presence rules the readers rely on: detached, attached, queued.
+  // The fixture exercises the presence rules the readers rely on: detached, attached, queued, and the optional fields both present and absent.
   expect(reply.peers["claude-2"].attached).toBe(false);
   expect(Object.hasOwn(reply.peers.local, "attached")).toBe(false);
   expect(reply.peers.local.queued).toBe(1);
   expect(Object.hasOwn(reply.peers.local, "needsReview")).toBe(false);
+  expect(Object.hasOwn(reply.peers.local, "pullOnly")).toBe(false);
+  expect(Object.hasOwn(reply.peers.local, "paused")).toBe(false);
+  expect(reply.peers.held.needsReview).toBeGreaterThan(0);
+  expect(reply.peers.claude.pullOnly).toBe(true);
+  expect(reply.peers["paused-away"].paused).toBe("manual");
+  // needs.first is present because something needs the person, and then it carries its kind and level (checked again by conform's conditional presence).
+  expect(plain(reply.needs.first)).toBe(true);
+  expect(reply.needs.first.peer).toBe("held");
+  expect(conform({ "needs.first.kind": contract.status["needs.first.kind"]!, "needs.first.level": contract.status["needs.first.level"]! }, { needs: { first: { kind: "delivery" } } })).toEqual([`needs.first.level: missing while needs.first is present`]);
 
   for (const args of [["status", "--json"], ["--project", f.project.root, "status", "--json"], ["--project", f.project.id, "status", "--json"]]) {
     const out = await cli(f.home, f.project.root, args);
@@ -129,7 +164,25 @@ test("src/cli/shell-quote.ts matches the contract's shellQuote vectors", () => {
   for (const v of contract.shellQuote) expect(shellQuote(v.in)).toBe(v.out);
 });
 
-// Moved from test/claude-code-companion-attention.test.ts: they test ahub's producer, not a companion.
+/** Execute the shipped closed producer with synthetic port facts, not a daemon/account. */
+function emittedPaused(record: unknown, manual = false, state = "idle") {
+  const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
+  const begin = source.indexOf("  const pausedNote = (id: PeerId) => {");
+  const end = source.indexOf("\n  };", begin) + "\n  };".length;
+  expect(begin).toBeGreaterThan(0); expect(end).toBeGreaterThan(begin);
+  const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(begin, end));
+  return new Function("budget", "manualPaused", "bus", `${compiled}; return pausedNote('claude');`)(
+    { record: () => record }, new Set(manual ? ["claude"] : []), { stateOf: () => state },
+  );
+}
+
+test("current pausedNote producer distinguishes budget, manual and unavailable fields", () => {
+  expect(emittedPaused({ reason: "PRIVATE_REASON", resetsAt: 10000 }).paused.startsWith("budget: ")).toBe(true);
+  expect(emittedPaused(undefined, true, "offline")).toEqual({ paused: "manual" });
+  expect(emittedPaused(undefined)).toEqual({});
+});
+
+// Moved from test/claude-code-companion-attention.test.ts when the Claude Code companion moved to STAIxBWLB/ahub-claude (#1387 T4): they test ahub's producer, not a companion.
 test("current needs producer exposes one unexpired approval first, not a permission inventory", () => {
   const value = needs({ approvals: [{ id: "perm-1", peer: "claude", expiresAt: 2000 }, { id: "perm-2", expiresAt: 3000 }], peers: { codex: { needsReview: 1 } } }, 1000);
   expect(value.items[0]).toEqual({ kind: "approval", level: "act", peer: "claude", id: "perm-1", until: 2000 });

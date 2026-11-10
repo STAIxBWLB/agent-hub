@@ -7061,125 +7061,17 @@ Upgrade the broker, then every room member to a codec-capable release, then reco
 connection; direct `ahub room status` failures expose only closed cause/action
 metadata. A healthy online link needs no broker repair advice.
 
-## Optional Orca companion contract (#1198 O0)
+## Optional Orca companion (moved, #1198)
 
-The [versioned O0 contract](../integrations/orca/host-contract-v1.md) and its
-[capability matrix](../integrations/orca/host-contract-v1.json) describe the
-installed Orca 1.4.252 declarations, pinned primary references and reusable
-fake-host/CLI fixtures. O0 installs no plugin and changes no ahub runtime.
-Worker and frame APIs differ: workspace inventory/navigation are worker-only;
-focused context lacks the exact workspace id, execution host and real root
-needed to select a project. Names and branches are never selection authority.
+The optional Orca companion moved to [STAIxBWLB/ahub-orca](https://github.com/STAIxBWLB/ahub-orca) (#1387). Its code, tests, receipts and verification records live there; nothing of it remains in this repository. It is an Orca plugin (`orca-plugin.json` at that repository's root, tagged `vX.Y.Z`), not an ahub dependency. It stays off here, and its native receipts are person-run and not run.
 
-Terminal focus remains unsupported until a plugin terminal id can be bound to a
-current same-host CLI handle. Workspace navigation and manual `ahub console` /
-`ahub ui` commands remain available independently of a companion. No remote
-loopback URL is opened locally. Native local, remote, Windows and mobile results
-are recorded separately; declarations and fake results do not qualify them.
-The three baseline journeys count procedure actions only, with observed native
-counts still unknown. O1 must record actual open/disable/standalone UI proof.
+## Herdr companion (moved, #1199)
 
-### Optional Orca companion: chooser and entry points (#1198 O1)
+The Herdr companion moved to [STAIxBWLB/ahub-herdr](https://github.com/STAIxBWLB/ahub-herdr) (#1387). Its code, tests, receipts and verification records live there; nothing of it remains in this repository. It is a mod folder the person copies into Herdr, not an ahub dependency. It stays off here, and its native receipts are person-run and not run.
 
-[`integrations/orca/`](../integrations/orca/README.md) holds the optional companion: a manifest, a
-trusted worker and a sidebar panel. It is not in the npm package, no ahub source refers to it, and ahub and
-Orca keep all their own functionality without it. It lists Orca's workspaces, you select one by its exact
-id (a name or branch never selects), and it opens an existing screen: `ahub ui` run as a short-lived child
-with the folder as its working directory only, or a terminal created in the workspace running `ahub console`
-or `acon ui`. A selection binds the id, host id, kind and the folder's real path on this Mac and is
-re-checked against a complete inventory before every effect; a duplicate, missing, truncated or changed
-identity, or a host not declared to be this Mac, refuses visibly and runs nothing. It never passes `--json`
-to `ahub ui`, never approves, assigns, completes, retries, stops or upgrades anything, and keeps no CLI
-output, one-time link or task text in plugin state or logs.
-
-Install is explicit and in an isolated Orca profile first (`orca plugin validate`, `orca plugin dev load`
-with the fingerprint Orca prints); remove it with `orca plugin disable` and `orca plugin dev unload`. The
-fake-host checks are `test/orca-companion-entry.test.ts` and `test/orca-companion-independence.test.ts`.
-A **Show status** button (O2) reads the selected project's public status on a click only: version, tasks by
-state, and peer state with queue length, copied from `ahub status --json` through a closed allowlist so no
-free-text field (task title, a peer's current line, a notice, a path) is read. Offline, unavailable version,
-partial, stale and unknown stay distinct states; there is no poller, no transcript read and no terminal read.
-There is **no terminal focus**: O0 found no proof that a plugin terminal id names an `orca terminal switch`
-handle, so the companion never calls it and never replaces a terminal.
-
-**Platforms (O3).** [`support-matrix.json`](../integrations/orca/support-matrix.json) records one verdict per
-combination and a test enforces that `supported` needs a receipt that no longer says NOT RUN. Today none is
-supported: macOS local is fixture-only, and remote, Windows, browser or mobile and Linux are unsupported, each
-with a person-run receipt template under `integrations/orca/receipts/`. A remote workspace is refused before
-anything runs and shows the existing remote console command to run on that host; a remote loopback link is never
-opened locally. On Windows every workspace is refused (`unsupported_platform`). Where a client has no external
-navigation no link is held. Mobile availability is not inferred from SSH reachability or from Orca's mobile
-pairing option.
-
-**The native open and disable receipt is a person-run leg that has not been run**
-([`native-receipt.md`](../integrations/orca/native-receipt.md)): the action counts in the companion's README
-are procedure counts, remote, Windows and mobile stay unqualified (O3), and there is no focus-existing-console
-action.
-
-### Orca terminal focus evidence recheck (#1198 O4)
-
-The [O4 host-contract evidence](../integrations/orca/host-contract-v1.md#terminal-focus-recheck-o4-2026-11-09)
-records installed Orca 1.4.254. Generated plugin types match the O0 hashes; neither those types nor the
-shipped host declarations expose terminal focus or equate plugin terminalId with a CLI handle. The
-read-only CLI inventory was complete for its local host scope and carried runtime, incarnation and
-workspace identity fields, but no plugin-id mapping. Those freshness fields alone do not prove a binding.
-
-Focus remains unsupported and runtime code is unchanged. Use the existing `ahub console` / `acon ui`
-command or select the terminal manually. No plugin was loaded into the everyday profile and no live
-terminal was switched, driven or replaced. The separate [O4 native receipt rows](../integrations/orca/native-receipt.md#terminal-focus-recheck-o4-person-run-leg)
-remain person-run **NOT RUN**; source checks, hosted CI and native acceptance are separate evidence.
-
-## Herdr companion host contract (#1199 H0)
-
-[`integrations/herdr/host-contract-v1.md`](../integrations/herdr/host-contract-v1.md) freezes what an optional Herdr mod may
-rely on, taken from the installed app's own declarations (Herdr 0.1.13, herdr-core 0.1.18, hashes recorded), and records
-what was not observed. It changes no ahub runtime and installs nothing. `exec` is bounded (30 s, 8 MiB) and used for
-reads only. The pane's machine and cwd are a navigation hint: the project root comes from `ahub projects --json` read on
-that same machine, and a remote cwd is never resolved on this Mac. Herdr has no install or disable command, so a mod is
-a folder the person adds and removes, and what removal does to a shown copy is for the H1 native receipt. Existing
-terminal focus is unbuilt until a Herdr terminal can be mapped to an ahub console. The three baseline journeys are
-procedure counts that have not been run in a native window.
-
-### Who owns a pull-only peer (#1310)
+## Who owns a pull-only peer (#1310)
 
 `ahub status` (and `--json`) names the current owner of an attached channel peer, beside its standby rows: `<peer> owner: pid <n>; attached <age>; native session <id>`. The pid is what the owner's plugin reported at hello (`pid unknown` when it reported none or an unusable one). `attached` is when the attach finished, not when the hello arrived. The native session reads `unverified` until the hub has verified one through the native-facts path (today agy), and an id that is not a short plain token is never shown. The owner line is absent while a newer session is still arriving, while the peer is offline, and after a detach, so a claimant is never shown as attached, and a takeover replaces the whole line at once. Use it to see who holds a queued peer before running `ahub peer takeover`. It is display only: it never decides delivery, takeover or permission, and `status.json` on disk does not carry it.
-
-### Herdr project and machine entry (#1199 H1)
-
-[`integrations/herdr/`](../integrations/herdr/README.md) is an optional mod: three files the person copies to
-`mods/ahub` in the Herdr app home, which Herdr reads live and which declares `place: none`, so no layout changes.
-It lists the focused space's machine and folder and that machine's registered projects, and opens nothing until a
-row is selected. Open console starts one new tab in the selected space running `ahub --project <id> console`, with the project root
-as the tab's folder. Before every effect it re-reads the space, the machine and the registrations and runs
-`ahub status --json` from the project folder, and refuses a changed, duplicate, offline or unready target. The local
-dashboard runs the existing `ahub ui` and keeps no link or ticket. A remote space gets the console tab or a copyable
-command, never a dashboard link. Remove it by deleting the folder. It starts, stops and upgrades nothing and is not an
-ahub dependency. `herdr-app check` accepts it in a scratch home; the native open and disable receipt is a person-run
-leg that has not been run.
-
-### Herdr status card and existing-console focus (#1199 H2)
-
-The Herdr entry also offers three read-only actions. **Status** reads `ahub --project <id> status --json` from the project folder on the
-selected machine, on a click only, and shows task counts, peer states and queue lengths and the hub version from a closed
-allowlist, so no task or note text reaches it. Missing CLI, timeout, an exit error, no hub running, oversized or
-unrecognized output, an old hub, a partial reading and a stale one are distinct states. **Focus console** and **Peek
-console** (this computer only) accept a terminal only after `hc get` shows it live and running `ahub console` for the
-selected project, exactly one match, rechecked right before a single `pane.focus` or `terminal.peek`, and a focus is
-believed only after Herdr's `focused()` shows it. They never start, replace, type into or close a terminal, and
-Herdr's own working, blocked, done and idle words are shown, never sent to ahub. A console started through a wrapper is
-not recognized and the person uses Open console. The native focus receipt is a person-run leg that has not been run.
-
-### Herdr platform support matrix (#1199 H3)
-
-[`integrations/herdr/support-matrix.json`](../integrations/herdr/support-matrix.json) records one verdict per combination and a
-test enforces that `supported` needs a receipt that no longer says NOT RUN. Today none is supported: macOS local is
-fixture-only, and remote, Windows, Linux and browser or mobile are unsupported, each with a person-run receipt template under
-`integrations/herdr/receipts/`. The remote console workflow is designed (read on that machine, new tab in that machine's space,
-no dashboard link, no remote focus) and exercised against the fixture only, because no remote machine is configured on the
-machine it was built on. On Windows every action refuses. Mobile is not inferred from SSH reachability or a machine being ready.
-[`baseline-comparison.md`](../integrations/herdr/baseline-comparison.md) lays the entry's journeys beside the H0 baseline as
-procedure counts: the entry costs one more action than the baseline when the pane is already in the right project, and its value
-is the verified machine and root, not a shorter path.
 
 ## Bounded visual attachments (#1058)
 
@@ -7288,26 +7180,6 @@ Upgrade every amem consumer sharing a memory home together, including native CLI
 
 Count-only `records capture`, `records forwarded`, `records brief` and `records recall` diagnostics report accepted/dropped rows or before/after UTF-8 bytes. Record text, anchors, native session IDs and credentials are absent from these diagnostics. An absent registry proof or an unavailable Record source preserves old note content; a privacy or policy change during a read withholds the stale block.
 
-## Claude Code companion contract (#1338 C0)
+## Claude Code companion (moved, #1338)
 
-The [versioned host contract](../integrations/claude-code/host-contract-v1.md) freezes the seven C0 questions and two counted baseline procedures. Claude Code 2.1.319 and a scratch agent-hub 0.35.0 were probed with isolated HOME and CLAUDE_CONFIG_DIR, outside Git, with no Claude credentials copied or model turns. The final probes used an explicit noncredential environment allowlist after the initial inherited environment was corrected (receipt records the distinction). Real settings.json hashes matched at the isolated native-probe boundary only. A later read-only pre-push audit differed (confirmed 2026-11-09T08:12:37Z, cause UNKNOWN); the contract and receipt retain both observations without attributing the change.
-
-Agent-marked direct CLI status, board and project reads succeeded; calling them from a live mod's `$.process` remains unproven. Channel delivery origins, gesture origins, panes/bands, statusLine coexistence and minimum mod version remain unproven. The status-line and channel-delivery surfaces are dropped pending proof; `ahub tail` is excluded (person-only refusal and free text). No surface is supported by C0, and every native surface receipt remains NOT RUN. No native UX improvement is claimed by passing fixture tests.
-
-C1 now provides a separate [fixture-only read-only mod](../integrations/claude-code/README.md) against declared 2.1.319 types: pane, `/hub`, `/hub refresh` and `/hub console` (prints only). Native installation and the terminal receipt remain person-run NOT RUN; no supported/minimum host version is claimed. The C0 capability verdicts remain unchanged. C1 read-set revision 2 uses one project-scoped `status --json` process for version, peers and task-state counts; it never requests board or global project JSON. Task/role lists are unavailable. Binding checks canonical root and pinned daemon projectId; registry existence/uniqueness remains unverified, as stated in the amended AC1 and host contract. Reviewer-measured old board/project payload sizes and the separate source-CLI refresh measurement are recorded there, without raw packets or native UI claims. The existing separate-terminal fallback is `ahub --project <quoted root> console` for attention, or `ahub --project <quoted root> status` for peer liveness. Both baseline procedures count two actions from a focused Claude session (open terminal, submit command), with selection or consent counted separately. Install/remove, a one-action attention journey, disable independence and on/off model-input equality require later native receipts. No channel plugin, runtime, real statusLine or statusline-tee was changed.
-
-### Claude Code companion C2 declared views (#1338)
-
-The optional [companion](../integrations/claude-code/README.md) adds a declared AbovePrompt attention band for fresh positive held-count, budget-record and first-active-permission facts, plus compact ToolUse views for four hub tools with the unchanged original behind a bounded session toggle. Missing fields are gaps in the pane, never waiting lines. Exact offline-owned-in_progress work cannot be inferred from current status WIP or offline-summary fields. The same single status read and canonical-root/pinned-projectId ceiling apply; no status line, channel row or additional CLI read is added.
-
-Actual registered fake-host chains compare model results, queued channel text and composed system sections with the mod on/off, while render/toggle views change; counterfactual mutations prove the comparator can detect all three kinds of drift. This is source evidence. The native needs_review band raised/cleared, row UX, action counts and disable proof remain person-run NOT RUN; support remains fixture_only.
-
-### Claude Code companion C3 manual qualification (#1338)
-
-The [manual-only placement procedure](../integrations/claude-code/README.md#manual-session-only-placement) uses a scratch folder and person-run session `--plugin-dir` opt-in in isolated HOME/config with a scratch hub. Copying files is not a registered CLI installation. Exit and restart without the flag to disable; discard only the owned scratch copy to remove. No persistent installation identifiers or second marketplace entry are qualified. The separate channel entry stays unchanged.
-
-The [matrix](../integrations/claude-code/support-matrix.json) keeps terminal/desktop fixture_only and VS Code/mobile unsupported for the full AbovePrompt journey, without claiming their pane/tool rows proven or impossible. Each surface has its own native receipt, all NOT RUN; no native supported version or minimum is claimed. The support test rejects missing, placeholder, version/head-mismatched or incomplete receipts. Source declarations, fake-host equality and isolated static validation are separate from native painting, disable independence and version-boundary evidence.
-
-For "what needs me?", the complete separate-console baseline is 2 procedure actions (open terminal, submit command). A fresh known-subset band can be noticed with 0 further actions or requested by 1 submitted refresh; complete console follow-up is still 2. Target selection/consent is additional. No observed action count or UX reduction is claimed until the person records it in the matching surface receipt.
-
-C3's guarded static CLI leg is UNVERIFIED/person-run: version-only diagnostic child exit -6 / signal 6, zero stdout/stderr bytes, with unchanged file fences and no owned group remaining. Cause is UNKNOWN; `plugin validate` was NOT RUN and probing stopped without relaxing isolation. The path label 2.1.321 is metadata only, separate from the immutable 2.1.319 declarations and historical validation. No native support or minimum follows.
+The Claude Code companion moved to [STAIxBWLB/ahub-claude](https://github.com/STAIxBWLB/ahub-claude) (#1387). Its code, tests, receipts and verification records live there; nothing of it remains in this repository. It is separate from the channel plugin `plugins/agent-hub` that ahub ships. It stays `fixture_only` with manual session-only placement, and its native receipts are person-run and not run.
