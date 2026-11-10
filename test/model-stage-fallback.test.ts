@@ -65,3 +65,61 @@ test("historical pass cannot reset a later compaction recovery hold", () => {
   expect(planStageSwitch(policy, "capable", completedResidual, "user", fits).tier).toBe("efficient");
   expect(planStageSwitch(policy, "capable", held, "user", fits).tier).toBe("capable");
 });
+
+test("a clean current step consumes hold without rearming retained failure groups", () => {
+  const failed = packet(["ModuleNotFoundError: own_fixture", "ModuleNotFoundError: own_fixture"]);
+  const withHold = selectFallbackStage(failed, { holdTurns: 2 });
+  const withoutHold = selectFallbackStage(failed, { holdTurns: 0 });
+  const clean = packet(["ModuleNotFoundError: own_fixture", "ModuleNotFoundError: own_fixture", "fixture saved"]);
+  expect(clean.signals).toMatchObject({ failures: 2, repeatedFailures: 2, fault: "exception" });
+  expect(selectFallbackStage(clean, { holdTurns: 2 }, withHold.state)).toMatchObject({ tier: "capable", source: "hold", state: { recoveryHoldRemaining: 1 } });
+  expect(selectFallbackStage(clean, { holdTurns: 0 }, withoutHold.state)).toMatchObject({ tier: "efficient", source: "default" });
+  const passed = packet(["ModuleNotFoundError: own_fixture", "ModuleNotFoundError: own_fixture", "17 tests passed"]);
+  expect(passed.signals.failures).toBe(2);
+  expect(selectFallbackStage(passed, { holdTurns: 2 }, withHold.state)).toMatchObject({ tier: "efficient", state: { recoveryHoldRemaining: 0 } });
+});
+
+test("historical passes on user and assistant boundaries never release a new compaction hold", () => {
+  const history = [{ role: "tool", content: "23 tests passed" }, { role: "user", content: "Continue after the conversation summary compaction." }];
+  const recovery = selectFallbackStage(buildStageEvidence(captureStageInput(history)!), { holdTurns: 4 });
+  for (const boundary of [{ role: "user", content: "Take the next synthetic step." }, { role: "assistant", content: "A synthetic assistant boundary." }]) {
+    const input = captureStageInput([...history, boundary])!;
+    const current = buildStageEvidence(input);
+    expect(current.signals.tests).toBe("pass");
+    expect(current.turn).not.toBe("tool_result");
+    expect(selectFallbackStage(current, { holdTurns: 4 }, recovery.state)).toMatchObject({ tier: "capable", source: "hold", state: { recoveryHoldRemaining: 3 } });
+  }
+});
+
+test("retained critical evidence does not rearm after a clean result, but a current critical failure still overrides", () => {
+  const critical = packet(["MemoryError: synthetic allocation failed"]);
+  const recovery = selectFallbackStage(critical);
+  const clean = packet(["MemoryError: synthetic allocation failed", "fixture ready"]);
+  expect(clean.signals.fault).toBe("critical");
+  expect(selectFallbackStage(clean, {}, recovery.state).source).toBe("hold");
+  expect(selectFallbackStage(critical).source).toBe("override");
+});
+
+test("the owned no-progress confidence distinguishes existing threshold choices", () => {
+  const history = [{ role: "user", content: "Inspect a new synthetic execution sequence." }, ...Array.from({ length: 8 }, (_, index) => [
+    { role: "assistant", tool_calls: [{ id: `own-threshold-${index}`, function: { name: "bash" } }] },
+    { role: "tool", tool_call_id: `own-threshold-${index}`, content: "fixture execution completed" },
+  ]).flat()];
+  const current = buildStageEvidence(captureStageInput(history)!);
+  expect(current.scores.capable).toBe(0.46);
+  expect(selectFallbackStage(current, { confidenceThreshold: 0.5 }).tier).toBe("efficient");
+  expect(selectFallbackStage(current, { confidenceThreshold: 0.3 })).toMatchObject({ tier: "capable", source: "dimensions" });
+});
+
+test("an unsupported latest tail cannot turn a historical pass into a new hold checkpoint", () => {
+  const history = [{ role: "tool", content: "29 tests passed" }, { role: "user", content: "Resume after the context summary compaction." }];
+  const recovery = selectFallbackStage(buildStageEvidence(captureStageInput(history)!), { holdTurns: 4 });
+  for (const tail of [null, {}, { role: "unsupported", content: "synthetic boundary" }]) {
+    const input = captureStageInput([...history, tail])!;
+    const current = buildStageEvidence(input);
+    expect(current.turn).toBe("other");
+    expect(current.incomplete).toBe(true);
+    expect(current.signals.tests).toBe("pass");
+    expect(selectFallbackStage(current, { holdTurns: 4 }, recovery.state)).toMatchObject({ tier: "capable", source: "hold", state: { recoveryHoldRemaining: 3 } });
+  }
+});

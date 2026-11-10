@@ -1,6 +1,6 @@
 /** Local bounded observation, deliberately separate from the whole forwarded wire. */
 export type StageTurn = "user" | "tool_result" | "compaction" | "other";
-export interface StageResultInput { text: string; error: boolean; family: "read" | "mutation" | "other"; associated: boolean }
+export interface StageResultInput { text: string; error: boolean; family: "read" | "mutation" | "execution" | "other"; associated: boolean; assistantTurn?: number }
 export interface StageInput { turn: StageTurn; incomplete: boolean; assistantTurns: number; results: StageResultInput[] }
 const MESSAGE_LIMIT = 64, RESULT_LIMIT = 16, CALL_LIMIT = 32, PART_LIMIT = 32;
 const TEXT_BYTES = 64 * 1024, ID_BYTES = 128, NAME_BYTES = 64;
@@ -15,6 +15,7 @@ function boundedString(value: unknown, bytes: number): string | undefined {
 }
 function family(name: string | undefined): StageResultInput["family"] {
   if (!name) return "other";
+  if (/^(bash|exec_command)$/i.test(name)) return "execution";
   if (/^(read|read_file|readfile|glob|grep|search|list|ls|lookup)(_|$)/i.test(name)) return "read";
   if (/^(write|write_file|edit|apply_patch|patch|delete|create|replace)(_|$)/i.test(name)) return "mutation";
   return "other";
@@ -42,12 +43,17 @@ export function captureStageInput(source: unknown): StageInput | undefined {
     };
     const calls = new Map<string, { name?: string; index: number } | null>();
     const observations: { id?: string; text: string; error: boolean; index: number }[] = [];
-    let turn: StageTurn = "other", assistantTurns = 0;
+    let turn: StageTurn = "other", assistantTurns = 0, turnCaptured = false;
     for (let index = messages.length - 1; index >= Math.max(0, messages.length - MESSAGE_LIMIT); index--) {
       const message = field(messages, String(index)), role = field(message, "role");
       if (role === "system" || role === "developer") continue;
-      if (role !== "user" && role !== "assistant" && role !== "tool") { incomplete = true; continue; }
-      if (turn === "other") {
+      if (role !== "user" && role !== "assistant" && role !== "tool") {
+        incomplete = true;
+        if (!turnCaptured) { turnCaptured = true; turn = "other"; }
+        continue;
+      }
+      if (!turnCaptured) {
+        turnCaptured = true;
         turn = role === "tool" ? "tool_result" : role === "user" ? "user" : "other";
         if (role === "user") {
           const latest = text(field(message, "content"));
@@ -80,7 +86,7 @@ export function captureStageInput(source: unknown): StageInput | undefined {
     const results = observations.reverse().map(result => {
       const call = result.id && !duplicates.has(result.id) ? calls.get(result.id) : undefined;
       const associated = !!call && call.index < result.index;
-      return { text: result.text, error: result.error, family: associated ? family(call!.name) : "other" as const, associated };
+      return { text: result.text, error: result.error, family: associated ? family(call!.name) : "other" as const, associated, ...(associated ? { assistantTurn: call!.index } : {}) };
     });
     return { turn, incomplete, assistantTurns, results };
   } catch { return undefined; }

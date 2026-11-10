@@ -58,3 +58,62 @@ test("negated and embedded uncounted success cannot clear failed test history", 
     expect(retained.signals.tests).not.toBe("pass");
   }
 });
+
+test("retained diagnostics stay visible while clean current activity has no failure risk", () => {
+  const clean = evidence(["synthetic transfer failed", "synthetic transfer failed", "fixture ready"]);
+  expect(clean.signals).toMatchObject({ failures: 2, repeatedFailures: 2, fault: "reported" });
+  expect(clean.dimensions.severity).toBe(0);
+  expect(clean.dimensions.spinning).toBe(0);
+  expect(clean.scores.capable).toBe(0);
+  const active = evidence(["synthetic transfer failed", "synthetic transfer failed", "different synthetic operation failed"]);
+  expect(active.signals.repeatedFailures).toBe(2);
+  expect(active.dimensions.severity).toBe(0.3);
+  expect(active.dimensions.spinning).toBeCloseTo(2 / 3);
+});
+
+function ownExecutionRounds(count: number): unknown[] {
+  return [{ role: "user", content: "Work through the synthetic execution fixtures." }, ...Array.from({ length: count }, (_, index) => [
+    { role: "assistant", tool_calls: [{ id: `own-round-${index}`, function: { name: "exec_command" } }] },
+    { role: "tool", tool_call_id: `own-round-${index}`, content: `completed fixture ${index}` },
+  ]).flat()];
+}
+
+test("eight distinct successful execution frames retain the owned ambiguous confidence", () => {
+  const seven = buildStageEvidence(captureStageInput(ownExecutionRounds(7))!);
+  const eight = buildStageEvidence(captureStageInput(ownExecutionRounds(8))!);
+  expect(seven.dimensions.spinning).toBe(0);
+  expect(eight.signals.assistantTurns).toBe(8);
+  expect(eight.dimensions.spinning).toBe(0.46);
+  expect(eight.scores.capable).toBe(0.46);
+  expect(Object.keys(eight.signals)).toEqual(["results", "failures", "repeatedFailures", "reads", "mutations", "assistantTurns", "tests", "fault"]);
+});
+
+test("parallel results plus unrelated old assistants cannot manufacture eight execution turns", () => {
+  const calls = Array.from({ length: 8 }, (_, index) => ({ id: `own-parallel-${index}`, function: { name: "exec_command" } }));
+  const input = captureStageInput([
+    { role: "user", content: "Inspect a synthetic parallel batch." },
+    ...Array.from({ length: 7 }, () => ({ role: "assistant", content: "Older fixture frame." })),
+    { role: "assistant", tool_calls: calls },
+    ...calls.map(call => ({ role: "tool", tool_call_id: call.id, content: "completed parallel fixture" })),
+  ])!;
+  expect(input.assistantTurns).toBe(8);
+  expect(new Set(input.results.map(row => row.assistantTurn)).size).toBe(1);
+  expect(buildStageEvidence(input).dimensions.spinning).toBe(0);
+});
+
+test("a genuine pass, failure, read, mutation or unknown family breaks the execution streak", () => {
+  const boundaries = [
+    { name: "exec_command", text: "11 tests passed", error: false },
+    { name: "exec_command", text: "synthetic execution failed", error: true },
+    { name: "read_file", text: "fixture contents", error: false },
+    { name: "write_file", text: "fixture saved", error: false },
+    { name: "unknown_operation", text: "fixture ready", error: false },
+  ];
+  for (const boundary of boundaries) {
+    const history = [...ownExecutionRounds(7),
+      { role: "assistant", tool_calls: [{ id: "own-boundary", function: { name: boundary.name } }] },
+      { role: "tool", tool_call_id: "own-boundary", content: boundary.text, is_error: boundary.error },
+    ];
+    expect(buildStageEvidence(captureStageInput(history)!).dimensions.spinning).toBe(0);
+  }
+});

@@ -6,22 +6,32 @@ status: draft
 parent: agent-hub-architecture
 paths:
   - src/models/route/**
+  - src/models/relay.ts
   - src/hub/progress.ts
+  - test/model-stage-input.test.ts
+  - test/model-stage-diagnostics.test.ts
+  - test/model-stage-evidence.test.ts
+  - test/model-stage-fallback.test.ts
+  - test/fixtures/model-stage-sizing-v1.json
+  - test/progress.test.ts
 ---
 
 # Hub Model Routes
 
-This draft defines agent-hub's replacement route design for issue #1352. Its
+This document defines agent-hub's replacement route design for issue #1352. Its
 inputs are the project's configuration, operational contracts and nonported
-consumers. It is an own-design rewrite, not a legal clean-room claim. R1 covers
+consumers. It is a newly authored rewrite. R1 covers
 stage evidence and deterministic fallback; R2 owns the remaining route decisions
 and judge/prompt replacement; R3 owns notice and remnant cleanup.
 
-**Review gate:** conductor review `8557f0` accepts the ownership split, packet
-bounds and numerical proposal in this draft. Implementation follows this reviewed contract. Commits, installation, builds and checks still wait for full source/test/spec review.
-The sizing characterization and conservative arithmetic below are approved;
-the task path plan was expanded before new unit/consumer/test edits. The four fresh units and approved consumer wiring implement this contract. Accepted design choices
-are not measurements of implementation equivalence or runtime behavior.
+**Review basis:** the recorded R1 contract review for issue #1352 accepted the
+ownership split, packet bounds and numerical contract. The sizing
+characterization and conservative arithmetic were approved, and the task path
+plan was expanded before new unit/consumer/test edits. Source, test and spec
+review preceded commits and remote checks. The four fresh units and approved
+consumer wiring implement this contract; validation conclusions remain bound
+to their exact-head receipts. Accepted design choices are not measurements of
+implementation equivalence or runtime behavior.
 
 ## Decision ownership
 
@@ -95,7 +105,7 @@ boolean and categorical data. It contains no source fragments, transcript,
 command, tool argument, path, tool name, diagnostic text or service error prose.
 It is not sent through the generic decision route by this delivery.
 
-Proposed closed schema:
+Closed schema:
 
 ```ts
 type StageTier = "efficient" | "capable";
@@ -152,13 +162,21 @@ roles, call/result association, explicit outcome flags and bounded local text fo
 classification; it never mutates, trims, summarizes or replaces the forwarded
 conversation. Tool arguments are opaque to the stage packet. Local-only
 compatibility data needed by remaining R2 consumers is not part of this schema.
+Local-only families include recognized reads, mutations, executions and unknown
+actions. Execution recognizes only bounded names `bash` and `exec_command`; it
+never inspects arguments. An associated result may carry its local assistant
+frame index to count distinct assistant turns. Neither that index nor the
+execution family adds a serialized StageEvidence field. The latest non-instruction
+message fixes the current boundary: an assistant-only or invalid tail is `other`,
+not an earlier tool result or user compaction. An invalid tail also marks input
+incomplete; system/developer entries retain their instruction-skip semantics.
 A diagnostic fingerprint may be used transiently to detect repetition; neither
 its source text nor an unbounded fingerprint list is emitted. A later public
 projection uses the closed packet above. A sensitive projection contains only
 `schemaVersion`, `kind` and the four dimensions, with no turn category, counts,
 scores or incomplete-history information; R1 creates no transport for either.
 
-Accepted classification proposal, to be validated against owned consumers:
+Reviewed classification contract:
 
 - Count observations within the fixed recent-result window. Unknown tool
   families remain unknown; source words are evidence, not authority.
@@ -174,9 +192,10 @@ Accepted classification proposal, to be validated against owned consumers:
   observations. `repeatedFailures` is the largest matching group among retained
   failures, including both observations, not every line of one diagnostic as a new
   attempt. An unrelated success or a different failure does not erase that group;
-  a passing test clears only retained test-category failures. Spinning divides
-  that largest group by the retained failure count when the group has at least
-  two observations. A zero-failure pass summary stays successful unless an
+  a passing test clears only retained test-category failures. Retained groups
+  and `signals.fault` describe the inspected window, not a new failure on every
+  assessment. Failure-group spinning divides that largest group by the retained
+  failure count only while a failure is current at a tool-result boundary. A zero-failure pass summary stays successful unless an
   explicit error outcome or a separate diagnostic establishes failure. Counted
   zero-failure forms such as `0 tests failed` are excluded before fault detection.
   An explicitly empty run (`0 passed, 0 failed`) is unknown test evidence, never
@@ -186,27 +205,37 @@ Accepted classification proposal, to be validated against owned consumers:
   surrounding horizontal whitespace and an optional final `.` or `!`. Substring
   matches, negated statements and additional prose do not establish an
   unqualified pass. This is a closed lexical grammar, not a language inference.
-- Severity maps `none/reported/exception/critical` to `0/0.3/0.7/1`;
-  spinning is the bounded repeated-failure proportion. Exploring and production
-  intensity are the inspected read/mutation proportions. Empty denominators
-  yield zero, not NaN.
-- The proposed fallback risk score is `max(severity, spinning)`; capable score is
+- Active severity maps the latest completed diagnostic to `0/0.3/0.7/1` at a
+  current tool-result boundary; user, compaction and other boundaries have no
+  newly completed failure. `signals.fault` remains the retained-window maximum.
+  Exploring and production intensity remain inspected read/mutation proportions;
+  empty denominators yield zero, not NaN.
+- A consecutive streak of eight successful executions across at least eight
+  distinct associated assistant turns, without a read or mutation, contributes
+  ambiguous spinning 0.46 at a tool-result boundary. A genuine pass, failure,
+  read, mutation or unknown family breaks the streak. The local assistant-frame
+  count prevents one batched call from manufacturing eight turns. The calibration
+  values 0.46 and eight come from the owned benchmark note and corpus, not the
+  former implementation: owned #637 corpus rule
+  `stage-spinning-below-threshold-stays-efficient` and the
+  [model-routing promotion note](../agent-notes/benchmarks.md#model-routing-promotion-rule-637-part-2).
+- The fallback risk score is `max(severity, spinning)`; capable score is
   that value and efficient score is its complement. Read/mutation dimensions are
   retained as evidence for future adec questions, not a second hidden tier picker.
 
-Review accepts the bound and score proposal above. If retaining an owned
+Review accepted the bound and score contract above. If retaining an owned
 integration expectation requires a different rule, the contract records that
 choice before code/tests are authored; no undocumented recalibration is accepted
 as an implementation detail.
 
 ## Deterministic fallback and session switching
 
-Proposed API, with state explicit and no I/O:
+Pure API, with state explicit and no I/O:
 
 ```ts
 interface FallbackStagePolicy {
-  confidenceThreshold: number;
-  holdTurns: number;
+  confidenceThreshold?: number;
+  holdTurns?: number;
 }
 interface FallbackStageState { recoveryHoldRemaining: number }
 interface FallbackStageResult {
@@ -219,10 +248,14 @@ captureStageInput(source: unknown): StageInput | undefined;
 buildStageEvidence(input: StageInput): StageEvidence;
 selectFallbackStage(
   evidence: StageEvidence,
-  policy: FallbackStagePolicy,
+  policy?: FallbackStagePolicy,
   state?: FallbackStageState,
 ): FallbackStageResult;
 ```
+
+Omitted fallback policy fields use the existing confidence 0.5 and hold 2
+defaults; an omitted policy is the same convenience. This changes no serialized
+evidence field or configuration grammar.
 
 `StageInput` is a local-only bounded view, not a service DTO. Capture accepts the
 existing message-array and relay-body-with-messages forms; unsupported source
@@ -231,20 +264,23 @@ shapes return unavailable without mutating them. The `confidence_threshold` and
 starts with zero residual recovery hold. The source category is translated only to the
 existing route-event categories above. Secondary exports for token estimation
 and stay/switch planning retain the argument/return boundary exercised by their
-nonported consumers, with newly authored internals; their exact compatibility
-facade is pinned in the plan after this contract review.
+nonported consumers, with newly authored internals; their compatibility
+facade and wiring were pinned in the plan after contract review.
 
 The result carries the tier, finite scalar score, a closed reason/source and a new
 state. The builder/selector call no model, service, clock, process, file or global
 session store. A caller retains state per route/session/configuration; another
 session cannot inherit a hold, and a configuration change resets that state.
 
-Fallback priority is explicit compaction/critical/repeated-failure recovery,
-then residual configured recovery hold, then a score above
-`confidence_threshold`, then an efficient default. Equality/insufficient evidence
-uses the declared default; there is no classifier call inside the selector.
-Invalid input cannot invent a model alias or defeat the host's ordinary fixed
-fallback.
+Fallback priority is explicit compaction, a current critical failure or an
+active retained repeated-failure group, then residual configured recovery hold,
+then a score above `confidence_threshold`, then an efficient default. A clean
+step consumes residual hold rather than rearming an old group. Only a genuine
+pass at the current tool-result boundary releases residual hold; retained
+unrelated diagnostics remain, and a historical pass on a user, compaction or
+other boundary never releases it. Equality/insufficient evidence uses the
+declared default; no classifier runs inside the selector. Invalid input cannot
+invent an alias or defeat the host's ordinary fixed fallback.
 
 The effective enforced hold has a user-turn boundary floor: recovery remains
 pinned through the tool loop until the next user boundary, and `hold_turns` can
@@ -289,7 +325,7 @@ interface StaySwitchPolicy {
 type StageSwitchReason = "new_pin" | "compaction" | "context_fit" |
   "same_tier" | "override" | "tool_loop" | "prefill_bound" | "user_turn";
 interface StageSwitchTrace {
-  turnType: "tool_result" | "user" | "compaction";
+  turnType?: Exclude<StageTurn, "other">;
   prefillTokens?: number;
   staySwitch?: "shadow" | "enforce";
   plan?: "stay" | "switch";
@@ -307,7 +343,7 @@ planStageSwitch(
   policy: StaySwitchPolicy | undefined,
   pin: StageTier | undefined,
   fallback: FallbackStageResult,
-  turn: "tool_result" | "user" | "compaction",
+  turn: StageTurn,
   admission: { inputTokens?: number; fits(tier: StageTier): boolean },
 ): StageSwitchResult;
 ```
@@ -446,8 +482,8 @@ values. Integer/round-up requirements apply to the new estimator; a valid older
 fraction is not discarded to make that requirement appear already satisfied.
 The former implementation body, function text,
 upstream vectors and error stacks are not inspected. This is public-API
-observation for compatibility, not a legal clean-room claim or permission to
-reconstruct expression from source.
+observation for compatibility; it does not authorize reconstructing expressions
+from source.
 
 The reviewed preparation is under workspace-relative
 `scratchpad/temp/task855/sizing-v1`. Root approved its corrected fixed command
@@ -457,7 +493,7 @@ tree/module blob. The new private driver, fixture and command have their own
 hashes; the untracked contract document and private probe are not labelled as
 verified code from that commit. No dependency installation is included.
 
-The prepared proposal contains 24 fixtures (78803 JSON bytes, under a 128 KiB
+The characterization used 24 fixtures (78803 JSON bytes, under a 128 KiB
 bound), with an 8-second worker wall bound, 3-second CPU bound and 16 KiB closed
 scalar-output bound. A private HOME/cache/cwd, empty npm configuration, no-auto-
 install flag, kernel no-network/credential restrictions and transport/process/
@@ -484,17 +520,17 @@ invocation requires fresh complete resource/thermal/ownership admission.
 
 The new estimator must be at least each observed scalar on every authored
 fixture and exactly satisfy values pinned by owned tests. Unsupported/unpinned shapes round up or conservatively overestimate;
-overflow remains unavailable. The arithmetic is then written in our own words
+overflow remains unavailable. The arithmetic was written in our own words
 before production implementation. The authored inputs and expected scalars are
 committed as our fixture at `test/fixtures/model-stage-sizing-v1.json`. The PR
 records that the former function was observed only through its public API.
 No second characterization, model request or quiet/no-op follow-up is implied.
 
-## Proposed implementation and consumer map
+## Implementation and consumer map
 
-Fresh stage-only units, subject to the task plan update before edits:
+Fresh stage-only units were added under the reviewed task plan:
 
-| Proposed unit | Responsibility |
+| Unit | Responsibility |
 | --- | --- |
 | `src/models/route/stage-input.ts` | Bounded local input capture, turn kind and token-estimate compatibility |
 | `src/models/route/stage-diagnostics.ts` | Own diagnostic classification and transient repetition keys |
@@ -523,8 +559,8 @@ required by unchanged consumers. A replaced stage-function file with no remainin
 consumer is removed without reading its removed body. The PR lists retained
 R2/R3 source-port files; R1 does not remove licenses/notices or upstream tooling.
 
-Before production edits, pin the precise new exports, any compatibility facade
-and every consumer wiring path in the board plan. The proposed unit tests are
+The precise new exports, compatibility facade and consumer wiring paths were
+pinned in the board plan before production edits. The own unit tests are
 `test/model-stage-input.test.ts`, `test/model-stage-diagnostics.test.ts`,
 `test/model-stage-evidence.test.ts` and `test/model-stage-fallback.test.ts`, with
 independently authored cases from this contract. Existing relay/local-worker/decision/doctor tests remain authority;

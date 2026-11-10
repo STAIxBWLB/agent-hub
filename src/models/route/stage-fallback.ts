@@ -8,8 +8,10 @@ export function selectFallbackStage(evidence: StageEvidence, policy: FallbackSta
   const threshold = policy.confidenceThreshold ?? 0.5, hold = policy.holdTurns ?? 2;
   if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1 || !Number.isSafeInteger(hold) || hold < 0 || hold > 200_000) throw new Error("invalid stage fallback policy");
   const score = evidence.scores.capable;
-  const recovery = evidence.turn === "compaction" || evidence.signals.fault === "critical" || evidence.signals.repeatedFailures >= 2;
-  const remaining = evidence.signals.tests === "pass" && evidence.signals.failures === 0 ? 0 : prior?.recoveryHoldRemaining ?? 0;
+  const currentFailure = evidence.turn === "tool_result" && evidence.dimensions.severity > 0;
+  const recovery = evidence.turn === "compaction" || currentFailure && (evidence.dimensions.severity === 1 || evidence.signals.repeatedFailures >= 2);
+  const cleanPass = evidence.turn === "tool_result" && evidence.signals.tests === "pass" && evidence.dimensions.severity === 0;
+  const remaining = cleanPass ? 0 : prior?.recoveryHoldRemaining ?? 0;
   if (recovery) return { tier: "capable", source: "override", score, state: { recoveryHoldRemaining: hold } };
   if (remaining > 0) return { tier: "capable", source: "hold", score, state: { recoveryHoldRemaining: remaining - 1 } };
   return { tier: score > threshold ? "capable" : "efficient", source: score > threshold ? "dimensions" : "default", score, state: { recoveryHoldRemaining: 0 } };

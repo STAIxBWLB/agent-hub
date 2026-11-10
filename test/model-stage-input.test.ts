@@ -67,3 +67,36 @@ describe("bounded stage input, separate from wire sizing", () => {
     expect(JSON.stringify(input)).not.toContain("ordinary request");
   });
 });
+
+test("execution classification uses exact bounded names and local associated assistant frames only", () => {
+  let argumentReads = 0;
+  const fn = Object.defineProperty({ name: "exec_command" }, "arguments", { get() { argumentReads++; throw new Error("opaque execution arguments"); } });
+  const input = captureStageInput([
+    { role: "user", content: "Inspect the synthetic fixture." },
+    { role: "assistant", tool_calls: [{ id: "own-execution", function: fn }, { id: "own-lookalike", function: { name: "bash_extra" } }] },
+    { role: "tool", tool_call_id: "own-execution", content: "completed fixture" },
+    { role: "tool", tool_call_id: "own-lookalike", content: "completed other fixture" },
+  ])!;
+  expect(input.results[0]?.family).toBe("execution");
+  expect(input.results[0]?.assistantTurn).toBe(1);
+  expect(input.results[1]?.family).toBe("other");
+  expect(argumentReads).toBe(0);
+});
+
+test("an assistant tail cannot reuse an earlier tool or compaction boundary", () => {
+  const input = captureStageInput([
+    { role: "user", content: "Continue from the conversation summary after compaction." },
+    { role: "tool", content: "7 tests passed" },
+    { role: "assistant", content: "Synthetic final answer." },
+  ])!;
+  expect(input.turn).toBe("other");
+});
+
+test("an invalid non-instruction tail locks other instead of reviving historical pass", () => {
+  const history = [{ role: "tool", content: "13 tests passed" }];
+  for (const tail of [null, {}, { role: "unsupported", content: "synthetic unsupported tail" }]) {
+    const input = captureStageInput([...history, tail])!;
+    expect(input.turn).toBe("other");
+    expect(input.incomplete).toBe(true);
+  }
+});
