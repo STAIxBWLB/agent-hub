@@ -635,13 +635,52 @@ argument, diagnostic or native identifier enters the numeric service packet.
 `observation-signals` follows the owned R1 evidence/diagnostic precedence and
 shared critical predicate, not former signal tables or source-port fixtures.
 A full outcome batch must not be reported as complete from the recent 16-result
-stage window. Unknown/over-bound input stays unavailable. Local label adapters
-retain the owned observed-outcome pins: an unflagged AssertionError can label
-severity 0.7; the owned wrapped numeric-test fixture containing `exit code 0`
-can label severity zero while tests fail; successful read/editor-view text does
-not create execution failure/repetition; and an early failure in a batch is not
-lost because later results are clean. These are local outcome flags, not a new
-stage score formula or native exit-status attestation from untrusted text. Their precise adapter is reviewed before implementation.
+stage window. Unknown/over-bound input stays unavailable and omits an unproven
+`next` label rather than inventing an all-clear value. Local native projection
+uses the existing 2M whole-wire ceiling; native progress retains its existing
+28-observation/name-80/text-500/source-40/turn-120 caller bounds.
+
+The local adapter has explicit per-result facts: `readOnly`, `nativeError`,
+`assertionDiagnostic`, `testInvocation` and `testMention`, plus the owned
+`diagnoseStageResult` result. Read-only classification includes the owned
+`text_editor` operation `view`; command/argument inspection is bounded and local,
+never part of StageEvidence or service evidence. A missing/ambiguous association
+or malformed flags do not establish a qualified complete batch.
+
+- A successful read/view creates no execution failure, test failure or digest.
+  It also does not clear prior qualified test failures.
+- Otherwise the shared R1 critical classification has first priority (severity
+  1). An explicit native error, AssertionError diagnostic or R1 exception has
+  local label severity 0.7. Other reported diagnostics retain 0.3, except an
+  unflagged test-failure-only report without those stronger flags is test evidence
+  only, with label severity zero. This preserves the owned wrapped numeric-test
+  fixture containing `exit code 0` without treating that text as native exit
+  attestation. This label adapter does not change stage severity or scoring.
+- A test context is an owned test-invocation name/command or an observed test
+  term. A qualified failure in that context is retained across the full batch;
+  an unrelated execution failure is retained separately. Process all results in
+  chronological order. Only a non-read, non-error genuine positive test pass
+  accepted by R1's closed grammar clears retained test-category failures, not
+  unrelated failures. Numeric failure takes priority over a simultaneous positive
+  pass count. An empty zero/zero run creates no pass and clears no failure.
+- Retained qualified test failure means `tests: "fail"` even after later plain
+  read or `ok` results. With none retained, the latest genuine qualified test pass
+  means `pass`; a batch with no eligible test evidence means `none`. Ordinary rows
+  do not replace qualified test evidence. This is an explicit LOCAL divergence
+  from R1's `signals.tests`, which describes the latest inspected result.
+- Retain only SHA256 digests of the owned R1 diagnostic fingerprint for qualified
+  failures. Diagnostic text and raw fingerprints are transient local values,
+  never state/event fields. Repetition still passes the existing separate native
+  cross-turn predicate before progress judging. No source-port calibration is
+  inferred from these owned fixtures.
+
+The fresh local APIs are `ToolObservation` (name plus optional command/resultText/
+isError/source), `projectOutcomeBatch(assistant, tools)`,
+`priorFailureDigests(messages)`, `failureFingerprint(text, isError)` and
+`repeatedObservationFailure(observations)`. A batch projection returns bounded
+severity, pass/fail/none and failure digests, or unavailable. The runtime obtains
+assistant count from its complete JudgeConversation and phase from PlanPhase;
+this is not a new general tier-picking ToolSignals formula.
 
 Native `progressDimensions`, its eight-distinct-known-turn rule, cross-turn
 failure predicate, attempted-frame deduplication, generation, owner/open-task and

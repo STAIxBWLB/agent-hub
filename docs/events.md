@@ -156,6 +156,25 @@ as raw JSON lines; plain `ahub report` keeps its existing behavior.
 The file is local and never uploaded. It grows without rotation; delete it to start
 over (the hub recreates it).
 
+## Judge model-choice observations
+
+A `route` row may carry exactly `decisionTarget: "judge"` to identify a separate
+model-choice observation for an optional host judge. An absent target retains the
+executor contract. The row's `tier` is the requested fallback judge alias, not a
+served model; `source` is `default`, and any decision fields are the existing
+validated service metadata. It introduces no purpose, phase, served or applied
+field. Off mode emits no such row. It is published through existing `onRoute`
+only after current privacy/observer/turn confirmation, bypassing executor
+`addDecision`, labels, progress, usage and cost credit.
+
+Executor reports exclude these rows before timestamp or switch accounting;
+research excludes them before task/cohort/peer accumulation; the owned routing
+corpus excludes them before collecting its last executor observation. They have
+no outcome decision id and are not execution examples. The raw research-quality
+event-type census still counts them as recorded metadata. Raw event export keeps
+the target; the closed operational projection withholds the entire `route` kind
+as before, so this adds no console display feature.
+
 ## Offline route outcome joins
 
 For local-worker decisions, join `route_outcome.decision` to `route.decision` (one-to-one).
