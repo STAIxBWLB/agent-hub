@@ -130,23 +130,27 @@ rows a reading returned, so `0 on my tasks` is not a claim about the queue.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0 | role-scoped (task 866), wave start | 2026-11-11 | unknown (not stored) | 0 on my tasks | 0 on my tasks | 0 on my tasks | 0 | 0 (current queue) | 0 |
 | 1 | role-scoped (task 866) | 2026-11-11 06:28 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 2 |
+| 2 | role-scoped (task 866) | 2026-11-11 08:36 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 3 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
-expired by the queue at their partner's approving verdict. Coverage (`evaluated`) is not part of
-a role-scoped read and stays unknown at this reading, never zero.
+expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
+same way, 2 s after its partner's review time, and the queue had stored nothing new on this task.
+Coverage (`evaluated`) is not part of a role-scoped read and stays unknown at both readings,
+never zero.
 
 ## Proposal ledger
 
 | proposal | rule | task | revision | trigger | action | outcome | evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `sup-067f72d97dd1` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:873` | `request_integration` | expired by the queue at #873's approving verdict, before its merge; unknown from stored records | #873 inserts one row (`Console agent-hub versions (#1385)`) at line 96 of main's `docs/dogfood.md`, while this task's row goes after the supervision row at line 128 (role-scoped read, 2026-11-11); an approved side is a closed side, so the pair left supervision at the verdict |
-| `sup-67b2b2319f69` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:874` | `request_integration` | expired by the queue at #874's approving verdict, before its merge; unknown from stored records | #874 adds one row to `docs/dogfood.md` about 86 rows above this task's anchor (read at `0c427dd0`); same closure rule as the row above |
-| `sup-adb3295ebc9b` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:881` | `request_integration` | pending, classification deferred to wave close | #881 rewrites rows 122, 124-126 and 249-253 of `docs/dogfood.md` in place while this task inserts one row after 128; jcode asked on 2026-11-11 and confirmed those ranges, so the pair needed no integration record |
+| `sup-067f72d97dd1` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:873` | `request_integration` | expired by the queue 1.3 s after #873's review time; unknown from stored records | #873 has one row of its own in `docs/dogfood.md` (`Console agent-hub versions (#1385)`) and this task inserts one row after the `Supervision rules and proposals (#1221 T1, T2)` row, so the overlap was file-level only; an approved side is a closed side, so the pair left supervision at the verdict, and #873's merge (`2d341c298`) landed with no row naming it |
+| `sup-67b2b2319f69` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:874` | `request_integration` | expired by the queue 1.3 s after #874's review time; unknown from stored records | #874 adds one row to `docs/dogfood.md` several dozen rows above this task's anchor (read at `0c427dd0`); same closure rule, and #874's merge (`89e69a38a`) landed with no row naming it |
+| `sup-adb3295ebc9b` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:881` | `request_integration` | expired by the queue 1.4 s after #881's review time; unknown from stored records | #881 rewrites the Orca O0 row at 124, deletes the O1-O3 rows at 126-128, and collapses the Herdr H0-H3 rows at 251-254 plus the Claude Code row at 255 into two (measured at `45ed8d5c`), while this task inserts one row after the supervision row; jcode asked on 2026-11-11 and confirmed the ranges, so the pair needed no integration record; #881 was still in review at reading 2, so its merge is ahead |
 
 A pending proposal stays pending until the wave closes: classifying one while later revisions are
-already in view would let its outcome be chosen to fit them. An expiry is the queue's own
-disposition and not a classification: it records that the reading stopped holding, and it counts
-neither as a helpful or false intervention nor as a clean non-trigger.
+already in view would let its outcome be chosen to fit them. No row on this task is pending at
+reading 2. An expiry is the queue's own disposition and not a classification: it records that the
+reading stopped holding, and it counts neither as a helpful or false intervention nor as a clean
+non-trigger.
 
 ## Cost
 
@@ -172,10 +176,10 @@ and is not part of this wave.
 - rows dropped by the 400-row prune, if the wave ever reaches it;
 - whether an expired row would have been helpful or false: the expiry records no classification,
   and no later record can name what an action that never ran would have found;
-- an integration that lands with the merge itself. Both `declared_overlap_without_integration`
-  rows on this task expired about 1.3 s after their partner's recorded review time, which is the
-  approving verdict and comes before the merge (both partner PRs were still open at reading 1),
-  so a declared pair leaves supervision at approval and no row can name the merge as its
-  integration. Measured twice on 2026-11-11; it is a limit of the reading window, not a defect of
-  either task;
+- an integration that lands with the merge itself. All three `declared_overlap_without_integration`
+  rows on this task expired 1.3 to 1.4 s after their partner's recorded review time, so the pair
+  leaves supervision at the approving verdict and no row can name the merge as its integration.
+  Two of those partners then merged on main (`2d341c298`, `89e69a38a`) and no row named either
+  merge; the third was still in review at reading 2. Measured three times on 2026-11-11; it is a
+  limit of the reading window, not a defect of any task;
 - every threshold that needs a live sample larger than this pilot can produce.
