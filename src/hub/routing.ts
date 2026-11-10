@@ -11,7 +11,7 @@ export interface PeerCapabilities { tests: boolean; spec: boolean; testsReason?:
 import type { PeerId, PeerState } from "./envelope.ts";
 
 import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";
-import { DEFAULT_STAY_SWITCH, type StaySwitchMode } from "../models/route/stage.ts";
+import { DEFAULT_STAY_SWITCH, type StaySwitchMode } from "../models/route/stage-fallback.ts";
 
 export interface ClassPolicy {
   /** preference order among attached, unpaused peers */

@@ -4,9 +4,11 @@ import { AdvisorGate, buildAdvisorJudgeRequest, redoFeedback } from "./advisor.t
 import type { HubRoute } from "./config.ts";
 import { buildEscalationJudgeRequest, parseEscalationVerdict } from "./escalation.ts";
 import { normalizeConversation } from "./normalize.ts";
-import { extractToolSignals, turnKind } from "./signals.ts";
+import { extractToolSignals } from "./signals.ts";
 import { RouteLabelTracker, type RouteLabelEvent, type RouteTurnContext, type RouteTurnOutcome } from "./labels.ts";
-import { dimensionsFromSignal, estimateInputTokens, selectStage, stayOrSwitch, type StageState, type StaySwitchPolicy, type SwitchTrace, type Tier } from "./stage.ts";
+import { captureStageInput, estimateStageInputTokens } from "./stage-input.ts";
+import { buildStageEvidence, type CodingAgentDimensions } from "./stage-evidence.ts";
+import { selectFallbackStage, planStageSwitch, type FallbackStageState, type StaySwitchPolicy, type StageSwitchTrace as SwitchTrace, type StageTier as Tier } from "./stage-fallback.ts";
 import { EscalationState, SessionState } from "./state.ts";
 import { parseAdvisorVerdict } from "./text.ts";
 import { planExecutePhase, type PlanExecuteState } from "./plan-execute.ts";
@@ -16,7 +18,7 @@ export interface RouteEvent extends Partial<SwitchTrace>, Partial<DecisionTrace>
   decision?: string; turn?: string; task?: number; pii?: boolean; severity?: number; spinning?: number; exploring?: number; production?: number;
 }
 export interface AdvisorEvent { route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
-interface RouteState { fingerprint: string; stage: StageState; pin?: Tier; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate }
+interface RouteState { fingerprint: string; stage: FallbackStageState; pin?: Tier; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate }
 export interface RouteHost extends DecisionHost {
   execute: (model: string, messages: ChatMessage[], judge: boolean, signal: AbortSignal, maxTokens?: number) => Promise<ChatResult>;
   /** Read on every stage call (#197); absent is the shadow default. */
@@ -51,7 +53,7 @@ export class HubRouteRuntime {
     const key = `${scope}:${route}`, fingerprint = JSON.stringify(config);
     const prior = this.states.get(key);
     if (prior?.fingerprint === fingerprint) return prior;
-    const value: RouteState = { fingerprint, stage: { capableHoldTurnsRemaining: 0 }, plan: { executingSessions: [] }, escalation: new EscalationState(), advisor: new AdvisorGate({ trigger: config.trigger, pattern: config.pattern, maxReviews: config.max_reviews, gateStallTurns: config.gate_stall_turns, gateMinToolResults: config.gate_min_tool_results, transcriptMaxChars: config.transcript_max_chars }) };
+    const value: RouteState = { fingerprint, stage: { recoveryHoldRemaining: 0 }, plan: { executingSessions: [] }, escalation: new EscalationState(), advisor: new AdvisorGate({ trigger: config.trigger, pattern: config.pattern, maxReviews: config.max_reviews, gateStallTurns: config.gate_stall_turns, gateMinToolResults: config.gate_min_tool_results, transcriptMaxChars: config.transcript_max_chars }) };
     this.states.set(key, value); return value;
   }
 
@@ -60,27 +62,26 @@ export class HubRouteRuntime {
     const labelTurn = this.labels.captureTurn();
     this.decisions.checkEntry(config, pii);
     const started = performance.now(), state = this.state(route, config, scope);
-    const conversation = normalizeConversation(messages), signals = extractToolSignals(conversation);
-    const dimensions = dimensionsFromSignal(signals);
+    const input = captureStageInput(messages) ?? { turn: "other" as const, incomplete: true, assistantTurns: 0, results: [] };
+    const evidence = buildStageEvidence(input), dimensions = evidence.dimensions;
+    // The remaining legacy consumers belong to R2; stage does not traverse their normalized history.
+    const signals = config.type === "stage" || config.type === "decision" ? undefined : extractToolSignals(normalizeConversation(messages));
     const efficient = config.efficient ?? "fast", capable = config.capable ?? "coding";
     let model = efficient, source: RouteEvent["source"] = "default", score = 0;
     let sent = messages, trace: Partial<SwitchTrace> = {};
     if (config.type === "stage" || config.type === "decision") {
-      const decision = selectStage(signals, { confidenceThreshold: config.confidence_threshold, capableHoldTurns: config.hold_turns }, state.stage);
+      const decision = selectFallbackStage(evidence, { confidenceThreshold: config.confidence_threshold, holdTurns: config.hold_turns }, state.stage);
       state.stage = decision.state;
-      // OmniRoute models publish no context limit to the hub, so every tier fits here; the estimate leaves out the tool
-      // schemas the host adds to each call, as the relay counts what Pi sends. A PII conversation's size says
-      // something about its text, as a private envelope's does: the planner never sees it (no prefill bound, so no
-      // plan or reason can depend on it) and the event leaves it out.
-      const staged = stayOrSwitch(this.host.staySwitch?.(), state.pin, decision, turnKind(conversation), { inputTokens: pii ? 0 : estimateInputTokens(messages), fits: () => true });
+      // Public planner sizing is separate from local full-context admission. Sensitive size is omitted.
+      const staged = planStageSwitch(this.host.staySwitch?.(), state.pin, decision, input.turn, { inputTokens: pii ? undefined : estimateStageInputTokens(messages), fits: () => true });
       state.pin = staged.pin;
       const { prefillTokens, ...shape } = staged.trace;
       trace = pii ? shape : staged.trace;
       model = staged.tier === "capable" ? capable : efficient;
       score = decision.score;
-      source = decision.source === "capable_hold" ? "hold" : decision.source === "override" || decision.source === "dimensions" ? decision.source : "default";
+      source = decision.source;
     } else if (config.type === "plan_execute") {
-      const decision = planExecutePhase(signals, scope, state.plan);
+      const decision = planExecutePhase(signals!, scope, state.plan);
       model = decision.tier === "capable" ? capable : efficient;
       state.plan = decision.state;
       if (decision.planningPrompt) sent = [{ role: "system", content: decision.planningPrompt }, ...messages];
@@ -92,7 +93,7 @@ export class HubRouteRuntime {
     let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace, ...picked?.trace }, labelTurn, dimensions, pii, messages);
     const result = await this.host.execute(model, sent, false, signal);
     if (config.type !== "escalation" || state.escalation.snapshot().latched) return this.withDecision(result, decisionId);
-    const request = buildEscalationJudgeRequest(normalizeConversation([...messages, result.message]), signals.assistantTurnCount + 1);
+    const request = buildEscalationJudgeRequest(normalizeConversation([...messages, result.message]), signals!.assistantTurnCount + 1);
     const answer = await this.judge(config.judge ?? capable, [{ role: "system", content: request.systemPrompt }, ...request.messages], pii, signal, request.maxOutputTokens);
     const verdict = answer ? parseEscalationVerdict(answer) : undefined;
     if (answer && !verdict) this.judgeOffUntil = Date.now() + 5 * 60_000;
@@ -124,7 +125,7 @@ export class HubRouteRuntime {
     return decisionId ? { ...result, routeDecision: decisionId } : result;
   }
 
-  private emitRoute(event: RouteEvent, turn: ReturnType<RouteLabelTracker["captureTurn"]>, dimensions: ReturnType<typeof dimensionsFromSignal>, pii: boolean, priorMessages: ChatMessage[]): string | undefined {
+  private emitRoute(event: RouteEvent, turn: ReturnType<RouteLabelTracker["captureTurn"]>, dimensions: CodingAgentDimensions, pii: boolean, priorMessages: ChatMessage[]): string | undefined {
     if (turn && turn.closed) return undefined;
     let decision: string | undefined;
     try {

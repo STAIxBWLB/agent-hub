@@ -13388,110 +13388,63 @@ var init_config2 = __esm(() => {
   TYPES = new Set(["stage", "plan_execute", "advisor", "escalation", "decision"]);
 });
 
-// src/models/route/stage.ts
-function dimensionsFromSignal(signal) {
-  const recentOps = signal.recentWriteCount + signal.recentEditCount + signal.recentReadCount + signal.recentTodowriteCount;
-  const deep = signal.turnDepth >= STALL_MIN_TURN_DEPTH;
-  const noProduction = signal.recentWriteCount === 0 && signal.recentEditCount === 0;
-  const investigating = signal.recentReadCount >= 1 || signal.recentTodowriteCount >= 1;
-  const newActivity = signal.recentNewCount >= 1;
-  const spinning = deep && noProduction && !investigating && !newActivity;
-  const exploring = deep && noProduction && investigating && !newActivity;
-  const production = recentOps === 0 ? 0 : (signal.recentWriteCount + signal.recentEditCount) / recentOps;
-  return { severity: signal.severity, spinning: spinning ? 1 : 0, exploring: exploring ? 1 : 0, productionIntensity: production };
+// src/models/route/stage-fallback.ts
+function selectFallbackStage(evidence, policy = {}, prior) {
+  const threshold = policy.confidenceThreshold ?? 0.5, hold = policy.holdTurns ?? 2;
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1 || !Number.isSafeInteger(hold) || hold < 0 || hold > 200000)
+    throw new Error("invalid stage fallback policy");
+  const score = evidence.scores.capable;
+  const currentFailure = evidence.turn === "tool_result" && evidence.dimensions.severity > 0;
+  const recovery = evidence.turn === "compaction" || currentFailure && (evidence.dimensions.severity === 1 || evidence.signals.repeatedFailures >= 2);
+  const cleanPass = evidence.turn === "tool_result" && evidence.signals.tests === "pass" && evidence.dimensions.severity === 0;
+  const remaining = cleanPass ? 0 : prior?.recoveryHoldRemaining ?? 0;
+  if (recovery)
+    return { tier: "capable", source: "override", score, state: { recoveryHoldRemaining: hold } };
+  if (remaining > 0)
+    return { tier: "capable", source: "hold", score, state: { recoveryHoldRemaining: remaining - 1 } };
+  return { tier: score > threshold ? "capable" : "efficient", source: score > threshold ? "dimensions" : "default", score, state: { recoveryHoldRemaining: 0 } };
 }
-function scoreSignal(signal) {
-  const d = dimensionsFromSignal(signal);
-  const raw = SIGNAL_UNIT * (d.severity / HARD_SEVERITY + d.spinning + d.exploring - d.productionIntensity);
-  const score = Math.tanh(SCORE_GAIN * raw);
-  return { score, confidence: Math.abs(score) };
-}
-function hardOverride(signal) {
-  return signal.compacted || signal.severity >= SEVERITY_CRITICAL || signal.repeatedFailure;
-}
-function pickTier(signal, mode = "efficient_first", confidenceThreshold = 0.5) {
-  const defaultTier = mode === "capable_first" ? "capable" : "efficient";
-  if (hardOverride(signal))
-    return { kind: "resolved", tier: "capable", source: "override", probability: 0.5, confidence: 1 };
-  const scored = scoreSignal(signal);
-  const probability = (scored.score + 1) / 2;
-  const half = confidenceThreshold / 2;
-  if (probability > 0.5 + half || probability < 0.5 - half)
-    return { kind: "resolved", tier: probability > 0.5 ? "capable" : "efficient", source: "dimensions", probability, confidence: scored.confidence };
-  return { kind: "consult_classifier", probability, confidence: scored.confidence, defaultTier };
-}
-function handoffNoteFor(tier, source, config) {
-  if (tier === "capable") {
-    const signalDriven = source === "override" || source === "dimensions";
-    return (config.onlyOnWrongSignalEscalation ?? true) && !signalDriven ? undefined : config.escalationNote;
-  }
-  return config.deescalationNote;
-}
-function selectStage(signal, options = {}, state = { capableHoldTurnsRemaining: 0 }) {
-  const mode = options.mode ?? "efficient_first";
-  const defaultTier = mode === "capable_first" ? "capable" : "efficient";
-  const holdTurns = Math.max(0, Math.trunc(options.capableHoldTurns ?? 2));
-  let remaining = Math.max(0, Math.trunc(state.capableHoldTurnsRemaining));
-  const cleanTestPass = signal.testsPassed && signal.noErrorStreak > 0;
-  if (cleanTestPass)
-    remaining = 0;
-  let outcome;
-  if (!cleanTestPass && remaining > 0) {
-    remaining--;
-    outcome = { kind: "resolved", tier: "capable", source: "capable_hold", probability: 0.5, confidence: 1 };
+function planStageSwitch(policy, pin, fallback, turn, host) {
+  const actual = policy ?? DEFAULT_STAY_SWITCH;
+  const trace = { ...turn === "other" ? {} : { turnType: turn }, ...host.inputTokens === undefined ? {} : { prefillTokens: host.inputTokens } };
+  if (turn === "other")
+    return { tier: fallback.tier, pin, trace };
+  if (actual.stay_switch === "off")
+    return { tier: fallback.tier, pin: undefined, trace };
+  let proposal = fallback.tier, reason;
+  if (!pin)
+    reason = "new_pin";
+  else if (!host.fits(pin))
+    reason = "context_fit";
+  else if (turn === "compaction")
+    reason = "compaction";
+  else if (pin === fallback.tier)
+    reason = "same_tier";
+  else if (fallback.source === "override")
+    reason = "override";
+  else if (turn === "tool_result") {
+    proposal = pin;
+    reason = "tool_loop";
+  } else if (fallback.tier === "efficient" && host.inputTokens !== undefined && host.inputTokens > actual.max_switch_prefill_tokens) {
+    proposal = pin;
+    reason = "prefill_bound";
   } else
-    outcome = pickTier(signal, mode, options.confidenceThreshold ?? 0.5);
-  if (outcome.kind === "resolved" && outcome.tier === "capable" && (outcome.source === "override" || outcome.source === "dimensions"))
-    remaining = holdTurns;
-  const dimensions = dimensionsFromSignal(signal);
-  const score = scoreSignal(signal).score;
-  const note = outcome.kind === "resolved" && options.handoffNotes ? handoffNoteFor(outcome.tier, outcome.source, options.handoffNotes) : undefined;
-  return {
-    tier: outcome.kind === "resolved" ? outcome.tier : undefined,
-    defaultTier,
-    source: outcome.kind === "consult_classifier" ? "ambiguous" : outcome.source,
-    probability: outcome.probability,
-    confidence: outcome.confidence ?? 0,
-    score,
-    dimensions,
-    ...note === undefined ? {} : { note },
-    state: { capableHoldTurnsRemaining: remaining },
-    hardOverride: hardOverride(signal)
-  };
+    reason = "user_turn";
+  if (!host.fits(proposal)) {
+    const other = proposal === "capable" ? "efficient" : "capable";
+    if (!host.fits(other))
+      throw new Error("no stage backend fits the model input");
+    proposal = other;
+    reason = "context_fit";
+  }
+  trace.staySwitch = actual.stay_switch;
+  trace.plan = !pin || pin === proposal ? "stay" : "switch";
+  trace.reason = reason;
+  const tier = actual.stay_switch === "enforce" ? proposal : fallback.tier;
+  return { tier, pin: tier, trace };
 }
-function estimateInputTokens(messages, tools) {
-  return Math.ceil(JSON.stringify({ messages, tools }).length / 4);
-}
-function planSwitch(pin, fresh, turn, cost) {
-  const wanted = fresh.tier ?? fresh.defaultTier, other = wanted === "capable" ? "efficient" : "capable";
-  const want = cost.fits(wanted) || !cost.fits(other) ? wanted : other;
-  const plan = (tier, reason) => ({ plan: pin === undefined || pin === tier ? "stay" : "switch", tier, reason });
-  if (pin === undefined)
-    return plan(want, "new_pin");
-  if (turn === "compaction")
-    return plan(want, "compaction");
-  if (want !== wanted || !cost.fits(pin))
-    return plan(want, "context_fit");
-  if (want === pin)
-    return plan(pin, "same_tier");
-  if (fresh.source === "override" || fresh.hardOverride)
-    return plan(want, "override");
-  if (turn === "tool_result")
-    return plan(pin, "tool_loop");
-  if (want === "efficient" && cost.inputTokens > cost.maxSwitchPrefillTokens)
-    return plan(pin, "prefill_bound");
-  return plan(want, "user_turn");
-}
-function stayOrSwitch(policy, pin, fresh, turn, cost) {
-  const { stay_switch: mode, max_switch_prefill_tokens: maxSwitchPrefillTokens } = policy ?? DEFAULT_STAY_SWITCH;
-  const tier = fresh.tier ?? fresh.defaultTier, trace = { turnType: turn, prefillTokens: cost.inputTokens };
-  if (mode === "off")
-    return { tier, trace };
-  const planned = planSwitch(pin, fresh, turn, { ...cost, maxSwitchPrefillTokens });
-  return { tier: mode === "enforce" ? planned.tier : tier, pin: planned.tier, trace: { ...trace, staySwitch: mode, plan: planned.plan, reason: planned.reason } };
-}
-var STALL_MIN_TURN_DEPTH = 8, SCORE_GAIN = 5, HARD_SEVERITY = 0.7, SIGNAL_UNIT = 0.1, SEVERITY_CRITICAL = 1, DEFAULT_STAY_SWITCH;
-var init_stage = __esm(() => {
+var DEFAULT_STAY_SWITCH;
+var init_stage_fallback = __esm(() => {
   DEFAULT_STAY_SWITCH = { stay_switch: "shadow", max_switch_prefill_tokens: 32000 };
 });
 
@@ -13508,7 +13461,7 @@ var init_routing = __esm(() => {
   init_board();
   init_spec_read();
   init_config2();
-  init_stage();
+  init_stage_fallback();
   TEMPLATE = join17(import.meta.dir, "..", "..", "templates", "routing.toml");
   cache = new Map;
 });
@@ -13627,6 +13580,213 @@ var init_decision_evidence = __esm(() => {
   init_src();
   SOURCE_BYTES = 64 * 1024;
   TOOL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_.:-]*$/;
+});
+
+// src/models/route/stage-input.ts
+function field(value, key) {
+  if (!value || typeof value !== "object")
+    return;
+  return Object.getOwnPropertyDescriptor(value, key)?.value;
+}
+function boundedString(value, bytes) {
+  return typeof value === "string" && value.length <= bytes && Buffer.byteLength(value) <= bytes ? value : undefined;
+}
+function family(name) {
+  if (!name)
+    return "other";
+  if (/^(bash|exec_command)$/i.test(name))
+    return "execution";
+  if (/^(read|read_file|readfile|glob|grep|search|list|ls|lookup)(_|$)/i.test(name))
+    return "read";
+  if (/^(write|write_file|edit|apply_patch|patch|delete|create|replace)(_|$)/i.test(name))
+    return "mutation";
+  return "other";
+}
+function captureStageInput(source) {
+  try {
+    const messages = Array.isArray(source) ? source : field(source, "messages");
+    if (!Array.isArray(messages))
+      return;
+    let incomplete = messages.length > MESSAGE_LIMIT, bytes = 0, parts = 0, inspectedCalls = 0;
+    const text = (value) => {
+      if (typeof value === "string") {
+        if (value.length > TEXT_BYTES || bytes + Buffer.byteLength(value) > TEXT_BYTES) {
+          incomplete = true;
+          return "";
+        }
+        bytes += Buffer.byteLength(value);
+        return value;
+      }
+      if (!Array.isArray(value))
+        return "";
+      const kept = [];
+      const available = PART_LIMIT - parts;
+      for (let index = 0;index < value.length && parts < PART_LIMIT; index++, parts++) {
+        const part = field(value, String(index));
+        if (field(part, "type") === "text" && typeof field(part, "text") === "string")
+          kept.push(text(field(part, "text")));
+      }
+      if (value.length > available)
+        incomplete = true;
+      return kept.join(`
+`);
+    };
+    const calls = new Map;
+    const observations = [];
+    let turn = "other", assistantTurns = 0, turnCaptured = false;
+    for (let index = messages.length - 1;index >= Math.max(0, messages.length - MESSAGE_LIMIT); index--) {
+      const message = field(messages, String(index)), role = field(message, "role");
+      if (role === "system" || role === "developer")
+        continue;
+      if (role !== "user" && role !== "assistant" && role !== "tool") {
+        incomplete = true;
+        if (!turnCaptured) {
+          turnCaptured = true;
+          turn = "other";
+        }
+        continue;
+      }
+      if (!turnCaptured) {
+        turnCaptured = true;
+        turn = role === "tool" ? "tool_result" : role === "user" ? "user" : "other";
+        if (role === "user") {
+          const latest = text(field(message, "content"));
+          if (/\b(compact(?:ed|ion)?|context summary|conversation summary)\b|continued[\s\S]*(?:previous conversation|ran out of context)/i.test(latest))
+            turn = "compaction";
+        }
+      }
+      if (role === "assistant") {
+        assistantTurns++;
+        const entries = field(message, "tool_calls");
+        if (Array.isArray(entries)) {
+          const availableCalls = CALL_LIMIT - inspectedCalls;
+          for (let at = entries.length - 1;at >= 0 && inspectedCalls < CALL_LIMIT; at--, inspectedCalls++) {
+            const call = field(entries, String(at));
+            const id = boundedString(field(call, "id"), ID_BYTES);
+            const name = boundedString(field(field(call, "function"), "name"), NAME_BYTES);
+            if (id)
+              calls.set(id, calls.has(id) ? null : { name, index });
+            else
+              incomplete = true;
+          }
+          if (entries.length > availableCalls)
+            incomplete = true;
+        }
+      }
+      if (role === "tool") {
+        if (observations.length === RESULT_LIMIT2) {
+          incomplete = true;
+          continue;
+        }
+        const id = boundedString(field(message, "tool_call_id"), ID_BYTES);
+        observations.push({ id, index, text: text(field(message, "content")), error: field(message, "is_error") === true || field(message, "isError") === true });
+      }
+    }
+    const resultIds = new Set, duplicates = new Set;
+    for (const result of observations)
+      if (result.id) {
+        if (resultIds.has(result.id))
+          duplicates.add(result.id);
+        resultIds.add(result.id);
+      }
+    const results = observations.reverse().map((result) => {
+      const call = result.id && !duplicates.has(result.id) ? calls.get(result.id) : undefined;
+      const associated = !!call && call.index < result.index;
+      return { text: result.text, error: result.error, family: associated ? family(call.name) : "other", associated, ...associated ? { assistantTurn: call.index } : {} };
+    });
+    return { turn, incomplete, assistantTurns, results };
+  } catch {
+    return;
+  }
+}
+function estimateStageInputTokens(messages, tools) {
+  try {
+    if (!Array.isArray(messages) || tools !== undefined && !Array.isArray(tools))
+      return;
+    const envelope = { messages, ...tools === undefined ? {} : { tools } };
+    const active = new Set;
+    let bytes = 0, inspected = 0;
+    const append = (part) => {
+      bytes += Buffer.byteLength(part);
+      if (bytes > WIRE_BYTES)
+        throw new StageSizingUnavailableError;
+    };
+    const encode = (value, depth) => {
+      if (++inspected > WIRE_BYTES || depth > 128)
+        throw new StageSizingUnavailableError;
+      if (value === null || typeof value === "boolean") {
+        append(String(value));
+        return;
+      }
+      if (typeof value === "string") {
+        if (value.length > WIRE_BYTES)
+          throw new StageSizingUnavailableError;
+        append(JSON.stringify(value));
+        return;
+      }
+      if (typeof value === "number" && Number.isFinite(value)) {
+        append(JSON.stringify(value));
+        return;
+      }
+      if (!value || typeof value !== "object" || active.has(value))
+        throw new StageSizingUnavailableError;
+      const array = Array.isArray(value);
+      if (!array && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+        throw new StageSizingUnavailableError;
+      if (Object.getOwnPropertyDescriptor(value, "toJSON"))
+        throw new StageSizingUnavailableError;
+      active.add(value);
+      try {
+        append(array ? "[" : "{");
+        let count = 0;
+        const keys = array ? undefined : Object.keys(value);
+        const length = Array.isArray(value) ? value.length : keys.length;
+        if (length > WIRE_BYTES)
+          throw new StageSizingUnavailableError;
+        for (let index = 0;index < length; index++) {
+          const key = array ? String(index) : keys[index];
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          if (descriptor && !("value" in descriptor))
+            throw new StageSizingUnavailableError;
+          const item = descriptor?.value;
+          if (!array && item === undefined)
+            continue;
+          if (count++)
+            append(",");
+          if (!array) {
+            if (key.length > WIRE_BYTES)
+              throw new StageSizingUnavailableError;
+            append(JSON.stringify(key));
+            append(":");
+          }
+          encode(item === undefined ? null : item, depth + 1);
+        }
+        append(array ? "]" : "}");
+      } finally {
+        active.delete(value);
+      }
+    };
+    encode(envelope, 0);
+    const estimate = Math.ceil(bytes / 4);
+    return Number.isSafeInteger(estimate) ? estimate : undefined;
+  } catch {
+    return;
+  }
+}
+function estimateInputTokens(messages, tools) {
+  const estimate = estimateStageInputTokens(messages, tools);
+  if (estimate === undefined)
+    throw new StageSizingUnavailableError;
+  return estimate;
+}
+var MESSAGE_LIMIT = 64, RESULT_LIMIT2 = 16, CALL_LIMIT = 32, PART_LIMIT = 32, TEXT_BYTES, ID_BYTES = 128, NAME_BYTES = 64, StageSizingUnavailableError, WIRE_BYTES = 2000000;
+var init_stage_input = __esm(() => {
+  TEXT_BYTES = 64 * 1024;
+  StageSizingUnavailableError = class StageSizingUnavailableError extends Error {
+    constructor() {
+      super("model input size is unavailable; provide bounded JSON messages and tool schemas");
+    }
+  };
 });
 
 // src/models/route/state.ts
@@ -13864,7 +14024,7 @@ var DecisionPolicyChangedError, ended = () => new Error("model route turn ended 
 var init_decision = __esm(() => {
   init_adec();
   init_decision_evidence();
-  init_stage();
+  init_stage_input();
   DecisionPolicyChangedError = class DecisionPolicyChangedError extends Error {
     constructor() {
       super("decision routing privacy or observer policy changed or is unavailable during preparation; run ahub status, inspect current task policy and retry");
@@ -14732,12 +14892,6 @@ function extractToolSignals(conversation, recentWindow = DEFAULT_RECENT_WINDOW) 
   }
   return buildSignals(calls, results, conversation.messages.length, assistants, compacted, recentWindow);
 }
-function turnKind(conversation) {
-  const last = conversation.messages.at(-1);
-  if (last?.toolResults.length)
-    return "tool_result";
-  return last?.content.toLowerCase().includes(COMPACTED) ? "compaction" : "user";
-}
 var DEFAULT_RECENT_WINDOW = 3, SOFT = 0.3, HARD = 0.7, CRITICAL = 1, EDIT, EDITOR, WRITE, READ, PLAN, SHELL, BASH_READ_COMMANDS, GIT_READ2, emptySignals = (turnDepth) => ({
   severity: 0,
   repeatedFailure: false,
@@ -14941,6 +15095,83 @@ var init_labels = __esm(() => {
   init_signals();
 });
 
+// src/models/route/stage-diagnostics.ts
+function diagnoseStageResult(result) {
+  const value = result.text.toLowerCase();
+  const diagnosticText = value.replace(/\b0\s+(?:tests?\s+)?(?:fail|failed|failures)\b/g, "");
+  const failedTest = /\b(?:[1-9]\d*\s+(?:tests?\s+)?(?:fail|failed)|tests?\s+failed|assertion(?:error| failed))\b/.test(diagnosticText);
+  const positivePass = /\b[1-9]\d*\s+(?:tests?\s+)?(?:pass|passed)\b/.test(value);
+  const zeroPass = /\b0\s+(?:tests?\s+)?(?:pass|passed)\b/.test(value);
+  const affirmativePass = /^[ \t]*(?:all[ \t]+tests?[ \t]+pass(?:ed)?|tests?[ \t]+passed)[.!]?[ \t\r]*$/m.test(value);
+  const passedTest = !failedTest && (positivePass || !zeroPass && affirmativePass);
+  const critical = /\b(?:fatal|panic|segmentation fault|out of memory|memoryerror)\b/.test(value);
+  const explicit = result.error || failedTest || (critical || /\b(?:error|failed|failure|exception|fatal|panic|memoryerror)\b/.test(diagnosticText) || /\b\w*(?:exception|error):/.test(diagnosticText)) && result.family !== "read";
+  if (!explicit)
+    return { fault: "none", test: passedTest ? "pass" : zeroPass ? "unknown" : "none" };
+  const fault = critical ? "critical" : !/\bassertionerror:/.test(value) && /\b\w*(?:exception|error):/.test(value) ? "exception" : "reported";
+  const fingerprint = value.replace(/\b\d+\b/g, "#").replace(/\s+/g, " ").trim();
+  return { fault, test: failedTest ? "fail" : "none", fingerprint: `${failedTest ? "test" : "other"}:${fingerprint}` };
+}
+
+// src/models/route/stage-evidence.ts
+function buildStageEvidence(input) {
+  const failures = [];
+  let reads = 0, mutations = 0, tests = "none";
+  let latestFault = "none", successfulExecutions = 0;
+  const executionFrames = new Set;
+  for (const result of input.results) {
+    if (result.family === "read")
+      reads++;
+    if (result.family === "mutation")
+      mutations++;
+    const diagnostic = diagnoseStageResult(result);
+    tests = diagnostic.test;
+    latestFault = diagnostic.fault;
+    if (result.family === "execution" && result.associated && result.assistantTurn !== undefined && diagnostic.fault === "none" && diagnostic.test !== "pass") {
+      successfulExecutions++;
+      executionFrames.add(result.assistantTurn);
+    } else {
+      successfulExecutions = 0;
+      executionFrames.clear();
+    }
+    if (diagnostic.test === "pass") {
+      for (let index = failures.length - 1;index >= 0; index--)
+        if (failures[index].test)
+          failures.splice(index, 1);
+    }
+    if (diagnostic.fault !== "none")
+      failures.push({ fault: diagnostic.fault, test: diagnostic.test === "fail", fingerprint: diagnostic.fingerprint });
+  }
+  const fault = failures.reduce((prior, failure) => SEVERITY[failure.fault] > SEVERITY[prior] ? failure.fault : prior, "none");
+  const groups = new Map;
+  for (const failure of failures)
+    groups.set(failure.fingerprint, (groups.get(failure.fingerprint) ?? 0) + 1);
+  const repeatedFailures = Math.max(0, ...groups.values());
+  const currentCompletion = input.turn === "tool_result";
+  const currentFailure = currentCompletion && latestFault !== "none";
+  const noProgress = currentCompletion && successfulExecutions >= EXECUTION_STREAK && executionFrames.size >= EXECUTION_STREAK && input.assistantTurns >= EXECUTION_STREAK;
+  const dimensions = {
+    severity: currentCompletion ? SEVERITY[latestFault] : 0,
+    spinning: currentFailure && repeatedFailures >= 2 ? Math.min(1, repeatedFailures / Math.max(1, failures.length)) : noProgress ? EXECUTION_AMBIGUITY : 0,
+    exploring: reads / Math.max(1, input.results.length),
+    productionIntensity: mutations / Math.max(1, input.results.length)
+  };
+  const risk = Math.max(dimensions.severity, dimensions.spinning);
+  return {
+    schemaVersion: 1,
+    kind: "stage-route-evidence",
+    turn: input.turn,
+    incomplete: input.incomplete,
+    signals: { results: input.results.length, failures: failures.length, repeatedFailures, reads, mutations, assistantTurns: input.assistantTurns, tests, fault },
+    dimensions,
+    scores: { efficient: 1 - risk, capable: risk }
+  };
+}
+var EXECUTION_STREAK = 8, EXECUTION_AMBIGUITY = 0.46, SEVERITY;
+var init_stage_evidence = __esm(() => {
+  SEVERITY = { none: 0, reported: 0.3, exception: 0.7, critical: 1 };
+});
+
 // src/models/route/plan-execute.ts
 function planExecutePhase(signal, sessionKey, state = { executingSessions: [] }, options = {}) {
   let sessions = [...state.executingSessions];
@@ -15003,7 +15234,7 @@ class HubRouteRuntime {
     const prior = this.states.get(key);
     if (prior?.fingerprint === fingerprint)
       return prior;
-    const value = { fingerprint, stage: { capableHoldTurnsRemaining: 0 }, plan: { executingSessions: [] }, escalation: new EscalationState, advisor: new AdvisorGate({ trigger: config.trigger, pattern: config.pattern, maxReviews: config.max_reviews, gateStallTurns: config.gate_stall_turns, gateMinToolResults: config.gate_min_tool_results, transcriptMaxChars: config.transcript_max_chars }) };
+    const value = { fingerprint, stage: { recoveryHoldRemaining: 0 }, plan: { executingSessions: [] }, escalation: new EscalationState, advisor: new AdvisorGate({ trigger: config.trigger, pattern: config.pattern, maxReviews: config.max_reviews, gateStallTurns: config.gate_stall_turns, gateMinToolResults: config.gate_min_tool_results, transcriptMaxChars: config.transcript_max_chars }) };
     this.states.set(key, value);
     return value;
   }
@@ -15011,21 +15242,22 @@ class HubRouteRuntime {
     const labelTurn = this.labels.captureTurn();
     this.decisions.checkEntry(config, pii);
     const started = performance.now(), state = this.state(route, config, scope);
-    const conversation = normalizeConversation(messages), signals = extractToolSignals(conversation);
-    const dimensions = dimensionsFromSignal(signals);
+    const input = captureStageInput(messages) ?? { turn: "other", incomplete: true, assistantTurns: 0, results: [] };
+    const evidence = buildStageEvidence(input), dimensions = evidence.dimensions;
+    const signals = config.type === "stage" || config.type === "decision" ? undefined : extractToolSignals(normalizeConversation(messages));
     const efficient = config.efficient ?? "fast", capable = config.capable ?? "coding";
     let model = efficient, source = "default", score = 0;
     let sent = messages, trace = {};
     if (config.type === "stage" || config.type === "decision") {
-      const decision = selectStage(signals, { confidenceThreshold: config.confidence_threshold, capableHoldTurns: config.hold_turns }, state.stage);
+      const decision = selectFallbackStage(evidence, { confidenceThreshold: config.confidence_threshold, holdTurns: config.hold_turns }, state.stage);
       state.stage = decision.state;
-      const staged = stayOrSwitch(this.host.staySwitch?.(), state.pin, decision, turnKind(conversation), { inputTokens: pii ? 0 : estimateInputTokens(messages), fits: () => true });
+      const staged = planStageSwitch(this.host.staySwitch?.(), state.pin, decision, input.turn, { inputTokens: pii ? undefined : estimateStageInputTokens(messages), fits: () => true });
       state.pin = staged.pin;
       const { prefillTokens, ...shape } = staged.trace;
       trace = pii ? shape : staged.trace;
       model = staged.tier === "capable" ? capable : efficient;
       score = decision.score;
-      source = decision.source === "capable_hold" ? "hold" : decision.source === "override" || decision.source === "dimensions" ? decision.source : "default";
+      source = decision.source;
     } else if (config.type === "plan_execute") {
       const decision = planExecutePhase(signals, scope, state.plan);
       model = decision.tier === "capable" ? capable : efficient;
@@ -15160,7 +15392,9 @@ var init_runtime = __esm(() => {
   init_escalation();
   init_signals();
   init_labels();
-  init_stage();
+  init_stage_input();
+  init_stage_evidence();
+  init_stage_fallback();
   init_text();
 });
 
