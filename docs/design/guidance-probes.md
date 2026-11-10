@@ -48,7 +48,7 @@ The proposed manifest fields are:
 - `model`: `requested` and `expectedServed`, each exactly `qwen27b/qwen3.8-27b`. No slash splitting, normalization, fallback or alias resolution is permitted. An absent or different observed served value makes the observation incomparable.
 - `guidance`: the frozen catalog baseline identity and exact guidance SHA-256. Candidate worker slots bind separately admitted existing G1 content ids at start, after their preregistered proposal or compose stage; initial candidate hashes are not required before those authoring stages.
 - `improverContextHash`, optional: a frozen experience SHA-256 commitment available only to explicitly declared proposer/composer inputs, paired with `improverContextBytes`. It is not a worker input channel.
-- `slots`: an ordered closed plan of at most nine attempts: at most four `worker` attempts and at most five total editor attempts, with role caps of two `proposal`, one `compose`, one `select` and one `reflect`. Each has an opaque unique slot id, role and arm/stage binding; array position is its ordinal. `retryOf`, when present, names an earlier compatible slot. Each slot is one attempt, including a failed attempt, and every retry also counts against its role cap.
+- `slots`: an ordered closed plan of at most nine attempts: required baseline and candidate1 worker attempts, at most four total `worker` attempts and at most five total editor attempts, with role caps of two `proposal`, one `compose`, one `select` and one `reflect`. Editors are optional, including a zero-editor baseline/preexisting-candidate comparison. Each slot has an opaque unique id, role and arm/stage binding; array position is its ordinal. `retryOf`, when present, names an earlier compatible slot. Each slot is one attempt, including a failed attempt, and every retry also counts against its role cap.
 - `limits`: aggregate model calls, tool calls and elapsed milliseconds; optional aggregate token limit; and `inputBytes`, `scratchBytes`, `outputBytes` storage reservations. Values are nonnegative safe integers. The three storage reservations sum to at most 1,073,741,824 bytes (1 GiB), checked without unsafe addition. There is no new experiment-count cap or arbitrary maximum on the other declared budgets.
 - `taskOrderSeed`, optional: ordering metadata only. It is never represented as a model sampling seed.
 
@@ -213,6 +213,8 @@ Queries are exact-key indexed reads. Session hydration selects at most ten rows 
 
 Recovery integrity streams ordered experiment keys, then exact-key session rows with the same ten-row sentinel and bounded per-row memory; orphan/duplicate/malformed state is not silently ignored. Missing legacy tables represent no probe state. Present but unreadable/incomplete state refuses recovery rather than manufacturing a clean ledger.
 
+The manifest/session/lane/orphan passes share one SQLite read transaction and therefore one coherent snapshot. Every lane read uses the same typed, byte-bounded SQL projection, including validity bits that distinguish a legitimate NULL slot from an oversized/invalid field projected to NULL. Project, manifest and non-null slot identifiers must parse, resolve to their retained records and agree with state; corrupt references never masquerade as a free lane.
+
 `ponytail:` recovery integrity is O(historical experiments + sessions), with sessions bounded by nine per experiment, not constant-time. If measured recovery time warrants an upgrade, add keyset paging and a separately reviewed verification budget; do not silently truncate this scan or invent a new refusal budget in T1.
 
 ## Lifecycle and fake effect boundary
@@ -229,7 +231,9 @@ Before replacing the last descriptor, every granted model attempt must have a ma
 
 Both a proposal-produced candidate and a composed successor bind an already existing, separately current admitted G1 to their next preregistered worker slot. `start(id, revision, variantId?)` takes a variant id only for that next unbound non-baseline worker slot. Tasks reads and validates the existing private G1, then the store atomically binds its immutable child commitment and reserves the session in the same transaction. No separate bind operation or caller-selected slot exists. A bound slot rejects a conflicting variant; its exact duplicate never grants another launch. No child can alter task/tree/fixed input/model/config/toolset/runtime/limits or append a slot. G1 creation remains the owner/person's separate authority; model text never selects or admits its own record.
 
-The fixed graph orders baseline worker, proposal1, candidate1 worker, optional proposal2/candidate2 worker, optional compose/successor worker, select, then reflect. Omitted optional stages cannot leave dangling dependencies; stage role/arm pairs are fixed. A known-failure retry may occupy only an additional preregistered compatible slot immediately following the failed attempt, consuming the same role cap and aggregate budget. No successful attempt can be repeated for statistical sampling, and an ambiguous attempt cannot be replaced/retried. `start` advances only one explicit eligible slot; it is not an autonomous orchestrator. Controlled authoring is derived from the existing matching in-lane proposal/compose session artifact hash, never a supplied controlled flag or variant rationale. External or ordinary G1 authoring without that provenance remains admissible if otherwise current, but uncontrolled with unknown cost, never fully measured or zero cost.
+The fixed graph orders baseline worker, optional proposal1, candidate1 worker, optional proposal2, optional candidate2 worker, optional compose, optional successor worker, optional select, then optional reflect. An included proposal/compose stage requires its corresponding candidate/successor worker; a preexisting candidate2/successor need not invent an editor stage. Stage role/arm pairs and their order are fixed. A known-failure retry may occupy only an additional preregistered compatible slot immediately following the failed attempt, consuming the same role cap and aggregate budget. No successful attempt can be repeated for statistical sampling, and an ambiguous attempt cannot be replaced/retried. `start` advances only one explicit eligible slot; it is not an autonomous orchestrator. Controlled authoring requires a closed, comparable in-lane editor session with a matching RAW G1 candidate-file artifact hash, never a supplied flag or rationale. External or ordinary G1 authoring remains admissible if otherwise current, but uncontrolled with unknown cost, never fully measured or zero cost.
+
+G1 `candidateSha256` hashes its raw role-file bytes; `guidanceSha256` separately hashes the exact sanitized rendered guidance handed to a worker. The child commitment retains both. Editor artifact provenance compares the raw candidate hash; worker frame/handoff validation compares the rendered guidance hash. They are not interchangeable, and a matching raw hash does not prove rendered bytes.
 
 ## Proposed APIs
 
@@ -251,6 +255,7 @@ interface GuidanceProbeStore {
     revalidate: () => ProbeAdmissionRecheck): ProbeEffectAdmissionResult;
   settleEffect(input: ProbeEffectSettlement): ProbeReceipt;
   settleSession(input: ProbeSessionSettlement): ProbeReceipt;
+  latchHold(reservation: ProbeReservation, reason: "elapsed" | "observation" | "usage"): ProbeReceipt;
   recordUsage(input: ProbeUsageObservation): ProbeReceipt;
   cancelIntent(input: ProbeCancellation,
     revalidate: () => ProbeHostBinding): ProbeReceipt;
@@ -275,6 +280,7 @@ interface ProbeHostBinding {
 interface ProbeChildBinding {
   variantId: ProbeSha256;
   candidateSha256: ProbeSha256;
+  guidanceSha256: ProbeSha256;
   task: { id: number; created: ProbeInteger; flowRevision: ProbeInteger };
   role: ProbeRoleIdentity;
   guidance: string; // Private exact existing G1 rendering, existing bound applies.
@@ -358,6 +364,7 @@ interface ProbeStoredState {
   receipt: ProbeReceipt;
   counters: ProbeCounters;
   firstReservedAt: ProbeInteger | null;
+  admissionHold: "none" | "elapsed" | "observation" | "usage";
   sessions: readonly {
     slotId: ProbeId;
     generation: ProbeInteger;
@@ -385,6 +392,7 @@ interface ProbeFakeObservation {
   reservation: ProbeReservation;
   outcome: "closed_fixture" | "failed_known" | "unknown";
   servedModel: string | null;
+  inputFrameHash: ProbeSha256 | null;
   workerEffectiveInputHash: ProbeSha256 | null;
   nonGuidanceInputSha256: ProbeSha256 | null;
   candidateArtifactSha256: ProbeSha256 | null;
@@ -454,7 +462,11 @@ The fixture effect value's observation hash binds its visible request and numeri
 
 The fake-launch frame is prepared for the selected role under the declared input matrix and charged against the input reservation. The fake port never receives the entire private snapshots bundle. A worker frame cannot directly contain improver context, other arm outputs or selector material; its only variable arm field is the admitted guidance slot. Preparation/frame equality tests establish fixture separation only, not semantic absence of hidden information or native confinement. Session settlement changes only the private ledger and cannot create a Task review/completion event. Registration receipts have `evidence: "declaration"`; they cannot become `"fixture"` merely because a runner exists or start was requested. Only actual closed fake-port observations have fixture strength, still with no native or model attestation.
 
-Phase1's host-only `GuidanceProbeFixtureHost` composes Store reservations and fake ports for fixtures; its constructor is not a config/wire factory. `guidanceProbeWorkerFrame(task, baselineContext, guidance)` renders only those worker-visible fields, with no reservation/arm ids. Tasks integration later owns the complete role-specific frame preparation; this helper does not materialize or attest other role inputs.
+Phase1's host-only `GuidanceProbeFixtureHost` composes Store reservations and fake ports for fixtures; its constructor is not a config/wire factory. `start(admission, signal)` derives worker bytes from the retained frozen task/baseline/system policy and selected rendered guidance, with no caller-supplied frame/hash. `guidanceProbeWorkerFrame(task, baselineContext, systemPolicy, guidance)` includes all four mandatory worker-visible fields, with no reservation/arm ids; its non-guidance hash derives from the first three. Editor frames come only from a host constructor callback, not wire data. Tasks integration later owns complete role-specific editor preparation; Phase1 does not claim that builder or native materialization.
+
+Every role observation must report the exact full served model and a generic `inputFrameHash` matching its actual visible frame. Worker observations additionally require `workerEffectiveInputHash` and the derived non-guidance hash; editor observations must not label an editor hash as a worker hash. A wrong/unknown model or frame cannot yield controlled authoring or a comparable fixture outcome. `admissionHold` is sticky once elapsed/observation/usage proof is lost: late close/accounting cannot clear it or free the lane, even if the clock later recovers. Any future disposition requires a separately specified T3 proof; T1 grants no hold-reset API.
+
+A visible observation-hash mismatch unconditionally latches conflict/unknown before bookkeeping. Provider hashes are never passed through as ledger correlation identities, even if they happen to equal the host correlation hash; ledger identities are always host-computed.
 
 The proposed control operations are `guidance_probe_register`, `guidance_probe_start`, `guidance_probe_show` and `guidance_probe_cancel`, each always replying to rid, including errors. CLI forms are `ahub guidance probe register --file JSON`, `start --id HASH --revision R [--variant G1_CONTENT_ID]`, `show --id HASH` and `cancel --id HASH --revision R`, with optional JSON output. R is the probe CAS revision, not the frozen Task flow revision. There are no MCP probe tools, console mutations or new daemon authority flags. Unknown operation responses give upgrade/restart guidance. An uncertain write response directs an explicit keyed show, never an automatic replay.
 

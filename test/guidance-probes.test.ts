@@ -2,7 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { openHubDatabase } from "../src/hub/db-schema.ts";
+import { openHubDatabase, type Database } from "../src/hub/db-schema.ts";
+import { parseGuidanceVariantV1, renderGuidanceVariantV1 } from "../src/hub/guidance-variants.ts";
+import { parseRole, taskRoleText } from "../src/hub/roles.ts";
+import vectors from "./fixtures/guidance-variant-v1.json";
 import { GuidanceProbeFixtureHost, GuidanceProbeStore } from "../src/hub/guidance-probe-store.ts";
 import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, guidanceProbeWorkerFrame,
   parseGuidanceProbeCommand, parseGuidanceProbeManifest, parseGuidanceProbeRegistration, probeHash,
@@ -92,6 +95,13 @@ describe("guidance probe V1 inert contract", () => {
     value.slots = [...value.slots, { id: "extra", role: "reflect", arm: "none", stage: "reflect", retryOf: "reflect" }];
     expect(parseGuidanceProbeManifest(value)).toBeUndefined();
   });
+  test("zero-editor baseline/preexisting candidates and successor are admitted without invented authoring", () => {
+    const value = guidanceProbeFixture().registration.manifest;
+    value.slots = [value.slots[0]!, value.slots[2]!, { id: "candidate2", stage: "candidate2", role: "worker", arm: "candidate2" },
+      { id: "successor", stage: "successor", role: "worker", arm: "successor" }];
+    expect(parseGuidanceProbeManifest(value)).toEqual(value);
+    value.slots = [value.slots[0]!]; expect(parseGuidanceProbeManifest(value)).toBeUndefined();
+  });
   test("combined maximum multiline/Unicode snapshots exceed 32KiB legitimately and remain bounded on hydration", () => {
     const f = fixture(), cap = GUIDANCE_PROBE_LIMITS.snapshotBytes;
     f.registration.snapshots.task = "\n".repeat(cap);
@@ -113,8 +123,8 @@ describe("guidance probe V1 inert contract", () => {
   });
   test("worker frame excludes host identity, arm ids and frozen editor experience", () => {
     const value = guidanceProbeFixture();
-    const frame = guidanceProbeWorkerFrame(value.registration.snapshots.task, value.registration.snapshots.baselineContext, value.host.baselineGuidance);
-    expect(JSON.parse(frame)).toEqual({ task: value.registration.snapshots.task, baselineContext: value.registration.snapshots.baselineContext, guidance: value.host.baselineGuidance });
+    const frame = guidanceProbeWorkerFrame(value.registration.snapshots.task, value.registration.snapshots.baselineContext, value.registration.snapshots.systemPolicy, value.host.baselineGuidance);
+    expect(JSON.parse(frame)).toEqual({ task: value.registration.snapshots.task, baselineContext: value.registration.snapshots.baselineContext, systemPolicy: value.registration.snapshots.systemPolicy, guidance: value.host.baselineGuidance });
     expect(frame).not.toContain(value.host.nativeSession!); expect(frame).not.toContain(value.registration.manifest.experimentId);
     expect(probeHash(frame)).not.toBe(probeHash("editor experience"));
   });
@@ -156,7 +166,7 @@ describe("guidance probe private atomic ledger", () => {
   test("production no runner refuses before any lane/session/late binding reservation", async () => {
     const f = fixture(); f.register(); const before = f.store.integrity();
     const host = new GuidanceProbeFixtureHost(f.store, { revalidate: f.revalidate, now: () => 100 });
-    await expect(host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, { inputFrame: "fixture", nonGuidanceInputSha256: probeHash("fixed") }, new AbortController().signal)).rejects.toThrow("runner is unavailable");
+    await expect(host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal)).rejects.toThrow("runner is unavailable");
     expect(f.store.integrity()).toEqual(before);
   });
   test("reservation precedes launch, actual wrapper accounting separates reserved and observed tokens", async () => {
@@ -166,8 +176,13 @@ describe("guidance probe private atomic ledger", () => {
       return launch(input, effects, signal);
     };
     const host = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100 });
-    await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, { inputFrame: "fixture", nonGuidanceInputSha256: probeHash("fixed") }, new AbortController().signal);
+    await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal);
     expect(observedReservation).toBe(true); expect(provider.launches).toHaveLength(1);
+    const visible = JSON.parse(provider.launches[0]!.inputFrame);
+    expect(visible.systemPolicy).toBe(f.registration.snapshots.systemPolicy);
+    expect(visible).toEqual({ task: f.registration.snapshots.task, baselineContext: f.registration.snapshots.baselineContext,
+      systemPolicy: f.registration.snapshots.systemPolicy, guidance: f.host.baselineGuidance });
+    expect(provider.launches[0]!.inputFrame).not.toContain(f.host.nativeSession!);
     expect(f.store.read(f.key)!.counters).toMatchObject({ workerAttempts: 1, modelCalls: 1, tokensReserved: 20, tokensObservedKnown: 10, usageUnknown: false });
   });
   test("effect replay ignores bookkeeping clock but never charges or invokes twice", () => {
@@ -185,11 +200,11 @@ describe("guidance probe private atomic ledger", () => {
       expect((await callbacks.runEffect(request, work)).kind).toBe("executed");
       // Coverage overrun must hold rather than permit a fresh tool effect.
       await expect(callbacks.runEffect({ ...request, sequence: 1 }, work)).rejects.toThrow("uncertain");
-      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, workerEffectiveInputHash: input.inputSha256,
+      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.inputSha256,
         nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
     };
     const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100 });
-    await runner.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, { inputFrame: "fixture", nonGuidanceInputSha256: probeHash("fixed") }, new AbortController().signal);
+    await runner.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal);
     expect(invocations).toBe(1); expect(f.store.read(f.key)!.counters).toMatchObject({ toolCalls: 1, usageUnknown: true });
   });
   test("actual host replay with known usage returns existing state without invoking twice", async () => {
@@ -199,11 +214,11 @@ describe("guidance probe private atomic ledger", () => {
       const work = async () => { invocations++; return fakeEffectValue(request, "tool result", 1); };
       expect((await callbacks.runEffect(request, work)).kind).toBe("executed");
       expect(await callbacks.runEffect(request, work)).toEqual({ kind: "existing", state: "settled" });
-      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, workerEffectiveInputHash: input.inputSha256,
+      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.inputSha256,
         nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
     };
     const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100 });
-    await runner.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, { inputFrame: "fixture", nonGuidanceInputSha256: probeHash("fixed") }, new AbortController().signal);
+    await runner.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal);
     expect(invocations).toBe(1); expect(f.store.read(f.key)!.counters.toolCalls).toBe(1);
   });
   test("shared model/token/tool budget refusal occurs before another fake effect", async () => {
@@ -214,11 +229,11 @@ describe("guidance probe private atomic ledger", () => {
       const request = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("one"), reservedTokens: 20 };
       await callbacks.runEffect(request, async () => { effects++; return fakeEffectValue(request, "one", 10); });
       await expect(callbacks.runEffect({ ...request, sequence: 1, descriptorSha256: probeHash("two") }, async () => { effects++; return fakeEffectValue(request, "two", 10); })).rejects.toThrow("budget");
-      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, workerEffectiveInputHash: input.inputSha256,
+      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.inputSha256,
         nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
     };
     const host = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100 });
-    await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, { inputFrame: "fixture", nonGuidanceInputSha256: probeHash("fixed") }, new AbortController().signal);
+    await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal);
     expect(effects).toBe(1); expect(f.store.read(f.key)!.counters.tokensReserved).toBe(20);
   });
   test("zero-call budget and unknown token upper bound refuse without a launch/effect", () => {
@@ -235,11 +250,11 @@ describe("guidance probe private atomic ledger", () => {
       const request = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("spent"), reservedTokens: 20 };
       await callbacks.runEffect(request, async () => { effects++; authorized = false; await Promise.resolve(); return fakeEffectValue(request, "spent", 10); });
       await expect(callbacks.runEffect({ ...request, sequence: 1 }, async () => { effects++; return fakeEffectValue(request, "forbidden", 10); })).rejects.toThrow();
-      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, workerEffectiveInputHash: input.inputSha256,
+      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.inputSha256,
         nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
     };
     const host = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: check, now: () => 100 });
-    await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, { inputFrame: "fixture", nonGuidanceInputSha256: probeHash("fixed") }, new AbortController().signal);
+    await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal);
     expect(effects).toBe(1); expect(f.store.read(f.key)!.counters.tokensObservedKnown).toBe(10);
   });
   test("missing, conflicting and late usage never becomes a known zero", () => {
@@ -254,12 +269,58 @@ describe("guidance probe private atomic ledger", () => {
     expect(f.store.read(f.key)!.counters).toMatchObject({ tokensReserved: 20, tokensObservedKnown: 21, modelCalls: 1, usageUnknown: true });
     expect(f.store.read(f.key)!.receipt.state).toBe("unknown_held");
   });
+  test("provider hash equal to host ledger hash still latches a visible-hash conflict", async () => {
+    const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider();
+    provider.script = async (input, callbacks) => {
+      const request = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("forged-visible"), reservedTokens: 20 };
+      const admission = { reservation: input.reservation, ...request, amount: 1, now: 100 }, observed = 10;
+      const ledgerHash = probeHash(guidanceProbeCanonical({ admission, observed }));
+      expect(ledgerHash).not.toBe(probeHash(guidanceProbeCanonical({ request, usage: observed })));
+      await callbacks.runEffect(request, async () => ({ value: "fixture", usage: observed, observationSha256: ledgerHash }));
+      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL, inputFrameHash: input.inputSha256,
+        workerEffectiveInputHash: input.inputSha256, nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
+    };
+    const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100 });
+    await runner.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal);
+    expect(f.store.read(f.key)!.admissionHold).toBe("observation");
+    expect(f.store.read(f.key)!.counters.usageUnknown).toBe(true);
+  });
+  test("wrong/unknown editor served model or generic input hash never yields controlled authoring", async () => {
+    for (const override of [{ servedModel: null }, { servedModel: "wrong/model" }, { inputFrameHash: null }, { inputFrameHash: probeHash("wrong-frame") }]) {
+      const f = fixture(); f.register(); f.finish(f.reserve()); const provider = new FakeGuidanceProbeProvider();
+      provider.script = async input => ({ reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL,
+        inputFrameHash: input.inputSha256, workerEffectiveInputHash: null, nonGuidanceInputSha256: null,
+        candidateArtifactSha256: probeHash("editor artifact"), usage: "known_fixture", ...override });
+      const runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100, prepareEditorFrame: () => "bounded editor frame" });
+      await runner.start({ key: f.key, expectedRevision: f.store.read(f.key)!.receipt.revision, host: f.host, now: 100 }, new AbortController().signal);
+      expect(provider.launches).toHaveLength(1); expect(f.store.read(f.key)!.sessions[1]!.candidateArtifactSha256).toBeNull();
+      expect(f.store.read(f.key)!.sessions[1]!.state).toBe("unknown_held"); expect(f.store.read(f.key)!.admissionHold).toBe("observation");
+    }
+  });
   test("wall clock regression holds the lane across reopen without a reservation refund", () => {
     const f = fixture(); f.register(); const r = f.reserve();
     expect(f.store.admitEffect({ ...f.effect(r), now: 99 }, f.revalidate)).toEqual({ kind: "existing", state: "unknown" });
     const reopened = new GuidanceProbeStore(f.file); cleanup.push(() => reopened.close());
     expect(reopened.read(f.key)!.receipt.state).toBe("unknown_held"); expect(reopened.read(f.key)!.counters.workerAttempts).toBe(1);
     expect(() => reopened.reserveSession({ key: f.key, expectedRevision: reopened.read(f.key)!.receipt.revision, host: f.host, now: 200 }, f.revalidate)).toThrow("uncertain");
+  });
+  test("late close after recovered clock cannot clear the sticky elapsed hold or delete the final lane", () => {
+    const f = fixture(); f.registration.manifest.slots = [f.registration.manifest.slots[0]!, f.registration.manifest.slots[2]!];
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    const first = f.store.reserveSession({ key, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate);
+    if (first.kind !== "granted") throw new Error("expected baseline");
+    f.store.settleSession({ reservation: first.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: 100 });
+    const child: ProbeChildBinding = { variantId: probeHash("current-variant"), candidateSha256: probeHash("raw role"), guidanceSha256: probeHash("rendered"), guidance: "rendered",
+      task: f.host.task, role: f.host.role, authoring: "uncontrolled", sourceSessionId: null };
+    const check = () => ({ host: f.host, child });
+    const second = f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, child, now: 100 }, check);
+    if (second.kind !== "granted") throw new Error("expected candidate");
+    expect(f.store.admitEffect({ ...f.effect(second.reservation), now: 99 }, check)).toEqual({ kind: "existing", state: "unknown" });
+    f.store.settleSession({ reservation: second.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: 101 });
+    expect(f.store.read(key)!.admissionHold).toBe("elapsed"); expect(f.store.read(key)!.receipt.state).toBe("unknown_held");
+    const db = openHubDatabase(f.file); cleanup.push(() => db.close());
+    expect((db.query("SELECT COUNT(*) AS n FROM guidance_probe_lanes WHERE project=?").get(key.projectKey) as { n: number }).n).toBe(1);
+    expect(f.store.read(key)!.counters.workerAttempts).toBe(2);
   });
   test("cancel narrows after flow change but does not release or resurrect", () => {
     const f = fixture(); f.register(); f.reserve(); const current = { ...f.host, task: { ...f.host.task, flowRevision: 9 } };
@@ -270,10 +331,73 @@ describe("guidance probe private atomic ledger", () => {
   });
   test("late candidate is atomically bound to existing current G1; external provenance stays uncontrolled", () => {
     const f = fixture(); f.register(); f.finish(f.reserve()); f.finish(f.reserve());
-    const child: ProbeChildBinding = { variantId: probeHash("variant"), candidateSha256: probeHash("Candidate guidance."), guidance: "Candidate guidance.", task: f.host.task, role: f.host.role, authoring: "admitted_fixture", sourceSessionId: "invented" };
+    const child: ProbeChildBinding = { variantId: probeHash("variant"), candidateSha256: probeHash("Raw candidate role file."), guidanceSha256: probeHash("Candidate guidance."), guidance: "Candidate guidance.", task: f.host.task, role: f.host.role, authoring: "admitted_fixture", sourceSessionId: "invented" };
     const result = f.store.reserveSession({ key: f.key, expectedRevision: f.store.read(f.key)!.receipt.revision, host: f.host, child, now: 100 }, () => ({ host: f.host, child }));
     expect(result.kind).toBe("granted"); expect(f.store.read(f.key)!.sessions[2]!.child).toMatchObject({ variantId: child.variantId, authoring: "uncontrolled", sourceSessionId: null });
     expect(f.store.read(f.key)!.counters.workerAttempts).toBe(2);
+  });
+  test("owned G1 raw candidate hash and rendered guidance hash bind different byte representations", async () => {
+    const f = fixture(), g1 = parseGuidanceVariantV1(vectors.golden.record);
+    f.host.task = { id: g1.taskId, created: g1.taskCreated, flowRevision: g1.flowRevision };
+    f.host.role = { id: g1.baseline.roleId, layer: g1.baseline.layer, baselineSha256: g1.baseline.sha256 };
+    f.host.baselineGuidance = taskRoleText(parseRole(g1.baseline.bytes, g1.baseline.roleId, g1.baseline.layer));
+    f.registration.manifest.task = f.host.task; f.registration.manifest.role = f.host.role;
+    f.registration.manifest.guidance.baselineSha256 = probeHash(f.host.baselineGuidance);
+    f.registration.manifest.slots = [f.registration.manifest.slots[0]!, f.registration.manifest.slots[2]!];
+    const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
+    const first = f.store.reserveSession({ key, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate);
+    if (first.kind !== "granted") throw new Error("expected baseline");
+    f.store.settleSession({ reservation: first.reservation, outcome: "closed_fixture", candidateArtifactSha256: null, now: 100 });
+    const rendered = renderGuidanceVariantV1(g1);
+    expect(probeHash(g1.candidate.bytes)).toBe(g1.candidate.sha256); expect(probeHash(rendered)).not.toBe(g1.candidate.sha256);
+    const child: ProbeChildBinding = { variantId: g1.id, candidateSha256: g1.candidate.sha256, guidanceSha256: probeHash(rendered), guidance: rendered,
+      task: f.host.task, role: f.host.role, authoring: "uncontrolled", sourceSessionId: null };
+    const before = f.store.integrity(), wrong = { ...child, guidanceSha256: child.candidateSha256 };
+    expect(() => f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, child: wrong, now: 100 }, () => ({ host: f.host, child: wrong }))).toThrow("binding");
+    expect(f.store.integrity()).toEqual(before);
+    const provider = new FakeGuidanceProbeProvider(), runner = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: () => ({ host: f.host, child }), now: () => 100 });
+    await runner.start({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, child, now: 100 }, new AbortController().signal);
+    expect(JSON.parse(provider.launches[0]!.inputFrame).guidance).toBe(rendered);
+    expect(JSON.parse(provider.launches[0]!.inputFrame).guidance).not.toBe(g1.candidate.bytes);
+    expect(f.store.read(key)!.sessions[1]!.child).toMatchObject({ candidateSha256: g1.candidate.sha256, guidanceSha256: probeHash(rendered), authoring: "uncontrolled" });
+  });
+  test("lane invalid/oversized fields never launder to a legitimate null slot", () => {
+    for (const [column, bad] of [["slot_id", "x".repeat(257)], ["slot_id", 42], ["manifest_id", "x".repeat(65)], ["manifest_id", new Uint8Array([1])]] as const) {
+      const f = fixture(); f.register(); f.finish(f.reserve());
+      const db = openHubDatabase(f.file); cleanup.push(() => db.close());
+      db.query(`UPDATE guidance_probe_lanes SET ${column}=? WHERE project=?`).run(bad, f.key.projectKey);
+      expect(() => f.store.integrity()).toThrow("storage");
+      expect(() => f.store.reserveSession({ key: f.key, expectedRevision: f.store.read(f.key)!.receipt.revision, host: f.host, now: 100 }, f.revalidate)).toThrow("storage");
+    }
+    const f = fixture(); f.register(); f.finish(f.reserve());
+    expect(f.store.reserveSession({ key: f.key, expectedRevision: f.store.read(f.key)!.receipt.revision, host: f.host, now: 100 }, f.revalidate).kind).toBe("granted");
+  });
+  test("lane project/reference corruption is rejected by the bounded recovery projection", () => {
+    for (const [column, bad] of [["project", "x".repeat(257)], ["project", new Uint8Array([1])], ["manifest_id", probeHash("missing")], ["slot_id", "missing-slot"]] as const) {
+      const f = fixture(); f.register(); f.reserve(); const db = openHubDatabase(f.file); cleanup.push(() => db.close());
+      db.query(`UPDATE guidance_probe_lanes SET ${column}=? WHERE project=?`).run(bad, f.key.projectKey);
+      expect(() => f.store.integrity()).toThrow("storage");
+    }
+  });
+  test("integrity manifest/session/lane passes retain one read snapshot across another connection's commit", () => {
+    const f = fixture(); f.register(); const setup = openHubDatabase(f.file); setup.run("PRAGMA journal_mode = WAL"); setup.close();
+    const second = new GuidanceProbeStore(f.file); cleanup.push(() => second.close());
+    const before = f.store.integrity(), internal = f.store as unknown as { db: Database }, db = internal.db;
+    const original = db.query.bind(db), descriptor = Object.getOwnPropertyDescriptor(db, "query"); let inserted = false;
+    // Intercept only this owned read, after its real session SELECT. The concurrent write uses the real second connection.
+    Object.defineProperty(db, "query", { configurable: true, value: (sql: string) => {
+      const statement = original(sql);
+      if (!sql.includes("FROM guidance_probe_sessions WHERE")) return statement;
+      return Object.create(statement, { all: { value: (...args: Parameters<typeof statement.all>) => {
+        const rows = statement.all(...args);
+        if (!inserted) { inserted = true; second.reserveSession({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, f.revalidate); }
+        return rows;
+      } } });
+    } });
+    try { expect(f.store.integrity()).toEqual(before); }
+    finally { if (descriptor) Object.defineProperty(db, "query", descriptor); else Reflect.deleteProperty(db, "query"); }
+    expect(inserted).toBe(true); expect(f.store.integrity().digest).not.toBe(before.digest);
+    expect(f.store.read(f.key)!.counters.workerAttempts).toBe(1);
   });
   test("all four workers/five editors share one root and successful slots cannot repeat", () => {
     const f = fixture();
@@ -286,7 +410,7 @@ describe("guidance probe private atomic ledger", () => {
     const key = guidanceProbeFixtureKey(f.registration); f.store.register(f.registration, f.host, () => f.host);
     for (const slot of f.registration.manifest.slots) {
       const guidance = "Existing current candidate.", child: ProbeChildBinding | undefined = slot.role === "worker" && slot.arm !== "baseline"
-        ? { variantId: probeHash(slot.id), candidateSha256: probeHash(guidance), guidance, task: f.host.task, role: f.host.role, authoring: "uncontrolled", sourceSessionId: null } : undefined;
+        ? { variantId: probeHash(slot.id), candidateSha256: probeHash(guidance), guidanceSha256: probeHash(guidance), guidance, task: f.host.task, role: f.host.role, authoring: "uncontrolled", sourceSessionId: null } : undefined;
       const check = () => ({ host: f.host, ...(child ? { child } : {}) });
       const result = f.store.reserveSession({ key, expectedRevision: f.store.read(key)!.receipt.revision, host: f.host, ...(child ? { child } : {}), now: 100 }, check);
       expect(result.kind).toBe("granted"); if (result.kind !== "granted") throw new Error("expected fixture reservation");

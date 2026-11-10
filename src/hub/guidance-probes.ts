@@ -56,7 +56,7 @@ export interface ProbeHostBinding {
   baselineGuidance: string; sessionGeneration: number; nativeSession: string | null;
 }
 export interface ProbeChildBinding {
-  variantId: string; candidateSha256: string; task: ProbeHostBinding["task"]; role: ProbeRoleIdentity; guidance: string;
+  variantId: string; candidateSha256: string; guidanceSha256: string; task: ProbeHostBinding["task"]; role: ProbeRoleIdentity; guidance: string;
   authoring: "admitted_fixture" | "uncontrolled"; sourceSessionId: string | null;
 }
 export interface ProbeAdmissionRecheck { host: ProbeHostBinding; child?: ProbeChildBinding }
@@ -82,12 +82,13 @@ export interface ProbeSession {
 }
 export interface ProbeStoredState {
   registration: ProbeRegistrationV1; binding: ProbeHostBinding; receipt: ProbeReceipt; counters: ProbeCounters;
-  firstReservedAt: number | null; sessions: readonly ProbeSession[];
+  firstReservedAt: number | null; admissionHold: "none" | "elapsed" | "observation" | "usage"; sessions: readonly ProbeSession[];
 }
 export interface ProbeIntegrity { experiments: number; sessions: number; digest: string }
 export interface ProbeFakeLaunch { reservation: ProbeReservation; slot: ProbeSlot; manifest: GuidanceProbeManifestV1; inputFrame: string; inputSha256: string; nonGuidanceInputSha256: string; purpose: "guidance_probe" }
 export interface ProbeFakeObservation {
   reservation: ProbeReservation; outcome: "closed_fixture" | "failed_known" | "unknown"; servedModel: string | null;
+  inputFrameHash: string | null;
   workerEffectiveInputHash: string | null; nonGuidanceInputSha256: string | null; candidateArtifactSha256: string | null; usage: "known_fixture" | "unknown";
 }
 export interface ProbeFakeStop { reservation: ProbeReservation }
@@ -196,10 +197,9 @@ function slots(value: unknown): void {
     } else { required(position > last); last = position; }
     ids.add(slot.id); counts.set(slot.role, (counts.get(slot.role) ?? 0) + 1);
   }
-  required(list[0]!.stage === "baseline" && list.some(item => item.stage === "proposal1") && list.some(item => item.stage === "candidate1")
-    && list.some(item => item.stage === "select") && list.some(item => item.stage === "reflect"));
-  required(list.some(item => item.stage === "proposal2") === list.some(item => item.stage === "candidate2"));
-  required(list.some(item => item.stage === "compose") === list.some(item => item.stage === "successor"));
+  required(list[0]!.stage === "baseline" && list.some(item => item.stage === "candidate1"));
+  required(!list.some(item => item.stage === "proposal2") || list.some(item => item.stage === "candidate2"));
+  required(!list.some(item => item.stage === "compose") || list.some(item => item.stage === "successor"));
   required((counts.get("worker") ?? 0) <= GUIDANCE_PROBE_LIMITS.workerAttempts && (counts.get("proposal") ?? 0) <= 2
     && ["compose", "select", "reflect"].every(key => (counts.get(key) ?? 0) <= 1)
     && list.filter(item => item.role !== "worker").length <= GUIDANCE_PROBE_LIMITS.editorAttempts);
@@ -304,8 +304,9 @@ export function parseGuidanceProbeCommand(args: readonly string[]): GuidanceProb
 }
 
 /** Explicit worker-visible bytes; no host identity, arm label or improver side channel. */
-export function guidanceProbeWorkerFrame(task: string, baselineContext: string, guidance: string): string {
-  if ([task, baselineContext].some(text => typeof text !== "string" || Buffer.byteLength(text) > GUIDANCE_PROBE_LIMITS.snapshotBytes)
+export function guidanceProbeWorkerFrame(task: string, baselineContext: string, systemPolicy: string, guidance: string): string {
+  if ([task, baselineContext, systemPolicy].some(text => typeof text !== "string" || Buffer.byteLength(text) > GUIDANCE_PROBE_LIMITS.snapshotBytes)
     || typeof guidance !== "string") return invalid();
-  return JSON.stringify({ task, baselineContext, guidance });
+  return JSON.stringify({ task, baselineContext, systemPolicy, guidance });
 }
+export const guidanceProbeNonGuidanceInputHash = (task: string, baselineContext: string, systemPolicy: string): string => probeHash(JSON.stringify({ task, baselineContext, systemPolicy }));

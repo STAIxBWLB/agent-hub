@@ -36,7 +36,8 @@ export class FakeGuidanceProbeProvider implements GuidanceProbeFakePorts {
     const request: ProbeFakeEffectRequest = { sequence: 0, unit: "model_calls", descriptorSha256: probeHash("fake-model-call"), reservedTokens: 20 };
     await effects.runEffect(request, async () => fakeEffectValue(request, "fixture result", 10));
     return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL,
-      workerEffectiveInputHash: input.inputSha256, nonGuidanceInputSha256: input.nonGuidanceInputSha256,
+      inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.slot.role === "worker" ? input.inputSha256 : null,
+      nonGuidanceInputSha256: input.slot.role === "worker" ? input.nonGuidanceInputSha256 : null,
       candidateArtifactSha256: null, usage: "known_fixture" };
   }
   async stop(input: { reservation: ProbeFakeLaunch["reservation"] }): Promise<{ reservation: ProbeFakeLaunch["reservation"]; stopped: "known_fixture" }> {
