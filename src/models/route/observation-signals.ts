@@ -30,9 +30,9 @@ interface ResultFacts {
 const WIRE_BYTES = 2_000_000;
 const unavailable = Symbol("observation unavailable");
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
-const testName = /^(?:test|run_tests|run_test|pytest|unittest)$/i;
+const testName = /\b(?:test|tests|spec|specs|pytest|vitest|jest|cargo test|go test)\b|^(?:run_tests|run_test|unittest)$/iu;
 // Local lexical evidence only, never an executable/exit-status attestation.
-const testCommand = /(?:^|[\s;&|])(?:(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?test(?:$|[\s:])|(?:pytest|vitest|jest)(?:$|\s)|python(?:3(?:\.\d+)?)?\s+-m\s+(?:pytest|unittest)\b|(?:cargo|go|make|just)\s+test\b)/i;
+const testCommand = /\b(?:bun test|pytest|vitest|jest|cargo test|go test|npm test|pnpm test|yarn test)\b|(?:^|[\s;&|])(?:(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?test(?:$|[\s:])|python(?:3(?:\.\d+)?)?\s+-m\s+(?:pytest|unittest)\b|(?:make|just)\s+test\b)/iu;
 
 function own(value: object, key: string): unknown {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -165,20 +165,29 @@ export function failureFingerprint(value: string, isError: boolean): string | un
 export function repeatedObservationFailure(observations: readonly ToolObservation[]): boolean | undefined {
   try {
     if (!dataArray(observations) || observations.length > WIRE_BYTES / 20) return undefined;
-    const results: ResultFacts[] = [], copied: Record<string, unknown>[] = [];
+    const copied: Record<string, unknown>[] = [];
+    let remaining = WIRE_BYTES;
+    const charge = (bytes: number): void => { remaining -= bytes; if (remaining < 0) throw unavailable; };
+    const inspectedText = (value: unknown): value is string => {
+      if (typeof value !== "string" || value.length > WIRE_BYTES) return false;
+      charge(Buffer.byteLength(value)); return true;
+    };
+    // Lower-bound aggregate admission precedes every diagnostic/fingerprint operation.
     for (let index = 0; index < observations.length; index++) {
+      charge(20);
       const item = own(observations, String(index));
       if (!plain(item)) return undefined;
       const name = own(item, "name"), resultText = own(item, "resultText"), invocation = own(item, "command"),
         isError = own(item, "isError"), source = own(item, "source");
-      if (!text(name) || !name || resultText !== undefined && !text(resultText) || invocation !== undefined && !text(invocation)
-        || source !== undefined && !text(source) || isError !== undefined && typeof isError !== "boolean") return undefined;
+      if (!inspectedText(name) || !name || resultText !== undefined && !inspectedText(resultText) || invocation !== undefined && !inspectedText(invocation)
+        || source !== undefined && !inspectedText(source) || isError !== undefined && typeof isError !== "boolean") return undefined;
       if (["resultText", "command", "isError", "source"].some(key => Object.hasOwn(item, key) && own(item, key) === undefined)) return undefined;
       copied.push({ role: "tool", content: resultText ?? "", name, ...(invocation === undefined ? {} : { command: invocation }),
         ...(source === undefined ? {} : { source }), ...(isError === undefined ? {} : { isError }) });
-      results.push(facts(name, resultText ?? "", isError === true, invocation));
     }
     if (estimateStageInputTokens(copied) === undefined) return undefined;
+    const results = copied.map(item => facts(item.name as string, item.content as string,
+      item.isError === true, item.command as string | undefined));
     const counts = new Map<string, number>();
     const seen = new Set<string>();
     for (const failure of fold(results).failures) {

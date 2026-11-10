@@ -77,6 +77,17 @@ test("numeric migration summaries alone are neither test failure nor test pass",
   expect(outcome([{ command: "migrate records", output: "9 passed, 0 failed" }])?.tests).toBe("none");
 });
 
+test("owned test invocation names qualify numeric outcomes with empty arguments", () => {
+  for (const name of ["jest", "vitest", "spec", "specs", "tests"]) {
+    const assistant = { role: "assistant", content: null, tool_calls: [{ id: "named-test", type: "function",
+      function: { name, arguments: "{}" } }] };
+    const result = projectOutcomeBatch(assistant, [{ role: "tool", tool_call_id: "named-test", content: "2 failed, 8 passed" }]);
+    expect(result?.tests).toBe("fail");
+    expect(result?.severity).toBe(0);
+    expect(result?.failureDigests).toHaveLength(1);
+  }
+});
+
 test("failed counts beat simultaneous passing counts and zero-zero never clears tests", () => {
   const retained = outcome([{ command: "npm test", output: "3 failed, 8 passed" },
     { command: "npm test", output: "0 passed, 0 failed" }, { output: "ok" }]);
@@ -153,4 +164,13 @@ test("native repetition preserves outcome clearing and refuses malformed or over
   expect(repeatedObservationFailure([failure, failure, { name: "bash", command: "bun test", resultText: "3 tests passed" }])).toBe(false);
   expect(repeatedObservationFailure([{ name: "bash", isError: "false" } as unknown as ToolObservation])).toBeUndefined();
   expect(repeatedObservationFailure([{ name: "bash", resultText: "x".repeat(2_000_001) }])).toBeUndefined();
+});
+
+test("combined overflow rejects shared individually bounded result strings", () => {
+  const shared = "fixture failure ".repeat(70_000);
+  expect(Buffer.byteLength(shared)).toBeLessThan(2_000_000);
+  const observations = Array.from({ length: 28 }, () => ({ name: "bash", resultText: shared }));
+  expect(repeatedObservationFailure(observations)).toBeUndefined();
+  // This result assertion does not measure CPU order. Source admission has two
+  // phases: lower-bound copy + exact wire admission, then diagnostics/folding.
 });
