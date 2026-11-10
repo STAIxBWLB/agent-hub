@@ -760,7 +760,13 @@ owned loopback fake service endpoint, never an implicit default. Default absence
 retains canonical missing-turn/no-HTTP behavior; no native/provider/person identity
 or inferred multi-user lifecycle is introduced. The first pauses a scripted reply
 only after execute arguments have been recorded; the last receives a detached,
-frozen copy and has no return authority. Absent ports introduce no new await or
+frozen copy and has no return authority. An optional `observeExecute` read-only
+tap similarly receives a detached/frozen snapshot of the actual requested model,
+messages, judge flag and maxTokens arguments, never the signal. It is invoked
+only when supplied, introduces no default clone/await/promise, and cannot alter
+scripted replies or scoring. Exact host-input JSON bytes are compared, not
+claimed as native/provider wire. The execute API has no effort argument, so no
+effective/served effort value is invented. Absent ports introduce no new await or
 readiness promise in canonical corpus execution. These ports do not change corpus
 cases, expected outputs, splits, guards or scoring. Integration proof must still
 show an actual judge-target event, off-mode absence and identical actual model,
