@@ -14,7 +14,11 @@ export interface ProbeConfinement {
 }
 /** An uncertain command retains this owned stop handle; callers must join it before workspace cleanup. */
 export class ProbeConfinementError extends Error {
-  constructor(readonly stop: () => Promise<void> = async () => {}) { super("probe OS confinement is unavailable or its owned command has not quiesced"); }
+  constructor(readonly stop: () => Promise<void> = async () => {},
+    /** Private proof-only diagnostic, never copied into a public probe receipt or ordinary observer. */
+    readonly diagnostic?: { stage: "control" | "lane" | "cleanup"; code: number | null; output: string }) {
+    super("probe OS confinement is unavailable or its owned command has not quiesced");
+  }
 }
 interface ProofState { workspace: ProbeWorkspace; profile: string; digest: string; current(): void; stop(): Promise<void> }
 interface OwnedProofPath { file: string; dev: number; ino: number; directory: boolean; optional?: boolean; removed?: boolean }
@@ -165,13 +169,14 @@ export async function verifyProbeConfinement(workspace: ProbeWorkspace, signal?:
       });
       active = command;
       const result = await command; active = undefined;
-      if (!result.quiescent) { if (result.stop) pending.add(result.stop); retained = true; throw new ProbeConfinementError(stop); }
+      if (!result.quiescent) { if (result.stop) pending.add(result.stop); retained = true;
+        throw new ProbeConfinementError(stop, { stage: "cleanup", code: result.code, output: result.output.slice(0, 1024) }); }
       probeWorkspaceCurrent(workspace);
       return result;
     };
     // Same utility and runtime constraints, with a single owned-loopback grant only for this positive control.
     const control = await run(["/usr/bin/nc", "-n", "-z", "-G", "1", "-w", "1", "127.0.0.1", String(server.port)], restrictedProfile(workspace, server.port));
-    if (control.code !== 0 || signal?.aborted) throw new ProbeConfinementError(stop);
+    if (control.code !== 0 || signal?.aborted) throw new ProbeConfinementError(stop, { stage: "control", code: control.code, output: control.output.slice(0, 1024) });
     const script = [
       'set -eu',
       '[ "$(/bin/cat "$1")" = "probe-boundary-canary" ] || exit 11',
@@ -191,7 +196,8 @@ export async function verifyProbeConfinement(workspace: ProbeWorkspace, signal?:
     probeWorkspaceCurrent(workspace);
     const result = await run(["/bin/sh", "-c", script, "proof", readable, writeControl ?? "/dev/null", String(server.port), aliasControl ?? "/dev/null", ...negatives], laneProfile);
     probeWorkspaceCurrent(workspace);
-    if (result.code !== 0 || result.output.trim() !== "PERMITTED\nDENIED" || networkRequests !== 0 || signal?.aborted) throw new ProbeConfinementError(stop);
+    if (result.code !== 0 || result.output.trim() !== "PERMITTED\nDENIED" || networkRequests !== 0 || signal?.aborted)
+      throw new ProbeConfinementError(stop, { stage: "lane", code: result.code, output: result.output.slice(0, 1024) });
     if (negatives.some(file => readFileSync(file, "utf8") !== PROOF_TOKEN)) throw new ProbeConfinementError(stop);
     if (readFileSync(readable, "utf8") !== PROOF_TOKEN) throw new ProbeConfinementError(stop);
     if (writeControl && readFileSync(writeControl, "utf8") !== PROOF_TOKEN) throw new ProbeConfinementError(stop);
