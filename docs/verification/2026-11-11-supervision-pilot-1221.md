@@ -131,11 +131,14 @@ rows a reading returned, so `0 on my tasks` is not a claim about the queue.
 | 0 | role-scoped (task 866), wave start | 2026-11-11 | unknown (not stored) | 0 on my tasks | 0 on my tasks | 0 on my tasks | 0 | 0 (current queue) | 0 |
 | 1 | role-scoped (task 866) | 2026-11-11 06:28 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 2 |
 | 2 | role-scoped (task 866) | 2026-11-11 08:36 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 3 |
+| 3 | role-scoped (task 866) | 2026-11-11 17:19 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 3 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
 same way, 2 s after its partner's review time, and the queue had stored nothing new on this task.
-Coverage (`evaluated`) is not part of a role-scoped read and stays unknown at both readings,
+Reading 3, nine hours later, returned the same three expired rows, the same revision (`8:3`) and
+`refused 0`: the queue stored no new proposal on this task, and its last partner had merged by
+then. Coverage (`evaluated`) is not part of a role-scoped read and stays unknown at every reading,
 never zero.
 
 ## Proposal ledger
@@ -144,11 +147,11 @@ never zero.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `sup-067f72d97dd1` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:873` | `request_integration` | expired by the queue 1.3 s after #873's review time; unknown from stored records | #873 has one row of its own in `docs/dogfood.md` (`Console agent-hub versions (#1385)`) and this task inserts one row after the `Supervision rules and proposals (#1221 T1, T2)` row, so the overlap was file-level only; an approved side is a closed side, so the pair left supervision at the verdict, and #873's merge (`2d341c298`) landed with no row naming it |
 | `sup-67b2b2319f69` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:874` | `request_integration` | expired by the queue 1.3 s after #874's review time; unknown from stored records | #874 adds one row to `docs/dogfood.md` several dozen rows above this task's anchor (read at `0c427dd0`); same closure rule, and #874's merge (`89e69a38a`) landed with no row naming it |
-| `sup-adb3295ebc9b` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:881` | `request_integration` | expired by the queue 1.4 s after #881's review time; unknown from stored records | #881 rewrites the Orca O0 row at 124, deletes the O1-O3 rows at 126-128, and collapses the Herdr H0-H3 rows at 251-254 plus the Claude Code row at 255 into two (measured at `45ed8d5c`), while this task inserts one row after the supervision row; jcode asked on 2026-11-11 and confirmed the ranges, so the pair needed no integration record; #881 was still in review at reading 2, so its merge is ahead |
+| `sup-adb3295ebc9b` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:881` | `request_integration` | expired by the queue 1.4 s after #881's review time; unknown from stored records | #881 rewrites the Orca O0 row at 124, deletes the O1-O3 rows at 126-128, and collapses the Herdr H0-H3 rows at 251-254 plus the Claude Code row at 255 into two (measured at `45ed8d5c`), while this task inserts one row after the supervision row; jcode asked on 2026-11-11 and confirmed the ranges, so the pair needed no integration record; #881 was still in review at reading 2 and merged as `60db687fd` (#1392) before reading 3, with no row naming that merge either |
 
 A pending proposal stays pending until the wave closes: classifying one while later revisions are
 already in view would let its outcome be chosen to fit them. No row on this task is pending at
-reading 2. An expiry is the queue's own disposition and not a classification: it records that the
+reading 3. An expiry is the queue's own disposition and not a classification: it records that the
 reading stopped holding, and it counts neither as a helpful or false intervention nor as a clean
 non-trigger.
 
@@ -179,7 +182,8 @@ and is not part of this wave.
 - an integration that lands with the merge itself. All three `declared_overlap_without_integration`
   rows on this task expired 1.3 to 1.4 s after their partner's recorded review time, so the pair
   leaves supervision at the approving verdict and no row can name the merge as its integration.
-  Two of those partners then merged on main (`2d341c298`, `89e69a38a`) and no row named either
-  merge; the third was still in review at reading 2. Measured three times on 2026-11-11; it is a
-  limit of the reading window, not a defect of any task;
+  All three of those partners then merged on main (`2d341c298`, `89e69a38a`, `60db687fd`) and no
+  row named any of the three merges, though the third had merged before reading 3 returned its
+  expired row. Measured four times on 2026-11-11; it is a limit of the reading window, not a
+  defect of any task;
 - every threshold that needs a live sample larger than this pilot can produce.
