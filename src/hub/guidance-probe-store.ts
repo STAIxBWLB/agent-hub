@@ -57,7 +57,7 @@ const counters = (): ProbeCounters => ({ workerAttempts: 0, editorAttempts: 0, m
   elapsedHighWaterMs: 0, usageUnknown: false });
 const sessionCoverage = (frame: ProbePreparedFrame | undefined): ProbeSessionCoverage => ({
   inputFrameSha256: frame?.sha256 ?? null, inputFrameBytes: frame?.bytes ?? 0, launchExposed: false, preLaunchFailure: false,
-  modelCalls: 0, modelUsageKnown: 0, toolCalls: 0, toolUsageKnown: 0, usageUnknown: false, coverageVerified: false,
+  modelCalls: 0, modelUsageKnown: 0, toolCalls: 0, toolUsageKnown: 0, usageUnknown: false, coverageVerified: false, tokensObserved: 0,
 });
 const receipt = (state: Stored, already = false): ProbeReceipt => ({ ...state.receipt, already });
 const advance = (state: Stored): void => { state.receipt.revision = increment(state.receipt.revision); };
@@ -139,8 +139,13 @@ function skipUnusedRetries(state: Stored, successful: number): void {
 /** Private same-db ledger. It never reads G1 tables or owns Task authority. */
 export class GuidanceProbeStore {
   private readonly db: Database;
-  constructor(file: string, private readonly now: () => number = Date.now) {
-    this.db = openHubDatabase(file, { create: true });
+  /**
+   * `readonly` opens the file on a connection that physically cannot write and creates nothing: every read still works, and any write path (including `reconcile`)
+   * fails as storage. It is how a reader proves "a read-only open never writes" (#1226 T3) and the open a future status reader should use.
+   */
+  constructor(file: string, private readonly now: () => number = Date.now, readonly readOnly = false) {
+    this.db = readOnly ? openHubDatabase(file, { readonly: true }) : openHubDatabase(file, { create: true });
+    if (readOnly) return;
     try {
       this.db.run(`CREATE TABLE IF NOT EXISTS guidance_probe_manifests (
         project TEXT NOT NULL,id TEXT NOT NULL,experiment TEXT NOT NULL,manifest TEXT NOT NULL,
@@ -210,10 +215,12 @@ export class GuidanceProbeStore {
         || !["planned", "reserved", "running", "failed_known", "closed_fixture", "not_needed", "unknown_held"].includes(session.state)
         || session.candidateArtifactSha256 !== null && !probeSha256(session.candidateArtifactSha256)) return fail("storage");
       const fields = Object.keys(session);
-      if (fields.some(name => !["slotId", "generation", "revision", "state", "candidateArtifactSha256", "child", "host", "effect", "start", "coverage"].includes(name))
+      if (fields.some(name => !["slotId", "generation", "revision", "state", "candidateArtifactSha256", "child", "host", "effect", "start", "coverage", "closeCause"].includes(name))
+        || session.closeCause !== undefined && !["none", "cancel", "elapsed", "hold", "crash"].includes(session.closeCause)
         || !Object.hasOwn(session, "effect") || ["planned", "not_needed"].includes(session.state)
           && (session.effect !== null || session.host !== undefined || session.child !== undefined || session.start !== undefined || session.generation !== 0 || session.revision !== 0 || session.candidateArtifactSha256 !== null)
-        || !session.coverage || Object.keys(session.coverage).sort().join(",") !== Object.keys(sessionCoverage(undefined)).sort().join(",")
+        || !session.coverage || Object.keys(session.coverage).filter(name => name !== "tokensObserved").sort().join(",") !== Object.keys(sessionCoverage(undefined)).filter(name => name !== "tokensObserved").sort().join(",")
+        || session.coverage.tokensObserved !== undefined && !probeInteger(session.coverage.tokensObserved)
         || !probeInteger(session.coverage.inputFrameBytes) || session.coverage.inputFrameSha256 !== null && !probeSha256(session.coverage.inputFrameSha256)
         || ["launchExposed", "preLaunchFailure", "usageUnknown", "coverageVerified"].some(name => typeof session.coverage[name as keyof ProbeSessionCoverage] !== "boolean")
         || ["modelCalls", "modelUsageKnown", "toolCalls", "toolUsageKnown"].some(name => !probeInteger(session.coverage[name as keyof ProbeSessionCoverage]))
@@ -469,7 +476,7 @@ export class GuidanceProbeStore {
         if (input.observed === null) { state.counters.usageUnknown = true; if (session) session.coverage.usageUnknown = true; }
         else if (input.admission.unit === "model_calls") {
           state.counters.tokensObservedKnown = increment(state.counters.tokensObservedKnown, input.observed);
-          if (session) session.coverage.modelUsageKnown = increment(session.coverage.modelUsageKnown);
+          if (session) { session.coverage.modelUsageKnown = increment(session.coverage.modelUsageKnown); session.coverage.tokensObserved = increment(session.coverage.tokensObserved ?? 0, input.observed); }
           if (input.admission.reservedTokens !== undefined && input.observed > input.admission.reservedTokens) state.counters.usageUnknown = true;
         } else if (input.admission.unit === "tool_calls") {
           if (session) session.coverage.toolUsageKnown = increment(session.coverage.toolUsageKnown);
@@ -507,6 +514,8 @@ export class GuidanceProbeStore {
         || session.coverage.launchExposed && !covered;
       session.coverage.coverageVerified = covered && !unknown;
       session.state = unknown ? "unknown_held" : input.outcome === "failed_known" ? "failed_known" : "closed_fixture"; session.candidateArtifactSha256 = input.candidateArtifactSha256;
+      // The settled session's own cause, fixed here: a later cancel, hold or other session can no longer change what its receipt says.
+      session.closeCause = state.cancelRequested || state.receipt.state === "closing" ? "cancel" : state.admissionHold === "elapsed" ? "elapsed" : unknown ? "hold" : "none";
       if (unknown) state.receipt.state = "unknown_held";
       else {
         this.db.query("UPDATE guidance_probe_lanes SET slot_id=NULL WHERE project=? AND manifest_id=? AND slot_id=?").run(input.reservation.key.projectKey, input.reservation.key.id, session.slotId);
@@ -529,7 +538,7 @@ export class GuidanceProbeStore {
         || session.effect !== null || state.counters.usageUnknown || state.admissionHold !== "none" || state.cancelRequested || state.receipt.state === "closing") return fail("held");
       if (this.clockLost(reservation.key, state, now)) return receipt(state);
       elapsed(state, now);
-      session.coverage.preLaunchFailure = true; session.state = "failed_known"; session.candidateArtifactSha256 = null;
+      session.coverage.preLaunchFailure = true; session.state = "failed_known"; session.candidateArtifactSha256 = null; session.closeCause = "none";
       this.db.query("UPDATE guidance_probe_lanes SET slot_id=NULL WHERE project=? AND manifest_id=? AND slot_id=?").run(reservation.key.projectKey, reservation.key.id, session.slotId);
       const index = state.sessions.indexOf(session), failed = state.registration.manifest.slots[index + 1]?.retryOf !== session.slotId;
       if (failed) {
@@ -586,8 +595,12 @@ export class GuidanceProbeStore {
         for (const value of sealed) {
           const session = state.sessions.find(item => item.slotId === value.slotId);
           // A receipt describes a session that reached a settled state, at the generation and revision it was reserved at.
-          if (!session || value.generation !== session.generation || ["planned", "not_needed", "reserved", "running"].includes(session.state)
-            || value.state === "succeeded" && (session.state !== "closed_fixture" || !session.coverage.coverageVerified)) return fail("storage");
+          const settled = session && !["planned", "not_needed", "reserved", "running"].includes(session.state);
+          // A receipt describes a settled session at the generation AND revision it was reserved at, and its state must be one that session could produce.
+          if (!session || !settled || value.generation !== session.generation || value.revision !== session.revision
+            || value.state === "succeeded" && (session.state !== "closed_fixture" || !session.coverage.coverageVerified)
+            || value.state === "failed" && session.state !== "failed_known"
+            || value.state === "unavailable" && !["failed_known", "unknown_held"].includes(session.state)) return fail("storage");
         }
         return sealed;
       })();
@@ -601,7 +614,38 @@ export class GuidanceProbeStore {
   sealReceipt(reservation: ProbeReservation, measured: ProbeMeasuredSession): ProbeReceiptV1 {
     // A conflicting replay must persist its hold, and a throw inside the transaction would roll that back. So the transaction returns the conflict
     // as a value and the refusal is raised only after the hold has committed.
-    const result = this.transaction((): ProbeReceiptV1 | "conflict" => {
+    const result = this.transaction(() => this.sealWithin(reservation, measured));
+    if (result === "conflict") return fail("held");
+    return result;
+  }
+  /**
+   * Settle a session and seal its receipt in ONE `BEGIN IMMEDIATE` transaction, so a settled session never exists without its receipt and no state
+   * between the two is visible. Anything that fails inside (including the seal) rolls the settlement back too: the session stays reserved or running,
+   * which the explicit reconcile at daemon start records as unknown. The caller may then settle it as unknown with a fallback measurement.
+   */
+  settleAndSeal(input: ProbeSessionSettlement, usage: "known_fixture" | "unknown", measured: ProbeMeasuredSession): { receipt: ProbeReceipt; sealed: ProbeReceiptV1 | undefined } {
+    const result = this.transaction(() => {
+      const settled = this.settleObservedSession(input, usage);
+      const session = this.get(input.reservation.key).sessions.find(item => item.slotId === input.reservation.slotId);
+      // A settlement that only latched a hold (a lost clock) leaves the session running: there is nothing to seal yet, the hold stays committed, and the
+      // explicit reconcile at daemon start records the session as unknown.
+      if (!session || ["planned", "not_needed", "reserved", "running"].includes(session.state)) return { receipt: settled, sealed: undefined };
+      return { receipt: settled, sealed: this.sealWithin(input.reservation, measured) };
+    });
+    if (result.sealed === "conflict") return fail("held");
+    return { receipt: result.receipt, sealed: result.sealed };
+  }
+  /** The pre-launch variant: the host attests no launch happened, and the session settles as failed with an `unavailable` receipt in the same transaction. */
+  settlePreLaunchAndSeal(reservation: ProbeReservation, now: number, measured: ProbeMeasuredSession): { receipt: ProbeReceipt; sealed: ProbeReceiptV1 } {
+    const result = this.transaction(() => {
+      const settled = this.settlePreLaunchFailure(reservation, now);
+      return { receipt: settled, sealed: this.sealWithin(reservation, measured) };
+    });
+    if (result.sealed === "conflict") return fail("held");
+    return { receipt: result.receipt, sealed: result.sealed };
+  }
+  private sealWithin(reservation: ProbeReservation, measured: ProbeMeasuredSession): ProbeReceiptV1 | "conflict" {
+    {
       const key = reservation.key, state = this.get(key);
       const session = state.sessions.find(item => item.slotId === reservation.slotId);
       if (!session || session.generation !== reservation.generation || session.revision !== reservation.revision || ["planned", "not_needed", "reserved", "running"].includes(session.state)) return fail("changed");
@@ -624,9 +668,7 @@ export class GuidanceProbeStore {
       this.db.query("INSERT INTO guidance_probe_receipts(project,manifest_id,slot_id,body,pruned,retained) VALUES(?,?,?,?,0,?)")
         .run(key.projectKey, key.id, reservation.slotId, canonical(built), retained ? canonical(retained) : null);
       return built;
-    });
-    if (result === "conflict") return fail("held");
-    return result;
+    }
   }
   private buildReceipt(state: Stored, session: Session, measured: ProbeMeasuredSession, wallEnd: number): ProbeReceiptV1 {
     const manifest = state.registration.manifest, slot = manifest.slots.find(item => item.id === session.slotId)!;
@@ -635,20 +677,28 @@ export class GuidanceProbeStore {
     const startedAt = probeInteger(measured.startedAt) ? Math.min(Math.max(measured.startedAt, first), endedAt) : first;
     const limits = new Set<ProbeReceiptLimit>(measured.limits);
     const coverage = session.coverage;
+    // Derived from this session's settled facts, the manifest (immutable) and the host's measurement only. Mutable experiment state (running token totals,
+    // the current hold, a later cancel) is never read here, so an identical replay after another session ran is byte-identical.
+    const cause = session.closeCause ?? (session.state === "unknown_held" ? "hold" : "none");
     if (coverage.usageUnknown || coverage.modelUsageKnown !== coverage.modelCalls || coverage.toolUsageKnown !== coverage.toolCalls) limits.add("usage_unknown");
     if (measured.servedModel === null) limits.add("served_model_unobserved");
     else if (measured.servedModel !== manifest.model.requested) limits.add("served_model_mismatch");
     if (!measured.teardownVerified) limits.add("teardown_unverified");
+    if (measured.runtime === null) limits.add("coverage_unverified");
     if (!coverage.coverageVerified) limits.add("coverage_unverified");
     if (measured.output.excluded.length > 0) limits.add("output_truncated");
     // The declared storage bound is the ceiling at runtime too: what the session left behind beyond it is a non-success and is never retained.
     if (measured.scratchBytes > manifest.limits.scratchBytes || measured.output.totalBytes > manifest.limits.outputBytes) limits.add("storage_over_cap");
+    // Order matters: what the host cannot vouch for comes first. A session whose teardown was not verified, or that a crash left behind, is `unknown`
+    // whatever else is true of it (a cancel or an elapsed hold that was latched before the crash does not make it `cancelled` or `timed_out`).
     let outcome: ProbeReceiptState;
-    if (state.cancelRequested || measured.cancelled) outcome = "cancelled";
-    else if (measured.timedOut || state.admissionHold === "elapsed") outcome = "timed_out";
-    else if (measured.unavailable) outcome = "unavailable";
-    else if (session.state === "failed_known" && !measured.unavailable) outcome = "failed";
-    else if (session.state === "unknown_held" || !measured.teardownVerified || state.admissionHold !== "none" || state.counters.usageUnknown) outcome = "unknown";
+    if (!measured.teardownVerified || cause === "crash") outcome = "unknown";
+    else if (cause === "cancel" || measured.cancelled) outcome = "cancelled";
+    else if (cause === "elapsed" || measured.timedOut) outcome = "timed_out";
+    // `unavailable` means the session could not start. Once any model or tool call ran, a confinement error is a failure or an unknown, never unavailable.
+    else if (measured.unavailable && coverage.modelCalls === 0 && coverage.toolCalls === 0) outcome = "unavailable";
+    else if (session.state === "failed_known") outcome = "failed";
+    else if (session.state === "unknown_held") outcome = "unknown";
     else outcome = "succeeded";
     // A success needs every condition of the contract's Sealing section; any gap downgrades it, it never stays a success.
     if (outcome === "succeeded" && (limits.size > 0 || measured.servedModel !== manifest.model.requested || session.state !== "closed_fixture")) outcome = "unknown";
@@ -657,10 +707,12 @@ export class GuidanceProbeStore {
       requestedModel: manifest.model.requested, servedModel: measured.servedModel, inputFrameSha256: coverage.inputFrameSha256,
       workerEffectiveInputSha256: slot.role === "worker" ? measured.workerEffectiveInputSha256 : null, nonGuidanceInputSha256: slot.role === "worker" ? measured.nonGuidanceInputSha256 : null,
       guidanceSha256: slot.arm === "baseline" ? manifest.guidance.baselineSha256 : session.child?.guidanceSha256 ?? null,
-      runtimeSha256: manifest.runtime.runtimeSha256, toolsetSha256: manifest.runtime.toolsetSha256, modelConfigSha256: manifest.runtime.modelConfigSha256,
+      // The host's own fingerprints at seal time, never the declaration's: copying the manifest would make a drifted runtime unrecordable. Null when unread.
+      runtimeSha256: measured.runtime?.runtimeSha256 ?? null, toolsetSha256: measured.runtime?.toolsetSha256 ?? null, modelConfigSha256: measured.runtime?.modelConfigSha256 ?? null,
       startedAt, endedAt, elapsedMs: endedAt - startedAt, state: outcome,
       usage: { modelCalls: coverage.modelCalls, modelUsageKnown: coverage.modelUsageKnown, toolCalls: coverage.toolCalls, toolUsageKnown: coverage.toolUsageKnown,
-        tokensObserved: coverage.usageUnknown || coverage.modelUsageKnown !== coverage.modelCalls ? null : state.counters.tokensObservedKnown },
+        // This session's own observed tokens, not the experiment's running total. Unknown (null) when any call went unobserved or none was recorded.
+        tokensObserved: coverage.usageUnknown || coverage.modelUsageKnown !== coverage.modelCalls || coverage.tokensObserved === undefined ? null : coverage.tokensObserved },
       limits: [...limits].sort(), output, expiresAt: endedAt + PROBE_RETENTION_MS };
     return { ...body, digest: probeReceiptDigest(body) };
   }
@@ -695,20 +747,25 @@ export class GuidanceProbeStore {
    * Read-only: exactly what a prune would remove now and why anything is kept. An active, held, closing or unfinished experiment is never prunable,
    * and an output is prunable only after its own `expiresAt`. The digest binds this plan; `prune` refuses any other.
    */
-  previewPrune(key: ProbeKey, now: number, fs: ProbeRetentionFs): ProbePrunePlan {
+  previewPrune(key: ProbeKey, fs: ProbeRetentionFs): ProbePrunePlan {
     try {
       return this.db.transaction(() => {
+        // Expiry is decided on the Store's own trusted clock, never a caller's: a caller cannot pull a retention date forward.
+        const now = this.now();
         const state = this.readStored(key); if (!state) return fail("changed");
         const sealed = this.receipts(key), retained = this.retainedRows(key);
-        const blocked: ProbePruneKeepReason | undefined = state.receipt.state === "unknown_held" || state.admissionHold !== "none" || state.counters.usageUnknown ? "experiment_held"
-          : !["closed_fixture", "failed_fixture"].includes(state.receipt.state) || state.cancelRequested ? "experiment_active" : undefined;
+        // Prunable once no session is in flight and the experiment is finished: terminal, or stopped by the person's or conductor's cancel (a crash-reconciled
+        // or hold-latched experiment is `unknown_held` until then). `usageUnknown` alone never blocks: it describes the measurements, not whether work is running.
+        const inFlight = state.sessions.some(item => ["reserved", "running"].includes(item.state));
+        const finished = ["closed_fixture", "failed_fixture"].includes(state.receipt.state) || state.cancelRequested;
+        const blocked: ProbePruneKeepReason | undefined = inFlight ? "experiment_active" : finished ? undefined : state.receipt.state === "unknown_held" ? "experiment_held" : "experiment_active";
         const slots = sealed.map(receipt => {
           const entry = retained.get(receipt.slotId);
           const none = (reason: ProbePruneKeepReason) => ({ slotId: receipt.slotId, expiresAt: receipt.expiresAt, remove: [] as { relative: string; bytes: number }[], keep: [{ relative: ".", reason }] });
           if (!entry?.record) return none("no_retained_output");
           if (entry.pruned) return none("already_pruned");
           if (blocked) return none(blocked);
-          if (!probeInteger(now) || now < receipt.expiresAt) return none("not_expired");
+          if (now < receipt.expiresAt) return none("not_expired");
           const seen = fs.preview(entry.record);
           return { slotId: receipt.slotId, expiresAt: receipt.expiresAt, remove: seen.remove, keep: seen.keep.map(item => ({ relative: item.relative, reason: item.reason as ProbePruneKeepReason })) };
         });
@@ -721,10 +778,10 @@ export class GuidanceProbeStore {
    * Remove retained output and workspace bytes only, never a receipt or a manifest. Takes the digest of the plan the person saw and refuses if the owned
    * set has changed since. Each slot is marked pruned only after its files were removed; a file kept for a changed identity keeps the slot retained.
    */
-  prune(key: ProbeKey, now: number, planDigest: string, fs: ProbeRetentionFs): ProbePruneResult {
+  prune(key: ProbeKey, planDigest: string, fs: ProbeRetentionFs): ProbePruneResult {
     if (!probeSha256(planDigest)) return fail("invalid");
     const outcome = this.transaction(() => {
-      const plan = this.previewPrune(key, now, fs);
+      const plan = this.previewPrune(key, fs);
       if (plan.digest !== planDigest) return fail("changed");
       const retained = this.retainedRows(key), pruned: string[] = [], kept: { slotId: string; relative: string; reason: ProbePruneKeepReason }[] = [];
       for (const slot of plan.slots) {
@@ -758,11 +815,11 @@ export class GuidanceProbeStore {
         const sealed = new Set(this.readReceipts(key).map(item => item.slotId));
         for (const session of state.sessions) {
           if (!["reserved", "running"].includes(session.state) || sealed.has(session.slotId)) continue;
-          session.state = "unknown_held"; session.coverage.coverageVerified = false; session.coverage.usageUnknown = true;
+          session.state = "unknown_held"; session.closeCause = "crash"; session.coverage.coverageVerified = false; session.coverage.usageUnknown = true;
           state.counters.usageUnknown = true; state.receipt.state = "unknown_held";
           if (state.admissionHold === "none") state.admissionHold = "usage";
           this.save(key, state);
-          const built = this.buildReceipt(state, session, { startedAt: now, servedModel: null, workerEffectiveInputSha256: null, nonGuidanceInputSha256: null, teardownVerified: false,
+          const built = this.buildReceipt(state, session, { startedAt: now, servedModel: null, workerEffectiveInputSha256: null, nonGuidanceInputSha256: null, teardownVerified: false, runtime: null,
             cancelled: false, timedOut: false, unavailable: false, limits: ["teardown_unverified"], scratchBytes: 0, output: { v: 1, entries: [], excluded: [], totalBytes: 0 } }, Math.max(now, state.lastWall ?? 0));
           this.db.query("INSERT INTO guidance_probe_receipts(project,manifest_id,slot_id,body,pruned) VALUES(?,?,?,?,0)").run(key.projectKey, key.id, session.slotId, canonical(built));
           count++;
@@ -799,6 +856,12 @@ export class GuidanceProbeStore {
     for (const lane of this.lanes()) digest.update(canonical(lane)).update("\n");
     return { experiments, sessions, digest: digest.digest("hex") };
   }
+}
+
+/** What the host can honestly say about a session whose adapter measured nothing: it never saw teardown or the runtime, so it cannot vouch for it. */
+function unmeasuredSession(startedAt: number, servedModel: string | null): ProbeMeasuredSession {
+  return { startedAt, servedModel, workerEffectiveInputSha256: null, nonGuidanceInputSha256: null, teardownVerified: false, runtime: null, cancelled: false, timedOut: false,
+    unavailable: false, limits: ["teardown_unverified"], scratchBytes: 0, output: { v: 1, entries: [], excluded: [], totalBytes: 0 } };
 }
 
 /** Host test composition only. No wire/config runner selection or independent caller authority. */
@@ -880,16 +943,20 @@ export class GuidanceProbeFixtureHost {
       const observation = launch.observation;
       const matched = this.matchObservation(observation, reservation, frame, slot.role === "worker");
       if (!matched) this.store.latchHold(reservation, "observation");
-      const settled = this.store.settleObservedSession({ reservation, outcome: matched ? observation.outcome : "unknown",
-        candidateArtifactSha256: matched ? observation.candidateArtifactSha256 : null, now: this.options.now() }, matched ? observation.usage : "unknown");
-      // Seal what the host measured. A sealing failure never changes the settled session: a conflicting replay has already latched the hold, and a session
-      // left without a receipt counts as unknown in the denominator and is never comparable (probeOutcomeCounts, classifyProbeComparability). It is never a success.
-      if (matched && observation.measured) { try { this.store.sealReceipt(reservation, { ...observation.measured, startedAt }); } catch { /* see above */ } }
-      return settled;
+      // Settlement and receipt are one transaction (the contract's Sealing step 3): a session is never visible as settled without its receipt. An
+      // observation that carries no measurement, or that did not match, is sealed with the conservative one: teardown not verified, nothing observed.
+      const measured: ProbeMeasuredSession = matched && observation.measured ? { ...observation.measured, startedAt } : unmeasuredSession(startedAt, matched ? observation.servedModel : null);
+      return this.store.settleAndSeal({ reservation, outcome: matched ? observation.outcome : "unknown",
+        candidateArtifactSha256: matched ? observation.candidateArtifactSha256 : null, now: this.options.now() }, matched ? observation.usage : "unknown", measured).receipt;
     } catch {
       const saved = this.store.read(input.key)?.sessions.find(item => item.slotId === reservation.slotId);
-      if (saved && !saved.coverage.launchExposed) this.store.settlePreLaunchFailure(reservation, this.options.now());
-      else this.store.settleObservedSession({ reservation, outcome: "unknown", candidateArtifactSha256: null, now: this.options.now() }, "unknown");
+      // A failed atomic settle rolled the settlement and the receipt back together, so the session is still open here. Settle it as unknown WITH its
+      // conservative receipt; if even that cannot be written, latch the observation hold so the experiment cannot present a clean result. A session left
+      // open is recorded as unknown by the explicit reconcile at daemon start.
+      try {
+        if (saved && !saved.coverage.launchExposed) this.store.settlePreLaunchAndSeal(reservation, this.options.now(), { ...unmeasuredSession(this.options.now(), null), unavailable: true });
+        else this.store.settleAndSeal({ reservation, outcome: "unknown", candidateArtifactSha256: null, now: this.options.now() }, "unknown", unmeasuredSession(this.options.now(), null));
+      } catch { try { this.store.latchHold(reservation, "observation"); } catch { /* the reconcile at daemon start is the last net */ } }
       throw new GuidanceProbeError("held");
     }
   }

@@ -2346,6 +2346,16 @@ export async function startDaemon(opts: DaemonOptions) {
     guidanceProbeStore.close(); board.close(); throw new Error("guidance probe state or recovery binding is unavailable; restore trusted project state and choose a compatible target before retrying");
   }
   startupCleanup.push(() => guidanceProbeStore.close());
+  // #1226 T3: the one explicit crash reconcile. A fresh process has no probe in flight, so a session still `reserved` or `running` belongs to a previous process
+  // and is recorded as unknown with an unknown receipt (never launched, retried or turned into a success). It runs after the integrity comparison above, never
+  // while a recovery holds the stores (the release path calls it again), and a failure is logged and leaves the rows untouched for the next start.
+  const reconcileGuidanceProbes = (): void => {
+    try {
+      const { reconciled } = guidanceProbeStore.reconcile();
+      if (reconciled > 0) log(`guidance probe reconcile: ${reconciled} session${reconciled === 1 ? "" : "s"} left by a previous process recorded as unknown`);
+    } catch { log("guidance probe reconcile failed; the sessions stay as stored and are retried at the next start"); }
+  };
+  if (!recoveryActive()) reconcileGuidanceProbes();
   const visuals = new VisualStore(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => visuals.close());
   // Held recovery must compare the source's exact rows before any retention mutation.
@@ -10718,6 +10728,7 @@ export async function startDaemon(opts: DaemonOptions) {
       archiveRestartSnapshot(opts.stateDir, op);
       recoveryPhase = "released";
       clearTimeout(recoveryLeaseTimer);
+      reconcileGuidanceProbes();
       bus.setRecoveryHold(false);
       budget.setRecoveryHold(false); tasks.scheduleQueuePressureRecheck();
       writeStatus();

@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
 import type { ProbeDataPolicyV1, ProbeSlot } from "../src/hub/guidance-probes.ts";
-import { collectProbeOutput, materializeProbeWorkspace, PROBE_WORKSPACE_LIMITS, previewRetained, removeRetained, retainProbeOutput, type ProbeRetained, type ProbeWorkspace } from "../src/local/probe-workspace.ts";
+import { collectProbeOutput, materializeProbeWorkspace, PROBE_WALK_DEPTH, PROBE_WORKSPACE_LIMITS, previewRetained, removeRetained, retainProbeOutput, type ProbeRetained, type ProbeWorkspace } from "../src/local/probe-workspace.ts";
 
 // #1226 T3 (AC6): collect only what is declared, retain only what the host created, remove only what the host still owns. Real directories, no mocks.
 const cleanups: string[] = [];
@@ -65,12 +66,83 @@ describe("output collection reads only the declared output, through captured ide
   });
 });
 
+describe("the walk limit never silently skips output or scratch (F4)", () => {
+  const deep = (root: string, levels: number): string => { let directory = root; for (let i = 0; i < levels; i++) { directory = join(directory, `d${i}`); mkdirSync(directory); } return directory; };
+  async function deepWorkspace() {
+    // The deep output tree must be inside a declared write root, so declare the whole output directory.
+    const w = await workspace();
+    return Object.freeze({ ...w, allowedWrites: [...w.allowedWrites, w.output] }) as ProbeWorkspace;
+  }
+  test("output nested exactly at the limit is still read", async () => {
+    const w = await workspace(); mkdirSync(join(w.output, "more")); const bottom = deep(join(w.output, "more"), PROBE_WALK_DEPTH - 1);
+    writeFileSync(join(bottom, "x.txt"), "x");
+    expect(collectProbeOutput(w, 1024).manifest.entries.map(item => item.sha256)).toEqual([sha("x")]);
+  });
+  test("a 9-level output path is EXCLUDED as over_depth: not hashed, not retained, and it records a reason that forbids a success", async () => {
+    const w = await workspace(); mkdirSync(join(w.output, "more")); const bottom = deep(join(w.output, "more"), PROBE_WALK_DEPTH + 1);
+    writeFileSync(join(bottom, "hidden.txt"), "hidden");
+    const { manifest } = collectProbeOutput(w, 1024);
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.excluded.map(item => item.reason)).toEqual(["over_depth"]);
+    expect(manifest.excluded[0]!.relative.startsWith("output/more/d0")).toBe(true);
+  });
+  test("scratch deeper than the limit is reported as unmeasured, so it can never pass the storage cap", async () => {
+    const w = await workspace(); mkdirSync(join(w.scratch, "work")); const bottom = deep(join(w.scratch, "work"), PROBE_WALK_DEPTH + 1);
+    writeFileSync(join(bottom, "big.bin"), Buffer.alloc(500));
+    const collected = collectProbeOutput(w, 1024);
+    expect(collected.scratchUnmeasured).toBe(true);
+  });
+  test("scratch within the limit is measured and not flagged", async () => {
+    const w = await workspace(); mkdirSync(join(w.scratch, "work", "a"), { recursive: true }); writeFileSync(join(w.scratch, "work", "a", "t"), Buffer.alloc(10));
+    const collected = collectProbeOutput(w, 1024);
+    expect(collected.scratchUnmeasured).toBe(false); expect(collected.scratchBytes).toBe(10);
+  });
+});
+
+describe("a file swapped after its lstat can neither hang nor be read (F5)", () => {
+  const fifo = (path: string) => { const made = spawnSync("mkfifo", [path]); if (made.status !== 0) throw new Error("mkfifo unavailable"); };
+  test("a regular file replaced by a FIFO between lstat and open is excluded without blocking", async () => {
+    const w = await workspace(); const target = join(w.output, "answer.txt"); writeFileSync(target, "answer");
+    const started = Date.now();
+    const { manifest } = collectProbeOutput(w, 1024, { beforeOpen: file => { if (file === target) { rmSync(file); fifo(file); } } });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.excluded).toEqual([{ relative: "output/answer.txt", reason: "changed_while_read" }]);
+  });
+  test("a regular file replaced by a symlink between lstat and open is excluded and the target is never read", async () => {
+    const w = await workspace(); const target = join(w.output, "answer.txt"); writeFileSync(target, "answer");
+    const secret = join(scratchRoot(), "secret.txt"); writeFileSync(secret, "PRECIOUS-SECRET");
+    const { manifest } = collectProbeOutput(w, 1024, { beforeOpen: file => { if (file === target) { rmSync(file); symlinkSync(secret, file); } } });
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.excluded[0]!.relative).toBe("output/answer.txt");
+    expect(JSON.stringify(manifest)).not.toContain(sha("PRECIOUS-SECRET"));
+  });
+  test("retention copies the bytes already read: a swap AFTER collection to a FIFO or symlink cannot hang it or change what is kept", async () => {
+    const w = await workspace(); const target = join(w.output, "answer.txt"); writeFileSync(target, "answer");
+    const collected = collectProbeOutput(w, 1024);
+    rmSync(target); fifo(target);
+    const started = Date.now(), kept = retainProbeOutput(w, collected, scratchRoot());
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(readFileSync(join(kept.directory, "output/answer.txt"), "utf8")).toBe("answer");
+    rmSync(target); const secret = join(scratchRoot(), "s.txt"); writeFileSync(secret, "SECRET"); symlinkSync(secret, target);
+    const second = retainProbeOutput(w, collected, scratchRoot());
+    expect(readFileSync(join(second.directory, "output/answer.txt"), "utf8")).toBe("answer");
+  });
+  test("retention refuses bytes that do not match the manifest instead of reading the workspace", async () => {
+    const w = await workspace(); writeFileSync(join(w.output, "answer.txt"), "answer");
+    const collected = collectProbeOutput(w, 1024);
+    const forged = { manifest: collected.manifest, contents: new Map([["output/answer.txt", Buffer.from("tampered")]]) };
+    expect(() => retainProbeOutput(w, forged, scratchRoot())).toThrow();
+    expect(() => retainProbeOutput(w, { manifest: collected.manifest, contents: new Map() }, scratchRoot())).toThrow();
+  });
+});
+
 describe("retention copies exactly the manifest, and removal touches only what the host created", () => {
   async function retained(): Promise<{ w: ProbeWorkspace; kept: ProbeRetained; root: string }> {
     const w = await workspace(); writeFileSync(join(w.output, "answer.txt"), "answer");
     mkdirSync(join(w.output, "more")); writeFileSync(join(w.output, "more", "b.txt"), "bee");
-    const root = scratchRoot(), { manifest } = collectProbeOutput(w, 1024);
-    return { w, root, kept: retainProbeOutput(w, manifest, root) };
+    const root = scratchRoot(), collected = collectProbeOutput(w, 1024);
+    return { w, root, kept: retainProbeOutput(w, collected, root) };
   }
   test("retained bytes equal the manifest hashes and are read-only, link-count-1 regular files", async () => {
     const { kept } = await retained();
@@ -165,7 +237,7 @@ describe("retention copies exactly the manifest, and removal touches only what t
   });
   test("two sessions' retained directories are independent: removing one never touches the other", async () => {
     const root = scratchRoot();
-    const make = async (text: string) => { const w = await workspace(); writeFileSync(join(w.output, "answer.txt"), text); return retainProbeOutput(w, collectProbeOutput(w, 1024).manifest, root); };
+    const make = async (text: string) => { const w = await workspace(); writeFileSync(join(w.output, "answer.txt"), text); return retainProbeOutput(w, collectProbeOutput(w, 1024), root); };
     const a = await make("A"), b = await make("B");
     expect(a.directory).not.toBe(b.directory);
     removeRetained(a);

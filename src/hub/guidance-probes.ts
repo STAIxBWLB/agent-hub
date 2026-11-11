@@ -85,6 +85,8 @@ export interface ProbeSessionCoverage {
   inputFrameSha256: string | null; inputFrameBytes: number; launchExposed: boolean; preLaunchFailure: boolean;
   modelCalls: number; modelUsageKnown: number; toolCalls: number; toolUsageKnown: number;
   usageUnknown: boolean; coverageVerified: boolean;
+  /** Tokens this session alone observed (T3). Optional: sessions written before it have none, which reads as 0 known tokens only when no model call ran unobserved. */
+  tokensObserved?: number;
 }
 export interface ProbeUsageObservation { admission: ProbeEffectAdmission; observed: number | null; observationSha256: string }
 export interface ProbeCancellation { key: ProbeKey; expectedRevision: number; host: ProbeHostBinding }
@@ -92,8 +94,11 @@ export interface ProbeCounters {
   workerAttempts: number; editorAttempts: number; modelCalls: number; toolCalls: number; tokensReserved: number; tokensObservedKnown: number;
   inputBytes: number; scratchBytes: number; outputBytes: number; elapsedHighWaterMs: number; usageUnknown: boolean;
 }
+/** Why a session settled, recorded once when it settled so a receipt is derived from the session's own facts and never from experiment state that moves later. */
+export type ProbeCloseCause = "none" | "cancel" | "elapsed" | "hold" | "crash";
 export interface ProbeSession {
   slotId: string; generation: number; revision: number; state: ProbeSessionState; candidateArtifactSha256: string | null;
+  closeCause?: ProbeCloseCause;
   child?: ProbeChildBinding;
   start?: ProbeStartSelector;
   coverage: ProbeSessionCoverage;
@@ -371,7 +376,7 @@ export const PROBE_OUTPUT_LIMITS = Object.freeze({ entries: 64, fileBytes: 1024 
 
 export type ProbeReceiptState = "succeeded" | "failed" | "cancelled" | "timed_out" | "unavailable" | "unknown";
 export type ProbeReceiptLimit = "usage_unknown" | "served_model_unobserved" | "served_model_mismatch" | "teardown_unverified" | "output_truncated" | "storage_over_cap" | "coverage_unverified";
-export type ProbeExcludedReason = "not_regular" | "linked" | "outside_declared_writes" | "over_file_cap" | "changed_while_read" | "over_entry_cap";
+export type ProbeExcludedReason = "not_regular" | "linked" | "outside_declared_writes" | "over_file_cap" | "changed_while_read" | "over_entry_cap" | "over_depth";
 export interface ProbeOutputEntry { relative: string; sha256: string; bytes: number }
 export interface ProbeOutputExcluded { relative: string; reason: ProbeExcludedReason }
 export interface ProbeOutputManifestV1 { v: 1; entries: readonly ProbeOutputEntry[]; excluded: readonly ProbeOutputExcluded[]; totalBytes: number }
@@ -389,9 +394,10 @@ export interface ProbeReceiptV1 {
   workerEffectiveInputSha256: string | null;
   nonGuidanceInputSha256: string | null;
   guidanceSha256: string | null;
-  runtimeSha256: string;
-  toolsetSha256: string;
-  modelConfigSha256: string;
+  /** The host's own fingerprints read at seal time. `null` when the host never observed them (a crash reconcile): never copied from the declaration. */
+  runtimeSha256: string | null;
+  toolsetSha256: string | null;
+  modelConfigSha256: string | null;
   startedAt: number;
   endedAt: number;
   elapsedMs: number;
@@ -411,7 +417,7 @@ export interface ProbeOutcomeCounts { succeeded: number; failed: number; cancell
 
 const RECEIPT_STATES: readonly ProbeReceiptState[] = ["succeeded", "failed", "cancelled", "timed_out", "unavailable", "unknown"];
 const RECEIPT_LIMITS: readonly ProbeReceiptLimit[] = ["usage_unknown", "served_model_unobserved", "served_model_mismatch", "teardown_unverified", "output_truncated", "storage_over_cap", "coverage_unverified"];
-const EXCLUDED_REASONS: readonly ProbeExcludedReason[] = ["not_regular", "linked", "outside_declared_writes", "over_file_cap", "changed_while_read", "over_entry_cap"];
+const EXCLUDED_REASONS: readonly ProbeExcludedReason[] = ["not_regular", "linked", "outside_declared_writes", "over_file_cap", "changed_while_read", "over_entry_cap", "over_depth"];
 
 /** Digest over the canonical record without its own digest field. */
 export function probeReceiptDigest(receipt: Omit<ProbeReceiptV1, "digest">): string {
@@ -427,7 +433,7 @@ export function parseProbeReceipt(value: unknown): ProbeReceiptV1 | undefined {
     required(f.v === 1 && identity(f.experimentId) && identity(f.slotId) && probeInteger(f.generation) && probeInteger(f.revision));
     required(f.requestedModel === GUIDANCE_PROBE_MODEL && (f.servedModel === null || typeof f.servedModel === "string" && Buffer.byteLength(f.servedModel) <= 256));
     required(nullableSha(f.inputFrameSha256) && nullableSha(f.workerEffectiveInputSha256) && nullableSha(f.nonGuidanceInputSha256) && nullableSha(f.guidanceSha256));
-    required(probeSha256(f.runtimeSha256) && probeSha256(f.toolsetSha256) && probeSha256(f.modelConfigSha256));
+    required(nullableSha(f.runtimeSha256) && nullableSha(f.toolsetSha256) && nullableSha(f.modelConfigSha256));
     // elapsed time is wall time between the Store's trusted-clock samples, so it can never exceed the span between them.
     required(probeInteger(f.startedAt) && probeInteger(f.endedAt) && probeInteger(f.elapsedMs) && f.endedAt >= f.startedAt && f.elapsedMs <= f.endedAt - f.startedAt
       && probeInteger(f.expiresAt) && f.expiresAt === f.endedAt + PROBE_RETENTION_MS);
@@ -483,6 +489,7 @@ export function classifyProbeComparability(input: {
     if (!receipt) { reasons.add("missing_receipt"); continue; }
     if (receipt.servedModel === null) reasons.add("served_model_unobserved");
     else if (receipt.servedModel !== receipt.requestedModel) reasons.add("served_model_mismatch");
+    // A fingerprint the host never observed is drift it cannot rule out; one that differs from the declaration is drift.
     if (receipt.runtimeSha256 !== input.runtime.runtimeSha256 || receipt.toolsetSha256 !== input.runtime.toolsetSha256 || receipt.modelConfigSha256 !== input.runtime.modelConfigSha256) reasons.add("input_drift");
     if (receipt.limits.includes("usage_unknown") || receipt.usage.tokensObserved === null || receipt.usage.modelUsageKnown !== receipt.usage.modelCalls || receipt.usage.toolUsageKnown !== receipt.usage.toolCalls) reasons.add("usage_unknown");
     if (receipt.limits.includes("teardown_unverified")) reasons.add("teardown_unverified");
@@ -515,8 +522,10 @@ export interface ProbeMeasuredSession {
   servedModel: string | null;
   workerEffectiveInputSha256: string | null;
   nonGuidanceInputSha256: string | null;
-  /** True only when the peer, the confinement and every owned child reported known quiescence. */
+  /** True only when the peer, the confinement and every owned child reported known quiescence, and the output was collected after that point. */
   teardownVerified: boolean;
+  /** The host's own runtime, toolset and model-config fingerprints at seal time, or null when it could not read them. Never the declaration's. */
+  runtime: { runtimeSha256: string; toolsetSha256: string; modelConfigSha256: string } | null;
   cancelled: boolean;
   timedOut: boolean;
   /** The session could not start or reach the model for a host-known reason (for example confinement unavailable). */

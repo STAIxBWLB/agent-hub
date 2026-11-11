@@ -6,12 +6,14 @@ a live trial and no real model, native session or account was used.
 
 ## Scope and authorization
 
-T3 adds a private `guidance_probe_receipts` table, `sealReceipt`, `receipts`,
-`outcome`, `reconcile`, `previewPrune` and `prune` to `GuidanceProbeStore`, pure
+T3 adds a private `guidance_probe_receipts` table, `sealReceipt`, `settleAndSeal`,
+`receipts`, `outcome`, `reconcile`, `previewPrune` and `prune` to `GuidanceProbeStore`, pure
 receipt, comparability and retention types in `guidance-probes.ts`, and output
 collection and owned removal in `src/local/probe-workspace.ts`. The adapter harvests
-the declared output before the confinement stop releases the workspace and reports the
-measurement on the observation; the fixture host samples `startedAt` and seals.
+the declared output after the confinement stop reported quiescence and reports the
+measurement on the observation; the fixture host samples `startedAt` and settles and
+seals in one transaction. The daemon calls `reconcile` at start and at the release of a
+held recovery.
 
 No CLI verb, wire operation, daemon runner, config key or live launch is added, and
 nothing selects the constructor-only adapter. Public `show` keeps only `comparable`,
@@ -25,26 +27,39 @@ behavior, sampling control or model quality. The live trial stays unapproved (T4
 | Point | Check |
 | --- | --- |
 | Receipt is host computed; a caller can ask for a success but not force one | `test/guidance-probe-receipts-store.test.ts` sealing cases: any gap in served model, teardown, usage, coverage or output downgrades to `unknown` |
+| Fingerprints are the host's own, never the declaration's (F1) | a changed host fingerprint is recorded and yields `input_drift`; a host that could not read them records `null` (unverified coverage); matching ones stay comparable |
+| Tokens are this session's and a replay is stable (F2) | per-session `tokensObserved` is not the experiment total; an identical replay after a later session ran, or after a later cancel, returns the stored receipt and latches nothing; a changed measured fact still latches |
+| What the host cannot vouch for is `unknown` first (F3) | a crash after a cancel request, or with an elapsed hold, reconciles as `unknown`; a session settled under a cancel is `unknown` unverified and `cancelled` verified; `unavailable` only for a session that never called the model |
+| The walk limit never skips silently (F4) | a 9-level output path is excluded as `over_depth`; scratch past the limit is unmeasured and counts as over the cap, in the cleanup and adapter tests |
+| Output is read only after quiescence, by descriptor (F5) | the adapter fixture's stop plays a straggler's last write and only a harvest after the stop sees it; a FIFO or symlink swapped in after the `lstat` is excluded without blocking; retention copies the bytes already read and refuses bytes that do not match the manifest |
+| Settlement and receipt are one transaction (F6) | every session run through the host has its receipt, even when the adapter measured nothing; a seal that fails rolls the settlement back; an adapter failure is settled `unknown` with a receipt |
+| Reconcile is wired (F7) | `test/guidance-probes-daemon.test.ts`: a session a dead process left `reserved` is `unknown_held` with an `unknown` receipt after start, once, with no launch; `test/guidance-probes-recovery.test.ts`: a held recovery target leaves it untouched until release, then reconciles |
+| A held experiment expires after the cancel (F8) | not prunable while held, prunable after `cancelIntent`, `usageUnknown` alone never blocks, a receipt is never deleted |
+| Hydration checks the session row (N1) | a receipt revision that differs from its session, or a state that session could not produce, is storage corruption |
+| A truly read-only open (N2) | a Store opened read-only reads receipts and outcome and leaves every row byte-identical; `reconcile` through it fails |
+| Expiry is the Store's clock (N3) | `previewPrune` and `prune` take no time; moving the fixture clock moves expiry |
 | A conflicting replay latches the observation hold and the refusal is raised after the commit | Store replay-conflict case reads the persisted hold after the throw |
-| A reserved or running session left by a crash is `unknown_held` with an `unknown` receipt; reconcile is idempotent and a read-only open never writes | Store reconcile cases, including a second call writing nothing and a reopened read-only open |
-| The denominator counts every reserved slot; a missing or reconciled receipt is `unknown`, never `failed` | `test/guidance-probe-receipts.test.ts` counts and the control test for a settled session with no receipt |
+| The denominator counts every reserved slot; a missing or reconciled receipt is `unknown`, never `failed` | `test/guidance-probe-receipts.test.ts` counts and the control test for a session the host could not witness |
 | Comparability reasons and counts stay private; public `show` carries only the flag | `test/guidance-probes-control.test.ts` asserts the reasons and `counts` are absent from the public JSON |
 | The 1 GiB cap holds at runtime | adapter tests: output past the cap is excluded, never hashed or retained; scratch past the cap carries `storage_over_cap` |
-| Output is collected before the workspace is released | adapter test whose fixture stop removes the workspace; moving the harvest after `close` fails four tests |
-| Prune acts only after `expiresAt`, only on a terminal and unheld experiment, only with the current plan digest, and only on files whose recorded identity still matches | Store prune cases and `test/guidance-probe-cleanup.test.ts` (swapped file, swapped directory, empty swapped directory, hardlink) |
-| Prune never deletes a receipt or manifest | Store case comparing receipts before and after a prune |
+| Prune acts only after `expiresAt`, only with the current plan digest, and only on files whose recorded identity (device, inode, change time) still matches | Store prune cases and `test/guidance-probe-cleanup.test.ts` |
 | A slot is marked pruned only when nothing was kept | mixed-slot case where one file is swapped between preview and prune |
 | Integrity covers receipts; an orphan receipt row fails recovery | Store integrity cases |
 
-Mutation checks (each reverted afterwards, final tree equals the tested tree): ignoring
-`expiresAt`, pruning a held or active experiment, skipping the plan digest check,
-deleting the receipt row on prune, marking a slot pruned although a file was kept,
-harvesting after the close, dropping the over-cap limit and retaining past the cap
-each fail at least one test. One mutation (teardown always verified) was not caught by
-the adapter file because the fixture stop never fails; the Store cases cover the
-downgrade, and a failing close is covered by the existing T2 interrupted-close cases.
-A first draft of the mixed-slot assertion survived its mutation and was rewritten
-until the mutation failed.
+Mutation checks (each reverted afterwards, final tree equals the tested tree). Each of
+these changes makes at least one test fail: copying fingerprints from the manifest,
+tokens from the experiment total, the cause read from live cancel state, unavailable
+after a model call, teardown not decided first, the seal outside the settlement
+transaction, a held experiment blocking forever, `usageUnknown` blocking, an unchecked
+revision, expiry ignoring the clock, harvest before the stop, depth skipped silently,
+scratch unmeasured ignored, retention re-reading the path, the daemon never calling
+reconcile, the recovery release never calling it, and reconciling while a recovery is
+held. Two things are not mutation-tested and said so: dropping `O_NONBLOCK` is covered
+by a test with a 20 s bound that hung, so a regression there fails by timeout rather than
+by assertion; and the harvest's own `closed` guard is defence in depth behind the throw of
+a failed close, so removing it changes no observable behaviour. An earlier pass found the
+teardown ordering test too weak (it survived the mutation) and it was rewritten until the
+mutation failed.
 
 ## Locks
 

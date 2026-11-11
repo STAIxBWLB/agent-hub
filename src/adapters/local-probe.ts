@@ -90,27 +90,36 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
     } catch { entry.closeFailed = true; throw new ProbeLocalError("interrupted"); }
   };
   /**
-   * Collect, then retain, the declared output while the workspace still exists. This must run before `close`: the confinement stop releases the workspace.
-   * It is best effort and never throws: a failure is recorded as a limit, which can only keep the receipt from being a success. The declared caps hold here
-   * too: past either, nothing is retained and the receipt carries `storage_over_cap`.
+   * Collect, then retain, the declared output. This runs only AFTER `close` returned: the peer and the confinement have then reported quiescence, so no
+   * child can still be writing (the contract's Sealing order), and before the host releases the workspace it owns. When the stop failed or is uncertain
+   * nothing is read at all: the output of a process tree that may still be running is not evidence. It never throws: a failure is recorded as a limit,
+   * which can only keep the receipt from being a success. The declared caps hold here too: past either, nothing is retained and the receipt carries
+   * `storage_over_cap`.
    */
   const harvestOutput = (entry: Owned, ready: Prepared): void => {
     if (entry.harvest || !entry.workspace) return;
+    if (!entry.closed || entry.closeFailed) { entry.harvest = { output: { v: 1, entries: [], excluded: [], totalBytes: 0 }, scratchBytes: 0, limits: ["output_truncated"] }; return; }
     const limits = ready.state.registration.manifest.limits;
     try {
       const collected = collectProbeOutput(entry.workspace, limits.outputBytes);
       const harvest: NonNullable<Owned["harvest"]> = { output: collected.manifest, scratchBytes: collected.scratchBytes, limits: [] };
-      const over = collected.scratchBytes > limits.scratchBytes || collected.manifest.totalBytes > limits.outputBytes;
+      // Scratch deeper than the walk limit was not fully measured: treat its size as unknown, which is over the cap.
+      const over = collected.scratchUnmeasured || collected.scratchBytes > limits.scratchBytes || collected.manifest.totalBytes > limits.outputBytes;
       if (over) harvest.limits.push("storage_over_cap");
       else if (retentionRoot && collected.manifest.entries.length > 0) {
-        try { harvest.retained = retainProbeOutput(entry.workspace, collected.manifest, retentionRoot); }
+        try { harvest.retained = retainProbeOutput(entry.workspace, collected, retentionRoot); }
         catch { harvest.limits.push("output_truncated"); }
       }
       entry.harvest = harvest;
     } catch { entry.harvest = { output: { v: 1, entries: [], excluded: [], totalBytes: 0 }, scratchBytes: 0, limits: ["output_truncated"] }; }
   };
+  /** The host's own fingerprints at seal time, never the declaration's. Null when they cannot be read, which the Store treats as unverified coverage. */
+  const hostRuntime = (): ProbeMeasuredSession["runtime"] => {
+    try { const actual = localProbeFingerprints(config); return { runtimeSha256: actual.runtimeSha256, toolsetSha256: actual.toolsetSha256, modelConfigSha256: actual.modelConfigSha256 }; }
+    catch { return null; }
+  };
   const measuredSession = (entry: Owned, servedModel: string | null, flags: { unavailable: boolean }): Omit<ProbeMeasuredSession, "startedAt"> => ({
-    servedModel, workerEffectiveInputSha256: null, nonGuidanceInputSha256: null,
+    servedModel, workerEffectiveInputSha256: null, nonGuidanceInputSha256: null, runtime: hostRuntime(),
     teardownVerified: entry.closed && !entry.closeFailed, cancelled: entry.controller.signal.aborted, timedOut: false, unavailable: flags.unavailable,
     limits: entry.harvest?.limits ?? [], scratchBytes: entry.harvest?.scratchBytes ?? 0,
     output: entry.harvest?.output ?? { v: 1, entries: [], excluded: [], totalBytes: 0 }, ...(entry.harvest?.retained ? { retained: entry.harvest.retained } : {}),
@@ -179,16 +188,17 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
             maxSteps: config.maxSteps, tools: { deny: [], permit } }, entry.confinement, fixture ? "fixture_only" : undefined);
           const result = await entry.peer.runProbe({ purpose: "guidance_probe", prepared: ready.input, workspace: entry.workspace,
             confinement: entry.confinement, config, accounting, reserve }, entry.controller.signal);
-          accounting.current(); harvestOutput(entry, ready); await close(entry);
+          accounting.current(); await close(entry); harvestOutput(entry, ready);
           effects.current(); current();
           return observation(input, ready, result.servedModel, result.complete ? "closed_fixture" : "failed_known", result.usageKnown ? "known_fixture" : "unknown", entry);
         }).catch(async error => {
           if (error instanceof ProbeConfinementError) entry.closeUnknown = error.stop;
-          // Collect before the close releases the workspace, but only while it is still ours: a drifted workspace is read by identity or not at all.
-          harvestOutput(entry, ready);
           try { await close(entry); }
           catch { throw new ProbeLocalError("interrupted"); }
-          return observation(input, ready, entry.peer?.probeObservation().servedModel ?? null, "unknown", "unknown", entry, error instanceof ProbeConfinementError);
+          // Only after the stop confirmed quiescence, and only while the workspace is still ours: a drifted workspace is read by identity or not at all.
+          harvestOutput(entry, ready);
+          // `unavailable` means the session could not start: a confinement error before any peer existed. Once a peer ran, the Store treats it as unknown or failed.
+          return observation(input, ready, entry.peer?.probeObservation().servedModel ?? null, "unknown", "unknown", entry, error instanceof ProbeConfinementError && !entry.peer);
         }).finally(() => {
           signal.removeEventListener("abort", abort);
           if (entry.closed) { completed.add(entry.reservation); owned.delete(id); }

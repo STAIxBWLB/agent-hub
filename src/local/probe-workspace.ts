@@ -241,21 +241,37 @@ export async function reserveProbeWorkspaceStorage(workspace: ProbeWorkspace, by
 // T3 (#1226): output collection and owned cleanup. Contract: docs/design/guidance-probes.md "T3 receipts, reconcile and cleanup contract".
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+/** What `collectProbeOutput` read: the manifest, the exact bytes it hashed (kept for retention, never re-read from a path), and the measured scratch. */
+export interface ProbeCollected {
+  manifest: ProbeOutputManifestV1;
+  /** The bytes hashed for each manifest entry, read once through the opened file. Retention copies these and never re-reads the workspace. Bounded by 64 files of 1 MiB. */
+  contents: ReadonlyMap<string, Buffer>;
+  scratchBytes: number;
+  /** True when scratch was not fully measured (a tree deeper than the walk limit): its size is unknown, so it must be treated as over the cap. */
+  scratchUnmeasured: boolean;
+}
+/** The deepest directory level read under output or scratch. Anything deeper is excluded (output) or makes scratch unmeasured, never silently skipped. */
+export const PROBE_WALK_DEPTH = 8;
+/** Test seam only: a hook that runs between a file's lstat and its open, to swap the file the way a racing process would. */
+export interface ProbeCollectSeam { beforeOpen?(file: string): void }
+
 /**
- * Collect a finished session's declared output into a manifest: every regular, link-count-1 file under the output root is read through its captured
- * identity and hashed, and the identity is re-checked after the read. Anything else (a symlink, a hardlink, a device, a directory entry the policy does not
- * declare, a file past the per-file cap, a file that changed while read) is recorded as an exclusion and is NOT hashed. Bytes past `maxBytes` are not read.
- * Reads only; it deletes nothing and follows no link.
+ * Collect a finished session's declared output into a manifest: every regular, link-count-1 file under the output root is read through its opened descriptor
+ * and hashed, and the identity is re-checked after the read. Anything else (a symlink, a hardlink, a device, a directory entry the policy does not
+ * declare, a file past the per-file cap, a file that changed while read, a tree deeper than the walk limit) is recorded as an exclusion and is NOT hashed.
+ * Bytes past `maxBytes` are not read. Files are opened O_NONBLOCK|O_NOFOLLOW and must still be regular files once open, so a file swapped for a FIFO
+ * or a device after its lstat can neither block this call nor be read. Call it only after the confinement stop has reported quiescence: until then a
+ * child may still be writing. Reads only; it deletes nothing and follows no link.
  */
-export function collectProbeOutput(workspace: ProbeWorkspace, maxBytes: number): { manifest: ProbeOutputManifestV1; scratchBytes: number } {
+export function collectProbeOutput(workspace: ProbeWorkspace, maxBytes: number, seam: ProbeCollectSeam = {}): ProbeCollected {
   probeWorkspacePhysical(workspace);
-  const entries: ProbeOutputEntry[] = [], excluded: ProbeOutputExcluded[] = [];
+  const entries: ProbeOutputEntry[] = [], excluded: ProbeOutputExcluded[] = [], contents = new Map<string, Buffer>();
   let total = 0;
   const declared = workspace.allowedWrites.filter(path => path === workspace.output || path.startsWith(workspace.output + "/"));
   const within = (file: string): boolean => declared.some(path => file === path || file.startsWith(path + "/"));
   const exclude = (relative: string, reason: ProbeExcludedReason): void => { if (excluded.length < PROBE_OUTPUT_LIMITS.entries) excluded.push({ relative, reason }); };
   const walk = (directory: string, depth: number): void => {
-    if (depth > 8) return;
+    if (depth > PROBE_WALK_DEPTH) { exclude(directory.slice(workspace.root.length + 1), "over_depth"); return; }
     const handle = opendirSync(directory);
     try {
       for (let item = handle.readSync(); item; item = handle.readSync()) {
@@ -270,24 +286,27 @@ export function collectProbeOutput(workspace: ProbeWorkspace, maxBytes: number):
         if (before.size > PROBE_OUTPUT_LIMITS.fileBytes) { exclude(relative, "over_file_cap"); continue; }
         if (entries.length >= PROBE_OUTPUT_LIMITS.entries) { exclude(relative, "over_entry_cap"); continue; }
         if (total + before.size > maxBytes) { exclude(relative, "over_file_cap"); continue; }
-        const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+        seam.beforeOpen?.(file);
+        let fd: number;
+        try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+        catch { exclude(relative, "changed_while_read"); continue; }
         let bytes: Buffer;
         try {
           const opened = fstatSync(fd);
-          if (opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1) { exclude(relative, "changed_while_read"); continue; }
+          if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1) { exclude(relative, "changed_while_read"); continue; }
           bytes = Buffer.alloc(Math.min(opened.size, PROBE_OUTPUT_LIMITS.fileBytes));
           let read = 0; while (read < bytes.length) { const n = readSync(fd, bytes, read, bytes.length - read, read); if (n === 0) break; read += n; }
           const after = fstatSync(fd);
           if (read !== opened.size || after.size !== opened.size || after.ino !== opened.ino || after.mtimeMs !== opened.mtimeMs) { exclude(relative, "changed_while_read"); continue; }
         } finally { closeSync(fd); }
-        entries.push({ relative, sha256: digest(bytes), bytes: bytes.length }); total += bytes.length;
+        entries.push({ relative, sha256: digest(bytes), bytes: bytes.length }); contents.set(relative, bytes); total += bytes.length;
       }
     } finally { handle.closeSync(); }
   };
   walk(workspace.output, 0);
-  let scratch = 0;
+  let scratch = 0, scratchUnmeasured = false;
   const measure = (directory: string, depth: number): void => {
-    if (depth > 8) return;
+    if (depth > PROBE_WALK_DEPTH) { scratchUnmeasured = true; return; }
     const handle = opendirSync(directory);
     try {
       for (let item = handle.readSync(); item; item = handle.readSync()) {
@@ -299,7 +318,7 @@ export function collectProbeOutput(workspace: ProbeWorkspace, maxBytes: number):
   };
   measure(workspace.scratch, 0);
   entries.sort((a, b) => a.relative < b.relative ? -1 : a.relative > b.relative ? 1 : 0);
-  return { manifest: { v: 1, entries, excluded, totalBytes: total }, scratchBytes: scratch };
+  return { manifest: { v: 1, entries, excluded, totalBytes: total }, contents, scratchBytes: scratch, scratchUnmeasured };
 }
 
 /** A retained output directory the host itself created, with the identity it recorded at creation. Prune acts on nothing else. */
@@ -309,8 +328,9 @@ export type ProbeRetained = ProbeRetainedRecord;
  * Copy the collected output into a fresh host-owned retention directory (mode 0700, O_EXCL files, link count 1) and return what was created. The retention
  * directory is outside the workspace so the workspace can be released at once; what is retained is exactly the manifest's entries, nothing else.
  */
-export function retainProbeOutput(workspace: ProbeWorkspace, manifest: ProbeOutputManifestV1, root: string): ProbeRetained {
+export function retainProbeOutput(workspace: ProbeWorkspace, collected: Pick<ProbeCollected, "manifest" | "contents">, root: string): ProbeRetained {
   probeWorkspacePhysical(workspace);
+  const { manifest, contents } = collected;
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const directory = realPath(mkdtempSync(join(root, "retained-")));
   const identity = directoryIdentity(directory);
@@ -318,11 +338,10 @@ export function retainProbeOutput(workspace: ProbeWorkspace, manifest: ProbeOutp
   const files: { relative: string; dev: number; ino: number; bytes: number; ctimeNs: string }[] = [];
   try {
     for (const entry of manifest.entries) {
-      const source = join(workspace.root, entry.relative);
-      const before = lstatSync(source);
-      if (!before.isFile() || before.nlink !== 1 || before.size !== entry.bytes) refused();
-      const bytes = readFileSync(source);
-      if (digest(bytes) !== entry.sha256) refused();
+      // The bytes already read and hashed through the opened descriptor. The workspace path is never read again: a swap to a symlink, a FIFO or /dev/zero
+      // after collection can neither hang this call nor change what is retained.
+      const bytes = contents.get(entry.relative);
+      if (!bytes || bytes.length !== entry.bytes || digest(bytes) !== entry.sha256) refused();
       // The manifest already holds only workspace-relative names; refuse anything that could leave the retention directory before joining.
       if (!probeRelativePath(entry.relative)) refused();
       const dest = join(directory, entry.relative);

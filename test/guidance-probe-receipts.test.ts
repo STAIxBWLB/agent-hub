@@ -38,6 +38,18 @@ describe("receipt parsing is closed, inert and digest-checked", () => {
     expect(parseProbeReceipt(null)).toBeUndefined();
     expect(parseProbeReceipt("receipt")).toBeUndefined();
   });
+  test("an output nested past the walk limit parses only as a closed exclusion (over_depth) and forbids a success", () => {
+    const r = receipt({ state: "unknown", limits: ["output_truncated"], output: { v: 1, entries: [], excluded: [{ relative: "output/d0/d1", reason: "over_depth" }], totalBytes: 0 } });
+    expect(parseProbeReceipt(JSON.parse(JSON.stringify(r)))).toEqual(r);
+    const lying = receipt({ state: "succeeded", output: { v: 1, entries: [], excluded: [{ relative: "output/d0/d1", reason: "over_depth" }], totalBytes: 0 } });
+    expect(parseProbeReceipt(JSON.parse(JSON.stringify(lying)))).toBeUndefined();
+    expect(parseProbeReceipt({ ...r, output: { ...r.output, excluded: [{ relative: "output/x", reason: "too_deep" }] } })).toBeUndefined();
+  });
+  test("a fingerprint is either a sha or null; anything else is refused", () => {
+    expect(parseProbeReceipt(JSON.parse(JSON.stringify(receipt({ runtimeSha256: null, state: "unknown", limits: ["coverage_unverified"] }))))).toBeDefined();
+    const r = receipt();
+    for (const bad of ["not-a-sha", 7, ""]) expect(parseProbeReceipt({ ...r, runtimeSha256: bad })).toBeUndefined();
+  });
   test("expiresAt is exactly seal time plus the retention constant, so retention is never silently longer", () => {
     expect(parseProbeReceipt(resealed(receipt(), { expiresAt: 1500 + PROBE_RETENTION_MS + 1 }))).toBeUndefined();
     expect(parseProbeReceipt(resealed(receipt(), { expiresAt: 1500 }))).toBeUndefined();
@@ -100,6 +112,14 @@ describe("comparability and the outcome denominator (AC4)", () => {
     expect(classify([a!, resealed(b!, { nonGuidanceInputSha256: sha("drifted") })]).reasons).toContain("input_drift");
     expect(classify([a!, resealed(b!, { toolsetSha256: sha("other-tools") })]).reasons).toContain("input_drift");
     expect(classify([a!, resealed(b!, { nonGuidanceInputSha256: null })]).reasons).toContain("input_drift");
+  });
+  test("a fingerprint the host never observed (null) is drift it cannot rule out, never a match", () => {
+    const [a, b] = pair();
+    for (const field of ["runtimeSha256", "toolsetSha256", "modelConfigSha256"] as const) {
+      const unread = resealed(b!, { [field]: null, state: "unknown", limits: ["coverage_unverified"] });
+      expect(parseProbeReceipt(JSON.parse(JSON.stringify(unread)))).toEqual(unread);
+      expect(classify([a!, unread]).reasons, field).toContain("input_drift");
+    }
   });
   test("usage gaps stay unknown and make the pair incomparable, never zero", () => {
     const [a, b] = pair();

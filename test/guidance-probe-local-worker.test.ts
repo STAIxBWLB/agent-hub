@@ -390,27 +390,30 @@ test("a retained successful preregistered baseline retry remains the actual-inpu
 });
 
 /** A real materialized workspace under the fixture confinement, whose model writes `answer` into the declared output file (and `scratch` into scratch) while it runs. */
-async function harvestRun(answer: string, retentionRoot: string | undefined, scratch = "") {
+async function harvestRun(answer: string, retentionRoot: string | undefined, scratch = "", finalWrite = "", scratchLevels = 0) {
   const saved = state(), slot = saved.registration.manifest.slots[0]!, ledger = effects();
-  let created: ProbeWorkspace | undefined, privateRoot: string | undefined;
+  let created: ProbeWorkspace | undefined, privateRoot: string | undefined, stopped = 0;
   const adapter = createGuidanceProbeLocalAdapter({ omni: { chat: async () => {
-      writeFileSync(join(created!.output, "answer.txt"), answer); if (scratch) writeFileSync(join(created!.scratch, "work.bin"), scratch); return result(); } } as unknown as OmniRoute,
+      writeFileSync(join(created!.output, "answer.txt"), answer); if (scratch) writeFileSync(join(created!.scratch, "work.bin"), scratch);
+      if (scratchLevels) { let directory = created!.scratch; for (let level = 0; level < scratchLevels; level++) { directory = join(directory, `s${level}`); mkdirSync(directory); } writeFileSync(join(directory, "deep.bin"), "tiny"); }
+      return result(); } } as unknown as OmniRoute,
     config, permit: async () => true, current: () => {}, resolveInput: () => ({ files: [], verifySource: () => "task_source" }), ...(retentionRoot ? { retentionRoot } : {}),
     workspaceOwned: workspace => { privateRoot = probeWorkspacePrivateRoot(workspace); },
     fixture: { evidence: "fixture_only",
       materialize: async input => { created = await materializeProbeWorkspace({ ...input, policy: { ...input.policy, allowedWrites: [{ root: "output", relative: "answer.txt" }] } }); return created; },
-      // The real sandbox's stop removes the workspace (cleanup()); the fixture does the same, so collecting after the stop would find nothing to collect.
-      confine: async workspace => ({ workspace, profile: "fixture-only, not an OS proof", env: {}, stop: async () => { if (privateRoot) rmSync(privateRoot, { recursive: true, force: true }); } }) } });
+      // A straggler child may still be writing until the stop reports quiescence. The fixture stop plays that child's last write, so only a harvest taken AFTER
+      // the stop can see it: collecting before the stop would hash the earlier bytes of a tree that is still moving.
+      confine: async workspace => ({ workspace, profile: "fixture-only, not an OS proof", env: {}, stop: async () => { stopped++; if (finalWrite) writeFileSync(join(workspace.output, "answer.txt"), finalWrite); } }) } });
   cleanup.push(() => { if (privateRoot) rmSync(privateRoot, { recursive: true, force: true }); });
   const frame = await adapter.prepareWorkerFrame(saved, slot, saved.binding.baselineGuidance);
   const reservation = { key: { projectKey: saved.registration.manifest.projectKey, id: guidanceProbeManifestKey(saved.registration.manifest) }, slotId: slot.id, generation: 1, revision: 1 };
   const observed = await adapter.ports.launch({ reservation, slot, manifest: saved.registration.manifest, inputFrame: frame.inputFrame,
     inputSha256: probeHash(frame.inputFrame), nonGuidanceInputSha256: frame.nonGuidanceInputSha256, purpose: "guidance_probe" }, ledger.port, new AbortController().signal);
-  return { observed, limits: saved.registration.manifest.limits };
+  return { observed, limits: saved.registration.manifest.limits, stopped: () => stopped };
 }
 const retentionDir = () => { const root = mkdtempSync(join(tmpdir(), "ahub-probe-retain-")); cleanup.push(() => rmSync(root, { recursive: true, force: true })); return root; };
 
-test("the adapter harvests the declared output before the workspace is released and reports what it measured", async () => {
+test("the adapter harvests the declared output after the stop reported quiescence, and reports what it measured", async () => {
   const root = retentionDir();
   const { observed } = await harvestRun("the answer", root);
   expect(observed.outcome).toBe("closed_fixture");
@@ -447,4 +450,48 @@ test("scratch left past the declared scratch cap carries storage_over_cap and re
   expect(observed.measured!.scratchBytes).toBeGreaterThan(probe.limits.scratchBytes);
   expect(observed.measured!.retained).toBeUndefined();
   expect(readdirSync(root)).toEqual([]);
+});
+
+test("the harvest happens AFTER the confinement stop: a straggler's last write is what gets hashed, and the stop ran first", async () => {
+  const root = retentionDir();
+  const { observed, stopped } = await harvestRun("written while running", root, "", "written by the straggler before the stop returned");
+  expect(stopped()).toBeGreaterThan(0);
+  expect(observed.measured!.output.entries).toEqual([{ relative: "output/answer.txt", sha256: probeHash("written by the straggler before the stop returned"),
+    bytes: Buffer.byteLength("written by the straggler before the stop returned") }]);
+  expect(readFileSync(join(observed.measured!.retained!.directory, "output/answer.txt"), "utf8")).toBe("written by the straggler before the stop returned");
+});
+
+test("when the stop cannot confirm quiescence nothing is read: the output of a possibly running tree is not evidence", async () => {
+  const saved = state(), slot = saved.registration.manifest.slots[0]!, ledger = effects(), retentionRootOf = retentionDir();
+  let created: ProbeWorkspace | undefined, privateRoot: string | undefined;
+  const adapter = createGuidanceProbeLocalAdapter({ omni: { chat: async () => { writeFileSync(join(created!.output, "answer.txt"), "partial"); return result(); } } as unknown as OmniRoute,
+    config, permit: async () => true, current: () => {}, resolveInput: () => ({ files: [], verifySource: () => "task_source" }), retentionRoot: retentionRootOf,
+    workspaceOwned: workspace => { privateRoot = probeWorkspacePrivateRoot(workspace); },
+    fixture: { evidence: "fixture_only",
+      materialize: async input => { created = await materializeProbeWorkspace({ ...input, policy: { ...input.policy, allowedWrites: [{ root: "output", relative: "answer.txt" }] } }); return created; },
+      confine: async workspace => ({ workspace, profile: "fixture-only, not an OS proof", env: {}, stop: async () => { throw new Error("process tree still running"); } }) } });
+  cleanup.push(() => { if (privateRoot) rmSync(privateRoot, { recursive: true, force: true }); });
+  const frame = await adapter.prepareWorkerFrame(saved, slot, saved.binding.baselineGuidance);
+  const reservation = { key: { projectKey: saved.registration.manifest.projectKey, id: guidanceProbeManifestKey(saved.registration.manifest) }, slotId: slot.id, generation: 1, revision: 1 };
+  const outcome = await adapter.ports.launch({ reservation, slot, manifest: saved.registration.manifest, inputFrame: frame.inputFrame,
+    inputSha256: probeHash(frame.inputFrame), nonGuidanceInputSha256: frame.nonGuidanceInputSha256, purpose: "guidance_probe" }, ledger.port, new AbortController().signal).catch(error => error);
+  // An uncertain stop makes the launch itself fail as interrupted, before any harvest: the failed-close branch throws first. The guard inside the harvest
+  // (`!entry.closed || entry.closeFailed`) is defence in depth behind that throw, so removing it changes no observable behaviour and is not mutation-tested.
+  // What this test pins is the observable contract: no partial output of an uncertain tree was copied out.
+  expect(outcome).toBeInstanceOf(ProbeLocalError);
+  expect(readdirSync(retentionRootOf)).toEqual([]);
+});
+
+test("scratch nested deeper than the walk limit is unmeasured, so it counts as over the cap and nothing is retained", async () => {
+  const root = retentionDir();
+  const { observed } = await harvestRun("small", root, "", "", 12);
+  expect(observed.measured!.limits).toContain("storage_over_cap");
+  expect(observed.measured!.retained).toBeUndefined();
+  expect(readdirSync(root)).toEqual([]);
+});
+
+test("host fingerprints ride on the measurement and come from the adapter's own runtime, not the declaration", async () => {
+  const { observed } = await harvestRun("x", undefined);
+  const actual = localProbeFingerprints(config);
+  expect(observed.measured!.runtime).toEqual({ runtimeSha256: actual.runtimeSha256, toolsetSha256: actual.toolsetSha256, modelConfigSha256: actual.modelConfigSha256 });
 });

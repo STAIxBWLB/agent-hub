@@ -824,12 +824,16 @@ exact experiment and slot ids, the reservation generation and revision, and:
 - `inputFrameSha256` and, for a worker, `workerEffectiveInputSha256` and
   `nonGuidanceInputSha256`; `guidanceSha256` for the admitted slot.
 - `runtimeSha256`, `toolsetSha256`, `modelConfigSha256`, read from the host's own
-  fingerprints at seal time, never copied from the declaration.
+  fingerprints at seal time (`localProbeFingerprints`), never copied from the declaration.
+  They are `null` when the host could not read them (a crash reconcile never saw them),
+  which is unverified coverage. A fingerprint that differs from the declared one is
+  recorded as it is and makes the pair incomparable (`input_drift`).
 - `startedAt`, `endedAt` and `elapsedMs` from the Store's trusted clock.
 - `state`: one of `succeeded`, `failed`, `cancelled`, `timed_out`, `unavailable`,
   `unknown`. `succeeded` requires every condition under "Sealing" below.
-- `usage`: per-session model calls and tool calls with their known counts, and observed
-  tokens or `null`. A gap stays `null`; a sum is never filled in.
+- `usage`: per-session model calls and tool calls with their known counts, and the
+  tokens this session alone observed, or `null`. A gap stays `null`; a sum is never
+  filled in, and the experiment's running token total is never copied into a receipt.
 - `limits`: the closed list of observation limits that applied (for example
   `usage_unknown`, `served_model_unobserved`, `teardown_unverified`, `output_truncated`,
   `storage_over_cap`).
@@ -840,21 +844,43 @@ exact experiment and slot ids, the reservation generation and revision, and:
 each file at most 1 MiB and the total at most the slot's declared `outputBytes`. Paths are
 workspace-relative under the declared output root, regular files with link count 1 only.
 Anything else (symlink, hardlink, device, a path outside the declared writes, a file over
-the cap) is not hashed: it is recorded as a closed `excluded` reason and the receipt
-cannot be `succeeded`.
+the cap, a tree nested deeper than 8 directory levels) is not hashed: it is recorded as a
+closed `excluded` reason (`over_depth` for the nesting limit) and the receipt cannot be
+`succeeded`. The walk limit never skips silently: scratch nested past it is reported as
+unmeasured, which counts as over the scratch cap.
 
 ### Sealing
 
 The adapter's `close` path already stops the peer and confinement and joins owned work.
-Sealing happens in that same owned lifecycle, after `stopProbe` and confinement stop have
-both reported known quiescence, and before the workspace is released:
+Output is collected only AFTER `stopProbe` and the confinement stop have both returned,
+that is after they reported known quiescence, because until then a child may still be
+writing and the bytes are not evidence. When the stop failed or is uncertain nothing is
+read at all. Collection and the receipt follow, before the host releases the workspace it
+owns:
 
-1. Collect the output manifest by reading each declared output file through its captured
-   identity (device, inode, link count, size), hashing the bytes read, and re-checking the
-   identity after the read. A file that changed while read is excluded, not hashed twice.
-2. Build the receipt from host state only, then compute its digest.
-3. Write it in one `BEGIN IMMEDIATE` transaction together with the session settlement, so
-   a receipt and its session state are never separately visible.
+1. Collect the output manifest by opening each declared output file `O_NONBLOCK|O_NOFOLLOW`
+   and requiring it to still be a regular file through the opened descriptor (a file
+   swapped for a FIFO, device or symlink after its `lstat` is excluded and cannot block
+   the daemon), hashing the bytes read from that descriptor, and re-checking the identity
+   after the read. A file that changed while read is excluded, not hashed twice.
+   Retention copies those same bytes. It never re-reads a workspace path, so a swap after
+   collection can neither hang it nor change what is kept.
+2. Build the receipt from the session's own settled facts, the immutable manifest and the
+   host's measurement only, then compute its digest. Mutable experiment state (the
+   running token total, the current hold, a later cancel, another session) is never read:
+   a session records why it settled (`closeCause`) when it settles.
+3. Write it in one `BEGIN IMMEDIATE` transaction together with the session settlement
+   (`settleAndSeal`), so a receipt and its session state are never separately visible. If
+   the seal fails the settlement rolls back with it; the host then settles the session as
+   `unknown` with a conservative receipt, and a session still open after a crash is
+   recorded as unknown by the explicit reconcile below. A settled session therefore never
+   exists without its receipt.
+
+The state is decided in this order, so what the host cannot vouch for always wins:
+unverified teardown or a crash is `unknown`; then the settled cause (`cancelled`,
+`timed_out`); then `unavailable`, which means the session could not start and is never
+used once a model or tool call ran (a confinement error after a call is `failed` or
+`unknown`); then `failed`; then `succeeded`.
 
 A receipt is `succeeded` only if all of these hold: the session settled `closed_fixture`
 with verified coverage; `servedModel` equals `requestedModel`; teardown is known
@@ -883,15 +909,20 @@ manifest is the record; the bytes are not claimed to still exist unless retained
 (next section).
 
 Crash after admission: a session found `reserved` or `running` with no receipt is
-reconciled to `unknown_held` with receipt state `unknown` and limit `teardown_unverified`.
+reconciled to `unknown_held` with receipt state `unknown` and limit `teardown_unverified`,
+whether or not a cancel request or an elapsed hold was already latched: a crash is never
+recorded as `cancelled` or `timed_out`, because the host did not witness a stop.
 Reconcile never launches, retries or restarts a session, and never turns an in-flight
 session into a failure or a success. It only records that the host cannot vouch for it.
 The lane stays held until a person or conductor cancels it through the existing
 `cancelIntent`.
 
 Reconcile runs **only** through an explicit host call, `GuidanceProbeStore.reconcile()`,
-made at daemon start. Opening the Store, `read`, `integrity`, `previewPrune` and every
-other read never write: a Store opened read-only changes no row. `reconcile` is
+made by the daemon in two places: at start, after the recovery integrity comparison, and
+at the release of a held recovery (a held target must keep carried rows byte-identical so
+its comparison holds). Opening the Store, `read`, `integrity`, `previewPrune` and every
+other read never write: a Store opened read-only (`new GuidanceProbeStore(file, now, true)`,
+a connection that cannot write) changes no row, and `reconcile` through it fails. `reconcile` is
 idempotent: a second call finds no unreconciled session and writes nothing. A reconciled
 `unknown` receipt counts in the outcome denominator as `unknown`, never as `failed`.
 
@@ -940,18 +971,26 @@ identity differs, a replaced root, a bystander file or a symlink swap is left al
 reported as `retained: <reason>`; cleanup never recurses into or deletes a name it did not
 create. It never follows a link and never touches another session's resources.
 
-`previewPrune(key, now)` is read-only and returns the exact list of what a prune would
+`previewPrune(key, fs)` is read-only and returns the exact list of what a prune would
 remove (relative names and byte counts, no content) and what it would keep and why.
-`prune(key, now, planDigest)` takes that preview's digest and refuses if the owned set has
-changed since, so a prune only ever does what the person saw.
+`prune(key, planDigest, fs)` takes that preview's digest and refuses if the owned set has
+changed since, so a prune only ever does what the person saw. Neither takes a time: expiry
+is decided on the Store's own trusted clock, so a caller cannot pull a retention date
+forward.
 
 Retention is `PROBE_RETENTION_DAYS = 14`, a named constant. It is not a setting, a
 manifest field or a config key. At seal time each retained output gets an explicit
 `expiresAt` (seal time plus that constant), stored with the receipt and shown by
 `previewPrune`. **Nothing is deleted automatically:** there is no timer and no background
 sweep. Removal happens only through `previewPrune` followed by `prune(planDigest)`,
-called by the host or the person. An unknown-held, active, closing or held experiment is
-never prunable, and an output is prunable only after its `expiresAt`.
+called by the host or the person. An output is prunable only after its `expiresAt`, and
+only when no session of its experiment is in flight and the experiment is finished:
+terminal (`closed_fixture`, `failed_fixture`), or stopped by the person's or conductor's
+existing `cancelIntent`. An experiment that is held (`unknown_held`, for example after a
+crash reconcile or a latched hold) stays unprunable until that cancel has released it, so
+its retained output cannot be removed while the person has not yet seen the hold, and it
+can still expire afterwards. `usageUnknown` alone never blocks a prune: it describes the
+measurements, not whether work is running. A receipt is never deleted in any case.
 
 A prune removes retained output and workspace bytes only. It never deletes a receipt or an
 output manifest.
@@ -967,7 +1006,7 @@ two-recoverer test (#329).
 T3 adds: the receipt and output manifest types and pure parsing in `guidance-probes.ts`;
 one additive private table in the Store (`guidance_probe_receipts`) with receipt
 hydration, tamper checks and reconcile folded into the existing integrity and recovery
-passes; `sealReceipt`, `receipts`, `outcome`, `reconcile`, `previewPrune` and `prune`; output collection and
+passes; `sealReceipt`, `settleAndSeal`, `receipts`, `outcome`, `reconcile`, `previewPrune` and `prune`; output collection and
 owned cleanup in the adapter and workspace modules; the comparability function; and fake
 fixtures for the mismatch, tamper, crash and teardown cases. It does not add a CLI verb,
 a wire operation, a daemon runner, a config key, a real model call or a live trial (T4).
@@ -977,18 +1016,20 @@ through the Store; T4 owns the producer status and decides what becomes public.
 
 ### How the adapter and host seal
 
-The adapter cannot reach the Store. It collects and retains the declared output while the
-workspace still exists (after the model loop and before the confinement stop releases it),
-and reports what it measured on the observation (`ProbeFakeObservation.measured`, every
-`ProbeMeasuredSession` field except `startedAt`). The fixture host samples `startedAt` on
-the trusted clock where it exposes the launch, settles the session, and then calls
-`sealReceipt`; the adapter never supplies the start instant. Collection never throws: a
-failure becomes an `output_truncated` limit, which can only keep a receipt from being a
-success. Retention needs a host-owned `retentionRoot` outside every workspace; without one
-the output is hashed and nothing is kept. Past the declared scratch or output cap nothing is
-retained and the receipt carries `storage_over_cap`. A settled session whose receipt could
-not be sealed counts as `unknown` in the denominator and is never comparable
-(`missing_receipt`); it is never read as a success or a failure.
+The adapter cannot reach the Store. After the stop reported quiescence it collects and
+retains the declared output and reports what it measured on the observation
+(`ProbeFakeObservation.measured`, every `ProbeMeasuredSession` field except `startedAt`,
+including the host's own runtime fingerprints). The fixture host samples `startedAt` on the
+trusted clock where it exposes the launch and calls `settleAndSeal`; the adapter never
+supplies the start instant. An observation that carries no measurement, or that did not
+match, is sealed with a conservative one (teardown not verified, nothing observed), so a
+session is never a success the host could not witness. Collection never throws: a failure
+becomes an `output_truncated` limit, which can only keep a receipt from being a success.
+Retention needs a host-owned `retentionRoot` outside every workspace; without one the
+output is hashed and nothing is kept. Past the declared scratch or output cap, or with
+scratch nested past the walk limit, nothing is retained and the receipt carries
+`storage_over_cap`. Hydration checks every receipt against its session row: generation,
+revision and a state that session could have produced.
 
 Public `show` computes `comparable` as the older expression AND the sealed-receipt verdict,
 so the flag only ever gets stricter. A store that cannot be read yields `false`.

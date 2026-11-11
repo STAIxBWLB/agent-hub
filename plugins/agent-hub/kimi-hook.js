@@ -8442,7 +8442,7 @@ var init_probe_errors = __esm(() => {
 });
 
 // src/local/probe-workspace.ts
-import { chmodSync as chmodSync2, constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync14, mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync5, openSync as openSync6, opendirSync as opendirSync2, readFileSync as readFileSync7, readSync as readSync4, rmSync as rmSync6, rmdirSync as rmdirSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7 } from "fs";
+import { chmodSync as chmodSync2, constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync14, mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync5, openSync as openSync6, opendirSync as opendirSync2, readSync as readSync4, rmSync as rmSync6, rmdirSync as rmdirSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname11, isAbsolute as isAbsolute6, join as join14 } from "path";
 function refused() {
   throw new Error("probe workspace source, role, path or resource proof is unavailable");
