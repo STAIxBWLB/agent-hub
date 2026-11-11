@@ -306,7 +306,7 @@ async function probeCommand(argv: string[], opts: { cwd: string; profile: string
       let quiescent = false;
       try { await stop(); quiescent = true; } catch { /* keep the child and directory in the returned owned stop handle */ }
       const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}\n(output truncated)` : output;
-      const observed = child.signalCode ? `${clipped}\n(probe command signal: ${child.signalCode})` : clipped;
+      const observed = child.signalCode ? `${clipped}\n(probe command signal: ${child.signalCode}; owned pid: ${child.pid})` : clipped;
       resolve({ code, output: cancelled ? `${observed}\n(probe command cancelled)` : observed, quiescent, ...(quiescent ? {} : { stop }) });
     };
     const abort = () => { cancelled = true; void finish(null); };
