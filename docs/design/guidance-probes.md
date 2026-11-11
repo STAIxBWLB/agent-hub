@@ -831,7 +831,8 @@ exact experiment and slot ids, the reservation generation and revision, and:
 - `usage`: per-session model calls and tool calls with their known counts, and observed
   tokens or `null`. A gap stays `null`; a sum is never filled in.
 - `limits`: the closed list of observation limits that applied (for example
-  `usage_unknown`, `served_model_unobserved`, `teardown_unverified`, `output_truncated`).
+  `usage_unknown`, `served_model_unobserved`, `teardown_unverified`, `output_truncated`,
+  `storage_over_cap`).
 - `output`: a `ProbeOutputManifestV1`, below.
 - `digest`: SHA-256 of the canonical record without this field.
 
@@ -864,8 +865,9 @@ exists. There is no path that upgrades a receipt after it is written.
 
 Immutability: a second `sealReceipt` for the same reservation with identical content
 returns the stored receipt (`already: true`); different content refuses and latches the
-observation hold. There is no update and no delete short of the experiment's expiry
-prune.
+observation hold. There is no update and no delete. A prune never removes a receipt or an
+output manifest (see "Cleanup"): receipts are the outcome denominator's record and live as
+long as the experiment row does.
 
 ### Tamper, torn writes and crash
 
@@ -880,12 +882,18 @@ identities, while the workspace is still owned. After the workspace is released 
 manifest is the record; the bytes are not claimed to still exist unless retained
 (next section).
 
-Crash after admission: on reopen, a session found `reserved` or `running` with no receipt
-is reconciled to `unknown_held` with receipt state `unknown` and limit
-`teardown_unverified`. Reconcile never launches, retries or restarts a session, and never
-turns an in-flight session into a failure or a success. It only records that the host
-cannot vouch for it. The lane stays held until a person or conductor cancels it through
-the existing `cancelIntent`.
+Crash after admission: a session found `reserved` or `running` with no receipt is
+reconciled to `unknown_held` with receipt state `unknown` and limit `teardown_unverified`.
+Reconcile never launches, retries or restarts a session, and never turns an in-flight
+session into a failure or a success. It only records that the host cannot vouch for it.
+The lane stays held until a person or conductor cancels it through the existing
+`cancelIntent`.
+
+Reconcile runs **only** through an explicit host call, `GuidanceProbeStore.reconcile()`,
+made at daemon start. Opening the Store, `read`, `integrity`, `previewPrune` and every
+other read never write: a Store opened read-only changes no row. `reconcile` is
+idempotent: a second call finds no unreconciled session and writes nothing. A reconciled
+`unknown` receipt counts in the outcome denominator as `unknown`, never as `failed`.
 
 ### Comparability and the outcome denominator (AC4)
 
@@ -914,6 +922,13 @@ The experiment's declared `inputBytes + scratchBytes + outputBytes` is already c
 1 GiB at admission. T3 adds no second source of truth: retained storage is accounted from
 the receipts' output manifests plus the retained workspace bytes the host recorded.
 
+The cap also holds at runtime, not only in the declaration. At seal time the host measures
+what the session actually left behind in scratch and output. If either exceeds the bound
+declared for it, the receipt is a non-success with limit `storage_over_cap` (or
+`output_truncated` when output files were excluded for size), and retention is never
+silently larger than declared: bytes past the bound are not retained, hashed or counted
+as the session's output.
+
 Cleanup touches only resources the host created and still owns, verified at the moment
 of removal by captured physical identity (device, inode, directory/file kind, link count)
 exactly as `materializeProbeWorkspace` already does for its failure cleanup. A path whose
@@ -924,10 +939,18 @@ create. It never follows a link and never touches another session's resources.
 `previewPrune(key, now)` is read-only and returns the exact list of what a prune would
 remove (relative names and byte counts, no content) and what it would keep and why.
 `prune(key, now, planDigest)` takes that preview's digest and refuses if the owned set has
-changed since, so a prune only ever does what the person saw. Retained output expires
-after the experiment's `retention` days (default 14, a named operational setting, not a
-manifest field) and only after the experiment is terminal and unheld. An unknown-held or
-active experiment is never pruned.
+changed since, so a prune only ever does what the person saw.
+
+Retention is `PROBE_RETENTION_DAYS = 14`, a named constant. It is not a setting, a
+manifest field or a config key. At seal time each retained output gets an explicit
+`expiresAt` (seal time plus that constant), stored with the receipt and shown by
+`previewPrune`. **Nothing is deleted automatically:** there is no timer and no background
+sweep. Removal happens only through `previewPrune` followed by `prune(planDigest)`,
+called by the host or the person. An unknown-held, active, closing or held experiment is
+never prunable, and an output is prunable only after its `expiresAt`.
+
+A prune removes retained output and workspace bytes only. It never deletes a receipt or an
+output manifest.
 
 Locks: receipts and prune plans use the Store's SQLite transaction, so no file lock and
 no stale-holder recovery are introduced. If implementation finds a file-level lock is
@@ -944,13 +967,15 @@ passes; `sealReceipt`, `readReceipt`, `previewPrune` and `prune`; output collect
 owned cleanup in the adapter and workspace modules; the comparability function; and fake
 fixtures for the mismatch, tamper, crash and teardown cases. It does not add a CLI verb,
 a wire operation, a daemon runner, a config key, a real model call or a live trial (T4).
-`show` gains the receipt-derived counts and the comparability reasons, nothing else.
+Public `show` is unchanged: it keeps only the stricter `comparable` flag. The per-state
+denominator counts and the comparability reasons are private status, read by the host
+through the Store; T4 owns the producer status and decides what becomes public.
 
-### Open choices for the reviewer
+### Rulings applied
 
-1. Retention default of 14 days and its home as an operational setting: acceptable, or
-   should prune be person-triggered only with no automatic expiry in T3?
-2. Whether `reconcile` should run on every Store open or only through an explicit host
-   call at daemon start (my proposal: the explicit call, so a read-only open never writes).
-3. Whether `show` may expose per-state denominator counts to the public projection or only
-   to the private status.
+The reviewer ruled on the three open choices of the first draft: no automatic expiry and
+no new setting (a named constant and an explicit `expiresAt`); reconcile only through an
+explicit host call at daemon start; the denominator counts and reasons stay private. They
+are folded into the sections above. Three amendments are also applied: prune never deletes
+receipts or manifests, the 1 GiB cap holds at runtime, and a reconciled `unknown` receipt
+counts as `unknown`.
