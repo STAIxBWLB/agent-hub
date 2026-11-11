@@ -140,6 +140,7 @@ rows a reading returned, so `0 on my tasks` is not a claim about the queue.
 | 1 | role-scoped (task 866) | 2026-11-11 06:28 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 2 |
 | 2 | role-scoped (task 866) | 2026-11-11 08:36 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 3 |
 | 3 | role-scoped (task 866) | 2026-11-11 17:19 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 3 |
+| 4 | role-scoped (task 866) | 2026-11-12 00:37 KST, hub 0.37.0 | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 since the daemon start at 20:51 (unknown before it) | 3 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -148,6 +149,13 @@ Reading 3, nine hours later, returned the same three expired rows, the same revi
 `refused 0`: the queue stored no new proposal on this task, and its last partner had merged by
 then. Coverage (`evaluated`) is not part of a role-scoped read and stays unknown at every reading,
 never zero.
+
+Reading 4 is the first on 0.37.0 and the first after the daemon restart that followed the upgrade
+(this project's state was written at 20:51 KST). It returned the same three expired rows at the
+same revision (`8:3`) under `mode shadow`, so the ledger and its receipts survived both the
+restart and the version change, and no new proposal was stored on this task in the seven hours
+since reading 3. Its `refused 0` covers that window only: the counter resets at a daemon start,
+so refusals before 20:51 stay unknown, as listed at the end.
 
 ## Proposal ledger
 
