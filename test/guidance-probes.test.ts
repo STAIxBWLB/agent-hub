@@ -865,3 +865,22 @@ test("T2 captured effect currentness closes with its port even while the experim
   if (!captured) throw new Error("expected captured capability");
   expect(() => captured!.current()).toThrow("uncertain");
 });
+
+
+test("T2 resources-only usage must be attested zero before any subsequent model effect", async () => {
+  const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider(); let models = 0;
+  provider.script = async (input, effects) => {
+    const setup = { sequence: 0, unit: "resources" as const, descriptorSha256: probeHash("invalid resource usage"), charges: { scratchBytes: 10 } };
+    await effects.runEffect(setup, async () => fakeEffectValue(setup, undefined, 1));
+    expect(f.store.read(f.key)!.counters.usageUnknown).toBe(true);
+    const request = { sequence: 1, unit: "model_calls" as const, reservedTokens: 20, descriptorSha256: probeHash("must not model") };
+    await expect(effects.runEffect(request, async () => { models++; return fakeEffectValue(request, "answer", 10); })).rejects.toThrow("uncertain");
+    return { reservation: input.reservation, outcome: "unknown", servedModel: GUIDANCE_PROBE_MODEL,
+      inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.inputSha256,
+      nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "unknown" };
+  };
+  const host = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100 });
+  const result = await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal);
+  expect(result.state).toBe("unknown_held"); expect(models).toBe(0);
+  expect(f.store.read(f.key)!.counters).toMatchObject({ modelCalls: 0, toolCalls: 0, scratchBytes: 10, usageUnknown: true });
+});

@@ -8,8 +8,10 @@ confined adapter, not the T3 durable producer receipt or a live trial.
 T2 uses the existing LocalPeer loop on a fresh private peer, with host-only
 lifecycle and purpose, a fixed requested model, role-specific admitted bytes,
 read/write/edit tools and experiment-wide accounting. The factory is not wired
-into the daemon. No real model, existing worker session, account, live home or
-production configuration was used or changed.
+into the daemon. No real model or existing worker session was launched, and no
+account or production configuration was changed. Live-home/account contents were
+not copied or supplied as probe inputs. The same-PID OS crash report was read
+read-only for the separate diagnosis described below.
 
 Constructor-injected fake model/fixture ports are source evidence. They do not
 prove OS confinement, provider behavior, sampling control or model quality.

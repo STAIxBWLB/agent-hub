@@ -694,6 +694,7 @@ export class GuidanceProbeFixtureHost {
           current();
           const result = await effect(signal);
           const observed = result.usage, visibleHash = probeHash(canonical({ request, usage: observed }));
+          if (request.unit === "resources" && observed !== 0) this.store.latchHold(reservation, "usage");
           if (result.observationSha256 !== visibleHash) this.store.latchHold(reservation, "observation");
           this.store.recordUsage({ admission, observed, observationSha256: probeHash(canonical({ admission, observed })) });
           this.store.settleEffect({ admission, outcome: "settled" });
