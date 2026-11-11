@@ -11530,7 +11530,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.23.1"
+      "@staix/agent-mem": "0.24.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -11702,83 +11702,6 @@ var init_review_comments = __esm(() => {
   init_review_anchor();
 });
 
-// node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
-var init_public_prune_view = __esm(() => {
-  init_generation();
-  init_platform();
-});
-// node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
-var MAX_LOG_BYTES;
-var init_lifecycle_log = __esm(() => {
-  MAX_LOG_BYTES = 8 * 1024 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/aliases.ts
-var init_aliases = __esm(() => {
-  init_lifecycle_log();
-});
-
-// node_modules/@staix/agent-mem/src/memory/profile-lock-diagnostic.ts
-var recognised;
-var init_profile_lock_diagnostic = __esm(() => {
-  init_platform();
-  recognised = new WeakMap;
-});
-
-// node_modules/@staix/agent-mem/src/memory/shard.ts
-var init_shard = __esm(() => {
-  init_sync_placement_active();
-  init_sync_placement_format();
-  init_sync_placement_guard();
-  init_public_prune_view();
-  init_generation();
-  init_aliases();
-  init_profile_lock_diagnostic();
-  init_aliases();
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-format.ts
-var METADATA_MAX, WIRE_MAX;
-var init_sync_placement_format = __esm(() => {
-  init_generation();
-  init_shard();
-  METADATA_MAX = 256 * 1024;
-  WIRE_MAX = 64 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/mutation.ts
-var mutations;
-var init_mutation = __esm(() => {
-  init_platform();
-  mutations = new WeakMap;
-});
-
-// node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
-var PUBLIC_PRUNE_REPLAY_MAX_BYTES;
-var init_public_prune_input_chain = __esm(() => {
-  init_generation();
-  init_platform();
-  PUBLIC_PRUNE_REPLAY_MAX_BYTES = 256 * 1024 * 1024;
-});
-
-// node_modules/@staix/agent-mem/src/memory/generation.ts
-var init_generation = __esm(() => {
-  init_sync_placement_format();
-  init_sync_placement_guard();
-  init_public_prune_view();
-  init_mutation();
-  init_platform();
-  init_shard();
-  init_public_prune_input_chain();
-  init_profile_lock_diagnostic();
-});
-
-// node_modules/@staix/agent-mem/src/memory/sync-placement-plan.ts
-var init_sync_placement_plan = __esm(() => {
-  init_generation();
-  init_sync_placement_format();
-});
-
 // node_modules/@staix/agent-mem/src/memory/screen.ts
 var SECRETS, looksSecret = (text) => SECRETS.some((re) => re.test(text));
 var init_screen = __esm(() => {
@@ -11811,6 +11734,66 @@ var init_policy = __esm(() => {
   flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
 });
 
+// node_modules/@staix/agent-mem/src/memory/config.ts
+var MAX_CONFIG_BYTES2;
+var init_config = __esm(() => {
+  init_policy();
+  MAX_CONFIG_BYTES2 = 64 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/private-spans.ts
+var init_private_spans = () => {};
+
+// node_modules/@staix/agent-mem/src/hook-record.ts
+var RECORD_INSTRUCTION, RECORD_INSTRUCTION_B, RECORD_INSTRUCTIONS, RECORD_INPUT_BYTES;
+var init_hook_record = __esm(() => {
+  init_private_spans();
+  RECORD_INSTRUCTION = [
+    "Only when a turn settles a decision, fix, fail or contract, end the final answer with at most 2 records; otherwise none:",
+    "amem: <decision|fix|fail|contract|finding> | <repo/path[#symbol],... or - for decision/contract> | <text, max 300 characters>",
+    "For fix/fail use symptom/cause -> fix/retry-when. No fences, quotes, secrets or PII."
+  ].join(`
+`);
+  RECORD_INSTRUCTION_B = [
+    "Future use: keep what code/git/instructions lack. Up to 2 final lines; else none:",
+    "amem: <decision|fix|fail|contract|finding> | <repo/path[#symbol],... or - for decision/contract> | <text, max 300 chars; basis:test|log|issue|run; prefix ? if unverified>",
+    "fix/fail: symptom/cause -> fix/retry-when. No fences, quotes, secrets or PII."
+  ].join(`
+`);
+  RECORD_INSTRUCTIONS = Object.freeze({ a: RECORD_INSTRUCTION, b: RECORD_INSTRUCTION_B });
+  RECORD_INPUT_BYTES = 256 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/brief-cache.ts
+var BRIEF_CACHE_BYTES;
+var init_brief_cache = __esm(() => {
+  BRIEF_CACHE_BYTES = 32 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/brief-capture.ts
+var init_brief_capture = __esm(() => {
+  init_hook_record();
+  init_config();
+  init_policy();
+  init_brief_cache();
+});
+
+// node_modules/@staix/agent-mem/src/brief-curated.ts
+var MAX_AGE;
+var init_brief_curated = __esm(() => {
+  init_policy();
+  init_config();
+  init_brief_capture();
+  init_brief_cache();
+  MAX_AGE = 24 * 60 * 60 * 1000;
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-plan.ts
+var init_sync_placement_plan = __esm(() => {
+  init_generation();
+  init_sync_placement_format();
+});
+
 // node_modules/@staix/agent-mem/src/memory/sync-placement-journal-format.ts
 var PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_ROOT_MAX_BYTES;
 var init_sync_placement_journal_format = __esm(() => {
@@ -11819,6 +11802,20 @@ var init_sync_placement_journal_format = __esm(() => {
   init_sync_placement_format();
   PLACEMENT_JOURNAL_CHUNK_MAX_BYTES = 64 * 1024;
   PLACEMENT_JOURNAL_ROOT_MAX_BYTES = 256 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/public-prune-view.ts
+var init_public_prune_view = __esm(() => {
+  init_generation();
+  init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/memory/public-prune-input-chain.ts
+var PUBLIC_PRUNE_REPLAY_MAX_BYTES;
+var init_public_prune_input_chain = __esm(() => {
+  init_generation();
+  init_platform();
+  PUBLIC_PRUNE_REPLAY_MAX_BYTES = 256 * 1024 * 1024;
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-active.ts
@@ -11832,6 +11829,13 @@ var init_sync_placement_active = __esm(() => {
   init_public_prune_input_chain();
   init_shard();
 });
+// node_modules/@staix/agent-mem/src/memory/profile-lock-diagnostic.ts
+var recognised;
+var init_profile_lock_diagnostic = __esm(() => {
+  init_platform();
+  recognised = new WeakMap;
+});
+
 // node_modules/@staix/agent-mem/src/memory/sync-placement-guard.ts
 var init_sync_placement_guard = __esm(() => {
   init_sync_placement_active();
@@ -11839,6 +11843,62 @@ var init_sync_placement_guard = __esm(() => {
   init_shard();
   init_sync_placement_format();
   init_profile_lock_diagnostic();
+});
+// node_modules/@staix/agent-mem/src/memory/lifecycle-log.ts
+var MAX_LOG_BYTES;
+var init_lifecycle_log = __esm(() => {
+  MAX_LOG_BYTES = 8 * 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/aliases.ts
+var init_aliases = __esm(() => {
+  init_lifecycle_log();
+});
+
+// node_modules/@staix/agent-mem/src/memory/shard.ts
+var init_shard = __esm(() => {
+  init_sync_placement_active();
+  init_sync_placement_format();
+  init_sync_placement_guard();
+  init_public_prune_view();
+  init_generation();
+  init_aliases();
+  init_profile_lock_diagnostic();
+  init_aliases();
+});
+
+// node_modules/@staix/agent-mem/src/memory/sync-placement-format.ts
+var METADATA_MAX, WIRE_MAX;
+var init_sync_placement_format = __esm(() => {
+  init_generation();
+  init_shard();
+  METADATA_MAX = 256 * 1024;
+  WIRE_MAX = 64 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/mutation.ts
+var mutations;
+var init_mutation = __esm(() => {
+  init_platform();
+  mutations = new WeakMap;
+});
+
+// node_modules/@staix/agent-mem/src/memory/generation.ts
+var init_generation = __esm(() => {
+  init_sync_placement_format();
+  init_sync_placement_guard();
+  init_public_prune_view();
+  init_mutation();
+  init_platform();
+  init_shard();
+  init_public_prune_input_chain();
+  init_profile_lock_diagnostic();
+});
+
+// node_modules/@staix/agent-mem/src/memory/curated-cache-state.ts
+var init_curated_cache_state = __esm(() => {
+  init_generation();
+  init_shard();
 });
 
 // node_modules/@staix/agent-mem/src/memory/formats.ts
@@ -12051,16 +12111,6 @@ var init_cli_attribution = __esm(() => {
   scope = new AsyncLocalStorage2;
 });
 
-// node_modules/@staix/agent-mem/src/memory/private-spans.ts
-var init_private_spans = () => {};
-
-// node_modules/@staix/agent-mem/src/memory/config.ts
-var MAX_CONFIG_BYTES2;
-var init_config = __esm(() => {
-  init_policy();
-  MAX_CONFIG_BYTES2 = 64 * 1024;
-});
-
 // node_modules/@staix/agent-mem/src/memory/home.ts
 var init_home = __esm(() => {
   init_platform();
@@ -12120,7 +12170,6 @@ var init_search_fts = __esm(() => {
   SCREENED_SCORE = rankedScoreSql();
   SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
 });
-
 // node_modules/@staix/agent-mem/src/memory/capture-input.ts
 var TOOL_INPUT_OMIT;
 var init_capture_input = __esm(() => {
@@ -12133,6 +12182,7 @@ var init_capture_input = __esm(() => {
 // node_modules/@staix/agent-mem/src/memory/capture.ts
 var SPOOL_MAX_BYTES;
 var init_capture = __esm(() => {
+  init_brief_cache();
   init_formats();
   init_screen();
   init_capture_input();
@@ -12219,6 +12269,7 @@ var init_migrate = __esm(() => {
   init_mutation();
   init_platform();
   init_generation();
+  init_curated_cache_state();
   init_style();
 });
 
@@ -12234,8 +12285,10 @@ var init_reader_lease = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/store.ts
-var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP;
+var DEFAULT_TTL_MS, UNSETTLED_MS, DEFAULT_LEASE_MS, MIGRATION_BOOTSTRAP, curatedDepth, curatedPending;
 var init_store = __esm(() => {
+  init_brief_curated();
+  init_curated_cache_state();
   init_sync_placement_guard();
   init_formats();
   init_public_prune_view();
@@ -12263,6 +12316,8 @@ var init_store = __esm(() => {
   UNSETTLED_MS = 180 * 24 * 3600000;
   DEFAULT_LEASE_MS = 4 * 3600000;
   MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
+  curatedDepth = new Map;
+  curatedPending = new Map;
 });
 
 // node_modules/@staix/agent-mem/src/memory/catalog.ts
@@ -12506,6 +12561,7 @@ var init_shard_migration = __esm(() => {
   init_reader_lease();
   init_shard();
   init_store();
+  init_curated_cache_state();
   init_migrate();
   init_style();
   USER2 = Symbol("shared-user-shard");
@@ -12625,17 +12681,17 @@ var init_mcp_memory = __esm(() => {
   init_work_lists();
 });
 
-// node_modules/@staix/agent-mem/src/hook-record.ts
-var RECORD_INSTRUCTION, RECORD_INPUT_BYTES;
-var init_hook_record = __esm(() => {
-  init_private_spans();
-  RECORD_INSTRUCTION = [
-    "Only when a turn settles a decision, fix, fail or contract, end the final answer with at most 2 records; otherwise none:",
-    "amem: <decision|fix|fail|contract|finding> | <repo/path[#symbol],... or - for decision/contract> | <text, max 300 characters>",
-    "For fix/fail use symptom/cause -> fix/retry-when. No fences, quotes, secrets or PII."
-  ].join(`
-`);
-  RECORD_INPUT_BYTES = 256 * 1024;
+// node_modules/@staix/agent-mem/src/memory/record-variant-log.ts
+var RECORD_VARIANTS_MAX_BYTES, CAP_TRIM_BYTES;
+var init_record_variant_log = __esm(() => {
+  RECORD_VARIANTS_MAX_BYTES = 4 * 1024 * 1024;
+  CAP_TRIM_BYTES = 3 * 1024 * 1024;
+});
+
+// node_modules/@staix/agent-mem/src/memory/record-instruction.ts
+var MAX_BYTES5;
+var init_record_instruction = __esm(() => {
+  MAX_BYTES5 = 64 * 1024;
 });
 
 // node_modules/@staix/agent-mem/src/hook-resources.ts
@@ -12654,7 +12710,7 @@ var init_hook_contract = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/hook-spool.ts
-var RECORD_BYTES, MAX_BYTES5, HOOK_REPLAY_MAX_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
+var RECORD_BYTES, MAX_BYTES6, HOOK_REPLAY_MAX_BYTES, CAPACITY_BYTES, RETIRE_AFTER_MS;
 var init_hook_spool = __esm(() => {
   init_formats();
   init_hook_record();
@@ -12669,7 +12725,7 @@ var init_hook_spool = __esm(() => {
   init_lifecycle();
   init_hook_contract();
   RECORD_BYTES = HOOK_INPUT_BYTES + 8192;
-  MAX_BYTES5 = 2 * 1024 * 1024;
+  MAX_BYTES6 = 2 * 1024 * 1024;
   HOOK_REPLAY_MAX_BYTES = 256 * 1024;
   CAPACITY_BYTES = 256 * 1024;
   RETIRE_AFTER_MS = 7 * 24 * 3600000;
@@ -12719,7 +12775,10 @@ var init_hook_jcode = __esm(() => {
 // node_modules/@staix/agent-mem/src/hooks.ts
 var hookStartedAt;
 var init_hooks = __esm(() => {
+  init_record_variant_log();
+  init_record_instruction();
   init_hook_record();
+  init_capture_input();
   init_hook_project();
   init_hook_native();
   init_aliases();
@@ -12738,7 +12797,7 @@ var init_hooks = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/ingest.ts
-var MAX_BYTES6, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
+var MAX_BYTES7, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
 var init_ingest = __esm(() => {
   init_capture();
   init_home();
@@ -12747,16 +12806,29 @@ var init_ingest = __esm(() => {
   init_config();
   init_project2();
   init_shard();
-  MAX_BYTES6 = 16 * 1024 * 1024;
+  MAX_BYTES7 = 16 * 1024 * 1024;
   DEFAULT_BYTES = 4 * 1024 * 1024;
   MAX_CURSOR_BYTES = 128 * 1024;
   utf8 = new TextDecoder("utf-8", { fatal: true });
   MAX_RECORD = 256 * 1024;
 });
 
+// node_modules/@staix/agent-mem/src/brief-curated-native.ts
+var init_brief_curated_native = __esm(() => {
+  init_brief_cache();
+  init_brief_curated();
+  init_formats();
+  init_shard();
+});
+
 // node_modules/@staix/agent-mem/src/session-brief.ts
 var init_session_brief = __esm(() => {
-  init_hook_record();
+  init_brief_cache();
+  init_brief_curated();
+  init_brief_curated_native();
+  init_curated_cache_state();
+  init_brief_capture();
+  init_formats();
   init_generation();
   init_home();
   init_platform();
@@ -12769,6 +12841,16 @@ var init_session_brief = __esm(() => {
   init_lifecycle();
   init_repo_scope();
   init_work_lists();
+});
+
+// node_modules/@staix/agent-mem/src/curated-brief-cache.ts
+var init_curated_brief_cache = __esm(() => {
+  init_brief_cache();
+  init_brief_curated();
+  init_curated_cache_state();
+  init_platform();
+  init_shard();
+  init_store();
 });
 
 // node_modules/@staix/agent-mem/src/memory/decay-review.ts
@@ -12824,13 +12906,14 @@ var init_public_prune_activation = __esm(() => {
   init_aliases();
   init_platform();
   init_store();
+  init_curated_cache_state();
   init_public_prune_inputs();
   init_public_prune_view();
   MAX = 1024 * 1024;
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-activation-storage.ts
-var MAX_BYTES7;
+var MAX_BYTES8;
 var init_sync_placement_activation_storage = __esm(() => {
   init_generation();
   init_platform();
@@ -12839,7 +12922,7 @@ var init_sync_placement_activation_storage = __esm(() => {
   init_sync_placement_plan();
   init_sync_placement_journal_format();
   init_public_prune_activation();
-  MAX_BYTES7 = 1024 * 1024;
+  MAX_BYTES8 = 1024 * 1024;
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-activation-proof.ts
@@ -12866,12 +12949,12 @@ var init_sync_placement_projection = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-writers.ts
-var MAX_BYTES8, MAX_PACKAGE;
+var MAX_BYTES9, MAX_PACKAGE;
 var init_sync_placement_writers = __esm(() => {
   init_generation();
   init_platform();
   init_sync_placement_format();
-  MAX_BYTES8 = 64 * 1024 * 1024;
+  MAX_BYTES9 = 64 * 1024 * 1024;
   MAX_PACKAGE = 64 * 1024;
 });
 
@@ -12912,7 +12995,7 @@ var init_sync_placement_journal_storage = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-writer-roots.ts
-var MAX_BYTES9;
+var MAX_BYTES10;
 var init_sync_placement_writer_roots = __esm(() => {
   init_generation();
   init_policy();
@@ -12924,7 +13007,7 @@ var init_sync_placement_writer_roots = __esm(() => {
   init_public_prune_activation();
   init_sync_placement_writers();
   init_sync_placement_format();
-  MAX_BYTES9 = 256 * 1024;
+  MAX_BYTES10 = 256 * 1024;
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-placement-prerequisites.ts
@@ -13397,6 +13480,7 @@ var init_src = __esm(() => {
   init_platform();
   init_candidates();
   init_config();
+  init_curated_brief_cache();
   init_sync_screen();
   init_sync_placement_writers();
   init_sync_placement_writer_roots();
@@ -13404,6 +13488,8 @@ var init_src = __esm(() => {
   init_setup();
   init_hook_record();
   init_sync_placement_writer_context();
+  init_capture_input();
+  init_record_instruction();
   init_store();
   init_capture();
   init_shard();
