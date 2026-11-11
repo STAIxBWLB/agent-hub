@@ -95,42 +95,10 @@ recovery step. The correction keeps ordinary paths unchanged and adds an alias
 write case, a second-call frame-bound case and typed logical refusal cases.
 Results for the corrected head are reported separately in the PR.
 
-## Native confinement root cause (macOS 27.0.1, local)
-
-The "exact denied resource is unknown" statements above were written before this
-bisection and stay as the record of that attempt. The cause is now identified,
-by plain `sandbox-exec` runs and by the unchanged canaries; no assertion was
-removed, skipped or loosened.
-
-1. **Root directory node.** `(deny file-read-data ...)` without `(literal "/")`
-   in the allowlist aborts every program at dyld startup (`nc`, `sh` and `cat`
-   all exit 134). Hosted macOS run 42967909894 shows the same abort. dyld reads
-   the root directory node's data at every process start. A `literal` matches that
-   one node, not its children.
-2. **The `/bin/sh` stub.** With (1) fixed, the lane script still fails, now at
-   its own `sh -c`: on this macOS `/bin/sh` re-execs `/bin/bash` as its variant
-   (`Failed to exec /bin/bash as variant for /bin/sh`) and reads the variant
-   selector `/private/var/select/sh`. The lane needed `/bin/bash` on the
-   `process-exec` allowlist and the selector as one data and traversal literal.
-   Allowing `/bin/bash` alone, or the selector's metadata alone, still fails.
-
-With both, the unchanged canaries pass locally: all five role canaries, the
-known-quiescent cleanup case and the default real-confinement plus fake-model
-lifecycle (63 pass, 1 skip, 0 fail across the sandbox, local-worker and
-input-matrix suites).
-
-What the change does not widen: the exact generated profile still denies, when
-run through `sandbox-exec` as `/bin/sh`, reading a file outside the workspace,
-`/etc/hosts`, the person's home files, `/Users`, and the bytes of the selector
-itself; denies executing `python3`, `curl` and `env`; denies a loopback
-connection; and denies a write outside the workspace. Probe tool dispatch
-refuses `bash` and `git` before any command (existing negative test), so
-`/bin/bash` on the allowlist widens the profile for the model-free proof only.
-
 ## Remaining evidence
 
-- Local real-profile confinement now passes the unchanged canaries after the root-node and `/bin/sh` stub corrections above; that is one macOS 27.0.1 machine, not the
-  hosted gate. The earlier "unknown" statements describe the attempt before the bisection.
+- Local real-profile confinement is **unverified**. The exact denied resource is
+  **unknown**; neither a loader stack nor a successful minimal control decides it.
 - Hosted macOS CI must run the unchanged positive/negative canaries and default
   real-profile/fake-model integration. Linux refusal and fake fixtures cannot
   substitute for that gate. A recurring hosted failure requires investigation.
