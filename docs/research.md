@@ -68,7 +68,7 @@ Schema v2 is additive: a v1 file still loads (a v1 row reads as `outcome: "appro
 | `tokens` | attributed tokens: `total`, `byPeer`, and `byAttribution` (`delivery`, `single_open`, the #200 rules); unattributed tokens are in no record |
 | `usage` | provider usage per peer: `input`, `output`, `cacheRead`, `total` (null when never reported) |
 | `usageByModel` | provider-reported total tokens per served (else requested) model |
-| `models` | model routes and served models of the attributed requests |
+| `models` | model routes and served models of the attributed requests; a judge model-choice observation (a `route` event with `decisionTarget: "judge"`, #1389) is skipped before any accumulation, so it adds no route, peer or attribution |
 | `writer` | the release and `live` or `backfill` |
 | `tooling` | #248: for each peer that worked on the task (owner, reviewer, a peer with attributed turns or tokens), the add-ons from the `tooling` event of the attachment it last worked in (an attachment runs from a `state` event that brings the peer online to the next `offline`; detection may settle after the work started): `{ name, version }` from the closed list `claude-mem`, `ponytail`, `ripwire`, `open-code-review`, `codex-plugin`, `dot-admit`; version null when unknown. A peer missing here is unknown; records built from events written before #248 have no field |
 | `briefs` | #258: task briefs handed over for the task (`delivered`) and how many carried a hub-memory fail note (`withFail`), from `memory_brief` events; absent when none was recorded |

@@ -1418,6 +1418,26 @@ when they do not clear. Bounds are 8192 bytes per role file and 32768 bytes per
 record. The tools' arguments and results never reach observer capture, and a
 variant grants no activation, permission, role or probe.
 
+## Guidance probes (#1226)
+
+`ahub guidance probe register|start|show|cancel` is the person's or the one
+configured conductor's, through the existing operational-authority admission; an
+ordinary peer, a console delegation and a `--live-test` run are refused. Every
+write goes through Tasks, which rechecks actor, session, task epoch and flow,
+the selected variant's applicability and privacy across every await: a private
+turn or a private or PII task refuses. Registration is an inert private
+declaration in additive `hub.db` tables (`guidance_probe_*`), never on the task,
+its history or a public view, and no actor, session or authority can be named in
+it. Production has no probe runner: start refuses before reserving a lane, and
+fixture runners are injected only by test constructors, never by wire data, CLI,
+config or a model id. The T2 confined path (a private `LocalPeer` with no bus,
+memory capture, observer or ordinary history) offers only `read`, `write` and
+`edit` under a logical `/workspace`, writes only under declared `scratch/` and
+`output/` paths, refuses non-regular and hardlinked targets and files over
+1 MiB, and runs any proof command under a narrowed seatbelt profile with network
+denied (the model-free proof's own control listener aside). It is fixture-proven
+only and grants no real model or worker run ([design](design/guidance-probes.md)).
+
 ## Execution lineage (#1220)
 
 `ahub lineage show` and `hub_lineage_show` read a bounded public metadata
