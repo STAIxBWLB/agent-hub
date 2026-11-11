@@ -4,9 +4,15 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.38.0
+
 - Commands the hub hands a person run as printed (#1399). The needs_review hold notice, `ahub status` held rows and `ahub queue show` give `cd <project> && ahub queue resolve <id> --revision N --action <suggested> --reason "<kind> from <sender> to <peer>"` plus the other actions with one clause each, in place of `--action completed|retry|discard --reason <text>`. Agents are told, in the managed AGENTS block and in their session instructions, to pass such a command on unshortened.
 - The managed AGENTS block is reordered (rules before transport, all-agent rules out of the pull-only bullet) and has one source: the `general`, `research` and `writing` profiles now append their own paragraph to `templates/AGENTS.block.md` and no longer carry a drifted copy, so they gain the `[FYI]` action rule, the no-polling rule and the one-heavy-job rule they lacked. Compatibility: an existing project keeps its old block until `ahub init` runs there; `ahub doctor` flags `hub instructions` and prints the commands. A project's own `profile_overrides.agents` still replaces the whole block.
 - The block no longer fixes the heavy-job limit at one (#1399): it tells agents to start a build or full test run through the machine's admission tool (`dot admit`, whose `admission.slots.heavy_per_repo` the person sets) and to respect a deferral, and to keep to one per repository only where no such tool exists. No setting was added: the number lives in the machine's tool, not in tracked project text.
+- Guidance probes (#1226 T3): host-sealed receipts in a private table, the outcome denominator (a missing or reconciled receipt counts as `unknown`, never `failed`), explicit crash reconcile and an owned-output prune that keeps receipts and manifests (#1397). Constructor-only and unwired; no live trial.
+- Guidance probes (#1226 T4, fake-provider part): `ahub guidance probe receipts --id HASH [--json]`, the matching control op and a read-only `probe` view in the Guidance panel show sealed receipts, the denominator, comparability reasons and retention state; `test/guidance-probe-gate.test.ts` runs the fake lifecycle end to end (#1400). The live local-worker trial (AC7) is still open.
+
+Release N-1 for 0.38.x is 0.37.0 (exact `@staix/agent-mem` 0.24.0, control protocol 17 with descriptor floor 16); `test/fixtures/release-n-1` and `test/published-protocol-compat.test.ts` now pin it. Compatibility: the wire protocol window is unchanged at 16 through 17; the new `guidance_probe_receipts` daemon feature and control op are optional, and a 0.37.0 daemon answers the op as unknown. Files: `hub.db` gains an additive `guidance_probe_receipts` table created with `CREATE TABLE IF NOT EXISTS` and no `hub_schema` bump, so 0.37.0 opens a 0.38.0 database and ignores it. The exact `@staix/agent-mem` pin stays 0.24.0. A project initialised by an earlier release keeps its AGENTS.md block until `ahub init --yes` is run again; `ahub doctor` warns until then.
 
 ## 0.37.0
 
