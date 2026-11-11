@@ -119,13 +119,20 @@ known-quiescent cleanup case and the default real-confinement plus fake-model
 lifecycle (63 pass, 1 skip, 0 fail across the sandbox, local-worker and
 input-matrix suites).
 
-What the change does not widen: the exact generated profile still denies, when
-run through `sandbox-exec` as `/bin/sh`, reading a file outside the workspace,
-`/etc/hosts`, the person's home files, `/Users`, and the bytes of the selector
-itself; denies executing `python3`, `curl` and `env`; denies a loopback
-connection; and denies a write outside the workspace. Probe tool dispatch
-refuses `bash` and `git` before any command (existing negative test), so
-`/bin/bash` on the allowlist widens the profile for the model-free proof only.
+What the change widens, and what it does not. The selector `/private/var/select/sh`
+is now **readable** under the lane profile (that is the grant); it is a system
+symlink to `/bin/bash` and holds no operator data. Its siblings stay denied:
+`developer_dir`, `X11` and the directory itself all refuse a read. An earlier
+draft of this note said the selector's bytes were denied; that was a measurement
+artifact (the read failed on writing to stdout) and is corrected here.
+
+The exact generated profile, run through `sandbox-exec` as `/bin/sh`, still denies
+reading a file outside the workspace, `/etc/hosts`, the person's home files and
+`/Users`; denies executing `python3`, `curl` and `env`; denies a loopback
+connection; and denies a write outside the workspace. `/bin/sh` on macOS is the
+bash variant stub, so the `/bin/bash` exec grant lets the lane run nothing `sh`
+could not. Probe tool dispatch refuses `bash` and `git` before any command
+(existing negative test), so no probe tool runs a command at all.
 
 ## Remaining evidence
 
