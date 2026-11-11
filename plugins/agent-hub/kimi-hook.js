@@ -8375,7 +8375,7 @@ function canonical3(value) {
 }
 var GUIDANCE_PROBE_LIMITS, registrationScaffoldBytes, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL = "qwen27b/qwen3.8-27b", GuidanceProbeError, invalid = () => {
   throw new GuidanceProbeError("invalid");
-}, probeHash = (text) => createHash5("sha256").update(text, "utf8").digest("hex"), probeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, guidanceProbeCanonical = (value, maximum = GUIDANCE_PROBE_LIMITS.recordBytes) => canonical3(inert(value, maximum));
+}, probeHash = (text) => createHash5("sha256").update(text, "utf8").digest("hex"), probeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, guidanceProbeCanonical = (value, maximum = GUIDANCE_PROBE_LIMITS.recordBytes) => canonical3(inert(value, maximum)), PROBE_RETENTION_DAYS = 14, PROBE_RETENTION_MS, OUTPUT_NAME_BYTES = 256, OUTPUT_ENTRIES = 64, NAME_JSON_BYTES, ENTRY_JSON_BYTES, EXCLUDED_JSON_BYTES, FIXED_RECEIPT_BYTES = 4096, PROBE_OUTPUT_LIMITS, PROBE_RECEIPT_ROW_BYTES;
 var init_guidance_probes = __esm(() => {
   init_execution_reference();
   GUIDANCE_PROBE_LIMITS = Object.freeze({
@@ -8405,6 +8405,17 @@ var init_guidance_probes = __esm(() => {
       this.name = "GuidanceProbeError";
     }
   };
+  PROBE_RETENTION_MS = PROBE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  NAME_JSON_BYTES = 2 * OUTPUT_NAME_BYTES + 2;
+  ENTRY_JSON_BYTES = NAME_JSON_BYTES + 160;
+  EXCLUDED_JSON_BYTES = NAME_JSON_BYTES + 64;
+  PROBE_OUTPUT_LIMITS = Object.freeze({
+    entries: OUTPUT_ENTRIES,
+    fileBytes: 1024 * 1024,
+    nameBytes: OUTPUT_NAME_BYTES,
+    receiptBytes: FIXED_RECEIPT_BYTES + OUTPUT_ENTRIES * (ENTRY_JSON_BYTES + 1) + OUTPUT_ENTRIES * (EXCLUDED_JSON_BYTES + 1)
+  });
+  PROBE_RECEIPT_ROW_BYTES = PROBE_OUTPUT_LIMITS.receiptBytes;
 });
 
 // src/local/probe-errors.ts
@@ -8439,7 +8450,7 @@ var init_probe_errors = __esm(() => {
 });
 
 // src/local/probe-workspace.ts
-import { chmodSync as chmodSync2, constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync14, mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync5, openSync as openSync6, opendirSync as opendirSync2, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "fs";
+import { chmodSync as chmodSync2, constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync14, mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync5, openSync as openSync6, opendirSync as opendirSync2, readSync as readSync4, rmSync as rmSync6, rmdirSync as rmdirSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname11, isAbsolute as isAbsolute6, join as join14 } from "path";
 function refused() {
   throw new Error("probe workspace source, role, path or resource proof is unavailable");
@@ -11044,7 +11055,7 @@ var init_shipped_roles = __esm(() => {
 
 // src/hub/roles.ts
 import { createHash as createHash6 } from "crypto";
-import { constants as constants6, closeSync as closeSync7, fstatSync as fstatSync6, lstatSync as lstatSync16, openSync as openSync7, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
+import { constants as constants6, closeSync as closeSync7, fstatSync as fstatSync6, lstatSync as lstatSync16, openSync as openSync7, readSync as readSync5, readdirSync as readdirSync2 } from "fs";
 import { join as join17 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
@@ -11099,7 +11110,7 @@ function projectRole(file) {
       throw new Error("role must be a bounded regular file");
     const bytes = Buffer.alloc(8193);
     let length = 0, n = 0;
-    while ((n = readSync4(fd, bytes, length, bytes.length - length, null)) > 0) {
+    while ((n = readSync5(fd, bytes, length, bytes.length - length, null)) > 0) {
       length += n;
       if (length > 8192)
         throw new Error("role exceeds file cap");
@@ -12361,7 +12372,7 @@ var init_curated_cache_state = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/formats.ts
-import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, openSync as openSync8, readFileSync as readFileSync8, readSync as readSync5 } from "fs";
+import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, openSync as openSync8, readFileSync as readFileSync8, readSync as readSync6 } from "fs";
 var MAX_BYTES4, SEMVER, READER_VERSION;
 var init_formats = __esm(() => {
   MAX_BYTES4 = 64 * 1024;
@@ -18660,7 +18671,7 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync9, constants as constants8, fstatSync as fstatSync8, lstatSync as lstatSync18, openSync as openSync9, readSync as readSync6 } from "fs";
+import { closeSync as closeSync9, constants as constants8, fstatSync as fstatSync8, lstatSync as lstatSync18, openSync as openSync9, readSync as readSync7 } from "fs";
 import { homedir as homedir5 } from "os";
 import { isAbsolute as isAbsolute7, join as join20, relative as relative5 } from "path";
 import { createHash as createHash11 } from "crypto";
@@ -18739,7 +18750,7 @@ function readAgyTranscript(session, transcript, options) {
       const buffer = Buffer.alloc(stat.size - from);
       let bytes = 0;
       while (bytes < buffer.length) {
-        const count = readSync6(fd, buffer, bytes, buffer.length - bytes, from + bytes);
+        const count = readSync7(fd, buffer, bytes, buffer.length - bytes, from + bytes);
         if (!count)
           break;
         bytes += count;
@@ -19034,7 +19045,7 @@ var init_native_cli_entry_codex = () => {};
 
 // src/cli/kimi-plugin.ts
 import { randomUUID as randomUUID11 } from "crypto";
-import { closeSync as closeSync10, lstatSync as lstatSync19, mkdirSync as mkdirSync12, openSync as openSync10, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync10 } from "fs";
+import { closeSync as closeSync10, lstatSync as lstatSync19, mkdirSync as mkdirSync12, openSync as openSync10, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync4, unlinkSync as unlinkSync4, writeFileSync as writeFileSync10 } from "fs";
 import { dirname as dirname14, isAbsolute as isAbsolute8, join as join22 } from "path";
 function file(path, cap) {
   const stat = lstatSync19(path, { throwIfNoEntry: false });
@@ -19072,7 +19083,7 @@ function atomic(path, bytes, before) {
     if (fd !== undefined)
       closeSync10(fd);
     try {
-      unlinkSync3(temporary);
+      unlinkSync4(temporary);
     } catch {}
   }
 }
@@ -19080,7 +19091,7 @@ function removeFile(path, expected) {
   const current = lstatSync19(path, { throwIfNoEntry: false });
   if (!current || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !readFileSync11(path).equals(expected))
     return;
-  unlinkSync3(path);
+  unlinkSync4(path);
 }
 function manifest() {
   return { name: ID2, version: "1.0.0", description: "Managed by the ahub kimi launcher for this launch only.", hooks: EVENTS3.map((event) => ({ event, command: `bun ./kimi-hook.js ${event}`, timeout: 5 })) };
@@ -19176,7 +19187,7 @@ function locked(options, run) {
     return run();
   } finally {
     closeSync10(fd);
-    unlinkSync3(path);
+    unlinkSync4(path);
   }
 }
 function ensureKimiPlugin(options) {
@@ -19212,7 +19223,7 @@ function cleanupKimiPlugin(options) {
     removeFile(join22(current.managed, "kimi.plugin.json"), manifestTarget.next);
     removeFile(join22(current.managed, "kimi-hook.js"), hookTarget.next);
     try {
-      rmdirSync3(current.managed);
+      rmdirSync4(current.managed);
     } catch {}
   });
 }
@@ -20143,7 +20154,7 @@ var init_native_cli_launch_common = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-claude-launch.ts
-import { mkdirSync as mkdirSync14, writeFileSync as writeFileSync11, renameSync as renameSync6, unlinkSync as unlinkSync4, readFileSync as readFileSync14 } from "fs";
+import { mkdirSync as mkdirSync14, writeFileSync as writeFileSync11, renameSync as renameSync6, unlinkSync as unlinkSync5, readFileSync as readFileSync14 } from "fs";
 import { randomUUID as randomUUID12 } from "crypto";
 import { resolve as resolve17, join as join28 } from "path";
 function claudeChannel(userArgs) {
@@ -20214,7 +20225,7 @@ function claudeNativeLaunch(ctx) {
         renameSync6(`${file}.tmp`, file);
       } catch {
         try {
-          unlinkSync4(`${file}.tmp`);
+          unlinkSync5(`${file}.tmp`);
         } catch {}
         throw new Error("cannot write private Claude session settings in the hub state directory");
       }
@@ -20264,7 +20275,7 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync12, existsSync as existsSync9, fstatSync as fstatSync10, openSync as openSync12, readFileSync as readFileSync15, readSync as readSync7 } from "fs";
+import { appendFileSync, closeSync as closeSync12, existsSync as existsSync9, fstatSync as fstatSync10, openSync as openSync12, readFileSync as readFileSync15, readSync as readSync8 } from "fs";
 function readEvents(file, since = 0) {
   if (!existsSync9(file))
     return [];
@@ -20435,7 +20446,7 @@ function claudeWindows(rateLimits) {
 }
 
 // src/adapters/kimi-tui-facts.ts
-import { closeSync as closeSync13, constants as constants10, fstatSync as fstatSync11, lstatSync as lstatSync20, openSync as openSync13, readSync as readSync8, readdirSync as readdirSync5 } from "fs";
+import { closeSync as closeSync13, constants as constants10, fstatSync as fstatSync11, lstatSync as lstatSync20, openSync as openSync13, readSync as readSync9, readdirSync as readdirSync5 } from "fs";
 import { createHash as createHash12 } from "crypto";
 import { basename as basename6, dirname as dirname15, isAbsolute as isAbsolute10, join as join31, relative as relative6 } from "path";
 import { homedir as homedir9 } from "os";
@@ -20469,7 +20480,7 @@ function readBytes(path, cap, tail = false) {
     const bytes = Buffer.alloc(length);
     let offset = 0;
     while (offset < length) {
-      const count = readSync8(fd, bytes, offset, length - offset, start + offset);
+      const count = readSync9(fd, bytes, offset, length - offset, start + offset);
       if (count <= 0)
         throw new Error("short read");
       offset += count;

@@ -85,6 +85,8 @@ export interface ProbeSessionCoverage {
   inputFrameSha256: string | null; inputFrameBytes: number; launchExposed: boolean; preLaunchFailure: boolean;
   modelCalls: number; modelUsageKnown: number; toolCalls: number; toolUsageKnown: number;
   usageUnknown: boolean; coverageVerified: boolean;
+  /** Tokens this session alone observed (T3). Optional: sessions written before it have none, which reads as 0 known tokens only when no model call ran unobserved. */
+  tokensObserved?: number;
 }
 export interface ProbeUsageObservation { admission: ProbeEffectAdmission; observed: number | null; observationSha256: string }
 export interface ProbeCancellation { key: ProbeKey; expectedRevision: number; host: ProbeHostBinding }
@@ -92,8 +94,11 @@ export interface ProbeCounters {
   workerAttempts: number; editorAttempts: number; modelCalls: number; toolCalls: number; tokensReserved: number; tokensObservedKnown: number;
   inputBytes: number; scratchBytes: number; outputBytes: number; elapsedHighWaterMs: number; usageUnknown: boolean;
 }
+/** Why a session settled, recorded once when it settled so a receipt is derived from the session's own facts and never from experiment state that moves later. */
+export type ProbeCloseCause = "none" | "cancel" | "elapsed" | "hold" | "crash";
 export interface ProbeSession {
   slotId: string; generation: number; revision: number; state: ProbeSessionState; candidateArtifactSha256: string | null;
+  closeCause?: ProbeCloseCause;
   child?: ProbeChildBinding;
   start?: ProbeStartSelector;
   coverage: ProbeSessionCoverage;
@@ -108,6 +113,8 @@ export interface ProbeFakeObservation {
   reservation: ProbeReservation; outcome: "closed_fixture" | "failed_known" | "unknown"; servedModel: string | null;
   inputFrameHash: string | null;
   workerEffectiveInputHash: string | null; nonGuidanceInputSha256: string | null; candidateArtifactSha256: string | null; usage: "known_fixture" | "unknown";
+  /** What the host measured of the finished session (T3). The adapter cannot supply `startedAt`: the host samples it when it exposes the launch. */
+  measured?: Omit<ProbeMeasuredSession, "startedAt">;
 }
 export interface ProbeFakeStop { reservation: ProbeReservation }
 export interface ProbeFakeStopObservation { reservation: ProbeReservation; stopped: "known_fixture" | "unknown" }
@@ -123,6 +130,12 @@ export interface ProbeFakeEffects {
 export interface GuidanceProbeFakePorts {
   launch(input: ProbeFakeLaunch, effects: ProbeFakeEffects, signal: AbortSignal): Promise<ProbeFakeObservation>;
   stop(input: ProbeFakeStop, signal: AbortSignal): Promise<ProbeFakeStopObservation>;
+  /**
+   * Remove output the port itself retained for a launch whose measurement the host did not seal with that record: an observation that did not match the
+   * reservation (a fallback model, for one), a failed seal, a settlement that lost its clock. Without it that directory has no row, so no prune could ever
+   * reach it. The port removes only what it created, by the identity it captured, and never throws into the host.
+   */
+  discardRetained?(retained: ProbeRetainedRecord): void;
 }
 export interface ProbePublicReceipt extends ProbeReceipt { experimentId: string; taskId: number; evidence: "declaration" | "fixture" | "unknown" }
 export interface ProbePublicStatus extends ProbePublicReceipt { counters: ProbeCounters; cancelRequested: boolean; notNeeded: number; comparable: boolean; authoring: "admitted_fixture" | "uncontrolled" | "unknown" }
@@ -356,3 +369,248 @@ export function guidanceProbeWorkerFrame(task: string, baselineContext: string, 
   return JSON.stringify({ task, baselineContext, systemPolicy, guidance });
 }
 export const guidanceProbeNonGuidanceInputHash = (task: string, baselineContext: string, systemPolicy: string): string => probeHash(JSON.stringify({ task, baselineContext, systemPolicy }));
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// T3 (#1226): host-observed receipts, the outcome denominator and comparability. Contract: docs/design/guidance-probes.md "T3 receipts, reconcile and cleanup contract".
+// Everything here is pure: no storage, process or clock. The Store seals and hydrates; these functions only shape, check and classify.
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** Retained output is eligible for a prune this long after its receipt seals. A constant, not a setting; nothing deletes automatically. */
+export const PROBE_RETENTION_DAYS = 14;
+export const PROBE_RETENTION_MS = PROBE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+/**
+ * The bounds of one receipt, and the largest valid receipt they allow. `receiptBytes` is DERIVED from them, never chosen: a session that meets every success
+ * condition and writes 64 files with the longest allowed names must still seal as a success, so the byte bound can never sit below the largest valid manifest.
+ * A name is at most `nameBytes` UTF-8 bytes; in JSON each of those bytes can cost two (a quote or a backslash), plus the surrounding quotes. Control and format
+ * characters are refused outright (`probeOutputName`), so no byte costs more than two. `FIXED_RECEIPT_BYTES` covers every other field at its own maximum:
+ * three bounded ids and model names, eight digests, the counters, the limits array and the keys (measured at about 3 KB; the test builds the real maximum).
+ */
+const OUTPUT_NAME_BYTES = 256, OUTPUT_ENTRIES = 64;
+const NAME_JSON_BYTES = 2 * OUTPUT_NAME_BYTES + 2;
+const ENTRY_JSON_BYTES = NAME_JSON_BYTES + 160, EXCLUDED_JSON_BYTES = NAME_JSON_BYTES + 64, FIXED_RECEIPT_BYTES = 4096;
+export const PROBE_OUTPUT_LIMITS = Object.freeze({ entries: OUTPUT_ENTRIES, fileBytes: 1024 * 1024, nameBytes: OUTPUT_NAME_BYTES,
+  receiptBytes: FIXED_RECEIPT_BYTES + OUTPUT_ENTRIES * (ENTRY_JSON_BYTES + 1) + OUTPUT_ENTRIES * (EXCLUDED_JSON_BYTES + 1) });
+/** The one name check for an output path in a manifest, an exclusion or a retained record: bounded, relative, no control or format characters, no `..`. */
+export const probeOutputName = (value: unknown): value is string => executionText(value, PROBE_OUTPUT_LIMITS.nameBytes) && !/\p{Cf}/u.test(value)
+  && !value.startsWith("/") && !value.split("/").includes("..");
+
+export type ProbeReceiptState = "succeeded" | "failed" | "cancelled" | "timed_out" | "unavailable" | "unknown";
+export type ProbeReceiptLimit = "usage_unknown" | "served_model_unobserved" | "served_model_mismatch" | "teardown_unverified" | "output_truncated" | "storage_over_cap" | "coverage_unverified";
+export type ProbeExcludedReason = "not_regular" | "linked" | "outside_declared_writes" | "over_file_cap" | "over_total_cap" | "changed_while_read" | "over_entry_cap" | "over_depth" | "over_walk_cap" | "invalid_name";
+export interface ProbeOutputEntry { relative: string; sha256: string; bytes: number }
+export interface ProbeOutputExcluded { relative: string; reason: ProbeExcludedReason }
+export interface ProbeOutputManifestV1 { v: 1; entries: readonly ProbeOutputEntry[]; excluded: readonly ProbeOutputExcluded[]; totalBytes: number }
+export interface ProbeReceiptUsage { modelCalls: number; modelUsageKnown: number; toolCalls: number; toolUsageKnown: number; tokensObserved: number | null }
+/** The host's immutable record of one finished session. Every field is host-computed; none is a provider claim. */
+export interface ProbeReceiptV1 {
+  v: 1;
+  experimentId: string;
+  slotId: string;
+  generation: number;
+  revision: number;
+  requestedModel: string;
+  servedModel: string | null;
+  inputFrameSha256: string | null;
+  workerEffectiveInputSha256: string | null;
+  nonGuidanceInputSha256: string | null;
+  guidanceSha256: string | null;
+  /** The host's own fingerprints read at seal time. `null` when the host never observed them (a crash reconcile): never copied from the declaration. */
+  runtimeSha256: string | null;
+  toolsetSha256: string | null;
+  modelConfigSha256: string | null;
+  startedAt: number;
+  endedAt: number;
+  elapsedMs: number;
+  state: ProbeReceiptState;
+  usage: ProbeReceiptUsage;
+  limits: readonly ProbeReceiptLimit[];
+  output: ProbeOutputManifestV1;
+  /** Seal time plus PROBE_RETENTION_MS. A prune never removes retained output before this instant. */
+  expiresAt: number;
+  digest: string;
+}
+export type ProbeIncomparableReason = "served_model_mismatch" | "served_model_unobserved" | "input_drift" | "usage_unknown" | "incomplete_coverage"
+  | "teardown_unverified" | "authoring_uncontrolled" | "missing_receipt";
+export interface ProbeComparability { comparable: boolean; reasons: readonly ProbeIncomparableReason[] }
+/** Private status: the outcome denominator by receipt state, plus slots that never started. Never part of the public projection (T4 owns that). */
+export interface ProbeOutcomeCounts { succeeded: number; failed: number; cancelled: number; timed_out: number; unavailable: number; unknown: number; planned: number; not_needed: number }
+
+const RECEIPT_STATES: readonly ProbeReceiptState[] = ["succeeded", "failed", "cancelled", "timed_out", "unavailable", "unknown"];
+const RECEIPT_LIMITS: readonly ProbeReceiptLimit[] = ["usage_unknown", "served_model_unobserved", "served_model_mismatch", "teardown_unverified", "output_truncated", "storage_over_cap", "coverage_unverified"];
+const EXCLUDED_REASONS: readonly ProbeExcludedReason[] = ["not_regular", "linked", "outside_declared_writes", "over_file_cap", "over_total_cap", "changed_while_read", "over_entry_cap", "over_depth", "over_walk_cap", "invalid_name"];
+
+/** Digest over the canonical record without its own digest field. */
+export function probeReceiptDigest(receipt: Omit<ProbeReceiptV1, "digest">): string {
+  return probeHash(guidanceProbeCanonical(receipt, PROBE_OUTPUT_LIMITS.receiptBytes));
+}
+const nullableSha = (value: unknown): boolean => value === null || probeSha256(value);
+/** Closed, inert parse. Returns undefined for any shape, bound or digest violation; never repairs. */
+export function parseProbeReceipt(value: unknown): ProbeReceiptV1 | undefined {
+  try {
+    const f = object(inert(value, PROBE_OUTPUT_LIMITS.receiptBytes), ["v", "experimentId", "slotId", "generation", "revision", "requestedModel", "servedModel", "inputFrameSha256",
+      "workerEffectiveInputSha256", "nonGuidanceInputSha256", "guidanceSha256", "runtimeSha256", "toolsetSha256", "modelConfigSha256", "startedAt", "endedAt", "elapsedMs", "state",
+      "usage", "limits", "output", "expiresAt", "digest"]);
+    required(f.v === 1 && identity(f.experimentId) && identity(f.slotId) && probeInteger(f.generation) && probeInteger(f.revision));
+    required(f.requestedModel === GUIDANCE_PROBE_MODEL && (f.servedModel === null || typeof f.servedModel === "string" && Buffer.byteLength(f.servedModel) <= 256));
+    required(nullableSha(f.inputFrameSha256) && nullableSha(f.workerEffectiveInputSha256) && nullableSha(f.nonGuidanceInputSha256) && nullableSha(f.guidanceSha256));
+    required(nullableSha(f.runtimeSha256) && nullableSha(f.toolsetSha256) && nullableSha(f.modelConfigSha256));
+    // elapsed time is wall time between the Store's trusted-clock samples, so it can never exceed the span between them.
+    required(probeInteger(f.startedAt) && probeInteger(f.endedAt) && probeInteger(f.elapsedMs) && f.endedAt >= f.startedAt && f.elapsedMs <= f.endedAt - f.startedAt
+      && probeInteger(f.expiresAt) && f.expiresAt === f.endedAt + PROBE_RETENTION_MS);
+    required(RECEIPT_STATES.includes(f.state as ProbeReceiptState));
+    const usage = object(f.usage, ["modelCalls", "modelUsageKnown", "toolCalls", "toolUsageKnown", "tokensObserved"]);
+    required(probeInteger(usage.modelCalls) && probeInteger(usage.modelUsageKnown) && usage.modelUsageKnown <= usage.modelCalls
+      && probeInteger(usage.toolCalls) && probeInteger(usage.toolUsageKnown) && usage.toolUsageKnown <= usage.toolCalls && (usage.tokensObserved === null || probeInteger(usage.tokensObserved)));
+    required(Array.isArray(f.limits) && f.limits.length <= RECEIPT_LIMITS.length && new Set(f.limits).size === f.limits.length && f.limits.every(item => RECEIPT_LIMITS.includes(item as ProbeReceiptLimit)));
+    const output = object(f.output, ["v", "entries", "excluded", "totalBytes"]);
+    required(output.v === 1 && Array.isArray(output.entries) && output.entries.length <= PROBE_OUTPUT_LIMITS.entries && Array.isArray(output.excluded) && output.excluded.length <= PROBE_OUTPUT_LIMITS.entries
+      && probeInteger(output.totalBytes));
+    let total = 0; const names = new Set<string>();
+    for (const entry of output.entries as unknown[]) {
+      const e = object(entry, ["relative", "sha256", "bytes"]);
+      required(probeOutputName(e.relative) && probeSha256(e.sha256) && probeInteger(e.bytes) && e.bytes <= PROBE_OUTPUT_LIMITS.fileBytes && !names.has(e.relative));
+      names.add(e.relative as string); total += e.bytes as number;
+    }
+    required(total === output.totalBytes);
+    for (const entry of output.excluded as unknown[]) {
+      const e = object(entry, ["relative", "reason"]);
+      required(probeOutputName(e.relative) && EXCLUDED_REASONS.includes(e.reason as ProbeExcludedReason));
+    }
+    required(probeSha256(f.digest));
+    const { digest, ...rest } = f as unknown as ProbeReceiptV1;
+    required(probeReceiptDigest(rest) === digest);
+    // A success is never recorded alongside a limit or an exclusion that the contract says forbids it.
+    if (f.state === "succeeded") required((f.limits as unknown[]).length === 0 && (output.excluded as unknown[]).length === 0 && f.servedModel === GUIDANCE_PROBE_MODEL);
+    return f as unknown as ProbeReceiptV1;
+  } catch { return undefined; }
+}
+
+/**
+ * Pure comparability over an experiment's receipts and the slots that should have produced them (AC4). One reason is enough to make the
+ * pair incomparable; reasons are listed, not ranked. Never an upgrade of the older inline expression: every case that expression called
+ * incomparable is incomparable here too.
+ */
+export function classifyProbeComparability(input: {
+  slots: readonly { slotId: string; role: ProbeSlot["role"]; arm: ProbeSlot["arm"]; reserved: boolean; coverageVerified: boolean; authoring?: "admitted_fixture" | "uncontrolled" }[];
+  receipts: readonly ProbeReceiptV1[];
+  /** The manifest's runtime fingerprints, which every receipt must match. */
+  runtime: { runtimeSha256: string; toolsetSha256: string; modelConfigSha256: string };
+  holds: boolean;
+}): ProbeComparability {
+  const reasons = new Set<ProbeIncomparableReason>();
+  if (input.holds) reasons.add("usage_unknown");
+  const bySlot = new Map(input.receipts.map(item => [item.slotId, item]));
+  for (const slot of input.slots) {
+    if (!slot.reserved) continue;
+    if (slot.authoring === "uncontrolled") reasons.add("authoring_uncontrolled");
+    if (!slot.coverageVerified) reasons.add("incomplete_coverage");
+    const receipt = bySlot.get(slot.slotId);
+    if (!receipt) { reasons.add("missing_receipt"); continue; }
+    if (receipt.servedModel === null) reasons.add("served_model_unobserved");
+    else if (receipt.servedModel !== receipt.requestedModel) reasons.add("served_model_mismatch");
+    // A fingerprint the host never observed is drift it cannot rule out; one that differs from the declaration is drift.
+    if (receipt.runtimeSha256 !== input.runtime.runtimeSha256 || receipt.toolsetSha256 !== input.runtime.toolsetSha256 || receipt.modelConfigSha256 !== input.runtime.modelConfigSha256) reasons.add("input_drift");
+    if (receipt.limits.includes("usage_unknown") || receipt.usage.tokensObserved === null || receipt.usage.modelUsageKnown !== receipt.usage.modelCalls || receipt.usage.toolUsageKnown !== receipt.usage.toolCalls) reasons.add("usage_unknown");
+    if (receipt.limits.includes("teardown_unverified")) reasons.add("teardown_unverified");
+    if (receipt.state !== "succeeded") reasons.add("incomplete_coverage");
+  }
+  // Worker arms differ only in the admitted guidance slot: any other input byte differing is drift.
+  const workers = input.receipts.filter(item => input.slots.some(slot => slot.slotId === item.slotId && slot.role === "worker"));
+  const baseline = workers[0];
+  for (const worker of workers) if (baseline && (worker.nonGuidanceInputSha256 === null || worker.nonGuidanceInputSha256 !== baseline.nonGuidanceInputSha256)) reasons.add("input_drift");
+  return { comparable: reasons.size === 0, reasons: [...reasons].sort() };
+}
+
+/** The outcome denominator: every reserved slot counts, whatever became of it. Slots never started are reported apart, never as success or failure. */
+export function probeOutcomeCounts(slots: readonly { slotId: string; state: ProbeSessionState }[], receipts: readonly ProbeReceiptV1[]): ProbeOutcomeCounts {
+  const counts: ProbeOutcomeCounts = { succeeded: 0, failed: 0, cancelled: 0, timed_out: 0, unavailable: 0, unknown: 0, planned: 0, not_needed: 0 };
+  const bySlot = new Map(receipts.map(item => [item.slotId, item]));
+  for (const slot of slots) {
+    if (slot.state === "planned") { counts.planned++; continue; }
+    if (slot.state === "not_needed") { counts.not_needed++; continue; }
+    // A reserved slot with no sealed receipt is unknown: the host cannot vouch for it. It is never counted as failed.
+    counts[bySlot.get(slot.slotId)?.state ?? "unknown"]++;
+  }
+  return counts;
+}
+
+/** What the host measured about one finished session, before the Store adds the fields only it can know. None of this comes from the provider. */
+export interface ProbeMeasuredSession {
+  /** Store-trusted-clock sample taken when this session's launch was exposed, as reported back by the host that took it. Never the experiment's first reservation. */
+  startedAt: number;
+  servedModel: string | null;
+  workerEffectiveInputSha256: string | null;
+  nonGuidanceInputSha256: string | null;
+  /** True only when the peer, the confinement and every owned child reported known quiescence, and the output was collected after that point. */
+  teardownVerified: boolean;
+  /** The host's own runtime, toolset and model-config fingerprints at seal time, or null when it could not read them. Never the declaration's. */
+  runtime: { runtimeSha256: string; toolsetSha256: string; modelConfigSha256: string } | null;
+  cancelled: boolean;
+  timedOut: boolean;
+  /** The session could not start or reach the model for a host-known reason (for example confinement unavailable). */
+  unavailable: boolean;
+  /** Limits the host observed itself, such as `output_truncated`. The Store adds the ones it can derive. */
+  limits: readonly ProbeReceiptLimit[];
+  /** Bytes the session actually left in scratch, measured, not the declared reservation. */
+  scratchBytes: number;
+  output: ProbeOutputManifestV1;
+  /** The host-created retention directory for `output`, if any. Stored beside the receipt, never inside it. */
+  retained?: ProbeRetainedRecord;
+}
+/** Stored rows hold a canonical receipt, which is bounded well below this; the SQL length check guards against a hostile row. */
+export const PROBE_RECEIPT_ROW_BYTES = PROBE_OUTPUT_LIMITS.receiptBytes;
+/**
+ * The runtime half of the 1 GiB cap: output past the slot's declared bound is not retained, hashed or counted as the session's output. Entries are
+ * kept in order until the bound would be crossed; the rest are recorded as excluded, so the receipt can never claim more than was declared.
+ */
+export function capOutput(output: ProbeOutputManifestV1, maximum: number): ProbeOutputManifestV1 {
+  const entries: ProbeOutputEntry[] = [], excluded: ProbeOutputExcluded[] = [...output.excluded];
+  let total = 0;
+  for (const entry of output.entries) {
+    if (entries.length >= PROBE_OUTPUT_LIMITS.entries || total + entry.bytes > maximum) { excluded.push({ relative: entry.relative, reason: entries.length >= PROBE_OUTPUT_LIMITS.entries ? "over_entry_cap" : "over_total_cap" }); continue; }
+    entries.push(entry); total += entry.bytes;
+  }
+  return { v: 1, entries, excluded: excluded.slice(0, PROBE_OUTPUT_LIMITS.entries), totalBytes: total };
+}
+
+/**
+ * A retained output directory the host created, with the identity it recorded at creation. Kept beside the receipt in its own column and out of the
+ * digested receipt body: a receipt never carries a physical path. Prune acts on nothing that is not recorded here and still matches by identity.
+ */
+/**
+ * A host-created retention directory and the identity of each file in it. Inode numbers are recycled (Linux reuses one straight after an unlink), so a file's
+ * identity is its device, inode AND change time in nanoseconds: a replacement created later always has a later `ctimeNs`, even when it reuses the inode.
+ * ponytail: ctime granularity is the filesystem's (a few milliseconds on Linux), so a replacement created in the very same tick as the original with a recycled
+ * inode would match; retention-to-prune is days, so the window is the retention call itself. A per-file content hash re-check at prune is the upgrade path.
+ * ponytail: a directory has no stable change time (it moves with every entry), so its identity is device and inode only. Deleting a replaced empty directory
+ * under the host's own random-named retention root is the ceiling; a stable directory identity (a host-written marker file) is the upgrade path.
+ */
+export interface ProbeRetainedRecord { directory: string; dev: number; ino: number; files: readonly { relative: string; dev: number; ino: number; bytes: number; ctimeNs: string }[] }
+/** The filesystem half of prune, injected so the Store (src/hub) never imports src/local. Both calls are identity-checked by their implementation. */
+export interface ProbeRetentionFs {
+  preview(retained: ProbeRetainedRecord): { remove: { relative: string; bytes: number }[]; keep: { relative: string; reason: string }[] };
+  remove(retained: ProbeRetainedRecord): { removed: string[]; kept: { relative: string; reason: string }[] };
+}
+export function parseProbeRetained(value: unknown): ProbeRetainedRecord | undefined {
+  try {
+    const f = object(inert(value, PROBE_OUTPUT_LIMITS.receiptBytes), ["directory", "dev", "ino", "files"]);
+    required(typeof f.directory === "string" && f.directory.startsWith("/") && Buffer.byteLength(f.directory) <= 1024 && !/[\u0000-\u001f]/.test(f.directory));
+    required(probeInteger(f.dev) && probeInteger(f.ino) && Array.isArray(f.files) && f.files.length <= PROBE_OUTPUT_LIMITS.entries);
+    const seen = new Set<string>();
+    for (const item of f.files as unknown[]) {
+      const e = object(item, ["relative", "dev", "ino", "bytes", "ctimeNs"]);
+      required(probeOutputName(e.relative) && probeInteger(e.dev) && probeInteger(e.ino) && probeInteger(e.bytes) && e.bytes <= PROBE_OUTPUT_LIMITS.fileBytes && !seen.has(e.relative)
+        && typeof e.ctimeNs === "string" && /^[0-9]{1,24}$/.test(e.ctimeNs));
+      seen.add(e.relative as string);
+    }
+    return f as unknown as ProbeRetainedRecord;
+  } catch { return undefined; }
+}
+export type ProbePruneKeepReason = "experiment_active" | "experiment_held" | "not_expired" | "already_pruned" | "no_retained_output" | "directory_replaced_or_missing" | "identity_changed" | "not_empty";
+export interface ProbePrunePlan {
+  /** SHA-256 over the canonical plan: a prune takes this and refuses if the owned set changed since the person saw it. */
+  digest: string;
+  retainedBytes: number;
+  slots: readonly { slotId: string; expiresAt: number; remove: readonly { relative: string; bytes: number }[]; keep: readonly { relative: string; reason: ProbePruneKeepReason }[] }[];
+}
+export interface ProbePruneResult { pruned: readonly string[]; kept: readonly { slotId: string; relative: string; reason: ProbePruneKeepReason }[]; planDigest: string }

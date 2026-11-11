@@ -79,6 +79,8 @@ export interface ProbeLocalAdapterOptions {
   current(): void;
   /** Private minted-resource ownership notification, never an ordinary observer or authority source. */
   workspaceOwned?: (workspace: ProbeWorkspace) => void;
+  /** Host-owned directory (outside every workspace) where a session's declared output is retained. Without it nothing is retained, only hashed. */
+  retentionRoot?: string;
   fixture?: ProbeLocalFixturePorts;
 }
 export interface ProbeLocalAdapter {
