@@ -129,7 +129,7 @@ export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer
     const now = hub.peers.find((p) => p.id === peer.id && p.state !== "offline");
     if (!now) return refused("it is no longer attached to its hub");
     // The hub holds what a peer that goes offline mid-turn was working on (`uncertain` in bus.ts).
-    if (now.state === "busy") cut = "; its turn was cut: a delivery it had not settled is held as needs_review, and its queue stays held until ahub queue resolve";
+    if (now.state === "busy") cut = `; its turn was cut: a delivery it had not settled is held as needs_review, and its queue stays held until it is resolved (ahub queue list --peer ${peer.id} names it; ahub queue show on that id prints the full resolve command)`;
     if (binding) {
       if (observedSession(binding.peer, now, binding.projectRoot) !== binding.sessionId) return refused(`the session attached now is not the one the plan bound to terminal ${binding.handle}`);
       // The same question the plan asked (`makeUpgradePlan`), for this one peer.

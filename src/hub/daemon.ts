@@ -210,6 +210,7 @@ import { TaskWorktrees, originVerdict } from "./task-worktree.ts";
 import { displayPath, shelfInsideRoot, partition, readWorktreeFacts, type ShelfRow } from "./worktree-shelf.ts";
 import { PrObservations, refreshPrStates, refreshTargets } from "./worktree-prs.ts";
 import { Bus, ReviewInputHandoffError } from "./bus.ts";
+import { queueResolveChoices, queueResolveCommand } from "./person-command.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { ACCEPTED_SETTLE_TIMEOUT_REASON, DeliveryJournal } from "./delivery-journal.ts";
 import { assertHubDbCompatible } from "./db-schema.ts";
@@ -4649,7 +4650,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (agentDrift.length && !stopping && !recoveryActive()) try { offerAgentDrift(); } catch { /* the next tick tries again */ }
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const [id, request] of permissions) if (request.expiresAt > Date.now()) supervision.approvalWaiting({ id, peer: request.peer, tool: request.tool ?? "unknown", createdAt: request.createdAt });
-      for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review" && row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(row.peer, row.id);
+      for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review" && row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(row.peer, row.id, () => holdCommand(row.peer, row.id));
       feedBudgetPauses();
       supervision.checkRound();
       try {
@@ -7186,14 +7187,19 @@ export async function startDaemon(opts: DaemonOptions) {
     return bus.queueList(peer, true).filter(row => row.state === "needs_review").map(row => ({
       id: row.id, senders: [...new Set(row.originals.map(env => sanitize(env.from)))],
       kinds: [...new Set(row.originals.map(env => env.kind))], createdAt: row.createdAt,
-      reason: row.reason,
+      reason: row.reason, revision: row.revision,
       context: deliveryTaskContext(row.originals, board, peer),
     }));
+  }
+  /** #1399: the full command for one held row, with the choices the hub cannot make for the person. */
+  function holdCommand(peer: PeerId, id: string): string {
+    const row = heldRows(peer).find(held => held.id === id);
+    return `${queueResolveCommand(row ? { ...row, peer, state: "needs_review" } : { id, peer }, opts.cwd)} (${queueResolveChoices("needs_review")})`;
   }
   function queueHold(peer: PeerId): string | undefined {
     const rows = heldRows(peer);
     if (!rows.length) return undefined;
-    return rows.map(row => `held by needs_review ${row.id} (from ${row.senders.join(",")}; kind ${row.kinds.join(",")}; age ${Math.max(0, Math.floor((Date.now() - row.createdAt) / 1000))}s${row.context ? `; ${row.context}` : ""}); ahub queue resolve ${row.id} --action completed|retry|discard --reason <text>`).join("; ");
+    return rows.map(row => `held by needs_review ${row.id} (from ${row.senders.join(",")}; kind ${row.kinds.join(",")}; age ${Math.max(0, Math.floor((Date.now() - row.createdAt) / 1000))}s${row.context ? `; ${row.context}` : ""}); ${queueResolveCommand({ ...row, peer, state: "needs_review" }, opts.cwd)} (${queueResolveChoices("needs_review")})`).join("; ");
   }
   let settlingSuperseded = false;
   function settleSupersededDeliveries() {
@@ -7223,7 +7229,7 @@ export async function startDaemon(opts: DaemonOptions) {
       for (const peer of bus.knownPeers()) {
         const rows = heldRows(peer);
         if (!rows.some(row => !noticedHolds.has(row.id))) continue;
-        for (const row of rows) { noticedHolds.add(row.id); if (row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(peer, row.id); }
+        for (const row of rows) { noticedHolds.add(row.id); if (row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(peer, row.id, () => holdCommand(peer, row.id)); }
         notify(`${peer} queue ${queueHold(peer)}`);
       }
       writeStatus();

@@ -154,7 +154,7 @@ test("#1144 plan source schemas direct every profile to registered ids and the s
 test("#607 every profile's AGENTS block carries the agy first-turn guidance", () => {
   for (const name of ["general", "research", "writing"]) {
     const profile = JSON.parse(readFileSync(join(import.meta.dir, `../templates/profiles/${name}.json`), "utf8"));
-    expect(JSON.stringify(profile)).toContain("never report the hub as unavailable from the first turn alone");
+    expect(`${readFileSync(join(import.meta.dir, "../templates/AGENTS.block.md"), "utf8").trim()}\n\n${profile.agents}`).toContain("never report the hub as unavailable from the first turn alone"); // #1399: a profile holds only its addition; init appends it to the template
   }
 });
 

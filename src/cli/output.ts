@@ -13,6 +13,7 @@ import { schedulePeriodText, scheduleWhen } from "../hub/schedules.ts";
 import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
 import type { Counter, LimitsResult, TotalResult, UsageResult } from "../hub/usage-rollup.ts";
 import type { SpecsStatus } from "../hub/specs-task.ts";
+import { queueResolveChoices, queueResolveCommand } from "../hub/person-command.ts";
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
@@ -328,7 +329,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
       for (const row of p.heldRows) out.push(...detail("held", `${id}: needs_review ${shortId(row.id, columns, full)}; from ${row.senders.join(",")}; kind ${row.kinds.join(",")}; age ${duration(Math.max(0, now - row.createdAt))}${row.context ? `; ${row.context}` : ""}; ahub queue show ${row.id}`, columns, "failure"));
     } else if (p.heldBy) {
       const note = flat(p.holdNote ?? "");
-      const command = `ahub queue resolve ${p.heldBy} --action completed|retry|discard --reason <text>`;
+      const command = `${queueResolveCommand({ id: p.heldBy, peer: id, state: "needs_review" })} (${queueResolveChoices("needs_review")})`;
       const normalized = note.startsWith(`held by needs_review ${p.heldBy}`)
         ? note.replace(`held by needs_review ${p.heldBy}`, `by needs_review ${shortId(p.heldBy, columns, full)}`)
         : `${shortId(p.heldBy, columns, full)}${note ? `: ${note}` : ""}`;
@@ -591,14 +592,17 @@ function fields(value: unknown, columns: number | undefined, now: number, prefix
   visit(value, prefix, prefix);
   return rows(["FIELD", "VALUE"], leaves, columns);
 }
-export function renderQueueShow(delivery: any, columns?: number, now = Date.now()): Span[][] {
+export function renderQueueShow(delivery: any, columns?: number, now = Date.now(), project?: string): Span[][] {
+  // #1399: the resolve line runs as printed: id, revision, a suggested action, a prefilled reason and the project that hosts the hub.
+  const messages: any[] = Array.isArray(delivery?.messages) ? delivery.messages : [];
+  const hint = () => queueResolveCommand({ id: delivery.id, revision: delivery.revision, state: delivery.state, peer: delivery.peer, senders: messages.map(m => String(m?.from ?? "")), kinds: messages.map(m => String(m?.kind ?? "")) }, project);
   const out = [...lines("Delivery", columns, "strong"), ...fields(delivery, columns, now)];
   if (delivery?.state === "failed" && delivery.failureCause === undefined) out.push(...detail("failure cause", "unknown (not recorded by this hub version)", columns, "muted"));
-  if (delivery?.state === "needs_review" && delivery.id) out.push([], ...detail("resolve", `ahub queue resolve ${delivery.id} --action completed|retry|discard --reason <text>`, columns, "failure"));
+  if (delivery?.state === "needs_review" && delivery.id) out.push([], ...detail("resolve", `${hint()}  (${queueResolveChoices("needs_review")})`, columns, "failure"));
   // #1096: a failed row that no one has settled can be cleared by the person or the conductor; one a resolution already settled says what is left (nothing).
   else if (delivery?.state === "failed" && delivery.id) {
     if (delivery.resolvedBy) out.push([], ...detail("resolve", `already resolved by ${delivery.resolvedBy}; nothing is left to do for this row${delivery.resolvedBy === "retry" ? " (its redelivery is a separate delivery: ahub queue list)" : ""}`, columns, "muted"));
-    else out.push([], ...detail("resolve", `ahub queue resolve ${delivery.id} --action discard|completed --reason <text>  (discard to drop it, completed to acknowledge it as handled; the person or the conductor)`, columns, "failure"));
+    else out.push([], ...detail("resolve", `${hint()}  (${queueResolveChoices("failed")}; the person or the conductor)`, columns, "failure"));
   }
   return out;
 }

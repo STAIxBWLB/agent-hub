@@ -785,7 +785,7 @@ export class Bus {
   resolveOwnDelivery(peer: string, id: string, revision: number, action: "completed" | "discard", reason: string): void {
     const refuse = (message: string): never => { throw new PreEffectToolRefusal(message); };
     // One message per cause class, each naming its next step. An unknown id, another peer's row and a row that is not needs_review share one message so a refusal never confirms another peer's row.
-    if (peer === USER || peer === HUB || remoteId(peer)) return refuse("hub_delivery_resolve settles a local agent's own held delivery; the person settles any other row with ahub queue resolve <delivery-id>");
+    if (peer === USER || peer === HUB || remoteId(peer)) return refuse(`hub_delivery_resolve settles a local agent's own held delivery; the person settles any other row with ahub queue resolve (ahub queue show ${id} prints the full command)`);
     if (this.closed || this.recoveryHeld || this.storageError || !this.journal) return refuse("the hub is not accepting delivery changes now (recovery, shutdown or delivery storage); run ahub status, then call hub_delivery_resolve again after it recovers");
     if (this.paused.has(peer) || this.opts.deliveryHeld?.(peer) === true) return refuse("your deliveries are paused or held, so this row cannot be settled now; run ahub status to see which, and call hub_delivery_resolve again once it is released");
     if (!Number.isSafeInteger(revision) || revision < 0 || (action !== "completed" && action !== "discard") || typeof reason !== "string" || !reason.trim() || reason.trim().length > 1000) return refuse("hub_delivery_resolve needs the revision hub_inbox showed (a whole number), action completed or discard, and a reason of 1 to 1000 characters");
@@ -794,7 +794,7 @@ export class Bus {
     if (!row || row.peer !== peer) return refuse(notYours);
     if (this.activeDeliveries.has(id) && this.activeDeliveries.get(id) !== peer) return refuse(notYours);
     // An uncertain invocation may still be running: a peer claiming it completed would make the caller wait for a result that may never come. Only the person settles it.
-    if (row.originals.some(env => isInvocationKind(env))) return refuse(`delivery ${id} carries an invocation whose outcome is uncertain; only the person settles it (ahub queue show ${id}, then ahub queue resolve ${id})`);
+    if (row.originals.some(env => isInvocationKind(env))) return refuse(`delivery ${id} carries an invocation whose outcome is uncertain; only the person settles it (ahub queue show ${id} prints the full ahub queue resolve ${id} command; pass it on as printed)`);
     if (row.state === "accepted") {
       if (this.peers.get(peer)?.acceptedSettlement !== "explicit") return refuse("only an explicit push channel session can settle its accepted delivery; ask the person to resolve it");
       if (row.revision !== revision) return refuse("held delivery revision changed; read hub_inbox again for the current revision");
