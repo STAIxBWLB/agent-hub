@@ -35,6 +35,15 @@ paths:
   - test/guidance-probe-input-matrix.test.ts
   - test/guidance-probe-sandbox.test.ts
   - test/omniroute.test.ts
+  - src/hub/manager.ts
+  - src/ui/plugin.ts
+  - src/ui/guidance-panel.ts
+  - src/ui/guidance-view.ts
+  - test/guidance-probe-status.test.ts
+  - test/guidance-probe-console.test.ts
+  - test/guidance-probe-cli.test.ts
+  - test/guidance-probe-gate.test.ts
+  - test/helpers/guidance-probe-tasks.ts
 ---
 
 # Fake-only guidance probe admission
@@ -1045,7 +1054,7 @@ fixtures for the mismatch, tamper, crash and teardown cases. It does not add a C
 a wire operation, a daemon runner, a config key, a real model call or a live trial (T4).
 Public `show` is unchanged: it keeps only the stricter `comparable` flag. The per-state
 denominator counts and the comparability reasons are private status, read by the host
-through the Store; T4 owns the producer status and decides what becomes public.
+through the Store; T4 (below) adds the producer receipt reader and decides what leaves it.
 
 ### How the adapter and host seal
 
@@ -1088,3 +1097,71 @@ explicit host call at daemon start; the denominator counts and reasons stay priv
 are folded into the sections above. Three amendments are also applied: prune never deletes
 receipts or manifests, the 1 GiB cap holds at runtime, and a reconciled `unknown` receipt
 counts as `unknown`.
+
+## T4 producer status and receipt export
+
+T4 (#1226) adds the producer-facing read of what T3 sealed, and the focused check that runs the whole fake lifecycle end to end. It adds no way to start work.
+It does not enable a runner, claim native confinement, call a model or launch a worker, and the constructor-only adapter stays unwired (a test reads the daemon,
+the CLI, the plugin, the manager and every other adapter and fails if one names it). **AC7's authorized real local-worker trial is not part of this change and
+stays open**: nothing here shows actual isolation or effective guidance delivery to a model, and nothing may be read as showing either.
+
+### What a producer or a receipt consumer reads
+
+One read, `Tasks.guidanceProbeReceipts(by, id)`, answered over the control op `guidance_probe_receipts`, the CLI `ahub guidance probe receipts --id HASH [--json]`
+and the guidance panel's `probe` read. It carries the same person-or-current-conductor, session, task-state and privacy fences as `show`, and it is read-only:
+it launches, reserves, writes and prunes nothing, and a read-only Store serves its inputs. The reply is a `ProbeReceiptExport`:
+
+- `status`: the public status `show` returns, with `comparable` already combined with the sealed verdict.
+- `comparable` and `reasons`: the stricter of the older public expression and the sealed-receipt verdict, and the sealed reasons (`served_model_mismatch`,
+  `served_model_unobserved`, `input_drift`, `usage_unknown`, `incomplete_coverage`, `teardown_unverified`, `authoring_uncontrolled`, `missing_receipt`). A comparable
+  export never lists a reason and never outranks a status that refused.
+- `counts`: the full outcome denominator. Every reserved slot is in it, failed, cancelled, timed out and unavailable ones included; a reserved slot with no
+  receipt is `unknown`; slots that never started are `planned` or `not_needed`, apart from success and failure.
+- `slots`: one row per declared slot, with its stage, role, arm and the session's own state, the verbatim sealed receipt (or none), the receipt's digest, a
+  `withheld` flag and the retention state of its output (`none`, `retained` or `pruned`).
+
+Unknown stays unknown: a usage gap is `usage_unknown` and prints as `unknown`, never zero; an unobserved served model is `unobserved`; a slot with no receipt says
+so. Evidence is at most `fixture`, and every rendering says that no live model or worker trial, sampling control, provider behaviour or model quality is claimed.
+
+### Bounds, privacy and tamper
+
+- **Closed, inert, bounded.** `parseGuidanceProbeReceiptExport` accepts exactly these fields, at most nine slots, and at most `PROBE_EXPORT_BYTES`, derived from the
+  largest valid receipt, never chosen. It re-verifies every embedded receipt with `parseProbeReceipt`, so a receipt that was edited, moved to another slot or given
+  another digest never parses. The counts must add up to the slot list, and a slot's digest must be its receipt's.
+- **Tamper refuses the whole read.** The Store hydrates receipts with its own session cross-check; a bad row fails the read with the storage error rather than
+  being skipped or shown. `Tasks` then parses what it is about to send with the same parser, so a result the consumer would refuse is a storage fault, never a
+  partial answer. The manager, the panel provider and the CLI parse again on receipt, and a reply that names another probe than the one asked for is refused.
+- **A model-written name is screened, not trusted.** An output path or served-model name in a receipt passes the same public-field screen as any other public field
+  (`guidanceFieldAllowed`: nameable, not secret-like, not under a denied path). A receipt with a name that fails it is replaced by its digest and flagged
+  `withheld`; the slot and the denominator still count it, so withholding never hides an arm. Every rendered string is stripped of control and format characters,
+  and the experiment label is advisory untrusted text.
+- **A location is a state, never a path.** The export says a slot's output is retained or pruned and never names where. `GuidanceProbeStore.retentionStates` is the
+  only accessor and returns states.
+
+### Surfaces
+
+- **Control and authority.** `guidance_probe_receipts` is a conductor operation labelled `guidance probe receipts`, answered with the request `rid` like every
+  probe op, and advertised as the feature `guidance_probe_receipts` beside `guidance_probes`. A client facing a hub without it says to upgrade and restart and sends
+  nothing. The CLI refuses a malformed id or any option other than `--id` and `--json` before a request, and a delegated live-test run is refused as for the other
+  probe commands.
+- **Producer panel.** The existing Guidance panel gains a probe read, not a new panel: `DASHBOARD_VIEWS` and the manifest's actions are unchanged. The provider
+  forwards exactly one field, the 64-hex probe id, through a producer-only read port on `projectConsole` (`guidanceProbe`) that pins the instance, checks the feature
+  and writes nothing. The panel shows the provider's own lines for exactly the probe it asked about as literal text; a reply that is malformed, for another probe, or
+  late (the project or id changed, the panel was hidden or destroyed) shows nothing of itself.
+- **One text.** The panel and the CLI print the same lines, `guidanceProbeStatusLines`.
+
+### The focused check gate (AC7, fake-provider leg)
+
+`test/guidance-probe-gate.test.ts` is the end-to-end pass over the real `Tasks` + `GuidanceProbeStore` + `Bus` with the fake provider: register, run the baseline and a
+candidate, seal, and read the export, asserting at once that the two arms share every non-guidance input byte (AC1), that attempts and calls are counted once per
+slot (AC3), that the denominator is complete and the pair is incomparable for the stated reason (AC4), that every receipt is host-sealed and bound to its slot
+(AC4, AC6), that no message, PII screen or lineage read happened and the task's public bytes are unchanged (AC5), that a crash in the middle is recorded unknown and
+never launched again (AC3, AC6), and that reading changes no row. It runs under `scripts/check.sh --changed` because it imports the files above. What it does not
+run is stated in the test and here: a real model call, a real worker, OS isolation, effective guidance delivery, sampling control.
+
+### Scope boundary
+
+T4 (this part) adds: `ProbeReceiptExport`, `parseGuidanceProbeReceiptExport`, `PROBE_EXPORT_BYTES`; `GuidanceProbeStore.retentionStates`; `Tasks.guidanceProbeReceipts`;
+the control op, feature, authority label, CLI subcommand and help line; the manager read port, the plugin's `probe` read and the panel section; the shared text; and
+the tests above. It does not add a runner, a config key, a write, a prune verb or a model call. The authorized live trial, and with it AC7's real-isolation and
+real-delivery evidence, is a separate decision and stays open.

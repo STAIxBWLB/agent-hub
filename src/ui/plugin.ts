@@ -1,5 +1,5 @@
 import { guidancePanelAssets } from "./guidance-panel.ts";
-import { guidanceLines } from "./guidance-view.ts";
+import { guidanceLines, guidanceProbeStatusLines } from "./guidance-view.ts";
 /**
  * acon console plugin for agent-hub (#935, plan entelecheia/ai-workspace#60 §2.5).
  *
@@ -181,7 +181,7 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
   const registry = options.registry ?? new Registry(join(options.home, "registry.db"));
   const owned = !options.registry;
   const lifecycle = options.lifecycle ?? lazyLifecycle();
-  const { list, act, answer, receipt, consoleControl, lineage, guidance } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
+  const { list, act, answer, receipt, consoleControl, lineage, guidance, guidanceProbe } = projectConsole({ registry, lifecycle, home: options.home, forwardTimeoutMs: options.forwardTimeoutMs });
   const dashboard = panelAssets(), guide = guidancePanelAssets();
   const assets = { css: `${dashboard.css}\n${guide.css}`, js: `${dashboard.js.replace("export default (host) => {", "const createDashboard = (host) => {")}\n${guide.js.replace("export default (host) => {", "const createGuidance = (host) => {")}\nexport default (host) => {
     const dashboardMount = host.mount.ownerDocument.createElement('div'), guidanceMount = host.mount.ownerDocument.createElement('div');
@@ -516,7 +516,14 @@ export function createProvider(options: { visualPolicy?: (cwd: string) => Promis
       // an unavailable or unsupported source stays a refusal here rather than an empty successful graph.
       if (input.panel === "guidance") {
         const { panel: _panel, after: _after, projectId, instanceId, op, ...query } = input;
-        if (op !== "list" && op !== "show") return { ok: false, panel: "guidance", error: "guidance console is read-only; select list/show and a current task scope" };
+        // T4 (#1226): one probe experiment's status and sealed receipts. Same panel, same read-only port family: it forwards only the exact probe id, and a reply
+        // that does not parse, fails a receipt digest or names another probe is a refusal, never partial text.
+        if (op === "probe") {
+          const reply = await guidanceProbe({ projectId, instanceId }, query);
+          if (!reply.ok || !("receipts" in reply) || !reply.receipts) return { ok: false, panel: "guidance", error: "error" in reply ? reply.error : "guidance probe status unavailable" };
+          return { ok: true, panel: "guidance", probe: reply.receipts, lines: guidanceProbeStatusLines(reply.receipts) };
+        }
+        if (op !== "list" && op !== "show") return { ok: false, panel: "guidance", error: "guidance console is read-only; select list/show/probe and a current task scope" };
         const result = await guidance({ projectId, instanceId }, op, query);
         if (!result.ok || !("guidance" in result) || !result.guidance) return { ok: false, panel: "guidance", error: "error" in result ? result.error : "guidance read unavailable" };
         return { ok: true, panel: "guidance", guidance: result.guidance, lines: guidanceLines(result.guidance) };

@@ -14,6 +14,15 @@ export default (host) => {
   const title = node('h2', 'Guidance');
   const introduction = node('p', 'Inspect task-bound declarations and editable-section diffs. Source evidence is a declaration; actual handoff, testing and model consumption are unknown.');
   const instructions = node('p', 'Create or withdraw with the authorized ahub guidance CLI or MCP tools. This panel only reads declarations.');
+  const probeForm = node('form', undefined, 'ahub-guidance-probe');
+  const probeId = node('input'); probeId.type = 'text'; probeId.autocomplete = 'off'; probeId.required = true;
+  probeId.pattern = '[a-f0-9]{64}'; probeId.maxLength = 64; probeId.spellcheck = false;
+  const probeLabel = node('label'); probeLabel.append(node('span', 'Probe ID (64 hex)'), probeId);
+  const probeButton = node('button', 'Read probe status'); probeButton.type = 'submit';
+  probeForm.append(probeLabel, probeButton);
+  const probeNote = node('p', 'Probe status is fixture evidence only: it reads the sealed receipts and the outcome denominator and claims no live model or worker trial.');
+  const probeOutput = node('pre', undefined, 'ahub-guidance-output');
+  probeOutput.tabIndex = 0; probeOutput.setAttribute('aria-label', 'Guidance probe status');
   const scopeForm = node('form', undefined, 'ahub-guidance-scope');
   const field = (label, control) => {
     const wrapper = node('label');
@@ -39,20 +48,21 @@ export default (host) => {
   const next = node('button', 'Next page'); next.type = 'button'; next.hidden = true;
   const output = node('pre', undefined, 'ahub-guidance-output');
   output.tabIndex = 0; output.setAttribute('aria-label', 'Guidance public details');
-  root.append(title, introduction, instructions, scopeForm, notice, recordList, next, output);
+  root.append(title, introduction, instructions, scopeForm, notice, recordList, next, output, probeForm, probeNote, probeOutput);
   host.mount.append(root);
   let generation = 0, disposed = false, visible = false, projects = [], cursor, busy = false;
   const state = (message) => { notice.textContent = message; };
   const update = () => {
     listButton.disabled = busy;
     projectsButton.disabled = busy;
+    probeButton.disabled = busy;
     next.disabled = busy;
     for (const button of recordList.querySelectorAll('button')) button.disabled = busy;
     root.setAttribute('aria-busy', busy ? 'true' : 'false');
   };
   const invalidate = () => {
     generation++; busy = false; cursor = undefined;
-    recordList.replaceChildren(); output.textContent = ''; next.hidden = true;
+    recordList.replaceChildren(); output.textContent = ''; probeOutput.textContent = ''; next.hidden = true;
     update();
   };
   const scope = () => {
@@ -120,12 +130,33 @@ export default (host) => {
     } catch { if (active(token)) failure(); }
     finally { if (active(token)) { busy = false; update(); } }
   }
+  async function readProbe() {
+    const selected = projects.find(row => row.id === project.value);
+    if (!selected || typeof selected.instanceId !== 'string' || !selected.instanceId || !/^[a-f0-9]{64}$/.test(probeId.value)) {
+      state('Select a running project and enter the exact 64-character probe id.'); return;
+    }
+    const id = probeId.value, token = ++generation;
+    busy = true; probeOutput.textContent = ''; update(); state('Reading probe status...');
+    try {
+      const result = await host.snapshot({ panel: 'guidance', op: 'probe', projectId: selected.id, instanceId: selected.instanceId, id });
+      if (!active(token)) return;
+      // The text shown is the provider's own lines for exactly the probe that was asked for; anything else is a refusal, never partial text.
+      if (!result || result.ok !== true || result.probe?.status?.id !== id || !Array.isArray(result.lines) || result.lines.some(line => typeof line !== 'string')) {
+        state(typeof result?.error === 'string' && result.ok === false ? result.error : 'Probe status unavailable. Refresh the probe id or check access and guidance_probe_receipts support.'); return;
+      }
+      probeOutput.textContent = result.lines.join('\n');
+      state('Probe status read. Fixture evidence only; every unknown stays unknown.');
+    } catch { if (active(token)) state('Probe status unavailable. Refresh the probe id or check access and guidance_probe_receipts support.'); }
+    finally { if (active(token)) { busy = false; update(); } }
+  }
   scopeForm.addEventListener('submit', event => { event.preventDefault(); track(read('list')); });
+  probeForm.addEventListener('submit', event => { event.preventDefault(); track(readProbe()); });
   projectsButton.addEventListener('click', () => track(refreshProjects()));
   next.addEventListener('click', () => { if (cursor) track(read('list', undefined, cursor)); });
   for (const input of [project, task, epoch]) input.addEventListener('input', () => {
     invalidate(); state('Task scope changed. List declarations to read the selected scope.');
   });
+  probeId.addEventListener('input', () => { generation++; busy = false; probeOutput.textContent = ''; update(); state('Probe id changed. Read probe status to refresh.'); });
   return {
     show(_panel, params) {
       if (disposed) return;
@@ -151,6 +182,7 @@ export default (host) => {
 .ahub-guidance-record code{overflow-wrap:anywhere;flex:1 1 30ch}.ahub-guidance-record span{font-size:.875em}
 .ahub-guidance-output{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.875em;line-height:1.55;font-variant-numeric:tabular-nums;padding:16px;border:1px solid currentColor;border-radius:10px;max-height:65vh;overflow:auto}
 .ahub-guidance-output:empty{display:none}.ahub-guidance [hidden]{display:none!important}
+.ahub-guidance-probe{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin:20px 0}.ahub-guidance-probe input{width:68ch;max-width:100%;font-family:ui-monospace,monospace}
 @media(max-width:600px){.ahub-guidance{padding:12px}.ahub-guidance-scope>label{width:100%}.ahub-guidance input{width:100%}}`;
   return { js, css };
 }

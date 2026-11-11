@@ -8357,7 +8357,7 @@ function canonical3(value) {
 }
 var GUIDANCE_PROBE_LIMITS, registrationScaffoldBytes, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL = "qwen27b/qwen3.8-27b", GuidanceProbeError, invalid = () => {
   throw new GuidanceProbeError("invalid");
-}, probeHash = (text) => createHash5("sha256").update(text, "utf8").digest("hex"), probeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, guidanceProbeCanonical = (value, maximum = GUIDANCE_PROBE_LIMITS.recordBytes) => canonical3(inert(value, maximum)), PROBE_RETENTION_DAYS = 14, PROBE_RETENTION_MS, OUTPUT_NAME_BYTES = 256, OUTPUT_ENTRIES = 64, NAME_JSON_BYTES, ENTRY_JSON_BYTES, EXCLUDED_JSON_BYTES, FIXED_RECEIPT_BYTES = 4096, PROBE_OUTPUT_LIMITS, PROBE_RECEIPT_ROW_BYTES;
+}, probeHash = (text) => createHash5("sha256").update(text, "utf8").digest("hex"), probeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, guidanceProbeCanonical = (value, maximum = GUIDANCE_PROBE_LIMITS.recordBytes) => canonical3(inert(value, maximum)), PROBE_RETENTION_DAYS = 14, PROBE_RETENTION_MS, OUTPUT_NAME_BYTES = 256, OUTPUT_ENTRIES = 64, NAME_JSON_BYTES, ENTRY_JSON_BYTES, EXCLUDED_JSON_BYTES, FIXED_RECEIPT_BYTES = 4096, PROBE_OUTPUT_LIMITS, PROBE_RECEIPT_ROW_BYTES, PROBE_EXPORT_BYTES;
 var init_guidance_probes = __esm(() => {
   init_execution_reference();
   GUIDANCE_PROBE_LIMITS = Object.freeze({
@@ -8398,6 +8398,7 @@ var init_guidance_probes = __esm(() => {
     receiptBytes: FIXED_RECEIPT_BYTES + OUTPUT_ENTRIES * (ENTRY_JSON_BYTES + 1) + OUTPUT_ENTRIES * (EXCLUDED_JSON_BYTES + 1)
   });
   PROBE_RECEIPT_ROW_BYTES = PROBE_OUTPUT_LIMITS.receiptBytes;
+  PROBE_EXPORT_BYTES = GUIDANCE_PROBE_LIMITS.slots * (PROBE_OUTPUT_LIMITS.receiptBytes + 1024) + 4096;
 });
 
 // src/local/probe-errors.ts
