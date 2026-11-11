@@ -3951,7 +3951,10 @@ capabilities still require their own labels. A disjoint window refuses with 4426
 The compatibility-floor `protocol` field remains readable by old clients.
 
 Release N-1 is counted in minor versions, separately from this protocol window
-(#1164, family contract entelecheia/ai-workspace#70). For 0.37.x, N-1 is 0.36.0,
+(#1164, family contract entelecheia/ai-workspace#70). For 0.38.x, N-1 is 0.37.0,
+the latest published patch of 0.37.x (exact `@staix/agent-mem` 0.24.0, control
+protocol 17 with descriptor floor 16). Every patch on 0.38.x keeps that release
+baseline. For 0.37.x, N-1 is 0.36.0,
 the latest published patch of 0.36.x (exact `@staix/agent-mem` 0.23.1, control
 protocol 17 with descriptor floor 16). Every patch on 0.37.x keeps that release
 baseline. For 0.36.x, N-1 is 0.35.0,
