@@ -8407,6 +8407,37 @@ var init_guidance_probes = __esm(() => {
   };
 });
 
+// src/local/probe-errors.ts
+function formatProbeToolRefusal(error) {
+  const reason = error instanceof ProbeToolRefusal && Object.hasOwn(reasons, error.code) ? reasons[error.code] : unknownReason;
+  return `error: ${reason}`;
+}
+var reasons, unknownReason = "confined probe operation refused; stop this operation and ask the host to inspect the admitted state", ProbeToolRefusal;
+var init_probe_errors = __esm(() => {
+  reasons = {
+    outside_workspace: "path is outside the admitted logical workspace; use a declared /workspace path",
+    invalid_path: "path is not an admitted relative name; use a declared /workspace file without traversal, dependency or internal-temp components",
+    unadmitted_write: "write target is not admitted; choose a target from the supplied logical /workspace/scratch or /workspace/output list",
+    file_ceiling: "file exceeds the 1 MiB file ceiling; reduce the file before requesting another admitted operation",
+    hardlinked_target: "hardlinked target is not a private probe file; ask the host for a fresh regular file",
+    nonregular_target: "target is not a regular probe file; choose a declared regular file",
+    authority_stopped: "probe authority is stopped or unavailable; stop this session and ask the host for a newly admitted session",
+    target_changed: "probe target or reservation changed; stop this operation and ask the host to inspect the admitted state",
+    tool_unavailable: "tool is unavailable in the confined probe; use only the admitted read, write and edit tools",
+    workspace_ceiling: "workspace reservation exceeds its admitted workspace ceiling (at most 64 MiB); reduce the declared data or ask the host for a new bounded session",
+    confinement_unavailable: "OS confinement or owned cleanup is unverified; stop this session and ask the host to inspect confinement and retained resources",
+    token_bound_unavailable: "trusted token upper-bound proof is unavailable; ask the host to prepare a frozen configuration before another model call",
+    token_ceiling: "model call exceeds the admitted token ceiling; reduce its declared input or ask the host for a new bounded session"
+  };
+  ProbeToolRefusal = class ProbeToolRefusal extends Error {
+    code;
+    constructor(code) {
+      super(Object.hasOwn(reasons, code) ? reasons[code] : unknownReason);
+      this.code = code;
+    }
+  };
+});
+
 // src/local/probe-workspace.ts
 import { chmodSync as chmodSync2, constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync14, mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync5, openSync as openSync6, opendirSync as opendirSync2, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname11, isAbsolute as isAbsolute6, join as join14 } from "path";
@@ -8449,8 +8480,10 @@ function probeWorkspaceCurrent(workspace) {
 function reserveProbeWorkspaceBytes(workspace, bytes) {
   probeWorkspaceCurrent(workspace);
   const state = workspaces.get(workspace);
-  if (!integer(bytes) || state.charged + bytes > state.maximum)
+  if (!integer(bytes))
     refused();
+  if (state.charged + bytes > state.maximum)
+    throw new ProbeToolRefusal("workspace_ceiling");
   state.charged += bytes;
 }
 var PROBE_WORKSPACE_LIMITS, workspaces, integer = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -8461,6 +8494,7 @@ var init_probe_workspace = __esm(() => {
   init_permission_mode();
   init_project();
   init_deny();
+  init_probe_errors();
   PROBE_WORKSPACE_LIMITS = Object.freeze({ fileBytes: 1024 * 1024, workspaceBytes: 64 * 1024 * 1024 });
   workspaces = new WeakMap;
 });
@@ -8468,18 +8502,27 @@ var init_probe_workspace = __esm(() => {
 // src/local/tools.ts
 import { lstatSync as lstatSync15, mkdirSync as mkdirSync9, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync8 } from "fs";
 import { dirname as dirname12, join as join15, relative as relative4, resolve as resolve11 } from "path";
+function probeCurrent(probe) {
+  try {
+    probe.current();
+  } catch {
+    throw new ProbeToolRefusal("authority_stopped");
+  }
+}
 function probeTargetIdentity(target) {
   const stat = lstatSync15(target, { throwIfNoEntry: false });
   if (!stat)
     return;
-  if (!stat.isFile() || stat.nlink !== 1)
-    throw new Error("probe write target is not a regular private file");
+  if (!stat.isFile())
+    throw new ProbeToolRefusal("nonregular_target");
+  if (stat.nlink !== 1)
+    throw new ProbeToolRefusal("hardlinked_target");
   return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
 }
 function planProbeTool(name, rawArgs, ctx) {
   if (!ctx.probe)
-    throw new Error("probe tool capability unavailable");
-  ctx.probe.current();
+    throw new ProbeToolRefusal("authority_stopped");
+  probeCurrent(ctx.probe);
   const root = realPath(ctx.cwd);
   let target, maximum = 0, identity;
   try {
@@ -8492,11 +8535,11 @@ function planProbeTool(name, rawArgs, ctx) {
       else {
         const stat = lstatSync15(target, { throwIfNoEntry: false });
         if (!stat || !stat.isFile())
-          throw new Error("probe edit target unavailable");
+          throw new ProbeToolRefusal("nonregular_target");
         maximum = Math.min(PROBE_WORKSPACE_LIMITS.fileBytes, stat.size + Buffer.byteLength(String(value.new ?? ""), "utf8"));
       }
       if (maximum > PROBE_WORKSPACE_LIMITS.fileBytes)
-        throw new Error("probe write exceeds file ceiling");
+        throw new ProbeToolRefusal("file_ceiling");
     }
   } catch {
     target = undefined;
@@ -8514,29 +8557,30 @@ function planProbeTool(name, rawArgs, ctx) {
   return plan;
 }
 function requireProbeToolWrite(plan, bytes, canonicalPath, ctx) {
-  ctx.probe?.current();
+  if (ctx.probe)
+    probeCurrent(ctx.probe);
   const state = probeToolPlans.get(plan);
   if (!ctx.probe || !state || state.used || state.target === undefined || !Number.isSafeInteger(bytes) || bytes < 0 || bytes > state.maximum || realPath(ctx.cwd) !== state.root || canonicalPath !== state.target || guardPath(ctx, relative4(state.root, canonicalPath), "write") !== state.target || probeTargetIdentity(canonicalPath) !== state.identity) {
-    throw new Error("probe tool reservation or target changed");
+    throw new ProbeToolRefusal("target_changed");
   }
   state.used = true;
 }
 function guardPath(ctx, path, mode) {
   if (ctx.probe) {
-    ctx.probe.current();
+    probeCurrent(ctx.probe);
     if (realPath(ctx.probe.root) !== realPath(ctx.cwd))
-      throw new Error("probe workspace binding changed");
+      throw new ProbeToolRefusal("target_changed");
     if (path === "/workspace")
       path = ".";
     else if (path.startsWith("/workspace/"))
       path = path.slice("/workspace/".length);
     else if (path.startsWith("/") || /^[a-z]:/i.test(path))
-      throw new Error("probe path is outside the logical workspace");
+      throw new ProbeToolRefusal("outside_workspace");
     if (!(mode === "read" && path === ".") && !probeRelativePath(path))
-      throw new Error("probe path is not an admitted relative name");
+      throw new ProbeToolRefusal("invalid_path");
     const normalized = relative4(realPath(ctx.cwd), resolve11(realPath(ctx.cwd), path));
     if (!(mode === "read" && !normalized) && !probeRelativePath(normalized))
-      throw new Error("probe path is outside its relative-name boundary");
+      throw new ProbeToolRefusal("invalid_path");
     path = normalized || ".";
   }
   const root = realPath(ctx.cwd);
@@ -8548,19 +8592,33 @@ function guardPath(ctx, path, mode) {
   try {
     realExisting = realPath(existing);
   } catch {
+    if (ctx.probe)
+      throw new ProbeToolRefusal("nonregular_target");
     throw new Error(`${path} goes through a dangling symlink`);
   }
   const real = join15(realExisting, relative4(existing, abs));
   const rel = relative4(root, real);
-  if (rel.startsWith("..") || resolve11(root, rel) !== real)
+  if (rel.startsWith("..") || resolve11(root, rel) !== real) {
+    if (ctx.probe)
+      throw new ProbeToolRefusal("outside_workspace");
     throw new Error(`${path} is outside the project directory`);
+  }
   const typed = relative4(root, abs), inside = insideRoot(typed);
-  if (isDenied(rel, ctx.deny) || inside && isDenied(typed, ctx.deny))
+  if (isDenied(rel, ctx.deny) || inside && isDenied(typed, ctx.deny)) {
+    if (ctx.probe)
+      throw new ProbeToolRefusal("invalid_path");
     throw new Error(`${path} is on the secrets denylist`);
+  }
   if (ctx.probe) {
     const stat = lstatSync15(real, { throwIfNoEntry: false });
-    if ((stat?.nlink ?? 1) > 1 || stat?.isFile() && stat.size > PROBE_WORKSPACE_LIMITS.fileBytes)
-      throw new Error("probe file identity or byte ceiling is unavailable");
+    if (stat && !stat.isFile() && !(mode === "read" && stat.isDirectory()))
+      throw new ProbeToolRefusal("nonregular_target");
+    if (stat?.isFile() && stat.nlink !== 1)
+      throw new ProbeToolRefusal("hardlinked_target");
+    if (stat?.isFile() && stat.size > PROBE_WORKSPACE_LIMITS.fileBytes)
+      throw new ProbeToolRefusal("file_ceiling");
+    if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed) || matchesPolicy(root, path, ctx.readOnly ?? [])))
+      throw new ProbeToolRefusal("unadmitted_write");
   }
   if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed)))
     throw new Error(`${path} is not writable by the local worker`);
@@ -8570,12 +8628,17 @@ function guardPath(ctx, path, mode) {
     throw new Error("target is protected by data.readonly");
   if (ctx.probe && mode === "write") {
     const allowed = ctx.probe.writableRoots.some((approved) => {
-      const entry = resolve11(root, approved), part = relative4(root, entry).split("/");
+      const spelling = resolve11(ctx.probe.root), requested = resolve11(spelling, approved);
+      const fromSpelling = relative4(spelling, requested);
+      const suffix = insideRoot(fromSpelling) ? fromSpelling : relative4(root, requested);
+      if (!insideRoot(suffix))
+        return false;
+      const entry = resolve11(root, suffix), part = relative4(root, entry).split("/");
       return part.length > 1 && ["scratch", "output"].includes(part[0]) && insideRoot(relative4(root, entry)) && insideRoot(relative4(entry, real)) && insideRoot(relative4(entry, abs));
     });
-    if (!allowed || (lstatSync15(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
-      throw new Error("probe write target is not admitted");
-    ctx.probe.current();
+    if (!allowed)
+      throw new ProbeToolRefusal("unadmitted_write");
+    probeCurrent(ctx.probe);
   }
   return real;
 }
@@ -8610,13 +8673,15 @@ function toolResultFailed(name, output) {
 }
 async function runTool(name, rawArgs, ctx) {
   if (ctx.probe) {
+    if (ctx.signal?.aborted)
+      return formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped"));
     try {
-      ctx.probe.current();
-    } catch {
-      return "error: probe authority is unavailable";
+      probeCurrent(ctx.probe);
+    } catch (error) {
+      return formatProbeToolRefusal(error);
     }
     if (!["read", "write", "edit"].includes(name))
-      return "error: tool is unavailable in the confined probe";
+      return formatProbeToolRefusal(new ProbeToolRefusal("tool_unavailable"));
   }
   let a;
   try {
@@ -8626,7 +8691,7 @@ async function runTool(name, rawArgs, ctx) {
   }
   try {
     if (ctx.signal?.aborted)
-      return "error: turn cancelled before tool execution";
+      return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped")) : "error: turn cancelled before tool execution";
     switch (name) {
       case "read": {
         const file = guardPath(ctx, String(a.path), "read");
@@ -8644,23 +8709,27 @@ async function runTool(name, rawArgs, ctx) {
         let file = guardPath(ctx, String(a.path), "write");
         const approvedTarget = file;
         const content = String(a.content ?? "");
+        if (ctx.probe && Buffer.byteLength(content, "utf8") > PROBE_WORKSPACE_LIMITS.fileBytes)
+          return formatProbeToolRefusal(new ProbeToolRefusal("file_ceiling"));
         const refused = approvalError(await ctx.permit(`write ${a.path} (${content.length} chars):
 ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), "error: the user did not approve this write");
         if (refused)
           return refused;
         if (ctx.signal?.aborted)
-          return "error: turn cancelled before write";
+          return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped")) : "error: turn cancelled before write";
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
-          return "error: path target changed during approval; inspect before retrying";
+          return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("target_changed")) : "error: path target changed during approval; inspect before retrying";
         if (ctx.probe) {
           const bytes = Buffer.byteLength(content, "utf8");
           if (bytes > PROBE_WORKSPACE_LIMITS.fileBytes)
-            return "error: probe file exceeds its admitted ceiling";
+            return formatProbeToolRefusal(new ProbeToolRefusal("file_ceiling"));
           await ctx.probe.reserveWrite(bytes, file);
-          ctx.probe.current();
-          if (ctx.signal?.aborted || guardPath(ctx, String(a.path), "write") !== approvedTarget)
-            return "error: probe write binding changed";
+          probeCurrent(ctx.probe);
+          if (ctx.signal?.aborted)
+            return formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped"));
+          if (guardPath(ctx, String(a.path), "write") !== approvedTarget)
+            return formatProbeToolRefusal(new ProbeToolRefusal("target_changed"));
         }
         mkdirSync9(dirname12(file), { recursive: true });
         writeFileSync8(file, content);
@@ -8679,10 +8748,10 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         if (refused)
           return refused;
         if (ctx.signal?.aborted)
-          return "error: turn cancelled before edit";
+          return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped")) : "error: turn cancelled before edit";
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
-          return "error: path target changed during approval; inspect before retrying";
+          return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("target_changed")) : "error: path target changed during approval; inspect before retrying";
         text = readFileSync7(file, "utf8");
         count = text.split(String(a.old)).length - 1;
         if (count !== 1)
@@ -8691,11 +8760,13 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         if (ctx.probe) {
           const bytes = Buffer.byteLength(replacement, "utf8");
           if (bytes > PROBE_WORKSPACE_LIMITS.fileBytes)
-            return "error: probe file exceeds its admitted ceiling";
+            return formatProbeToolRefusal(new ProbeToolRefusal("file_ceiling"));
           await ctx.probe.reserveWrite(bytes, file);
-          ctx.probe.current();
-          if (ctx.signal?.aborted || guardPath(ctx, String(a.path), "write") !== approvedTarget || readFileSync7(file, "utf8") !== text)
-            return "error: probe edit binding changed";
+          probeCurrent(ctx.probe);
+          if (ctx.signal?.aborted)
+            return formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped"));
+          if (guardPath(ctx, String(a.path), "write") !== approvedTarget || readFileSync7(file, "utf8") !== text)
+            return formatProbeToolRefusal(new ProbeToolRefusal("target_changed"));
         }
         writeFileSync8(file, replacement);
         return `edited ${a.path}`;
@@ -8773,7 +8844,7 @@ note: the sandbox does not let you move a branch, tag or HEAD, or stage inside a
     }
   } catch (e) {
     if (ctx.probe)
-      return "error: confined probe tool operation refused";
+      return formatProbeToolRefusal(e);
     return `error: ${e.message}`;
   }
 }
@@ -8798,6 +8869,7 @@ var init_tools = __esm(() => {
   init_web_fetch();
   init_sandbox();
   init_probe_workspace();
+  init_probe_errors();
   ApprovalWaitStop = class ApprovalWaitStop extends Error {
   };
   probeToolPlans = new WeakMap;
@@ -16919,8 +16991,15 @@ var init_probe_types = __esm(() => {
   ProbeLocalError = class ProbeLocalError extends Error {
     reason;
     constructor(reason) {
-      super("guidance probe execution is unavailable or uncertain; retain its private state and inspect before retrying");
+      super({
+        invalid: "guidance probe input or capability is invalid; ask the host to rebuild the admitted input before retrying",
+        drift: "guidance probe input or runtime changed; retain this session and preregister matching inputs before retrying",
+        model: "guidance probe served-model identity is changed or unverified; inspect model provenance and admit a matching session without fallback",
+        usage: "guidance probe model usage is missing or unknown; retain unknown cost and inspect provider accounting before retrying",
+        interrupted: "guidance probe authority or owned work stopped; join the owned stop and inspect retained state before retrying"
+      }[reason]);
       this.reason = reason;
+      this.name = "ProbeLocalError";
     }
   };
 });
@@ -16938,12 +17017,13 @@ var init_probe_sandbox = __esm(() => {
   init_project();
   init_deny();
   init_sandbox();
+  init_probe_errors();
   init_probe_workspace();
-  ProbeConfinementError = class ProbeConfinementError extends Error {
+  ProbeConfinementError = class ProbeConfinementError extends ProbeToolRefusal {
     stop;
     diagnostic;
     constructor(stop = async () => {}, diagnostic) {
-      super("probe OS confinement is unavailable or its owned command has not quiesced");
+      super("confinement_unavailable");
       this.stop = stop;
       this.diagnostic = diagnostic;
     }
@@ -16984,6 +17064,7 @@ var init_local_worker = __esm(() => {
   init_probe_types();
   init_probe_sandbox();
   init_probe_workspace();
+  init_probe_errors();
   SIDE_EFFECTS2 = new Set(["write", "edit", "bash", "git", "hub_send"]);
   ExecutionBudgetStop = class ExecutionBudgetStop extends Error {
     budgetStop = true;
@@ -17152,6 +17233,24 @@ var init_local_worker = __esm(() => {
           usageKnown: this.probeUsageKnown
         };
       }).catch((error) => {
+        if (error instanceof ProbeToolRefusal && error.code === "token_ceiling") {
+          if (signal.aborted || controller.signal.aborted || this.probeStopping || turn !== this.turn)
+            throw new ProbeLocalError("interrupted");
+          try {
+            session.accounting.current();
+          } catch {
+            throw new ProbeLocalError("interrupted");
+          }
+          return {
+            answer: "",
+            complete: false,
+            servedModel: this.probeServedModel,
+            servedModelExact: this.probeServedExact,
+            usageKnown: this.probeCalls > 0 && this.probeUsageKnown,
+            refusal: "token_ceiling",
+            reason: formatProbeToolRefusal(error)
+          };
+        }
         throw error instanceof ProbeLocalError ? error : new ProbeLocalError("interrupted");
       }).finally(async () => {
         signal.removeEventListener("abort", cancel);
@@ -17367,15 +17466,22 @@ var init_local_worker = __esm(() => {
             }
             const taskToolName = name.replace(/^mcp__[^ ]+__/, "");
             const reviewNoteWrite = taskToolName === "hub_remember" || taskToolName === "hub_task_propose";
-            const toolRun = () => this.probeConfinement && !["read", "write", "edit"].includes(name) ? Promise.resolve("error: tool unavailable in guidance probe") : reviewScope.excluded && reviewNoteWrite ? Promise.resolve("error: anchored review in this batch; save notes in a later turn") : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
+            const toolRun = () => this.probeConfinement && !["read", "write", "edit"].includes(name) ? Promise.resolve(formatProbeToolRefusal(new ProbeToolRefusal("tool_unavailable"))) : reviewScope.excluded && reviewNoteWrite ? Promise.resolve("error: anchored review in this batch; save notes in a later turn") : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
             const probe = this.probeSession;
-            const plan = probe ? planProbeTool(name, call.function.arguments, ctx) : undefined;
-            if (probe && plan && !this.probeFixture)
-              reserveProbeWorkspaceBytes(probe.workspace, plan.scratchBytes + plan.outputBytes);
-            if (probe)
-              this.probeToolPlan = plan;
-            const charges = plan ? { scratchBytes: plan.scratchBytes, outputBytes: plan.outputBytes } : undefined;
-            const running = probe ? probeLocalEffect(probe.accounting, "tool_calls", JSON.stringify({ name, arguments: call.function.arguments }), charges, undefined, async () => ({ value: await toolRun(), usage: 1 })) : toolRun();
+            const running = probe ? (async () => {
+              try {
+                const plan = planProbeTool(name, call.function.arguments, ctx);
+                if (!this.probeFixture)
+                  reserveProbeWorkspaceBytes(probe.workspace, plan.scratchBytes + plan.outputBytes);
+                this.probeToolPlan = plan;
+                const charges = { scratchBytes: plan.scratchBytes, outputBytes: plan.outputBytes };
+                return await probeLocalEffect(probe.accounting, "tool_calls", JSON.stringify({ name, arguments: call.function.arguments }), charges, undefined, async () => ({ value: await toolRun(), usage: 1 }));
+              } catch (error) {
+                if (error instanceof ProbeToolRefusal)
+                  return formatProbeToolRefusal(error);
+                throw error;
+              }
+            })() : toolRun();
             const output = await running.finally(() => {
               clearInterval(alive);
               if (probe)
@@ -17431,7 +17537,7 @@ var init_local_worker = __esm(() => {
           writableRoots: probe.workspace.allowedWrites,
           current: () => {
             if (turnSignal.aborted || this.probeStopping)
-              throw new ProbeLocalError("interrupted");
+              throw new ProbeToolRefusal("authority_stopped");
             probe.accounting.current();
             if (!this.probeFixture)
               requireProbeConfinement(probe.confinement, probe.workspace);
@@ -17584,7 +17690,7 @@ var init_local_worker = __esm(() => {
     async callProbe(turnMsgs, fixedPrompt) {
       const probe = this.probeSession;
       if (!probe || this.probeStopping || this.abort?.signal.aborted)
-        throw new ProbeLocalError("interrupted");
+        throw new ProbeToolRefusal("authority_stopped");
       probe.accounting.current();
       if (!this.probeFixture)
         requireProbeConfinement(probe.confinement, probe.workspace);
@@ -17598,7 +17704,10 @@ var init_local_worker = __esm(() => {
       const frame = JSON.stringify(body), first = this.probeCalls === 0;
       if (first && frame !== probe.prepared.inputFrame)
         throw new ProbeLocalError("drift");
-      const result = await probeLocalEffect(probe.accounting, "model_calls", frame, first ? undefined : { inputBytes: Buffer.byteLength(frame, "utf8") }, probe.config.tokenUpperBound, async (signal) => {
+      const upper = probe.config.tokenUpperBound, inputBytes = Buffer.byteLength(frame, "utf8");
+      if (upper !== undefined && (probe.config.maxOutputTokens > upper || inputBytes > upper - probe.config.maxOutputTokens))
+        throw new ProbeToolRefusal("token_ceiling");
+      const result = await probeLocalEffect(probe.accounting, "model_calls", frame, first ? undefined : { inputBytes }, probe.config.tokenUpperBound, async (signal) => {
         if (signal.aborted || this.abort?.signal.aborted)
           throw new ProbeLocalError("interrupted");
         const value = await this.opts.omni.chat(body, { signal: this.abort.signal });
