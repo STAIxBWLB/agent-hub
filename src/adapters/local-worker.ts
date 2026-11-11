@@ -29,7 +29,8 @@ import { GUIDANCE_PROBE_MODEL, GUIDANCE_PROBE_SESSION_BYTES, guidanceProbeCanoni
 import { ProbeLocalError, probeLocalEffect, probeObservedTokens, type ProbeLocalModelConfig, type ProbeLocalRequest,
   type ProbeLocalResult, type ProbeLocalSession, type ProbePreparedLocalInput } from "../local/probe-types.ts";
 import { requireProbeConfinement, type ProbeConfinement } from "../local/probe-sandbox.ts";
-import { reserveProbeWorkspaceBytes } from "../local/probe-workspace.ts";
+import { probeRelativePath, reserveProbeWorkspaceBytes } from "../local/probe-workspace.ts";
+import { ProbeToolRefusal, formatProbeToolRefusal } from "../local/probe-errors.ts";
 
 export interface LocalOptions {
   /** Host-only choice sampled once at the next turn/review boundary. */
@@ -117,7 +118,8 @@ const probeRoleInstruction = (role: Exclude<ProbeSlot["role"], "worker">): strin
 function probeRuntimeHash(): string {
   const sources = [import.meta.url, new URL("../local/probe-types.ts", import.meta.url), new URL("./local-probe.ts", import.meta.url),
     new URL("../local/probe-workspace.ts", import.meta.url), new URL("../local/probe-sandbox.ts", import.meta.url),
-    new URL("../local/tools.ts", import.meta.url), new URL("../local/sandbox.ts", import.meta.url), new URL("../omniroute/client.ts", import.meta.url)].map(value => {
+    new URL("../local/tools.ts", import.meta.url), new URL("../local/probe-errors.ts", import.meta.url),
+    new URL("../local/sandbox.ts", import.meta.url), new URL("../omniroute/client.ts", import.meta.url)].map(value => {
     const file = openSync(new URL(value), constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const before = fstatSync(file);
@@ -147,20 +149,26 @@ export function localProbeFingerprints(config: Readonly<ProbeLocalModelConfig>):
 export function prepareLocalProbeInput(state: ProbeStoredState, slot: ProbeSlot, guidance: string,
   files: ProbePreparedLocalInput["files"], config: Readonly<ProbeLocalModelConfig>): ProbePreparedLocalInput {
   const actual = localProbeFingerprints(config), manifest = state.registration.manifest, snapshots = state.registration.snapshots;
+  if (manifest.limits.tokens !== undefined && config.tokenUpperBound === undefined) throw new ProbeToolRefusal("token_bound_unavailable");
   if (manifest.runtime.runtimeSha256 !== actual.runtimeSha256 || manifest.runtime.toolsetSha256 !== actual.toolsetSha256
     || manifest.runtime.modelConfigSha256 !== actual.modelConfigSha256 || snapshots.systemPolicy !== actual.systemPolicy
-    || manifest.model.requested !== GUIDANCE_PROBE_MODEL || manifest.model.expectedServed !== GUIDANCE_PROBE_MODEL
-    || manifest.limits.tokens !== undefined && config.tokenUpperBound === undefined) throw new ProbeLocalError("drift");
+    || manifest.model.requested !== GUIDANCE_PROBE_MODEL || manifest.model.expectedServed !== GUIDANCE_PROBE_MODEL) throw new ProbeLocalError("drift");
   const rolePolicy = snapshots.dataPolicy.roles[slot.role];
   if (!rolePolicy || files.length !== rolePolicy.dataIds.length || files.some(file => !rolePolicy.dataIds.includes(file.dataId))) throw new ProbeLocalError("invalid");
   const visibleFiles = files.map(({ relative, sha256, bytes }) => ({ relative, sha256, bytes }));
+  const writes = snapshots.dataPolicy.allowedWrites.map(({ root, relative }) => {
+    if (!["scratch", "output"].includes(root) || !probeRelativePath(relative)) throw new ProbeLocalError("invalid");
+    return `/workspace/${root}/${relative}`;
+  });
+  const writeInstruction = writes.length ? `Admitted logical write targets: ${writes.join(", ")}. No other target is writable.`
+    : "No write target is admitted. Use only declared read inputs.";
   const context = slot.role === "reflect" ? { role: slot.role, files: visibleFiles }
     : slot.role === "select" ? { role: slot.role, task: snapshots.task, files: visibleFiles }
       : { role: slot.role, task: snapshots.task, baselineContext: snapshots.baselineContext, files: visibleFiles,
         ...((slot.role === "proposal" || slot.role === "compose") && snapshots.dataPolicy.roles[slot.role].improverContext
           ? { improverContext: snapshots.improverContext ?? (() => { throw new ProbeLocalError("invalid"); })() } : {}) };
   const requestFor = (slotGuidance: string): ProbeLocalRequest => ({ model: GUIDANCE_PROBE_MODEL,
-    messages: [{ role: "system", content: actual.systemPolicy }, { role: "system", content: slot.role === "worker" ? slotGuidance : probeRoleInstruction(slot.role) }, { role: "user", content: JSON.stringify(context) }],
+    messages: [{ role: "system", content: `${actual.systemPolicy}\n${writeInstruction}` }, { role: "system", content: slot.role === "worker" ? slotGuidance : probeRoleInstruction(slot.role) }, { role: "user", content: JSON.stringify(context) }],
     tools: probeSchemas(), max_tokens: config.maxOutputTokens, stream: false });
   const request = requestFor(guidance), inputFrame = JSON.stringify(request);
   return { inputFrame, inputSha256: probeHash(inputFrame), nonGuidanceInputSha256: probeHash(JSON.stringify(requestFor(""))),
@@ -306,7 +314,15 @@ export class LocalPeer extends BasePeer {
       await session.reserve({ outputBytes: Buffer.byteLength(answer, "utf8") }, "probe-final-output");
       return { answer, complete: progress.answerComplete, servedModel: this.probeServedModel,
         servedModelExact: this.probeServedExact, usageKnown: this.probeUsageKnown };
-    }).catch(error => { throw error instanceof ProbeLocalError ? error : new ProbeLocalError("interrupted"); })
+    }).catch(error => {
+      if (error instanceof ProbeToolRefusal && error.code === "token_ceiling") {
+        if (signal.aborted || controller.signal.aborted || this.probeStopping || turn !== this.turn) throw new ProbeLocalError("interrupted");
+        try { session.accounting.current(); } catch { throw new ProbeLocalError("interrupted"); }
+        return { answer: "", complete: false, servedModel: this.probeServedModel, servedModelExact: this.probeServedExact,
+          usageKnown: this.probeCalls > 0 && this.probeUsageKnown, refusal: "token_ceiling" as const, reason: formatProbeToolRefusal(error) };
+      }
+      throw error instanceof ProbeLocalError ? error : new ProbeLocalError("interrupted");
+    })
       .finally(async () => {
         signal.removeEventListener("abort", cancel); this.clearWatchdog();
         await Promise.allSettled([...this.probePermits]);
@@ -494,19 +510,23 @@ export class LocalPeer extends BasePeer {
           const taskToolName = name.replace(/^mcp__[^ ]+__/, "");
           const reviewNoteWrite = taskToolName === "hub_remember" || taskToolName === "hub_task_propose";
           const toolRun = () => this.probeConfinement && !["read", "write", "edit"].includes(name)
-            ? Promise.resolve("error: tool unavailable in guidance probe")
+            ? Promise.resolve(formatProbeToolRefusal(new ProbeToolRefusal("tool_unavailable")))
             : reviewScope.excluded && reviewNoteWrite
             ? Promise.resolve("error: anchored review in this batch; save notes in a later turn")
             : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool
               ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e: Error) => `error: ${e.message}`)
               : runTool(name, call.function.arguments, ctx);
           const probe = this.probeSession;
-          const plan = probe ? planProbeTool(name, call.function.arguments, ctx) : undefined;
-          if (probe && plan && !this.probeFixture) reserveProbeWorkspaceBytes(probe.workspace, plan.scratchBytes + plan.outputBytes);
-          if (probe) this.probeToolPlan = plan;
-          const charges: ProbeResourceCharges | undefined = plan ? { scratchBytes: plan.scratchBytes, outputBytes: plan.outputBytes } : undefined;
-          const running = probe ? probeLocalEffect(probe.accounting, "tool_calls", JSON.stringify({ name, arguments: call.function.arguments }), charges, undefined,
-            async () => ({ value: await toolRun(), usage: 1 })) : toolRun();
+          const running = probe ? (async () => {
+            try {
+              const plan = planProbeTool(name, call.function.arguments, ctx);
+              if (!this.probeFixture) reserveProbeWorkspaceBytes(probe.workspace, plan.scratchBytes + plan.outputBytes);
+              this.probeToolPlan = plan;
+              const charges: ProbeResourceCharges = { scratchBytes: plan.scratchBytes, outputBytes: plan.outputBytes };
+              return await probeLocalEffect(probe.accounting, "tool_calls", JSON.stringify({ name, arguments: call.function.arguments }), charges, undefined,
+                async () => ({ value: await toolRun(), usage: 1 }));
+            } catch (error) { if (error instanceof ProbeToolRefusal) return formatProbeToolRefusal(error); throw error; }
+          })() : toolRun();
           const output = await running.finally(() => { clearInterval(alive); if (probe) this.probeToolPlan = undefined; });
           if (turn !== this.turn) return "";
           if (!this.probeConfinement) this.touch();
@@ -542,7 +562,7 @@ export class LocalPeer extends BasePeer {
       readOnly: this.opts.tools.readOnly,
       ...(probe ? { probe: { root: probe.workspace.root, writableRoots: probe.workspace.allowedWrites,
         current: () => {
-          if (turnSignal.aborted || this.probeStopping) throw new ProbeLocalError("interrupted");
+          if (turnSignal.aborted || this.probeStopping) throw new ProbeToolRefusal("authority_stopped");
           probe.accounting.current(); if (!this.probeFixture) requireProbeConfinement(probe.confinement, probe.workspace);
         },
         reserveWrite: async (bytes: number, canonicalPath: string) => {
@@ -663,7 +683,7 @@ export class LocalPeer extends BasePeer {
 
   private async callProbe(turnMsgs: ChatMessage[], fixedPrompt: string): Promise<ChatResult> {
     const probe = this.probeSession;
-    if (!probe || this.probeStopping || this.abort?.signal.aborted) throw new ProbeLocalError("interrupted");
+    if (!probe || this.probeStopping || this.abort?.signal.aborted) throw new ProbeToolRefusal("authority_stopped");
     probe.accounting.current();
     if (!this.probeFixture) requireProbeConfinement(probe.confinement, probe.workspace);
     const body = JSON.parse(JSON.stringify({ model: GUIDANCE_PROBE_MODEL,
@@ -671,7 +691,12 @@ export class LocalPeer extends BasePeer {
       max_tokens: probe.config.maxOutputTokens, stream: false })) as ProbeLocalRequest;
     const frame = JSON.stringify(body), first = this.probeCalls === 0;
     if (first && frame !== probe.prepared.inputFrame) throw new ProbeLocalError("drift");
-    const result = await probeLocalEffect(probe.accounting, "model_calls", frame, first ? undefined : { inputBytes: Buffer.byteLength(frame, "utf8") },
+    // ponytail: byte-level BPE input tokens are bounded by exact framed UTF-8 bytes; add the output-token cap.
+    // Recheck every request; upgrade to a pinned tokenizer-measured whole-call bound when available.
+    const upper = probe.config.tokenUpperBound, inputBytes = Buffer.byteLength(frame, "utf8");
+    if (upper !== undefined && (probe.config.maxOutputTokens > upper || inputBytes > upper - probe.config.maxOutputTokens))
+      throw new ProbeToolRefusal("token_ceiling");
+    const result = await probeLocalEffect(probe.accounting, "model_calls", frame, first ? undefined : { inputBytes },
       probe.config.tokenUpperBound, async signal => {
         if (signal.aborted || this.abort?.signal.aborted) throw new ProbeLocalError("interrupted");
         const value = await this.opts.omni.chat(body, { signal: this.abort!.signal });

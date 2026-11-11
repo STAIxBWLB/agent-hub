@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalPeer, localProbeFingerprints, prepareLocalProbeInput, type LocalOptions } from "../src/adapters/local-worker.ts";
@@ -14,10 +14,11 @@ import type { Capture } from "../src/memory/capture.ts";
 import { guidanceProbeFixture } from "./fakes/guidance-probe-provider.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 import { USER, newEnvelope } from "../src/hub/envelope.ts";
+import { ProbeToolRefusal } from "../src/local/probe-errors.ts";
 
 const cleanup: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-const config: ProbeLocalModelConfig = { maxSteps: 4, maxOutputTokens: 128, tokenUpperBound: 256 };
+const config: ProbeLocalModelConfig = { maxSteps: 4, maxOutputTokens: 128, tokenUpperBound: 16384 };
 const reference = (text: string) => ({ sha256: probeHash(text), bytes: Buffer.byteLength(text) });
 
 function state() {
@@ -25,6 +26,7 @@ function state() {
   registration.snapshots.systemPolicy = actual.systemPolicy;
   registration.manifest.inputs.systemPolicy = { sha256: probeHash(actual.systemPolicy), bytes: Buffer.byteLength(actual.systemPolicy) };
   registration.manifest.runtime = { runtimeSha256: actual.runtimeSha256, toolsetSha256: actual.toolsetSha256, modelConfigSha256: actual.modelConfigSha256 };
+  registration.manifest.limits.tokens = config.tokenUpperBound! * config.maxSteps;
   return { registration, binding: value.host, receipt: { id: guidanceProbeManifestKey(registration.manifest), revision: 0, state: "declared", already: false },
     counters: { workerAttempts: 0, editorAttempts: 0, modelCalls: 0, toolCalls: 0, tokensReserved: 0, tokensObservedKnown: 0,
       inputBytes: 0, scratchBytes: 0, outputBytes: 0, elapsedHighWaterMs: 0, usageUnknown: false },
@@ -51,12 +53,17 @@ function effects(signal = new AbortController().signal) {
   return { port, accounting, requests, withdraw: () => { current = false; } };
 }
 
-function setup(script: (body: unknown, signal: AbortSignal | undefined) => Promise<ChatResult>, overrides: Partial<LocalOptions> = {}) {
+function setup(script: (body: unknown, signal: AbortSignal | undefined) => Promise<ChatResult>, overrides: Partial<LocalOptions> = {},
+  inputFiles: readonly { dataId: string; relative: string; content: string }[] = []) {
   const parent = mkdtempSync(join(tmpdir(), "ahub-probe-local-fixture-")), root = join(parent, "workspace"), home = join(parent, "home");
   for (const directory of [root, home, join(root, "scratch"), join(root, "output")]) mkdirSync(directory);
   cleanup.push(() => rmSync(parent, { recursive: true, force: true }));
+  const descriptors = inputFiles.map(file => {
+    writeFileSync(join(root, file.relative), file.content, { mode: 0o400 });
+    return { dataId: file.dataId, relative: file.relative, sha256: probeHash(file.content), bytes: Buffer.byteLength(file.content) };
+  });
   const workspace: ProbeWorkspace = { role: "worker", root, home, scratch: join(root, "scratch"), output: join(root, "output"),
-    inputDigest: probeHash("[]"), files: [], allowedWrites: [join(root, "output/result.txt")] };
+    inputDigest: probeHash(JSON.stringify(descriptors)), files: descriptors, allowedWrites: [join(root, "output/result.txt")] };
   let stopped = 0;
   const confinement: ProbeConfinement = { workspace, profile: "fixture-only, not an OS proof", env: {}, stop: async () => { stopped++; } };
   const calls: string[] = [], bodies: unknown[] = [], ledger = effects();
@@ -75,7 +82,14 @@ function setup(script: (body: unknown, signal: AbortSignal | undefined) => Promi
   peer.onMessage = spy("message"); peer.onFinalAnswer = spy("answer"); peer.onState = spy("state"); peer.onFailed = spy("failed");
   peer.onDoing = spy("doing"); peer.onDelivery = spy("delivery"); peer.recordInstruction = () => { calls.push("record"); return "ordinary record"; };
   cleanup.push(() => peer.stopProbe());
-  const saved = state(), slot = saved.registration.manifest.slots[0]!, prepared = prepareLocalProbeInput(saved, slot, saved.binding.baselineGuidance, [], config);
+  const saved = state(), slot = saved.registration.manifest.slots[0]!;
+  if (descriptors.length) {
+    saved.registration.snapshots.dataPolicy.admittedData = descriptors.map(file => ({ id: file.dataId, sha256: file.sha256, bytes: file.bytes }));
+    saved.registration.snapshots.dataPolicy.roles.worker = { dataIds: descriptors.map(file => file.dataId), guidanceOnlyExperience: true };
+    saved.registration.manifest.inputs.dataPolicy = reference(guidanceProbeCanonical(saved.registration.snapshots.dataPolicy));
+    saved.receipt.id = guidanceProbeManifestKey(saved.registration.manifest);
+  }
+  const prepared = prepareLocalProbeInput(saved, slot, saved.binding.baselineGuidance, descriptors, config);
   const session: ProbeLocalSession = { purpose: "guidance_probe", prepared, workspace, confinement, config, accounting: ledger.accounting,
     reserve: async (charges, descriptor) => {
       if (Object.values(charges).some(value => value > 0)) await probeLocalEffect(ledger.accounting, "resources", descriptor, charges, undefined,
@@ -129,6 +143,52 @@ for (const failure of ["missing usage", "wrong model", "normalized identity"] as
   await expect(f.peer.runProbe(f.session, new AbortController().signal)).rejects.toThrow(ProbeLocalError);
   expect(f.calls).toEqual([]); expect(f.ledger.requests.filter(request => request.unit === "model_calls")).toHaveLength(1);
   expect(f.ledger.requests.filter(request => request.unit === "resources")).toHaveLength(0);
+});
+
+test("a large admitted tool result refuses the second call before HTTP or a new token/input reservation", async () => {
+  const f = setup(async () => ({ ...result(), message: { role: "assistant", content: null,
+    tool_calls: [toolCall("read", { path: "/workspace/large.txt", limit: 1 }, "large-input")] } }), {},
+  [{ dataId: "large-input", relative: "large.txt", content: "x".repeat(20000) }]);
+  expect(Buffer.byteLength(f.session.prepared.inputFrame) + config.maxOutputTokens).toBeLessThanOrEqual(config.tokenUpperBound!);
+  const observed = await f.peer.runProbe(f.session, new AbortController().signal);
+  expect(observed.complete).toBe(false); expect(observed.answer).toBe(""); expect(observed.refusal).toBe("token_ceiling");
+  expect(observed.reason).toContain("token ceiling"); expect(observed.reason).toContain("reduce");
+  expect(observed.servedModel).toBe(GUIDANCE_PROBE_MODEL); expect(observed.usageKnown).toBe(true);
+  expect(f.bodies).toHaveLength(1);
+  const models = f.ledger.requests.filter(request => request.unit === "model_calls");
+  expect(models).toHaveLength(1); expect(models[0]!.reservedTokens).toBe(config.tokenUpperBound);
+  expect(models[0]!.charges?.inputBytes).toBeUndefined();
+  expect(f.ledger.requests.filter(request => request.unit === "tool_calls")).toHaveLength(1);
+  expect(f.ledger.requests.filter(request => request.unit === "resources")).toHaveLength(0); expect(f.calls).toEqual([]);
+});
+
+test("prepared model instructions show only logical admitted write targets", () => {
+  const saved = state(), prepared = prepareLocalProbeInput(saved, saved.registration.manifest.slots[0]!, saved.binding.baselineGuidance, [], config);
+  expect(prepared.request.messages[0]!.content).toContain("/workspace/output/result.txt");
+  expect(prepared.request.messages[0]!.content).toContain("No other target is writable");
+  expect(prepared.inputFrame).not.toContain(saved.binding.requestConnectionId);
+});
+
+test("a known pre-tool workspace ceiling is a safe refusal result and never invokes the write body", async () => {
+  let calls = 0;
+  const f = setup(async () => {
+    if (++calls === 1) {
+      return { ...result(), message: { role: "assistant", content: null,
+        tool_calls: [toolCall("write", { path: "/workspace/output/result.txt", content: "must not write" }, "workspace-cap")] } };
+    }
+    return result("completed without a write");
+  });
+  const admit = f.ledger.port.runEffect;
+  f.ledger.port.runEffect = (request, execute) => {
+    if (request.unit === "tool_calls") throw new ProbeToolRefusal("workspace_ceiling");
+    return admit(request, execute);
+  };
+  const observed = await f.peer.runProbe(f.session, new AbortController().signal);
+  expect(observed.complete).toBe(true); expect(existsSync(join(f.workspace.output, "result.txt"))).toBe(false);
+  const refused = (f.bodies[1] as { messages: { role: string; content: string }[] }).messages.find(message => message.role === "tool")!.content;
+  expect(refused).toContain("workspace ceiling"); expect(refused).toContain("reduce");
+  expect(refused).not.toContain(f.workspace.root);
+  expect(f.ledger.requests.filter(request => request.unit === "tool_calls")).toHaveLength(0); expect(f.calls).toEqual([]);
 });
 
 test("private stop joins an uncooperative model promise and never turns abort into a final answer", async () => {

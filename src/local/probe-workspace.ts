@@ -8,6 +8,7 @@ import { guidanceProbeCanonical, GUIDANCE_PROBE_LIMITS, type ProbeDataPolicyV1, 
 import { foldSegment } from "../hub/permission-mode.ts";
 import { realPath } from "../hub/project.ts";
 import { isDenied } from "./deny.ts";
+import { ProbeToolRefusal } from "./probe-errors.ts";
 
 /** Availability ceilings, narrowed by the admitted budget. ponytail: manifest-declared materialization ceilings are the upgrade path. */
 export const PROBE_WORKSPACE_LIMITS = Object.freeze({ fileBytes: 1024 * 1024, workspaceBytes: 64 * 1024 * 1024 });
@@ -91,8 +92,9 @@ function sourceTreeFile(input: ProbeWorkspaceInput, file: ProbeMaterializedFile,
 
 /** Materialize only verified admitted bytes. It never creates a Git worktree or exposes an object store. */
 export async function materializeProbeWorkspace(input: ProbeWorkspaceInput): Promise<ProbeWorkspace> {
-  if (!roleNames.includes(input.role) || !integer(input.maxBytes) || input.maxBytes > PROBE_WORKSPACE_LIMITS.workspaceBytes
+  if (!roleNames.includes(input.role) || !integer(input.maxBytes)
     || typeof input.current !== "function" || typeof input.reserveStorage !== "function" || typeof input.verifySource !== "function") refused();
+  if (input.maxBytes > PROBE_WORKSPACE_LIMITS.workspaceBytes) throw new ProbeToolRefusal("workspace_ceiling");
   input.current();
   // Keep the host's checked declaration stable across source/reservation awaits.
   input = { ...input, policy: JSON.parse(guidanceProbeCanonical(input.policy, GUIDANCE_PROBE_LIMITS.snapshotBytes)) as ProbeDataPolicyV1,
@@ -109,12 +111,13 @@ export async function materializeProbeWorkspace(input: ProbeWorkspaceInput): Pro
   for (const original of input.files) {
     if (!executionText(original.dataId, EXECUTION_REFERENCE_LIMITS.id) || !probeRelativePath(original.relative)
       || !sha(original.sha256) || !(original.bytes instanceof Uint8Array) || seenIds.has(original.dataId) || !member.has(original.dataId)) refused();
+    if (original.bytes.byteLength > PROBE_WORKSPACE_LIMITS.fileBytes) throw new ProbeToolRefusal("file_ceiling");
     const file = Object.freeze({ dataId: original.dataId, relative: original.relative, sha256: original.sha256, bytes: Buffer.from(original.bytes) });
     const admission = declared.get(file.dataId);
     if (!admission || !integer(admission.bytes) || admission.bytes !== file.bytes.length || admission.sha256 !== file.sha256
       || file.bytes.length > PROBE_WORKSPACE_LIMITS.fileBytes || digest(file.bytes) !== file.sha256) refused();
     seenIds.add(file.dataId); total += file.bytes.length;
-    if (total > input.maxBytes) refused();
+    if (total > input.maxBytes) throw new ProbeToolRefusal("workspace_ceiling");
     const parts = file.relative.split("/");
     if (["scratch", "output"].includes(foldSegment(parts[0]!))) refused();
     for (let index = 1; index <= parts.length; index++) {
@@ -223,7 +226,8 @@ export function probeWorkspaceTemporaryRoot(workspace: ProbeWorkspace): string {
 /** Local conservative ceiling, called before the owner ledger's compound admission; never performs a second ledger effect. */
 export function reserveProbeWorkspaceBytes(workspace: ProbeWorkspace, bytes: number): void {
   probeWorkspaceCurrent(workspace); const state = workspaces.get(workspace)!;
-  if (!integer(bytes) || state.charged + bytes > state.maximum) refused();
+  if (!integer(bytes)) refused();
+  if (state.charged + bytes > state.maximum) throw new ProbeToolRefusal("workspace_ceiling");
   state.charged += bytes;
 }
 export async function reserveProbeWorkspaceStorage(workspace: ProbeWorkspace, bytes: number): Promise<void> {

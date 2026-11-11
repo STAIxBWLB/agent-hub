@@ -690,7 +690,15 @@ from absent records. Shared storage remains under T1's 1 GiB experiment ceiling.
 
 A token-limited call refuses unless a trusted frozen model configuration supplies
 a conservative upper bound for the whole call, including input and output. An
-output cap or past usage is not that bound. Explicit valid provider total usage
+output cap or past usage is not that bound. Before every limited model effect,
+the exact serialized request's UTF-8 byte length plus `maxOutputTokens` must fit
+the frozen `tokenUpperBound`; otherwise refuse as a known pre-effect failure.
+This conservative bytes-bound-tokens check assumes the pinned served model's
+byte-level BPE; a tokenizer-measured whole-call bound is the upgrade path.
+Private local results distinguish this refusal from an interrupted run and are
+incomplete. Earlier explicitly covered usage remains covered; a refusal before
+any model call does not fabricate a usage observation or comparability.
+Explicit valid provider total usage
 is observed; missing/conflicting usage stays unknown. Money and sampling control
 remain unknown without their separately required evidence.
 
@@ -726,6 +734,12 @@ scratch/output descendants; no writable common ancestor, parent entry or sibling
 is exposed by its profile. Immutable inputs and source policy remain read-only.
 No hostile same-user isolation is claimed. Existing guardPath checks, lexical and
 canonical deny policy, normal write permission and post-approval checks remain.
+Approved write roots are mapped from the admitted workspace spelling onto its
+canonical root, so a host temporary-directory alias does not change admission.
+The model sees the admitted logical scratch/output names. Probe tool refusals
+use typed cause classes and a logical next step, never physical paths or ids;
+workspace/file ceilings are known refusals, and withdrawn authority forbids
+further tool calls.
 
 - Worker: current task, fixed baseline context and source ids; admitted guidance
   is the only experience channel. No other-arm output or control receipt.

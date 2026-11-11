@@ -79,6 +79,22 @@ No file, Mach, network or system-data permission was added based on the abort.
 No failing native assertion was removed or skipped. The default adapter refuses
 before model handoff when its actual proof is unavailable.
 
+A later bounded historical unified-log read used the kernel Sandbox/deny
+predicate around the owned NC lifetime. It returned no matching denial, so the
+resource remains unknown. A requested fresh logger-plus-canary attempt was
+deferred by resource admission (exit 75, memory pressure warning), before the
+logger or canary started. No permission was inferred from that empty read.
+
+## Review corrections
+
+Review of `d81db5b7cc7437f60716e00d8d7d318381b74e2d` found three source issues
+that its Linux gate did not establish away: non-canonical temporary-directory
+parents could refuse admitted writes; the frozen token reservation did not
+check each later call's own frame; and private tool errors hid their cause and
+recovery step. The correction keeps ordinary paths unchanged and adds an alias
+write case, a second-call frame-bound case and typed logical refusal cases.
+Results for the corrected head are reported separately in the PR.
+
 ## Remaining evidence
 
 - Local real-profile confinement is **unverified**. The exact denied resource is

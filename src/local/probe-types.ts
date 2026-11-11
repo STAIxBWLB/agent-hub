@@ -7,7 +7,12 @@ import { guidanceProbeCanonical, probeHash } from "../hub/guidance-probes.ts";
 
 export class ProbeLocalError extends Error {
   constructor(readonly reason: "invalid" | "drift" | "model" | "usage" | "interrupted") {
-    super("guidance probe execution is unavailable or uncertain; retain its private state and inspect before retrying");
+    super({ invalid: "guidance probe input or capability is invalid; ask the host to rebuild the admitted input before retrying",
+      drift: "guidance probe input or runtime changed; retain this session and preregister matching inputs before retrying",
+      model: "guidance probe served-model identity is changed or unverified; inspect model provenance and admit a matching session without fallback",
+      usage: "guidance probe model usage is missing or unknown; retain unknown cost and inspect provider accounting before retrying",
+      interrupted: "guidance probe authority or owned work stopped; join the owned stop and inspect retained state before retrying" }[reason]);
+    this.name = "ProbeLocalError";
   }
 }
 
@@ -52,6 +57,9 @@ export interface ProbeLocalResult {
   servedModel: string | null;
   servedModelExact: boolean;
   usageKnown: boolean;
+  /** Known pre-effect refusal metadata, not a fabricated model answer or token-usage observation. */
+  refusal?: "token_ceiling";
+  reason?: string;
 }
 export interface ProbeLocalSource {
   files: readonly ProbeMaterializedFile[];

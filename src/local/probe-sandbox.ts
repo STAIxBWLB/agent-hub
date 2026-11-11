@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { realPath } from "../hub/project.ts";
 import { sbplString } from "./deny.ts";
 import { profile, sandboxAvailable, sandboxedExec } from "./sandbox.ts";
+import { ProbeToolRefusal } from "./probe-errors.ts";
 import { probeWorkspaceCurrent, probeWorkspacePhysical, probeWorkspacePrivateRoot, probeWorkspaceTemporaryRoot, reserveProbeWorkspaceStorage, type ProbeWorkspace } from "./probe-workspace.ts";
 
 export interface ProbeConfinement {
@@ -13,11 +14,11 @@ export interface ProbeConfinement {
   stop(): Promise<void>;
 }
 /** An uncertain command retains this owned stop handle; callers must join it before workspace cleanup. */
-export class ProbeConfinementError extends Error {
+export class ProbeConfinementError extends ProbeToolRefusal {
   constructor(readonly stop: () => Promise<void> = async () => {},
     /** Private proof-only diagnostic, never copied into a public probe receipt or ordinary observer. */
     readonly diagnostic?: { stage: "control" | "lane" | "cleanup"; code: number | null; output: string }) {
-    super("probe OS confinement is unavailable or its owned command has not quiesced");
+    super("confinement_unavailable");
   }
 }
 interface ProofState { workspace: ProbeWorkspace; profile: string; digest: string; current(): void; stop(): Promise<void> }

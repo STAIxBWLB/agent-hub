@@ -1,15 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative } from "node:path";
 import type { ProbeDataPolicyV1, ProbeSlot } from "../src/hub/guidance-probes.ts";
 import { materializeProbeWorkspace, PROBE_WORKSPACE_LIMITS, type ProbeWorkspace } from "../src/local/probe-workspace.ts";
 import { ProbeConfinementError, requireProbeConfinement, verifyProbeConfinement, type ProbeConfinement } from "../src/local/probe-sandbox.ts";
-import { planProbeTool, requireProbeToolWrite, runTool, type ProbeToolResourcePlan, type ToolContext } from "../src/local/tools.ts";
+import { guardPath, planProbeTool, requireProbeToolWrite, runTool, type ProbeToolResourcePlan, type ToolContext } from "../src/local/tools.ts";
+import { formatProbeToolRefusal, ProbeToolRefusal, type ProbeToolRefusalCode } from "../src/local/probe-errors.ts";
 
 const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0).reverse()) rmSync(directory, { recursive: true, force: true }); });
 const roles: readonly ProbeSlot["role"][] = ["worker", "proposal", "compose", "select", "reflect"];
+const refusal = (code: ProbeToolRefusalCode): string => formatProbeToolRefusal(new ProbeToolRefusal(code));
 async function create(role: ProbeSlot["role"] = "worker", registerCleanup = true, current: () => void = () => {}): Promise<ProbeWorkspace> {
   const bytes = Buffer.from(`${role}: admitted input`), id = `${role}-source`, sha256 = createHash("sha256").update(bytes).digest("hex");
   const policy: ProbeDataPolicyV1 = { v: 1, admittedData: [{ id, sha256, bytes: bytes.length }],
@@ -33,7 +36,7 @@ function tools(workspace: ProbeWorkspace) {
 test("probe dispatch refuses all invented non-file calls before parsing, permission or hub dispatch", async () => {
   const workspace = await create(), host = tools(workspace);
   for (const name of ["bash", "git", "hub_send", "hub_task_done", "hub_remember", "hub_set_title", "doc_read", "web_fetch", "read_file"]) {
-    expect(await runTool(name, "{not-json", host.context)).toBe("error: tool is unavailable in the confined probe");
+    expect(await runTool(name, "{not-json", host.context)).toBe(refusal("tool_unavailable"));
   }
   expect(host.permits()).toBe(0); expect(host.sends()).toBe(0);
 });
@@ -59,7 +62,7 @@ test("probe immutable inputs, physical absolute paths and undeclared output root
   for (const path of ["/workspace/input/task.txt", "/workspace/output/unknown.txt", "/workspace/new-parent/file.txt", join(workspace.output, "answer.txt")]) {
     const args = JSON.stringify({ path, content: "changed" });
     expect(host.prepare("write", args).maximumBytes).toBe(0);
-    expect(await runTool("write", args, host.context)).toBe("error: confined probe tool operation refused");
+    expect(await runTool("write", args, host.context)).toBe(refusal(path.startsWith("/workspace/") ? "unadmitted_write" : "outside_workspace"));
   }
   expect(host.permits()).toBe(0);
   expect(readFileSync(join(workspace.root, "input/task.txt"), "utf8")).toBe("worker: admitted input");
@@ -71,7 +74,7 @@ test("probe target changes after planning or during approval refuse writes witho
   const args = JSON.stringify({ path: "/workspace/output/answer.txt", old: "old", new: "new" });
   const reservation = host.prepare("edit", args);
   writeFileSync(target, "old host replacement");
-  expect(await runTool("edit", args, host.context)).toBe("error: confined probe tool operation refused");
+  expect(await runTool("edit", args, host.context)).toBe(refusal("target_changed"));
   expect(readFileSync(target, "utf8")).toBe("old host replacement");
   expect(reservation.outputBytes).toBe(Buffer.byteLength("old valuenew", "utf8"));
   expect(host.permits()).toBe(1);
@@ -82,12 +85,58 @@ test("probe file guards refuse outside symlink and hardlink aliases even inside 
   writeFileSync(outside, "outside fixture");
   const target = join(workspace.output, "answer.txt");
   symlinkSync(outside, target);
-  expect(await runTool("read", JSON.stringify({ path: "/workspace/output/answer.txt" }), host.context)).toBe("error: confined probe tool operation refused");
+  expect(await runTool("read", JSON.stringify({ path: "/workspace/output/answer.txt" }), host.context)).toBe(refusal("outside_workspace"));
   rmSync(target); linkSync(outside, target);
   const args = JSON.stringify({ path: "/workspace/output/answer.txt", content: "changed" });
   expect(host.prepare("write", args).maximumBytes).toBe(0);
-  expect(await runTool("write", args, host.context)).toBe("error: confined probe tool operation refused");
+  expect(await runTool("write", args, host.context)).toBe(refusal("hardlinked_target"));
   expect(readFileSync(outside, "utf8")).toBe("outside fixture");
+});
+
+test("probe canonicalization maps approved roots from a noncanonical parent while retaining outside and undeclared refusals", async () => {
+  for (const spelling of ["admitted", "canonical"] as const) {
+    const workspace = await create(), alias = mkdtempSync(join(tmpdir(), "ahub-probe-parent-alias-")); cleanups.push(alias);
+    symlinkSync(dirname(workspace.root), join(alias, "parent"));
+    const rawRoot = join(alias, "parent", "workspace");
+    let plan: ProbeToolResourcePlan;
+    const context: ToolContext = { cwd: rawRoot, deny: [], sandboxProfile: "file-only fixture, no native proof", permit: async () => true,
+      send: () => { throw new Error("no probe send"); }, probe: { root: rawRoot,
+        writableRoots: spelling === "admitted" ? workspace.allowedWrites.map(path => join(rawRoot, relative(workspace.root, path))) : workspace.allowedWrites,
+        current: () => {}, reserveWrite: async (bytes, path) => requireProbeToolWrite(plan, bytes, path, context) } };
+    const args = JSON.stringify({ path: "/workspace/output/answer.txt", content: "canonical write" });
+    plan = planProbeTool("write", args, context);
+    expect(plan.outputBytes).toBe(Buffer.byteLength("canonical write"));
+    expect(await runTool("write", args, context)).toBe("wrote /workspace/output/answer.txt");
+    expect(readFileSync(join(workspace.output, "answer.txt"), "utf8")).toBe("canonical write");
+    expect(guardPath(context, "/workspace/input", "read")).toBe(join(workspace.root, "input"));
+    expect(await runTool("write", JSON.stringify({ path: "/workspace/output/not-admitted", content: "no" }), context)).toBe(refusal("unadmitted_write"));
+    expect(await runTool("read", JSON.stringify({ path: "/outside/source" }), context)).toBe(refusal("outside_workspace"));
+  }
+});
+
+test("probe typed refusals name safe next steps without copying physical error text or identifiers", async () => {
+  for (const code of ["outside_workspace", "unadmitted_write", "file_ceiling", "hardlinked_target", "nonregular_target", "authority_stopped", "workspace_ceiling"] as const) {
+    const error = new ProbeToolRefusal(code); error.message = "/physical/private/path actor-secret-id";
+    const text = formatProbeToolRefusal(error);
+    expect(text).not.toContain("/physical/private/path"); expect(text).not.toContain("actor-secret-id");
+    expect(text).toContain(";");
+  }
+  expect(refusal("file_ceiling")).toContain("1 MiB"); expect(refusal("workspace_ceiling")).toContain("64 MiB");
+  expect(refusal("unadmitted_write")).toContain("supplied logical");
+  expect(formatProbeToolRefusal(new Error("/physical/private/path actor-secret-id"))).not.toContain("/physical/private/path");
+  const workspace = await create(), host = tools(workspace);
+  host.context.probe!.current = () => { throw new Error("private callback failure actor-secret-id"); };
+  expect(await runTool("read", JSON.stringify({ path: "/workspace/input/task.txt" }), host.context)).toBe(refusal("authority_stopped"));
+  expect(host.permits()).toBe(0);
+});
+
+test("probe known file ceiling and aborted authority refuse before approval or writes", async () => {
+  const workspace = await create(), host = tools(workspace);
+  const args = JSON.stringify({ path: "/workspace/output/answer.txt", content: "x".repeat(PROBE_WORKSPACE_LIMITS.fileBytes + 1) });
+  expect(await runTool("write", args, host.context)).toBe(refusal("file_ceiling"));
+  const abort = new AbortController(); abort.abort(); host.context.signal = abort.signal;
+  expect(await runTool("write", "{not-json", host.context)).toBe(refusal("authority_stopped"));
+  expect(host.permits()).toBe(0); expect(existsSync(join(workspace.output, "answer.txt"))).toBe(false);
 });
 
 test("a declared profile or copied proof never substitutes for the live OS proof brand", async () => {

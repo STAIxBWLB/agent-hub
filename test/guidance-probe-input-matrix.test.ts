@@ -7,6 +7,7 @@ import { hubGitSync } from "../src/hub/git.ts";
 import type { ProbeDataPolicyV1, ProbeSlot } from "../src/hub/guidance-probes.ts";
 import { materializeProbeWorkspace, PROBE_WORKSPACE_LIMITS, probeRelativePath, probeWorkspaceCurrent, probeWorkspacePhysical, reserveProbeWorkspaceBytes, type ProbeMaterializedFile, type ProbeSourceClass, type ProbeWorkspaceInput } from "../src/local/probe-workspace.ts";
 import { runTool, type ToolContext } from "../src/local/tools.ts";
+import { formatProbeToolRefusal, ProbeToolRefusal } from "../src/local/probe-errors.ts";
 
 const cleanup: string[] = [];
 afterEach(() => { for (const root of cleanup.splice(0).reverse()) rmSync(root, { recursive: true, force: true }); });
@@ -54,11 +55,11 @@ for (const role of roles) test(`probe ${role}: runtime file tools deny dependenc
     permit: async () => { approvals++; return true; }, send: () => { throw new Error("no probe send capability"); },
     probe: { root: created.root, writableRoots: created.allowedWrites, current: () => probeWorkspaceCurrent(created), reserveWrite: async () => { writes++; } } };
   for (const relative of forbidden) {
-    expect(await runTool("read", JSON.stringify({ path: `/workspace/${relative}` }), context)).toBe("error: confined probe tool operation refused");
-    expect(await runTool("write", JSON.stringify({ path: `/workspace/${relative}`, content: "must not write" }), context)).toBe("error: confined probe tool operation refused");
+    expect(await runTool("read", JSON.stringify({ path: `/workspace/${relative}` }), context)).toBe(formatProbeToolRefusal(new ProbeToolRefusal("invalid_path")));
+    expect(await runTool("write", JSON.stringify({ path: `/workspace/${relative}`, content: "must not write" }), context)).toBe(formatProbeToolRefusal(new ProbeToolRefusal("invalid_path")));
     expect(readFileSync(join(created.root, relative), "utf8")).toBe("host-only forbidden fixture");
   }
-  expect(await runTool("read", JSON.stringify({ path: `/workspace/${role}.txt/../${role}.txt` }), context)).toBe("error: confined probe tool operation refused");
+  expect(await runTool("read", JSON.stringify({ path: `/workspace/${role}.txt/../${role}.txt` }), context)).toBe(formatProbeToolRefusal(new ProbeToolRefusal("invalid_path")));
   expect(approvals).toBe(0); expect(writes).toBe(0);
 });
 
@@ -112,9 +113,9 @@ test("probe paths reject Git/hub/dependency names, traversal, secret paths and a
 
 test("materialization respects the fixed and remaining resource ceilings and propagates a refused reservation", async () => {
   const bytes = new Uint8Array(PROBE_WORKSPACE_LIMITS.fileBytes + 1), oversized = { dataId: "large", relative: "large.txt", bytes, sha256: hash(bytes) };
-  await expect(materializeProbeWorkspace(input("worker", [oversized]))).rejects.toThrow();
-  await expect(materializeProbeWorkspace({ ...input("worker"), maxBytes: PROBE_WORKSPACE_LIMITS.workspaceBytes + 1 })).rejects.toThrow();
-  await expect(materializeProbeWorkspace({ ...input("worker"), maxBytes: 1 })).rejects.toThrow();
+  await expect(materializeProbeWorkspace(input("worker", [oversized]))).rejects.toMatchObject({ code: "file_ceiling" });
+  await expect(materializeProbeWorkspace({ ...input("worker"), maxBytes: PROBE_WORKSPACE_LIMITS.workspaceBytes + 1 })).rejects.toMatchObject({ code: "workspace_ceiling" });
+  await expect(materializeProbeWorkspace({ ...input("worker"), maxBytes: 1 })).rejects.toMatchObject({ code: "workspace_ceiling" });
   await expect(materializeProbeWorkspace({ ...input("worker"), reserveStorage: () => { throw new Error("resource reservation refused"); } })).rejects.toThrow("resource reservation refused");
 });
 
@@ -152,7 +153,7 @@ test("runtime reservations retain the aggregate workspace ceiling without making
   const created = await workspace(options);
   reserveProbeWorkspaceBytes(created, 7);
   reserveProbeWorkspaceBytes(created, 5);
-  expect(() => reserveProbeWorkspaceBytes(created, 1)).toThrow();
+  expect(() => reserveProbeWorkspaceBytes(created, 1)).toThrow(ProbeToolRefusal);
   expect(ownerCalls).toBe(1);
 });
 
