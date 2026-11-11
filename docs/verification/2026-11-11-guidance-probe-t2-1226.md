@@ -35,9 +35,12 @@ while checking the original actor/session/connection and preserving admitted rep
 After this source fix, normal pinned local bundle regeneration was deferred by
 fresh resource admission (exit 75, memory pressure warning), including one
 conductor-requested retry. The build did not start. Generated files were not
-hand-edited and remote build outputs were not copied back. A conductor rebuild
-and a new final-head changed gate are required; prior source checks do not prove
-bundle freshness.
+hand-edited and remote build outputs were not copied back. Subsequent
+committed-head freshness verification at
+`60606e56da5570ff2843211e89d8ed6ddb1cde5a` passed with the existing tracked
+assets; build admission deferral alone did not establish stale bundles. The
+required gate continued into the full suite. Its completed result and the
+final-head non-test/incremental gate remain separately reported in the PR.
 
 The focused set covers T1 lifecycle/recovery/control, complete request parity,
 role input separation, source/tree/binary binding, compound model/file budgets,
