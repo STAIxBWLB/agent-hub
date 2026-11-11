@@ -5129,7 +5129,14 @@ export class Tasks {
   }
   async guidanceProbeShow(by: PeerId, id: string): Promise<ProbePublicStatus> {
     const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);
-    request.check(); return this.guidanceProbeProjection(state);
+    request.check();
+    const status = this.guidanceProbeProjection(state);
+    // T3 (#1226): the sealed receipts can only make the verdict stricter, never grant one the older expression refused. The reasons and the denominator stay in
+    // the store's private status; public show keeps just this flag. A store that cannot be read is not comparable.
+    if (!status.comparable) return status;
+    let sealedComparable = false;
+    try { sealedComparable = this.d.guidanceProbes!.store.outcome({ projectKey: this.guidanceProject(), id: state.receipt.id })?.comparability.comparable === true; } catch { /* fail closed */ }
+    return sealedComparable ? status : { ...status, comparable: false };
   }
   async guidanceProbeStart(by: PeerId, id: string, revision: number, variantId?: string): Promise<ProbePublicReceipt> {
     const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);

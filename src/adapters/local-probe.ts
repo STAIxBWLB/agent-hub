@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { LocalPeer, localProbeFingerprints, prepareLocalProbeInput } from "./local-worker.ts";
 import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, probeHash,
-  type ProbeFakeLaunch, type ProbeFakeObservation, type ProbeReservation, type ProbeResourceCharges, type ProbeSlot, type ProbeStoredState } from "../hub/guidance-probes.ts";
-import { materializeProbeWorkspace, probeWorkspaceCurrent, PROBE_WORKSPACE_LIMITS,
+  type ProbeFakeLaunch, type ProbeFakeObservation, type ProbeMeasuredSession, type ProbeReceiptLimit, type ProbeReservation, type ProbeResourceCharges, type ProbeSlot, type ProbeStoredState } from "../hub/guidance-probes.ts";
+import { collectProbeOutput, materializeProbeWorkspace, probeWorkspaceCurrent, PROBE_WORKSPACE_LIMITS, retainProbeOutput,
   type ProbeWorkspace } from "../local/probe-workspace.ts";
 import { ProbeConfinementError, requireProbeConfinement, verifyProbeConfinement, type ProbeConfinement } from "../local/probe-sandbox.ts";
 import { ProbeLocalError, probeLocalEffect, type ProbeLocalAdapter, type ProbeLocalAdapterOptions, type ProbeLocalEffectScope,
@@ -25,6 +25,8 @@ interface Owned {
   closeUnknown?: () => Promise<void>;
   closed: boolean;
   closeFailed?: boolean;
+  /** Output collected while the workspace still existed. Collected once, before the confinement stop releases it. */
+  harvest?: { output: ProbeMeasuredSession["output"]; scratchBytes: number; limits: ProbeReceiptLimit[]; retained?: ProbeMeasuredSession["retained"] };
 }
 const bytesHash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const reservationKey = (reservation: ProbeReservation) => probeHash(guidanceProbeCanonical(reservation));
@@ -39,6 +41,7 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
   if (options.fixture && options.fixture.evidence !== "fixture_only") throw new ProbeLocalError("invalid");
   const current = options.current.bind(options), resolveInput = options.resolveInput.bind(options), permit = options.permit.bind(options), omni = options.omni;
   const workspaceOwned = options.workspaceOwned?.bind(options);
+  const retentionRoot = options.retentionRoot;
   const fixture = options.fixture && Object.freeze({ materialize: options.fixture.materialize.bind(options.fixture), confine: options.fixture.confine.bind(options.fixture) });
   const config = Object.freeze({ maxSteps: options.config.maxSteps, maxOutputTokens: options.config.maxOutputTokens,
     ...(options.config.tokenUpperBound === undefined ? {} : { tokenUpperBound: options.config.tokenUpperBound }) });
@@ -86,11 +89,41 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
       entry.closed = true;
     } catch { entry.closeFailed = true; throw new ProbeLocalError("interrupted"); }
   };
-  const observation = (input: ProbeFakeLaunch, ready: Prepared, servedModel: string | null, outcome: ProbeFakeObservation["outcome"], usage: ProbeFakeObservation["usage"]): ProbeFakeObservation => ({
+  /**
+   * Collect, then retain, the declared output while the workspace still exists. This must run before `close`: the confinement stop releases the workspace.
+   * It is best effort and never throws: a failure is recorded as a limit, which can only keep the receipt from being a success. The declared caps hold here
+   * too: past either, nothing is retained and the receipt carries `storage_over_cap`.
+   */
+  const harvestOutput = (entry: Owned, ready: Prepared): void => {
+    if (entry.harvest || !entry.workspace) return;
+    const limits = ready.state.registration.manifest.limits;
+    try {
+      const collected = collectProbeOutput(entry.workspace, limits.outputBytes);
+      const harvest: NonNullable<Owned["harvest"]> = { output: collected.manifest, scratchBytes: collected.scratchBytes, limits: [] };
+      const over = collected.scratchBytes > limits.scratchBytes || collected.manifest.totalBytes > limits.outputBytes;
+      if (over) harvest.limits.push("storage_over_cap");
+      else if (retentionRoot && collected.manifest.entries.length > 0) {
+        try { harvest.retained = retainProbeOutput(entry.workspace, collected.manifest, retentionRoot); }
+        catch { harvest.limits.push("output_truncated"); }
+      }
+      entry.harvest = harvest;
+    } catch { entry.harvest = { output: { v: 1, entries: [], excluded: [], totalBytes: 0 }, scratchBytes: 0, limits: ["output_truncated"] }; }
+  };
+  const measuredSession = (entry: Owned, servedModel: string | null, flags: { unavailable: boolean }): Omit<ProbeMeasuredSession, "startedAt"> => ({
+    servedModel, workerEffectiveInputSha256: null, nonGuidanceInputSha256: null,
+    teardownVerified: entry.closed && !entry.closeFailed, cancelled: entry.controller.signal.aborted, timedOut: false, unavailable: flags.unavailable,
+    limits: entry.harvest?.limits ?? [], scratchBytes: entry.harvest?.scratchBytes ?? 0,
+    output: entry.harvest?.output ?? { v: 1, entries: [], excluded: [], totalBytes: 0 }, ...(entry.harvest?.retained ? { retained: entry.harvest.retained } : {}),
+  });
+  const observation = (input: ProbeFakeLaunch, ready: Prepared, servedModel: string | null, outcome: ProbeFakeObservation["outcome"], usage: ProbeFakeObservation["usage"],
+    entry?: Owned, unavailable = false): ProbeFakeObservation => ({
     reservation: input.reservation, outcome, servedModel, inputFrameHash: ready.input.inputSha256,
     workerEffectiveInputHash: input.slot.role === "worker" ? ready.input.inputSha256 : null,
     nonGuidanceInputSha256: input.slot.role === "worker" ? ready.input.nonGuidanceInputSha256 : null,
     candidateArtifactSha256: null, usage,
+    ...(entry ? { measured: { ...measuredSession(entry, servedModel, { unavailable }),
+      workerEffectiveInputSha256: input.slot.role === "worker" ? ready.input.inputSha256 : null,
+      nonGuidanceInputSha256: input.slot.role === "worker" ? ready.input.nonGuidanceInputSha256 : null } } : {}),
   });
   return {
     prepareWorkerFrame: async (state, slot, guidance) => {
@@ -146,14 +179,16 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
             maxSteps: config.maxSteps, tools: { deny: [], permit } }, entry.confinement, fixture ? "fixture_only" : undefined);
           const result = await entry.peer.runProbe({ purpose: "guidance_probe", prepared: ready.input, workspace: entry.workspace,
             confinement: entry.confinement, config, accounting, reserve }, entry.controller.signal);
-          accounting.current(); await close(entry);
+          accounting.current(); harvestOutput(entry, ready); await close(entry);
           effects.current(); current();
-          return observation(input, ready, result.servedModel, result.complete ? "closed_fixture" : "failed_known", result.usageKnown ? "known_fixture" : "unknown");
+          return observation(input, ready, result.servedModel, result.complete ? "closed_fixture" : "failed_known", result.usageKnown ? "known_fixture" : "unknown", entry);
         }).catch(async error => {
           if (error instanceof ProbeConfinementError) entry.closeUnknown = error.stop;
+          // Collect before the close releases the workspace, but only while it is still ours: a drifted workspace is read by identity or not at all.
+          harvestOutput(entry, ready);
           try { await close(entry); }
           catch { throw new ProbeLocalError("interrupted"); }
-          return observation(input, ready, entry.peer?.probeObservation().servedModel ?? null, "unknown", "unknown");
+          return observation(input, ready, entry.peer?.probeObservation().servedModel ?? null, "unknown", "unknown", entry, error instanceof ProbeConfinementError);
         }).finally(() => {
           signal.removeEventListener("abort", abort);
           if (entry.closed) { completed.add(entry.reservation); owned.delete(id); }

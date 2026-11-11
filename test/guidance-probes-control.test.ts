@@ -517,3 +517,17 @@ test("cancel after G1 withdrawal/flow change preserves intent without rescreenin
   expect(f.store.read(key)!.cancelRequested).toBe(true); expect(f.store.read(key)!.receipt.state).toBe("unknown_held");
   expect(f.tasks.guidanceProbesPending()).toBe(0); expect(f.timer.jobs.size).toBe(0);
 });
+
+test("a settled session without a sealed receipt is never public-comparable, and the private status names why (T3, #1226)", async () => {
+  const f = await fixture(), receipt = await f.tasks.guidanceProbeRegister(USER, f.registration()), key = { projectKey: f.projectKey, id: receipt.id };
+  await f.tasks.guidanceProbeStart(USER, receipt.id, 0);
+  const shown = await f.tasks.guidanceProbeShow(USER, receipt.id);
+  expect(shown.comparable).toBe(false);
+  // The fake provider reports no host measurement, so nothing is sealed: the denominator still counts the session, as unknown, never as a success.
+  const outcome = f.store.outcome(key)!;
+  expect(outcome.comparability.reasons).toContain("missing_receipt");
+  expect(outcome.counts.unknown).toBe(1); expect(outcome.counts.succeeded).toBe(0);
+  // The public view carries neither the reasons nor the denominator.
+  expect(JSON.stringify(shown)).not.toContain("missing_receipt");
+  expect(Object.keys(shown)).not.toContain("counts");
+});

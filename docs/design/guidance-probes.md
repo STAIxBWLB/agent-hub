@@ -963,13 +963,31 @@ two-recoverer test (#329).
 T3 adds: the receipt and output manifest types and pure parsing in `guidance-probes.ts`;
 one additive private table in the Store (`guidance_probe_receipts`) with receipt
 hydration, tamper checks and reconcile folded into the existing integrity and recovery
-passes; `sealReceipt`, `readReceipt`, `previewPrune` and `prune`; output collection and
+passes; `sealReceipt`, `receipts`, `outcome`, `reconcile`, `previewPrune` and `prune`; output collection and
 owned cleanup in the adapter and workspace modules; the comparability function; and fake
 fixtures for the mismatch, tamper, crash and teardown cases. It does not add a CLI verb,
 a wire operation, a daemon runner, a config key, a real model call or a live trial (T4).
 Public `show` is unchanged: it keeps only the stricter `comparable` flag. The per-state
 denominator counts and the comparability reasons are private status, read by the host
 through the Store; T4 owns the producer status and decides what becomes public.
+
+### How the adapter and host seal
+
+The adapter cannot reach the Store. It collects and retains the declared output while the
+workspace still exists (after the model loop and before the confinement stop releases it),
+and reports what it measured on the observation (`ProbeFakeObservation.measured`, every
+`ProbeMeasuredSession` field except `startedAt`). The fixture host samples `startedAt` on
+the trusted clock where it exposes the launch, settles the session, and then calls
+`sealReceipt`; the adapter never supplies the start instant. Collection never throws: a
+failure becomes an `output_truncated` limit, which can only keep a receipt from being a
+success. Retention needs a host-owned `retentionRoot` outside every workspace; without one
+the output is hashed and nothing is kept. Past the declared scratch or output cap nothing is
+retained and the receipt carries `storage_over_cap`. A settled session whose receipt could
+not be sealed counts as `unknown` in the denominator and is never comparable
+(`missing_receipt`); it is never read as a success or a failure.
+
+Public `show` computes `comparable` as the older expression AND the sealed-receipt verdict,
+so the flag only ever gets stricter. A store that cannot be read yields `false`.
 
 ### Rulings applied
 

@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalPeer, localProbeFingerprints, prepareLocalProbeInput, type LocalOptions } from "../src/adapters/local-worker.ts";
 import { createGuidanceProbeLocalAdapter } from "../src/adapters/local-probe.ts";
 import { ProbeLocalError, probeLocalEffect, type ProbeLocalEffectScope, type ProbeLocalModelConfig, type ProbeLocalSession } from "../src/local/probe-types.ts";
-import { probeWorkspacePrivateRoot, type ProbeWorkspace } from "../src/local/probe-workspace.ts";
+import { materializeProbeWorkspace, probeWorkspacePrivateRoot, type ProbeWorkspace } from "../src/local/probe-workspace.ts";
 import type { ProbeConfinement } from "../src/local/probe-sandbox.ts";
 import { GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, probeHash,
   type ProbeFakeEffectRequest, type ProbeFakeEffects, type ProbeSlot, type ProbeStoredState } from "../src/hub/guidance-probes.ts";
@@ -387,4 +387,64 @@ test("a retained successful preregistered baseline retry remains the actual-inpu
   const prepared = await adapter.prepareWorkerFrame(saved, candidate, "candidate guidance");
   expect(prepared.nonGuidanceInputSha256).toBe(baseline.nonGuidanceInputSha256);
   expect(JSON.parse(prepared.inputFrame).messages[1].content).toBe("candidate guidance");
+});
+
+/** A real materialized workspace under the fixture confinement, whose model writes `answer` into the declared output file (and `scratch` into scratch) while it runs. */
+async function harvestRun(answer: string, retentionRoot: string | undefined, scratch = "") {
+  const saved = state(), slot = saved.registration.manifest.slots[0]!, ledger = effects();
+  let created: ProbeWorkspace | undefined, privateRoot: string | undefined;
+  const adapter = createGuidanceProbeLocalAdapter({ omni: { chat: async () => {
+      writeFileSync(join(created!.output, "answer.txt"), answer); if (scratch) writeFileSync(join(created!.scratch, "work.bin"), scratch); return result(); } } as unknown as OmniRoute,
+    config, permit: async () => true, current: () => {}, resolveInput: () => ({ files: [], verifySource: () => "task_source" }), ...(retentionRoot ? { retentionRoot } : {}),
+    workspaceOwned: workspace => { privateRoot = probeWorkspacePrivateRoot(workspace); },
+    fixture: { evidence: "fixture_only",
+      materialize: async input => { created = await materializeProbeWorkspace({ ...input, policy: { ...input.policy, allowedWrites: [{ root: "output", relative: "answer.txt" }] } }); return created; },
+      // The real sandbox's stop removes the workspace (cleanup()); the fixture does the same, so collecting after the stop would find nothing to collect.
+      confine: async workspace => ({ workspace, profile: "fixture-only, not an OS proof", env: {}, stop: async () => { if (privateRoot) rmSync(privateRoot, { recursive: true, force: true }); } }) } });
+  cleanup.push(() => { if (privateRoot) rmSync(privateRoot, { recursive: true, force: true }); });
+  const frame = await adapter.prepareWorkerFrame(saved, slot, saved.binding.baselineGuidance);
+  const reservation = { key: { projectKey: saved.registration.manifest.projectKey, id: guidanceProbeManifestKey(saved.registration.manifest) }, slotId: slot.id, generation: 1, revision: 1 };
+  const observed = await adapter.ports.launch({ reservation, slot, manifest: saved.registration.manifest, inputFrame: frame.inputFrame,
+    inputSha256: probeHash(frame.inputFrame), nonGuidanceInputSha256: frame.nonGuidanceInputSha256, purpose: "guidance_probe" }, ledger.port, new AbortController().signal);
+  return { observed, limits: saved.registration.manifest.limits };
+}
+const retentionDir = () => { const root = mkdtempSync(join(tmpdir(), "ahub-probe-retain-")); cleanup.push(() => rmSync(root, { recursive: true, force: true })); return root; };
+
+test("the adapter harvests the declared output before the workspace is released and reports what it measured", async () => {
+  const root = retentionDir();
+  const { observed } = await harvestRun("the answer", root);
+  expect(observed.outcome).toBe("closed_fixture");
+  const measured = observed.measured!;
+  expect(measured.output.entries).toEqual([{ relative: "output/answer.txt", sha256: probeHash("the answer"), bytes: Buffer.byteLength("the answer") }]);
+  expect(measured.teardownVerified).toBe(true); expect(measured.servedModel).toBe(GUIDANCE_PROBE_MODEL);
+  expect(measured.limits).toEqual([]);
+  const retained = measured.retained!;
+  expect(retained.directory.startsWith(root)).toBe(true);
+  expect(readFileSync(join(retained.directory, "output", "answer.txt"), "utf8")).toBe("the answer");
+  expect(readdirSync(root)).toHaveLength(1);
+});
+
+test("without a retention root the output is hashed but nothing is copied or kept", async () => {
+  const { observed } = await harvestRun("the answer", undefined);
+  expect(observed.measured!.output.entries).toHaveLength(1);
+  expect(observed.measured!.retained).toBeUndefined();
+});
+
+test("an output past the declared cap is excluded, never retained or hashed, so the receipt cannot be a success", async () => {
+  const root = retentionDir(), probe = await harvestRun("seed", undefined);
+  const cap = probe.limits.outputBytes;
+  const { observed } = await harvestRun("x".repeat(cap + 1), root);
+  expect(observed.measured!.output.entries).toEqual([]);
+  expect(observed.measured!.output.excluded).toEqual([{ relative: "output/answer.txt", reason: "over_file_cap" }]);
+  expect(observed.measured!.retained).toBeUndefined();
+  expect(readdirSync(root)).toEqual([]);
+});
+
+test("scratch left past the declared scratch cap carries storage_over_cap and retains nothing", async () => {
+  const root = retentionDir(), probe = await harvestRun("seed", undefined);
+  const { observed } = await harvestRun("small", root, "y".repeat(probe.limits.scratchBytes + 1));
+  expect(observed.measured!.limits).toContain("storage_over_cap");
+  expect(observed.measured!.scratchBytes).toBeGreaterThan(probe.limits.scratchBytes);
+  expect(observed.measured!.retained).toBeUndefined();
+  expect(readdirSync(root)).toEqual([]);
 });

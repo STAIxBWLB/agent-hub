@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { chmodSync, constants, closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync, readFileSync, readSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { executionText, EXECUTION_REFERENCE_LIMITS } from "../hub/execution-reference.ts";
 import { hubGitSync } from "../hub/git.ts";
-import { guidanceProbeCanonical, GUIDANCE_PROBE_LIMITS, type ProbeDataPolicyV1, type ProbeSlot, type ProbeTree } from "../hub/guidance-probes.ts";
+import { guidanceProbeCanonical, GUIDANCE_PROBE_LIMITS, PROBE_OUTPUT_LIMITS, type ProbeDataPolicyV1, type ProbeExcludedReason, type ProbeOutputEntry, type ProbeOutputExcluded,
+  type ProbeOutputManifestV1, type ProbeRetainedRecord, type ProbeSlot, type ProbeTree } from "../hub/guidance-probes.ts";
 import { foldSegment } from "../hub/permission-mode.ts";
 import { realPath } from "../hub/project.ts";
 import { isDenied } from "./deny.ts";
@@ -234,4 +235,147 @@ export async function reserveProbeWorkspaceStorage(workspace: ProbeWorkspace, by
   reserveProbeWorkspaceBytes(workspace, bytes); const state = workspaces.get(workspace)!;
   await state.reserveStorage(bytes); state.current();
   probeWorkspaceCurrent(workspace);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// T3 (#1226): output collection and owned cleanup. Contract: docs/design/guidance-probes.md "T3 receipts, reconcile and cleanup contract".
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/**
+ * Collect a finished session's declared output into a manifest: every regular, link-count-1 file under the output root is read through its captured
+ * identity and hashed, and the identity is re-checked after the read. Anything else (a symlink, a hardlink, a device, a directory entry the policy does not
+ * declare, a file past the per-file cap, a file that changed while read) is recorded as an exclusion and is NOT hashed. Bytes past `maxBytes` are not read.
+ * Reads only; it deletes nothing and follows no link.
+ */
+export function collectProbeOutput(workspace: ProbeWorkspace, maxBytes: number): { manifest: ProbeOutputManifestV1; scratchBytes: number } {
+  probeWorkspacePhysical(workspace);
+  const entries: ProbeOutputEntry[] = [], excluded: ProbeOutputExcluded[] = [];
+  let total = 0;
+  const declared = workspace.allowedWrites.filter(path => path === workspace.output || path.startsWith(workspace.output + "/"));
+  const within = (file: string): boolean => declared.some(path => file === path || file.startsWith(path + "/"));
+  const exclude = (relative: string, reason: ProbeExcludedReason): void => { if (excluded.length < PROBE_OUTPUT_LIMITS.entries) excluded.push({ relative, reason }); };
+  const walk = (directory: string, depth: number): void => {
+    if (depth > 8) return;
+    const handle = opendirSync(directory);
+    try {
+      for (let item = handle.readSync(); item; item = handle.readSync()) {
+        const file = join(directory, item.name), relative = file.slice(workspace.root.length + 1);
+        const before = lstatSync(file, { throwIfNoEntry: false });
+        if (!before) continue;
+        if (before.isSymbolicLink()) { exclude(relative, "not_regular"); continue; }
+        if (before.isDirectory()) { walk(file, depth + 1); continue; }
+        if (!before.isFile()) { exclude(relative, "not_regular"); continue; }
+        if (before.nlink !== 1) { exclude(relative, "linked"); continue; }
+        if (!within(file)) { exclude(relative, "outside_declared_writes"); continue; }
+        if (before.size > PROBE_OUTPUT_LIMITS.fileBytes) { exclude(relative, "over_file_cap"); continue; }
+        if (entries.length >= PROBE_OUTPUT_LIMITS.entries) { exclude(relative, "over_entry_cap"); continue; }
+        if (total + before.size > maxBytes) { exclude(relative, "over_file_cap"); continue; }
+        const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+        let bytes: Buffer;
+        try {
+          const opened = fstatSync(fd);
+          if (opened.dev !== before.dev || opened.ino !== before.ino || opened.nlink !== 1) { exclude(relative, "changed_while_read"); continue; }
+          bytes = Buffer.alloc(Math.min(opened.size, PROBE_OUTPUT_LIMITS.fileBytes));
+          let read = 0; while (read < bytes.length) { const n = readSync(fd, bytes, read, bytes.length - read, read); if (n === 0) break; read += n; }
+          const after = fstatSync(fd);
+          if (read !== opened.size || after.size !== opened.size || after.ino !== opened.ino || after.mtimeMs !== opened.mtimeMs) { exclude(relative, "changed_while_read"); continue; }
+        } finally { closeSync(fd); }
+        entries.push({ relative, sha256: digest(bytes), bytes: bytes.length }); total += bytes.length;
+      }
+    } finally { handle.closeSync(); }
+  };
+  walk(workspace.output, 0);
+  let scratch = 0;
+  const measure = (directory: string, depth: number): void => {
+    if (depth > 8) return;
+    const handle = opendirSync(directory);
+    try {
+      for (let item = handle.readSync(); item; item = handle.readSync()) {
+        const file = join(directory, item.name), stat = lstatSync(file, { throwIfNoEntry: false });
+        if (!stat) continue;
+        if (stat.isDirectory()) measure(file, depth + 1); else if (stat.isFile()) scratch += stat.size;
+      }
+    } finally { handle.closeSync(); }
+  };
+  measure(workspace.scratch, 0);
+  entries.sort((a, b) => a.relative < b.relative ? -1 : a.relative > b.relative ? 1 : 0);
+  return { manifest: { v: 1, entries, excluded, totalBytes: total }, scratchBytes: scratch };
+}
+
+/** A retained output directory the host itself created, with the identity it recorded at creation. Prune acts on nothing else. */
+export type ProbeRetained = ProbeRetainedRecord;
+
+/**
+ * Copy the collected output into a fresh host-owned retention directory (mode 0700, O_EXCL files, link count 1) and return what was created. The retention
+ * directory is outside the workspace so the workspace can be released at once; what is retained is exactly the manifest's entries, nothing else.
+ */
+export function retainProbeOutput(workspace: ProbeWorkspace, manifest: ProbeOutputManifestV1, root: string): ProbeRetained {
+  probeWorkspacePhysical(workspace);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const directory = realPath(mkdtempSync(join(root, "retained-")));
+  const identity = directoryIdentity(directory);
+  chmodSync(directory, 0o700);
+  const files: { relative: string; dev: number; ino: number; bytes: number }[] = [];
+  try {
+    for (const entry of manifest.entries) {
+      const source = join(workspace.root, entry.relative);
+      const before = lstatSync(source);
+      if (!before.isFile() || before.nlink !== 1 || before.size !== entry.bytes) refused();
+      const bytes = readFileSync(source);
+      if (digest(bytes) !== entry.sha256) refused();
+      // The manifest already holds only workspace-relative names; refuse anything that could leave the retention directory before joining.
+      if (!probeRelativePath(entry.relative)) refused();
+      const dest = join(directory, entry.relative);
+      mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+      const fd = openSync(dest, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o400);
+      try { const created = fstatSync(fd); writeFileSync(fd, bytes); files.push({ relative: entry.relative, dev: created.dev, ino: created.ino, bytes: bytes.length }); }
+      finally { closeSync(fd); }
+    }
+  } catch (error) {
+    // Remove only what this call created, by identity, never a replaced name.
+    removeRetained({ directory, dev: identity.dev, ino: identity.ino, files }, true);
+    throw error;
+  }
+  return Object.freeze({ directory, dev: identity.dev, ino: identity.ino, files: Object.freeze(files.map(item => Object.freeze(item))) });
+}
+
+/** What a prune would remove from one retained directory, and why anything is kept. Read-only. */
+export function previewRetained(retained: ProbeRetained): { remove: { relative: string; bytes: number }[]; keep: { relative: string; reason: string }[] } {
+  const remove: { relative: string; bytes: number }[] = [], keep: { relative: string; reason: string }[] = [];
+  const root = lstatSync(retained.directory, { throwIfNoEntry: false });
+  if (!root || !root.isDirectory() || root.isSymbolicLink() || root.dev !== retained.dev || root.ino !== retained.ino) {
+    return { remove, keep: [{ relative: ".", reason: "directory_replaced_or_missing" }] };
+  }
+  for (const file of retained.files) {
+    const stat = lstatSync(join(retained.directory, file.relative), { throwIfNoEntry: false });
+    if (!stat) continue;
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.dev !== file.dev || stat.ino !== file.ino) keep.push({ relative: file.relative, reason: "identity_changed" });
+    else remove.push({ relative: file.relative, bytes: stat.size });
+  }
+  return { remove, keep };
+}
+
+/**
+ * Remove only the files and directories this host created, each verified by captured device and inode at the moment of removal. A name that is a
+ * replacement, a symlink, a hardlink or a bystander is left exactly where it is. Never recurses through a name it did not create and never follows a link.
+ * Returns what it removed and what it kept; a retained name makes the directory itself stay.
+ */
+export function removeRetained(retained: ProbeRetained, partial = false): { removed: string[]; kept: { relative: string; reason: string }[] } {
+  const removed: string[] = [], kept: { relative: string; reason: string }[] = [];
+  const root = lstatSync(retained.directory, { throwIfNoEntry: false });
+  if (!root || !root.isDirectory() || root.isSymbolicLink() || root.dev !== retained.dev || root.ino !== retained.ino) {
+    return { removed, kept: [{ relative: ".", reason: "directory_replaced_or_missing" }] };
+  }
+  const parents = new Set<string>();
+  for (const file of retained.files) {
+    const path = join(retained.directory, file.relative), stat = lstatSync(path, { throwIfNoEntry: false });
+    if (!stat) continue;
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.dev !== file.dev || stat.ino !== file.ino) { kept.push({ relative: file.relative, reason: "identity_changed" }); continue; }
+    unlinkSync(path); removed.push(file.relative);
+    for (let parent = dirname(path); parent !== retained.directory && parent.startsWith(retained.directory + "/"); parent = dirname(parent)) parents.add(parent);
+  }
+  // Directories this call may have created: removed only if now empty, deepest first; a non-empty one holds a bystander and stays.
+  for (const parent of [...parents].sort((a, b) => b.length - a.length)) { try { rmdirSync(parent); } catch { kept.push({ relative: parent.slice(retained.directory.length + 1), reason: "not_empty" }); } }
+  if (kept.length === 0 || partial) { try { rmdirSync(retained.directory); } catch { kept.push({ relative: ".", reason: "not_empty" }); } }
+  return { removed, kept };
 }
