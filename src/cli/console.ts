@@ -17,6 +17,8 @@ import { pasteFlow, questionRows } from "./console-question.ts";
 import { characterAttentionLine } from "./attention.ts";
 import { projectRoomStatus } from "../rooms/status.ts";
 import { LIVE_TEST_PERSON_REFUSAL } from "./identity.ts";
+import { consoleVersions } from "./console-versions.ts";
+import { VERSION } from "../version.ts";
 
 export interface ConsoleTerminal {
   columns: number; rows: number; isTTY: boolean; isRaw?: boolean;
@@ -40,6 +42,8 @@ export interface ConsoleOptions {
   /** Injected command runner must use argv, closed stdin, and return a cancellation handle. */
   runCommand?: (args: string[], output: (text: string) => void, done: (code?: number) => void, columns?: number) => (() => void);
   pollMs?: number;
+  /** #1385: the global CLI and installed plugin versions, read once off the render loop; absent reads as unknown. */
+  installed?: Promise<{ global?: string; plugin?: string }>;
 }
 /** Exact navigation sequences only (#309, #441); anything else in a multi-character read is a paste. */
 const NAVIGATION = ["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", ...FIRST_KEYS, ...LAST_KEYS].filter(key => key.startsWith("\x1b"));
@@ -107,6 +111,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let resolveDone: () => void = () => {}; const done = new Promise<void>(resolve => { resolveDone = resolve; });
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
   let presentation = consoleOperationalSnapshot(undefined);
+  let installed: { global?: string; plugin?: string } = {};
+  options.installed?.then(value => { installed = value; if (state.versions) state.versions = consoleVersions(state.versions.daemon, VERSION, installed.global, installed.plugin); }, () => {});
   let priorStreamFooterStart: number | undefined;
   let lastExpandedNotice = "";
   const notice = (text: string, tone: Tone = "failure") => notify(state, text, Date.now(), tone);
@@ -239,6 +245,10 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (status.status && status.ok !== false) state.retainedConfig = Array.isArray(status.status.retainedConfig) ? status.status.retainedConfig : [];
       if (status.status) state.features = Array.isArray(status.status.features) ? status.status.features : [];
       if (status.status && status.ok !== false) {
+        state.versions = consoleVersions(status.status.version, VERSION, installed.global, installed.plugin);
+        state.agentDrift = Array.isArray(status.status.agentDrift) ? status.status.agentDrift : [];
+      }
+      if (status.status && status.ok !== false) {
         const rooms = status.status.rooms;
         state.rooms = rooms === undefined ? undefined : rooms === null ? null : Array.isArray(rooms) ? projectRoomStatus(rooms).sort((a, b) => a.name.localeCompare(b.name)) : null;
         if (state.rooms === undefined || Array.isArray(state.rooms) && state.rooms.length === 0) {
@@ -252,7 +262,9 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       }
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer],
         ...(typeof status.status.ownerIsolation?.[peer] === "boolean" ? { ownerIsolation: status.status.ownerIsolation[peer] } : {}),
-        ...(typeof status.status.ownerIsolationNotes?.[peer] === "string" ? { ownerIsolationNote: status.status.ownerIsolationNotes[peer] } : {}) }]));
+        ...(typeof status.status.ownerIsolationNotes?.[peer] === "string" ? { ownerIsolationNote: status.status.ownerIsolationNotes[peer] } : {}),
+        ...(status.status.peerVersions?.[peer]?.ahub ? { ahub: status.status.peerVersions[peer].ahub } : {}),
+        ...(status.status.peerVersions?.[peer]?.ahubTools ? { ahubTools: status.status.peerVersions[peer].ahubTools } : {}) }]));
       if (status.status && status.ok !== false) {
         state.taskWip = status.status.taskWip ?? {};
         state.attentionFacts = attentionFacts(status.status.attentionItems);

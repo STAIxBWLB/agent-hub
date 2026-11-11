@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRouting } from "../../src/hub/routing.ts";
 import { HubRouteRuntime } from "../../src/models/route/runtime.ts";
-import { ADVISOR_REVIEWER_PROMPT, ESCALATION_PROMPT } from "../../src/models/route/prompts.ts";
+import { ADVISOR_PROMPT as ADVISOR_REVIEWER_PROMPT, ESCALATION_JUDGE_PROMPT as ESCALATION_PROMPT } from "../../src/models/route/hub-prompts.ts";
 import { changedModelKeys, compare, evaluate, freezeModelCorpus, isDeterministic, liveRequired, loadModelCorpus, modelCorpusHash, modelRoutingSha, modelRoutingSummary, runCase, validateModelCorpus, type JudgeCase, type ModelRoutingCorpus } from "../../scripts/benchmarks/model-routing-corpus.ts";
 import { gatewayChat, main, runLive, type JudgeChat } from "../../scripts/benchmarks/model-routing-gate.ts";
 import { LIVE_NOT_RUN, compareLive, judgeRequestFor, liveProblem, parseModelReceipt, scoreLive, type LiveEvidence } from "../../scripts/benchmarks/model-routing-receipt.ts";

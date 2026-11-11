@@ -177,7 +177,6 @@
   "src/cli/room.ts:parseRoomInput:inline:peers.length > 64=64#0",
   "src/cli/room.ts:remotePeerRows:inline:value.length > 4096=4096#0",
   "src/cli/room.ts:roomRows:inline:value.length > 64=64#0",
-  "src/cli/runtime-version-warning.ts:version:inline:value.length <= 64=64#0",
   "src/cli/sdlc-output.ts:<anonymous>:inline:c.files ?? 0=0#0",
   "src/cli/sdlc-output.ts:<anonymous>:inline:para=2#0",
   "src/cli/sdlc-output.ts:GAP:constant:GAP=2#0",

@@ -1,0 +1,442 @@
+{
+  "schemaVersion": 1,
+  "purpose": "newly authored public-API scalar fixtures; no source-port vectors",
+  "cases": [
+    {
+      "id": "advisor-default-success-budget",
+      "kind": "advisor-reserve",
+      "config": {},
+      "outcome": "success",
+      "scalarFields": [
+        "eligible1",
+        "reserved1",
+        "eligible2",
+        "reserved2",
+        "eligible3",
+        "reserved3"
+      ],
+      "observed": [
+        true,
+        true,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": "advisor-one-success-budget",
+      "kind": "advisor-reserve",
+      "config": {
+        "maxReviews": 1
+      },
+      "outcome": "success",
+      "scalarFields": [
+        "eligible1",
+        "reserved1",
+        "eligible2",
+        "reserved2",
+        "eligible3",
+        "reserved3"
+      ],
+      "observed": [
+        true,
+        true,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": "advisor-default-failure-budget",
+      "kind": "advisor-reserve",
+      "config": {},
+      "outcome": "failure",
+      "scalarFields": [
+        "eligible1",
+        "reserved1",
+        "eligible2",
+        "reserved2",
+        "eligible3",
+        "reserved3"
+      ],
+      "observed": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "id": "advisor-min-omitted-zero",
+      "kind": "advisor-eligible",
+      "config": {},
+      "rounds": 0,
+      "scalarFields": [
+        "eligible"
+      ],
+      "observed": [
+        true
+      ]
+    },
+    {
+      "id": "advisor-min-zero-zero",
+      "kind": "advisor-eligible",
+      "config": {
+        "gateMinToolResults": 0
+      },
+      "rounds": 0,
+      "scalarFields": [
+        "eligible"
+      ],
+      "observed": [
+        true
+      ]
+    },
+    {
+      "id": "advisor-min-one-zero",
+      "kind": "advisor-eligible",
+      "config": {
+        "gateMinToolResults": 1
+      },
+      "rounds": 0,
+      "scalarFields": [
+        "eligible"
+      ],
+      "observed": [
+        false
+      ]
+    },
+    {
+      "id": "advisor-min-one-one",
+      "kind": "advisor-eligible",
+      "config": {
+        "gateMinToolResults": 1
+      },
+      "rounds": 1,
+      "scalarFields": [
+        "eligible"
+      ],
+      "observed": [
+        true
+      ]
+    },
+    {
+      "id": "advisor-stall-omitted-zero",
+      "kind": "advisor-eligible",
+      "config": {
+        "gateMinToolResults": 0
+      },
+      "rounds": 0,
+      "scalarFields": [
+        "eligible"
+      ],
+      "observed": [
+        true
+      ]
+    },
+    {
+      "id": "advisor-stall-omitted-eight",
+      "kind": "advisor-eligible",
+      "config": {
+        "gateMinToolResults": 0
+      },
+      "rounds": 8,
+      "scalarFields": [
+        "eligible"
+      ],
+      "observed": [
+        true
+      ]
+    },
+    {
+      "id": "advisor-stall-zero-eight",
+      "kind": "advisor-eligible",
+      "config": {
+        "gateMinToolResults": 0,
+        "gateStallTurns": 0
+      },
+      "rounds": 8,
+      "scalarFields": [
+        "eligible"
+      ],
+      "observed": [
+        true
+      ]
+    },
+    {
+      "id": "advisor-stall-two-eight",
+      "kind": "advisor-eligible",
+      "config": {
+        "gateMinToolResults": 0,
+        "gateStallTurns": 2
+      },
+      "rounds": 8,
+      "scalarFields": [
+        "eligible"
+      ],
+      "observed": [
+        true
+      ]
+    },
+    {
+      "id": "advisor-output-budget",
+      "kind": "advisor-output",
+      "scalarFields": [
+        "maxOutputTokens"
+      ],
+      "observed": [
+        2048
+      ]
+    },
+    {
+      "id": "advisor-output-cap256",
+      "kind": "advisor-output",
+      "cap": 256,
+      "scalarFields": [
+        "maxOutputTokens"
+      ],
+      "observed": [
+        2048
+      ]
+    },
+    {
+      "id": "escalation-output-budget",
+      "kind": "escalation-output",
+      "scalarFields": [
+        "maxOutputTokens"
+      ],
+      "observed": [
+        256
+      ]
+    },
+    {
+      "id": "advisor-reply-approve",
+      "kind": "advisor-reply",
+      "text": "APPROVE",
+      "scalarFields": [
+        "accepted",
+        "approve",
+        "redo"
+      ],
+      "observed": [
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "id": "advisor-reply-lower",
+      "kind": "advisor-reply",
+      "text": "approve",
+      "scalarFields": [
+        "accepted",
+        "approve",
+        "redo"
+      ],
+      "observed": [
+        true,
+        true,
+        false
+      ]
+    },
+    {
+      "id": "advisor-reply-redo",
+      "kind": "advisor-reply",
+      "text": "REDO: inspect the synthetic result",
+      "scalarFields": [
+        "accepted",
+        "approve",
+        "redo"
+      ],
+      "observed": [
+        true,
+        false,
+        true
+      ]
+    },
+    {
+      "id": "advisor-reply-prefix",
+      "kind": "advisor-reply",
+      "text": "fixture note: APPROVE",
+      "scalarFields": [
+        "accepted",
+        "approve",
+        "redo"
+      ],
+      "observed": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": "advisor-reply-similar",
+      "kind": "advisor-reply",
+      "text": "APPROVED",
+      "scalarFields": [
+        "accepted",
+        "approve",
+        "redo"
+      ],
+      "observed": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": "escalation-reply-valid",
+      "kind": "escalation-reply",
+      "text": "{\"escalate\": true, \"category\": \"repetition\", \"new_evidence\": true, \"reason\": \"synthetic distinct observations\"}",
+      "scalarFields": [
+        "accepted",
+        "escalate",
+        "newEvidence"
+      ],
+      "observed": [
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "id": "escalation-reply-invalid",
+      "kind": "escalation-reply",
+      "text": "{\"escalate\": true, \"category\": \"unsupported_fixture\", \"new_evidence\": true, \"reason\": \"synthetic invalid category\"}",
+      "scalarFields": [
+        "accepted",
+        "escalate",
+        "newEvidence"
+      ],
+      "observed": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": "escalation-state-old-evidence",
+      "kind": "escalation-state",
+      "sequence": [
+        "positive",
+        "old",
+        "positive"
+      ],
+      "scalarFields": [
+        "latched1",
+        "latched2",
+        "latched3"
+      ],
+      "observed": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": "escalation-state-category",
+      "kind": "escalation-state",
+      "sequence": [
+        "positive",
+        "different",
+        "different"
+      ],
+      "scalarFields": [
+        "latched1",
+        "latched2",
+        "latched3"
+      ],
+      "observed": [
+        false,
+        false,
+        true
+      ]
+    },
+    {
+      "id": "escalation-state-unavailable",
+      "kind": "escalation-state",
+      "sequence": [
+        "positive",
+        "missing",
+        "positive"
+      ],
+      "scalarFields": [
+        "latched1",
+        "latched2",
+        "latched3"
+      ],
+      "observed": [
+        false,
+        false,
+        true
+      ]
+    }
+  ],
+  "notProbed": [
+    "scope capacity/TTL default: no documented public clock seam",
+    "transcript default: no owned scalar cap field; prompt content is not inspected"
+  ],
+  "provenance": {
+    "baseline": {
+      "commit": "78891c179954f80adc90bec716f9f78107a2e872",
+      "tree": "2f377d281f716d771c961d2743595eee2344f289",
+      "blobs": {
+        "src/models/route/advisor.ts": "57d9cf40a3bfdca62f5ddcfa3ac276849f8e8626",
+        "src/models/route/escalation.ts": "d8837aa9ca1eb2e1000452be8cc59253b702d50b",
+        "src/models/route/judge.ts": "71eae4d5054c7370e5b2675fb6ccf78719f0cb7b",
+        "src/models/route/normalize.ts": "fa38c608f5e5181b154721d047d5e18b497b4f9e",
+        "src/models/route/plan-execute.ts": "380c0e3fc2cd86da48bf926a3c75a6a8e2eb7f01",
+        "src/models/route/prompts.ts": "83760e3a2265e7b36c9f96aa263ab40fd9b3ee0c",
+        "src/models/route/signals.ts": "ee269793ca76097dc6e2bc981499d23d03424d70",
+        "src/models/route/state.ts": "9b795c735817a437e2c9f1127dbd5bceb87a6256",
+        "src/models/route/text.ts": "0c1bb08131f18deb08d7e7adccd9c83698c71ea9"
+      }
+    },
+    "fixtureInputSHA256": "301f607b2a71a20b0a95ea33d34601741fd681db1408796a48850c52ac3d9d6d",
+    "driverSHA256": "731fbb9de46d2350e1ad535fc929042afbbfaa6741a3c4b6595a7fb9f284e2a5",
+    "controllerSHA256": "3b95d51e5d7ba0eab6901f90766e80368c72e4e5197759febd1b3747043577b9",
+    "commandSHA256": "43e1c7919945847f9d2859822901e42e6418f52488faa90417bacbd5f2395a4d",
+    "rawLogSHA256": "e9790c07cae5e974cdc9695b08ecf7099bf72d2679a1a747bfc18078a57cb338",
+    "commandShape": [
+      "remote_dev.py",
+      "verify",
+      "<owned-worktree>",
+      "--",
+      "timeout",
+      "--signal=TERM",
+      "--kill-after=2s",
+      "120s",
+      "python3",
+      "-c",
+      "<owned-controller-bound-by-hash>",
+      "<bound-fixture-and-driver-payload>"
+    ],
+    "commandShapeIsRedactedNotExecutable": true,
+    "observationOnly": "Public APIs executed opaquely on newly authored fixtures; protected source, prompts and error stacks were not captured. These finite scalars are not general equivalence proof.",
+    "result": {
+      "passed": true,
+      "actualExitCode": 0,
+      "ownedStopConfirmed": true,
+      "stdoutDrained": true,
+      "ownedTempRemoved": true,
+      "elapsedMs": 129,
+      "baselineBefore": true,
+      "baselineAfter": true,
+      "nativeNetworkDenied": true,
+      "noDependencyInstall": true,
+      "noRawSourceOutput": true,
+      "stderrDiscarded": true
+    },
+    "effects": {
+      "network": 0,
+      "process": 0,
+      "server": 0,
+      "output": 0,
+      "write": 0
+    }
+  }
+}

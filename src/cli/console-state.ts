@@ -16,6 +16,7 @@ import { windowKind } from "../hub/window-kind.ts";
 import { ownerIsolationText, taskHolderText } from "./role-holders.ts";
 import { USAGE_DROP, USAGE_HEAD, usageCells, usageDetail, usagePeers, usageTaskLines, type UsageState } from "./console-usage.ts";
 import type { RoomStatusView } from "../rooms/status.ts";
+import { peerHubVersion, type ConsoleVersions } from "./console-versions.ts";
 
 export interface Approval {
   id: string; peer: string; title: string; expiresAt: number;
@@ -39,6 +40,8 @@ export interface ConsoleState {
   pendingRestart?: { key: string; reason: string }[];
   retainedConfig?: { key: string; reason: string }[];
   features?: readonly string[];
+  /** #1385: the agent-hub versions in play, and the native agent CLIs the hub has not verified (status `agentDrift`). */
+  versions?: ConsoleVersions; agentDrift?: readonly { id: string; version: string; state: string; receipt: string }[];
   /** #1053 T4: the open questions the hub reported (the person's text, shown here only) and the answer being built; `A` starts it. */
   questions?: QuestionView[]; questionFlow?: QuestionFlow; questionsSeen?: string[];
   /** Older embedding callers omit choices and retain the original STAI/off toggle. */
@@ -364,14 +367,28 @@ export function budgetFields(budget: any, now: number): [string, unknown][] {
   return [["quota", lines.length ? lines : typeof budget.note === "string" ? budget.note : "no reading"], ...(lines.length && typeof budget.note === "string" ? [["quota note", budget.note] as [string, unknown]] : [])];
 }
 /** #784 AC3: the Peers detail carries the planner WIP split as one line (`1 of 2: active 1, review-wait 0, reserved 0`); a hub that sends none adds nothing. */
+/** #1385: one line above the peer table: the running daemon, this console, the global CLI and the plugin, older ones in attention, then the peers that load another version. */
+function versionsLine(s: ConsoleState): Span[] {
+  const v = s.versions!;
+  const parts: Span[] = [span("agent-hub", "info")];
+  for (const [label, value, key] of [["daemon", v.daemon, undefined], ["console", v.cli, "cli"], ["global", v.global, "global"], ["plugin", v.plugin, "plugin"]] as const) {
+    const older = !!key && v.older.includes(key);
+    parts.push(span(`  ${label} ${value ?? "unknown"}${older ? " (older)" : ""}`, older ? "attention" : value ? undefined : "muted"));
+  }
+  const differing = Object.entries(s.peers).filter(([id, peer]) => peerHubVersion({ id, ...peer }, v.daemon).differs).map(([id]) => id);
+  if (differing.length) parts.push(span(`  ${plural(differing.length, "peer")} on another version: ${differing.join(", ")}`, "attention"));
+  return parts;
+}
 function peerDetailRow(s: ConsoleState, row: any, now: number): Record<string, unknown> {
   const wip = s.taskWip?.[row.id];
   const split = wip && [wip.active, wip.reviewWait, wip.reserved].every(n => Number.isSafeInteger(n)) ? `${wip.wip} of ${wip.wipLimit}: active ${wip.active}, review-wait ${wip.reviewWait}, reserved ${wip.reserved}` : undefined;
   const isolation = ownerIsolationText(row.ownerIsolation, row.ownerIsolationNote);
-  const { standbySessions, ...fields } = row;
+  const { standbySessions, ahub: _ahub, ahubTools: _tools, ...fields } = row;
+  const hub = peerHubVersion(row, s.versions?.daemon).detail;
+  const drift = s.agentDrift?.find(agent => agent.id === row.id);
   const standby = Array.isArray(standbySessions) ? standbySessions.filter((session: any) => session && typeof session.id === "string").map((session: any) =>
     `${typeof session.pid === "number" ? `pid ${session.pid}` : "pid unknown"}; session ${session.id}${typeof session.since === "number" ? `; waiting since ${relative(session.since, now)}` : ""}`) : [];
-  return { ...fields, ...(standby.length ? { "standing by": standby } : {}), ...(isolation ? { ownerIsolation: isolation } : {}), ...(split ? { "planner WIP": split } : {}) };
+  return { ...fields, ...(hub ? { "agent-hub": hub } : {}), ...(drift ? { "agent CLI": `${drift.version} ${drift.state}; last receipt ${drift.receipt}` } : {}), ...(standby.length ? { "standing by": standby } : {}), ...(isolation ? { ownerIsolation: isolation } : {}), ...(split ? { "planner WIP": split } : {}) };
 }
 const detailLines = (detail: Detail, columns: number, now: number, task = false): Span[][] => {
   if (typeof detail === "string") return wrap(detail, columns).map(text => [span(text)]);
@@ -962,7 +979,7 @@ export function activeNotice(s: Pick<ConsoleState, "notice" | "noticeAt" | "noti
   return !!s.notice && now - (s.noticeAt ?? now) < (s.noticeMs ?? NOTICE_MS);
 }
 export const TABLES: Record<number, string[]> = {
-  1: ["PEER", "STATE", "LINK", "Q", "!", "WIP", "REVIEW", "PAUSE", "QUOTA", "MODEL", "DOING"],
+  1: ["PEER", "STATE", "LINK", "AHUB", "Q", "!", "WIP", "REVIEW", "PAUSE", "QUOTA", "MODEL", "DOING"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
   3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
@@ -989,6 +1006,7 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
     return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === "offline" ? undefined : "info"), span(`${row.rostered === false ? `${row.state} off roster` : row.state}${Array.isArray(row.standbySessions) && row.standbySessions.length ? ` +standby:${row.standbySessions.length}` : ""}`, stateTone(row.state)),
       ...(showPermissionModes(s) ? [span(row.permissionMode && row.permissionMode !== "ask" ? row.permissionMode : "-", row.permissionMode === "never-ask" ? "attention" : undefined)] : []),
       span(row.pullOnly && definitionOf(row.id)?.attach?.pullOnlyForms?.includes("tui") ? "pull-only" : row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
+      ((hub) => span(hub.cell, hub.differs ? "attention" : hub.cell === "-" || hub.unknown ? "muted" : undefined))(peerHubVersion(row, s.versions?.daemon)),
       span(count(row.queued)), span(count(row.queuedImportant), row.queuedImportant ? "attention" : undefined),
       span(wip ? `${wip.wip}/${wip.wipLimit}` : "-", wip && wip.wip >= wip.wipLimit ? "attention" : undefined),
       span(count(row.needsReview), row.needsReview ? "failure" : undefined), span(paused, paused === "-" ? undefined : "attention"),
@@ -1065,10 +1083,10 @@ export function table(head: string[], rows: Span[][], columns: number, explicitW
   }));
 }
 /** Keep the status/quota columns visible instead of clipping them behind optional peer metadata. */
-function optionalTable(head: string[], rows: Span[][], columns: number, drop = ["DOING", "MODEL", "WIP", "PAUSE", "REVIEW", "LINK", "Q", "!", "MODE"]): Span[][] {
+function optionalTable(head: string[], rows: Span[][], columns: number, drop = ["DOING", "MODEL", "WIP", "PAUSE", "REVIEW", "AHUB", "LINK", "Q", "!", "MODE"]): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const widths = head.map((name, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, Bun.stringWidth(flat(row[i]?.text ?? ""))), name.length)));
-  const keep = head.map((_, i) => i).filter(i => head[i] !== "DOING" || rows.some(row => row[i]?.text !== "-")); // #878: shown once a peer has one
+  const keep = head.map((_, i) => i).filter(i => !["DOING", "AHUB"].includes(head[i]!) || rows.some(row => row[i]?.text !== "-")); // #878, #1385: shown once a peer has one
   const total = () => keep.reduce((sum, i) => sum + widths[i]!, 0) + 2 * (keep.length - 1);
   for (const name of drop) {
     if (total() <= columns - 2) break;
@@ -1285,7 +1303,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const selectedTask = s.panel === 3 ? data[at] : undefined;
     const holders = selectedTask && (selectedTask.planner !== undefined || selectedTask.plannerReason !== undefined)
       ? fieldLines((["planner", "owner", "reviewer"] as const).map((role): [string, unknown] => [role, taskHolderText(selectedTask, role)]), columns, now).flat() : [];
-    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : s.panel === 7 ? height - 2 - taskLines.length : height - (s.panel === 3 ? 2 + holders.length : 1)); const start = Math.max(0, at - capacity + 1);
+    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : s.panel === 7 ? height - 2 - taskLines.length : height - (s.panel === 3 ? 2 + holders.length : s.panel === 1 && s.versions ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
     const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
     const cellRows = head ? data.map((row, i) => cells(s, row, i === at, now, stages)) : [];
     const rowsOf = head ? s.panel === 7 ? optionalTable(head, cellRows, columns, USAGE_DROP) : s.panel === 1 ? optionalTable(head, cellRows, columns) : s.panel === 3 && s.backlogView ? optionalTable(head, cellRows, columns, ["AGE", "CLASS", "DEPS", "PRI"]) : table(head, cellRows, columns) : undefined;
@@ -1304,6 +1322,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
         : `usage through ${s.usage.at ? relative(s.usage.at, now) : "now"}: today is the UTC day, 7d the last seven UTC days`;
       lines.push(fitLine([span(note, s.usage?.problem ? "failure" : !s.usage?.life || s.usage.behind ? "attention" : "info")], columns));
     }
+    if (s.panel === 1 && s.versions) lines.push(fitLine(versionsLine(s), columns));
     if (s.panel === 8 && s.rooms === null) lines.push(fitLine([span("Room status unavailable", "attention")], columns));
     if (s.panel === 3 && s.backlogView) {
       lines.push(fitLine([span(s.tasksKnown === false ? "backlog loading..." : `backlog ${data.length}`, s.tasksKnown === false ? "attention" : "info")], columns));

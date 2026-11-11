@@ -225,7 +225,7 @@ meter keeps a fixed column at the right edge. In Usage, LAST RESET is the column
 
 | Panel | Columns |
 |---|---|
-| Peers | PEER STATE MODE LINK Q ! WIP REVIEW PAUSE QUOTA MODEL DOING |
+| Peers | PEER STATE MODE LINK AHUB Q ! WIP REVIEW PAUSE QUOTA MODEL DOING |
 | Approvals | ID PEER LEFT TITLE |
 | Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE STAGE |
 | Tasks, backlog view (`b`) | ID PRI RESERVED DEPS CLASS AGE TITLE |
@@ -262,6 +262,24 @@ Peers' WIP column shows planner work in progress as `wip/limit` from `taskWip`,
 including `0/2`; a peer without an entry reads `-`. At or above the limit, the
 cell uses the attention tone. At narrow widths WIP gives way before PEER, STATE
 and QUOTA, whether or not MODE is present.
+
+Agent-hub versions (#1385). A line above the Peers table names the running
+daemon's version, this console's, the global `ahub` on PATH (read from its
+`package.json`, never run) and the installed Claude plugin (one bounded
+`claude plugin list --json` read when the console starts). One older than the
+daemon reads `(older)` in the attention tone, by the comparison `ahub doctor`
+prints; a value that cannot be read is `unknown` and is never flagged. AHUB is
+the agent-hub code each peer has loaded: `daemon` for an adapter that runs
+inside the daemon, the version a client's hello reported (the Claude plugin's
+MCP server), and `tools x` for the versions its open tools connections reported
+(the hub tools Codex, Kimi, agy or Jcode run). A client that reports none reads
+`unreported`, muted: an unknown version is never counted as a difference. A cell with any version other than the daemon's uses the attention
+tone, the versions line counts those peers, and the peer's detail (Enter) says
+to update the global CLI and run `ahub setup`, then restart that agent's session.
+The column appears only when some peer reports a version, so an older hub shows
+none; it gives way before LINK on a narrow terminal. The detail also shows
+`agent CLI` for a native CLI version the hub has not verified (the same
+`agentDrift` row `ahub status` prints). All of it is display only.
 
 DOING (#878) is what a peer is working on, from signals the hub already receives:
 a Claude session's title (its transcript's latest `ai-title` row) and the
@@ -1037,6 +1055,13 @@ plugin stale when the module changed after setup, so run `ahub setup` again afte
   cards, 64 links, newest links kept), and a project that has not answered within about 3 s is left
   out of that poll. Only labels and states reach the scene, never message bodies, task details,
   approval titles or reasons; a PII task's card shows the `[pii]` stub.
+
+The companions read ahub only through the companion CLI contract,
+`docs/contracts/companion-cli-v1.json` (#1387): the commands, the `status` and `projects` paths with
+their types and presence rules, the no-hub exit and the `shellQuote` vectors. Adding a field changes
+nothing. Removing or renaming a listed path, changing a closed set, an argv form, the exit code or
+the stderr prefix needs `companion-cli-v2.json` beside v1 and a `hub_task_handoff` to each companion
+repository. `test/companion-contract.test.ts` holds ahub to the file.
 
 ## Install and start
 
@@ -4831,6 +4856,61 @@ observer change detected across the request is different from a service failure:
 it refuses the stale turn, exactly as a decision route does, and the heuristic is
 not executed around that refusal. The PII
 screen, `assign()` and the escalation and advisor triggers never use this path.
+
+#### Optional phase and judge model/effort choices (#1352)
+
+The same separately operated ADEc service can suggest a model/effort pair for
+an existing `plan_execute` phase or an existing `advisor`/`escalation` judge
+call. Add the ordinary service binding to that route and keep
+`decision_mode = "shadow"`; omitted mode remains `off`, and `enforce` is refused
+at configuration load. No new `judge_choice` table or other routing key is
+introduced.
+
+For a phase route, `policy_id = "ahub.plan-execute"` refers to
+[`templates/adec/ahub.plan-execute.json`](../templates/adec/ahub.plan-execute.json).
+The policy's candidates, the route's allowed `candidates`, and the route's
+`efficient`/`capable` fallback aliases must be reviewed together. The route's
+`candidates` allowlist must match the policy options; the host fallback aliases
+remain independent and are what the executor still receives in shadow. For
+example, the syntactically valid placeholders in that template map to a route
+like:
+
+```toml
+[hub_routes."hub/plan-execute"]
+type = "plan_execute"
+decision_backend = "adec"
+decision_mode = "shadow"
+policy_id = "ahub.plan-execute"
+adec_endpoint = "http://127.0.0.1:8740/v1/route"
+efficient = "replace-me-efficient"
+capable = "replace-me-capable"
+candidates = [
+  { alias = "replace-me-efficient", efforts = ["edit-effort"] },
+  { alias = "replace-me-capable", efforts = ["edit-effort"] },
+]
+```
+
+Replace every placeholder with a provider and alias/effort pair from the
+person's own ADEc configuration before using the example. `ahub.stage` is the
+separate R1 ambiguity-band classifier policy; its template is
+[`templates/adec/ahub.stage.json`](../templates/adec/ahub.stage.json) and its
+stage candidates use effort `none`. These templates are pinned to the public
+agent-decide policy schema at commit `008548c5`; their provider, aliases, effort
+and on-prem status are examples only. Each sample candidate sets `onPrem` to
+`false`. A person must verify the model's actual serving location before
+changing that value; loopback service placement alone does not establish it.
+
+Advisor and escalation judge routes may use the same binding shape with a
+person-authored policy for the judge model/effort options. ADEc suggests only a
+pair. The hub still owns whether to review or escalate, the judge prompt and
+reply parsing, escalation confirmation, privacy and campus admission, and the
+existing fallback execution. In shadow the suggested pair is metadata only;
+it does not replace the model/effort actually sent to the executor. Judge
+observations use the `decisionTarget = "judge"` route-event marker and do not
+add a phase or purpose field. The route keeps the existing main model and host
+semantics. No live model-quality, routing-gain or production claim follows from
+the policy files or model-free proof; the manual model-routing receipt/live
+benchmark remains unrun.
 
 Migrate the retired settings as follows:
 
