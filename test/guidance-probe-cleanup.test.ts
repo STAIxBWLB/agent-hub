@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { ProbeDataPolicyV1, ProbeSlot } from "../src/hub/guidance-probes.ts";
-import { collectProbeOutput, materializeProbeWorkspace, PROBE_WALK_DEPTH, PROBE_WORKSPACE_LIMITS, previewRetained, removeRetained, retainProbeOutput, type ProbeRetained, type ProbeWorkspace } from "../src/local/probe-workspace.ts";
+import { collectProbeOutput, materializeProbeWorkspace, PROBE_WALK_DEPTH, PROBE_WALK_ENTRIES, PROBE_WORKSPACE_LIMITS, previewRetained, removeRetained, retainProbeOutput, type ProbeRetained, type ProbeWorkspace } from "../src/local/probe-workspace.ts";
 
 // #1226 T3 (AC6): collect only what is declared, retain only what the host created, remove only what the host still owns. Real directories, no mocks.
 const cleanups: string[] = [];
@@ -96,6 +96,54 @@ describe("the walk limit never silently skips output or scratch (F4)", () => {
     const w = await workspace(); mkdirSync(join(w.scratch, "work", "a"), { recursive: true }); writeFileSync(join(w.scratch, "work", "a", "t"), Buffer.alloc(10));
     const collected = collectProbeOutput(w, 1024);
     expect(collected.scratchUnmeasured).toBe(false); expect(collected.scratchBytes).toBe(10);
+  });
+});
+
+// R3: both walks run synchronously on the daemon's event loop, so the number of entries they visit is bounded, and reaching the bound is a limit that forbids a
+// success, never a silent stop. A confined child leaving a huge number of empty files stays far under every byte cap, which is exactly why a byte cap is not enough.
+describe("the walks visit a bounded number of entries (R3)", () => {
+  const fill = (directory: string, count: number) => { for (let i = 0; i < count; i++) writeFileSync(join(directory, `e${i}`), ""); };
+  test("the entry cap is a named constant well below a stall", () => { expect(PROBE_WALK_ENTRIES).toBeGreaterThan(64); expect(PROBE_WALK_ENTRIES).toBeLessThanOrEqual(65536); });
+  test("scratch with more entries than the cap is unmeasured, so it can never pass the storage cap, and the walk stops at the cap", async () => {
+    const w = await workspace(); mkdirSync(join(w.scratch, "many")); fill(join(w.scratch, "many"), 40);
+    const collected = collectProbeOutput(w, 1024, { walkEntries: 25 });
+    expect(collected.scratchUnmeasured).toBe(true);
+  });
+  test("scratch exactly at the cap is still measured", async () => {
+    const w = await workspace(); mkdirSync(join(w.scratch, "many")); fill(join(w.scratch, "many"), 24);
+    const collected = collectProbeOutput(w, 1024, { walkEntries: 25 }); // 24 files plus the directory itself
+    expect(collected.scratchUnmeasured).toBe(false);
+  });
+  test("an output walk that hits the cap is excluded whole as over_walk_cap: nothing from the unfinished walk is hashed or retained", async () => {
+    const w = await workspace(); writeFileSync(join(w.output, "answer.txt"), "answer"); mkdirSync(join(w.output, "more")); fill(join(w.output, "more"), 40);
+    const collected = collectProbeOutput(w, 1024, { walkEntries: 25 });
+    expect(collected.manifest.entries).toEqual([]); expect(collected.manifest.totalBytes).toBe(0); expect(collected.contents.size).toBe(0);
+    expect(collected.manifest.excluded).toEqual([{ relative: "output", reason: "over_walk_cap" }]);
+  });
+  test("the two walks have their own budget: a full output walk does not make a small scratch unmeasured", async () => {
+    const w = await workspace(); writeFileSync(join(w.output, "answer.txt"), "answer"); mkdirSync(join(w.scratch, "t")); writeFileSync(join(w.scratch, "t", "x"), "12345");
+    const collected = collectProbeOutput(w, 1024, { walkEntries: 4 });
+    expect(collected.manifest.entries).toHaveLength(1); expect(collected.scratchUnmeasured).toBe(false); expect(collected.scratchBytes).toBe(5);
+  });
+  test("a capped walk does not run away: a directory far over the cap is abandoned in a bounded time", async () => {
+    const w = await workspace(); mkdirSync(join(w.scratch, "huge")); fill(join(w.scratch, "huge"), PROBE_WALK_ENTRIES + 500);
+    const started = Date.now(), collected = collectProbeOutput(w, 1024);
+    expect(collected.scratchUnmeasured).toBe(true); expect(Date.now() - started).toBeLessThan(5000);
+  });
+  test("a name past the name bound is excluded as invalid_name under a digest label, never hashed and never written raw", async () => {
+    // A file name is at most 255 bytes on disk, but the receipt carries the workspace-relative path, so 250 bytes plus "output/" already passes the 256-byte bound.
+    const w = await workspace(); const long = "n".repeat(250);
+    writeFileSync(join(w.output, long), "secret-bytes");
+    const { manifest, contents } = collectProbeOutput(w, 1024);
+    expect(manifest.entries).toEqual([]); expect(contents.size).toBe(0);
+    expect(manifest.excluded).toHaveLength(1); expect(manifest.excluded[0]!.reason).toBe("invalid_name");
+    expect(manifest.excluded[0]!.relative).toMatch(/^invalid-name-[0-9a-f]{32}$/);
+    expect(JSON.stringify(manifest)).not.toContain(long);
+  });
+  test("total-budget overflow is labelled over_total_cap, not over_file_cap", async () => {
+    const w = await workspace(); writeFileSync(join(w.output, "answer.txt"), "12345"); mkdirSync(join(w.output, "more")); writeFileSync(join(w.output, "more", "b"), "67890");
+    const { manifest } = collectProbeOutput(w, 7);
+    expect(manifest.excluded.map(item => item.reason)).toEqual(["over_total_cap"]);
   });
 });
 

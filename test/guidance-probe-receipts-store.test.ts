@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
 import { GuidanceProbeFixtureHost, GuidanceProbeStore } from "../src/hub/guidance-probe-store.ts";
-import { GUIDANCE_PROBE_MODEL, GuidanceProbeError, PROBE_RETENTION_MS, guidanceProbeCanonical, probeHash, probeReceiptDigest, type ProbeChildBinding, type ProbeMeasuredSession, type ProbeReservation, type ProbeRetentionFs } from "../src/hub/guidance-probes.ts";
+import { GUIDANCE_PROBE_MODEL, GuidanceProbeError, PROBE_OUTPUT_LIMITS, PROBE_RETENTION_MS, guidanceProbeCanonical, probeHash, probeReceiptDigest, type ProbeChildBinding, type ProbeMeasuredSession, type ProbeReservation, type ProbeRetentionFs } from "../src/hub/guidance-probes.ts";
 import { previewRetained, removeRetained } from "../src/local/probe-workspace.ts";
 import { FakeGuidanceProbeProvider, fakeEffectValue, guidanceProbeFixture, guidanceProbeFixtureKey } from "./fakes/guidance-probe-provider.ts";
 
@@ -239,7 +239,7 @@ describe("reconcile after a crash (explicit call only)", () => {
   });
   test("reconcile records the unfinished session as unknown_held with an unknown receipt, never as a failure or a success", () => {
     const f = crashed();
-    expect(f.store.reconcile(200)).toEqual({ reconciled: 1 });
+    expect(f.store.reconcile(200)).toEqual({ reconciled: 1, failed: 0 });
     const state = f.store.read(f.key)!;
     expect(state.sessions[0]!.state).toBe("unknown_held");
     expect(state.receipt.state).toBe("unknown_held");
@@ -251,7 +251,7 @@ describe("reconcile after a crash (explicit call only)", () => {
   test("reconcile is idempotent: a second call finds nothing and writes nothing", () => {
     const f = crashed(); f.store.reconcile(200);
     const after = rows(f.file);
-    expect(f.store.reconcile(300)).toEqual({ reconciled: 0 });
+    expect(f.store.reconcile(300)).toEqual({ reconciled: 0, failed: 0 });
     expect(rows(f.file)).toBe(after);
   });
   test("reconcile never launches, retries or restarts: no provider call, no new reservation, attempts unchanged", () => {
@@ -269,12 +269,12 @@ describe("reconcile after a crash (explicit call only)", () => {
   });
   test("a session that already has a receipt is left alone by reconcile", async () => {
     const f = fixture(), reservation = await f.baseline(); const sealed = f.store.sealReceipt(reservation, measured());
-    expect(f.store.reconcile(500)).toEqual({ reconciled: 0 });
+    expect(f.store.reconcile(500)).toEqual({ reconciled: 0, failed: 0 });
     expect(f.store.receipts(f.key)).toEqual([sealed]);
   });
   test("an experiment with nothing in flight is untouched by reconcile", () => {
     const f = fixture(); const before = rows(f.file);
-    expect(f.store.reconcile(500)).toEqual({ reconciled: 0 });
+    expect(f.store.reconcile(500)).toEqual({ reconciled: 0, failed: 0 });
     expect(rows(f.file)).toBe(before);
   });
 });
@@ -610,7 +610,7 @@ describe("settlement and receipt are one transaction (F6)", () => {
     expect(f.store.read(f.key)!.sessions[0]!.state).toBe(before);
     expect(f.store.receipts(f.key)).toEqual([]);
     // The unsettled session is what reconcile records at the next start.
-    expect(f.store.reconcile(300)).toEqual({ reconciled: 1 });
+    expect(f.store.reconcile(300)).toEqual({ reconciled: 1, failed: 0 });
     expect(f.store.receipts(f.key)[0]!.state).toBe("unknown");
   });
   test("the host settles an adapter failure as unknown WITH a receipt, so the session is not receipt-less", async () => {
@@ -661,5 +661,106 @@ describe("a truly read-only open (N2)", () => {
     expect(dump()).toBe(before);
     expect(() => ro.reconcile(500)).toThrow(GuidanceProbeError);
     expect(dump()).toBe(before);
+  });
+});
+
+// R2: a session that meets every success condition and writes the most files with the longest allowed names must seal as a success, not roll back at the digest.
+describe("the largest valid manifest seals as a success (R2)", () => {
+  const name = (index: number) => { const head = `output/${String(index).padStart(3, "0")}-`; return head + "x".repeat(PROBE_OUTPUT_LIMITS.nameBytes - Buffer.byteLength(head)); };
+  test("64 entries with the longest allowed names seal as succeeded and read back", async () => {
+    const f = fixture(), reservation = await f.baseline();
+    const entries = Array.from({ length: PROBE_OUTPUT_LIMITS.entries }, (_, i) => ({ relative: name(i), sha256: probeHash(`f${i}`), bytes: 1 }));
+    // The fixture declares a small output bound; this test is about the receipt record, so the bound is the one the manifest declares.
+    const sealed = f.store.sealReceipt(reservation, measured({ output: { v: 1, entries, excluded: [], totalBytes: entries.length } }));
+    expect(sealed.state).toBe("succeeded"); expect(sealed.output.entries).toHaveLength(PROBE_OUTPUT_LIMITS.entries);
+    expect(Buffer.byteLength(JSON.stringify(sealed))).toBeLessThanOrEqual(PROBE_OUTPUT_LIMITS.receiptBytes);
+    expect(f.store.receipts(f.key)).toEqual([sealed]);
+    expect(f.store.outcome(f.key)!.counts.succeeded).toBe(1);
+  });
+  test("a receipt hydration would refuse is never written: the seal refuses it whole instead of leaving corrupt storage", async () => {
+    const f = fixture(), reservation = await f.baseline();
+    const bad = { relative: "output/" + "y".repeat(PROBE_OUTPUT_LIMITS.nameBytes), sha256: probeHash("y"), bytes: 1 };
+    expect(() => f.store.sealReceipt(reservation, measured({ output: { v: 1, entries: [bad], excluded: [], totalBytes: 1 } }))).toThrow(GuidanceProbeError);
+    expect(f.store.receipts(f.key)).toEqual([]);
+    expect(() => f.store.integrity()).not.toThrow();
+  });
+});
+
+// N4: one bad experiment must not hide the others, and the daemon must be able to log why.
+describe("reconcile visits every experiment (N4)", () => {
+  test("a corrupt experiment is reported with its key and the next experiment is still reconciled", () => {
+    const f = fixture();
+    const result = f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.source.host, now: 100 }, f.revalidate);
+    if (result.kind !== "granted") throw new Error("reservation");
+    // A second experiment whose stored state is unreadable sorts BEFORE the real one, so a loop that stops at the first failure never reaches it.
+    const db = new Database(f.file);
+    try {
+      db.query("INSERT INTO guidance_probe_manifests SELECT project, ?, ?, manifest, task_input, baseline_context, data_policy, system_policy, improver_context, binding, counters, revision, state, first_reserved, last_wall, admission_hold, cancel_requested FROM guidance_probe_manifests")
+        .run("0".repeat(64), "other-experiment");
+      db.query("UPDATE guidance_probe_manifests SET counters='not json' WHERE id=?").run("0".repeat(64));
+    } finally { db.close(); }
+    const failures: { id: string | undefined; reason: string }[] = [];
+    const outcome = f.store.reconcile(200, (key, error) => failures.push({ id: key?.id, reason: error instanceof GuidanceProbeError ? error.reason : "error" }));
+    expect(outcome.failed).toBe(1); expect(failures).toEqual([{ id: "0".repeat(64), reason: expect.any(String) }]);
+    expect(outcome.reconciled).toBe(1);
+    expect(f.store.receipts(f.key)[0]!.state).toBe("unknown");
+  });
+  test("with no callback the first failure is thrown only AFTER every experiment was tried", () => {
+    const f = fixture();
+    const result = f.store.reserveSession({ key: f.key, expectedRevision: 0, host: f.source.host, now: 100 }, f.revalidate);
+    if (result.kind !== "granted") throw new Error("reservation");
+    const db = new Database(f.file);
+    try {
+      db.query("INSERT INTO guidance_probe_manifests SELECT project, ?, ?, manifest, task_input, baseline_context, data_policy, system_policy, improver_context, binding, counters, revision, state, first_reserved, last_wall, admission_hold, cancel_requested FROM guidance_probe_manifests")
+        .run("0".repeat(64), "other-experiment");
+      db.query("UPDATE guidance_probe_manifests SET counters='not json' WHERE id=?").run("0".repeat(64));
+    } finally { db.close(); }
+    expect(() => f.store.reconcile(200)).toThrow(GuidanceProbeError);
+    expect(f.store.receipts(f.key)[0]!.state).toBe("unknown");
+  });
+});
+
+// N5: a receipt must describe the session it sits beside, and the recovery pass is where an edited pair is caught.
+describe("integrity cross-checks receipts against sessions (N5)", () => {
+  const edit = (file: string, sql: string, ...args: (string | number)[]) => { const db = new Database(file); try { db.query(sql).run(...args); } finally { db.close(); } };
+  test("a receipt whose generation does not match its session fails the recovery integrity pass", async () => {
+    const f = fixture(), reservation = await f.baseline(); f.store.sealReceipt(reservation, measured());
+    expect(() => f.store.integrity()).not.toThrow();
+    const body = JSON.parse(new Database(f.file, { readonly: true }).query("SELECT body FROM guidance_probe_receipts").get()!["body" as never] as string);
+    const { digest: _digest, ...rest } = body; const moved = { ...rest, generation: rest.generation + 1 };
+    edit(f.file, "UPDATE guidance_probe_receipts SET body=?", JSON.stringify({ ...moved, digest: probeReceiptDigest(moved) }));
+    expect(() => f.store.integrity()).toThrow(GuidanceProbeError);
+  });
+  test("a receipt claiming success for a session that did not close fails the recovery integrity pass too", async () => {
+    const f = fixture(), reservation = await f.baseline(); f.store.sealReceipt(reservation, measured());
+    f.store.latchHold(reservation, "usage");
+    edit(f.file, "UPDATE guidance_probe_sessions SET body=replace(body,'\"closed_fixture\"','\"unknown_held\"') WHERE slot_id='baseline'");
+    expect(() => f.store.integrity()).toThrow(GuidanceProbeError);
+  });
+});
+
+// N6: the in-flight guard must be what blocks the prune, so the session has to be reserved or running and the experiment otherwise prunable.
+describe("an in-flight session blocks a prune on its own (N6)", () => {
+  const fs: ProbeRetentionFs = { preview: record => previewRetained(record), remove: record => removeRetained(record) };
+  test("a cancelled experiment (otherwise prunable) with one session still running is not prunable", async () => {
+    const f = fixture();
+    const first = await f.baseline();
+    const root = mkdtempSync(join(tmpdir(), "ahub-probe-inflight-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const directory = join(root, "r"); mkdirSync(join(directory, "output"), { recursive: true });
+    const file = join(directory, "output", "a.txt"); writeFileSync(file, "a");
+    const stat = statSync(file, { bigint: true }), dir = statSync(directory);
+    const record = { directory, dev: dir.dev, ino: dir.ino, files: [{ relative: "output/a.txt", dev: Number(stat.dev), ino: Number(stat.ino), bytes: 1, ctimeNs: stat.ctimeNs.toString() }] };
+    const sealed = f.store.sealReceipt(first, measured({ retained: record, output: { v: 1, entries: [{ relative: "output/a.txt", sha256: probeHash("a"), bytes: 1 }], excluded: [], totalBytes: 1 } }));
+    // The next session is reserved and running. The person's cancel makes the experiment "finished" by the state rule, so ONLY the in-flight guard can block.
+    f.openNext();
+    f.store.cancelIntent({ key: f.key, expectedRevision: f.store.read(f.key)!.receipt.revision, host: f.source.host }, () => f.source.host);
+    expect(f.store.read(f.key)!.cancelRequested).toBe(true);
+    expect(f.store.read(f.key)!.sessions.some(item => ["reserved", "running"].includes(item.state))).toBe(true);
+    f.clock.now = sealed.expiresAt;
+    const plan = f.store.previewPrune(f.key, fs);
+    expect(plan.slots.find(item => item.slotId === sealed.slotId)!.keep.map(item => item.reason)).toEqual(["experiment_active"]);
+    expect(plan.retainedBytes).toBe(0);
+    f.store.prune(f.key, plan.digest, fs);
+    expect(existsSync(file)).toBe(true);
   });
 });

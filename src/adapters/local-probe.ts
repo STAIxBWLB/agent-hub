@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { LocalPeer, localProbeFingerprints, prepareLocalProbeInput } from "./local-worker.ts";
 import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, probeHash,
-  type ProbeFakeLaunch, type ProbeFakeObservation, type ProbeMeasuredSession, type ProbeReceiptLimit, type ProbeReservation, type ProbeResourceCharges, type ProbeSlot, type ProbeStoredState } from "../hub/guidance-probes.ts";
-import { collectProbeOutput, materializeProbeWorkspace, probeWorkspaceCurrent, PROBE_WORKSPACE_LIMITS, retainProbeOutput,
+  type ProbeFakeLaunch, type ProbeFakeObservation, type ProbeMeasuredSession, type ProbeReceiptLimit, type ProbeReservation, type ProbeRetainedRecord, type ProbeResourceCharges, type ProbeSlot, type ProbeStoredState } from "../hub/guidance-probes.ts";
+import { collectProbeOutput, materializeProbeWorkspace, probeWorkspaceCurrent, PROBE_WORKSPACE_LIMITS, removeRetained, retainProbeOutput,
   type ProbeWorkspace } from "../local/probe-workspace.ts";
 import { ProbeConfinementError, requireProbeConfinement, verifyProbeConfinement, type ProbeConfinement } from "../local/probe-sandbox.ts";
 import { ProbeLocalError, probeLocalEffect, type ProbeLocalAdapter, type ProbeLocalAdapterOptions, type ProbeLocalEffectScope,
@@ -25,7 +25,7 @@ interface Owned {
   closeUnknown?: () => Promise<void>;
   closed: boolean;
   closeFailed?: boolean;
-  /** Output collected while the workspace still existed. Collected once, before the confinement stop releases it. */
+  /** Output collected and retained once, after the stop reported quiescence and before the host releases the workspace. */
   harvest?: { output: ProbeMeasuredSession["output"]; scratchBytes: number; limits: ProbeReceiptLimit[]; retained?: ProbeMeasuredSession["retained"] };
 }
 const bytesHash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -46,6 +46,9 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
   const config = Object.freeze({ maxSteps: options.config.maxSteps, maxOutputTokens: options.config.maxOutputTokens,
     ...(options.config.tokenUpperBound === undefined ? {} : { tokenUpperBound: options.config.tokenUpperBound }) });
   const prepared = new Map<string, Prepared>(), owned = new Map<string, Owned>(), completed = new WeakSet<ProbeReservation>();
+  // Every retention directory this adapter created, by canonical record. `discardRetained` removes only a record that is still exactly one of these: the host
+  // can hand back nothing else, so a forged or altered record never reaches a delete. Removal is by the identity captured at creation (`removeRetained`).
+  const retainedHere = new Map<string, ProbeRetainedRecord>();
   const prepare = async (state: ProbeStoredState, slot: ProbeSlot, guidance: string): Promise<Prepared> => {
     current();
     state = freeze(JSON.parse(JSON.stringify(state)) as ProbeStoredState);
@@ -107,8 +110,12 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
       const over = collected.scratchUnmeasured || collected.scratchBytes > limits.scratchBytes || collected.manifest.totalBytes > limits.outputBytes;
       if (over) harvest.limits.push("storage_over_cap");
       else if (retentionRoot && collected.manifest.entries.length > 0) {
-        try { harvest.retained = retainProbeOutput(entry.workspace, collected, retentionRoot); }
-        catch { harvest.limits.push("output_truncated"); }
+        try {
+          harvest.retained = retainProbeOutput(entry.workspace, collected, retentionRoot);
+          retainedHere.set(guidanceProbeCanonical(harvest.retained), harvest.retained);
+          // The host discards right after the launch returns, so only recent records matter; a sealed one is never asked for again. Bounded, oldest first.
+          while (retainedHere.size > GUIDANCE_PROBE_LIMITS.slots) retainedHere.delete(retainedHere.keys().next().value!);
+        } catch { harvest.limits.push("output_truncated"); }
       }
       entry.harvest = harvest;
     } catch { entry.harvest = { output: { v: 1, entries: [], excluded: [], totalBytes: 0 }, scratchBytes: 0, limits: ["output_truncated"] }; }
@@ -204,6 +211,13 @@ export function createGuidanceProbeLocalAdapter(options: ProbeLocalAdapterOption
           if (entry.closed) { completed.add(entry.reservation); owned.delete(id); }
         });
         return entry.promise;
+      },
+      discardRetained(record) {
+        // Only what this adapter retained and has not yet handed to a receipt. A record that is not exactly one of ours is ignored, never deleted.
+        const key = guidanceProbeCanonical(record), ours = retainedHere.get(key);
+        if (!ours) return;
+        retainedHere.delete(key);
+        try { removeRetained(ours, true); } catch { /* the identity checks inside leave a replaced name alone; a failure leaves the directory for the person's prune preview */ }
       },
       async stop(input) {
         const entry = owned.get(reservationKey(input.reservation));

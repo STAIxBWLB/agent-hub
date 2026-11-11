@@ -663,6 +663,9 @@ export class GuidanceProbeStore {
         return "conflict";
       }
       if (manifest.slots.every(slot => slot.id !== reservation.slotId)) return fail("changed");
+      // Only a receipt that reads back is written: one the hydration would refuse (a name past the bound, a record over the row bound) would turn a finished
+      // session into permanent storage corruption for its experiment. Refusing here keeps the settle atomic, and the host seals its conservative receipt instead.
+      if (!parseProbeReceipt(JSON.parse(canonical(built)))) return fail("invalid");
       const retained = measured.retained ? parseProbeRetained(measured.retained) : undefined;
       if (measured.retained && !retained) return fail("invalid");
       this.db.query("INSERT INTO guidance_probe_receipts(project,manifest_id,slot_id,body,pruned,retained) VALUES(?,?,?,?,0,?)")
@@ -802,15 +805,18 @@ export class GuidanceProbeStore {
   /**
    * Explicit, idempotent crash reconcile, called once by the host at daemon start. A session left reserved or running by a crash is recorded as
    * unknown_held with an unknown receipt: the host cannot vouch for it. It never launches, retries or restarts anything, and a second call writes nothing.
-   * Opening the Store and every read never write; this is the only path that does.
+   * Opening the Store and every read never write; this is the only path that does. One bad experiment never hides the others: every key is visited, a
+   * failure is handed to `onFailure` (the host logs its cause) and the loop moves on, and with no callback the first failure is thrown only AFTER every key was
+   * tried, so a caller can never mistake a partial pass for a full one.
    */
-  reconcile(now: number = this.now()): { reconciled: number } {
-    let reconciled = 0;
+  reconcile(now: number = this.now(), onFailure?: (key: ProbeKey | undefined, error: unknown) => void): { reconciled: number; failed: number } {
+    let reconciled = 0, failed = 0, first: unknown;
+    const note = (key: ProbeKey | undefined, error: unknown): void => { failed++; first ??= error; onFailure?.(key, error); };
     const keys = this.db.query(`SELECT CASE WHEN typeof(project)='text' AND length(CAST(project AS BLOB))<=256 THEN project END AS projectKey,
       CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=64 THEN id END AS id FROM guidance_probe_manifests ORDER BY project,id`).all() as ProbeKey[];
     for (const key of keys) {
-      if (typeof key.projectKey !== "string" || !probeSha256(key.id)) return fail("storage");
-      reconciled += this.transaction(() => {
+      if (typeof key.projectKey !== "string" || !probeSha256(key.id)) { try { fail("storage"); } catch (error) { note(undefined, error); } continue; }
+      try { reconciled += this.transaction(() => {
         const state = this.get(key); let count = 0;
         const sealed = new Set(this.readReceipts(key).map(item => item.slotId));
         for (const session of state.sessions) {
@@ -826,9 +832,10 @@ export class GuidanceProbeStore {
         }
         if (count > 0) { advance(state); this.save(key, state); }
         return count;
-      });
+      }); } catch (error) { note(key, error); }
     }
-    return { reconciled };
+    if (failed > 0 && !onFailure) throw first;
+    return { reconciled, failed };
   }
 
   /** Recovery only. O(historical experiments + <=9 sessions each); future keyset/budget upgrade if measured slow. */
@@ -847,7 +854,8 @@ export class GuidanceProbeStore {
       for (const component of [key, state.registration.manifest, state.binding, state.counters, state.receipt,
         { firstReservedAt: state.firstReservedAt, lastWall: state.lastWall, admissionHold: state.admissionHold, cancelRequested: state.cancelRequested }]) digest.update(canonical(component)).update("\n");
       for (const session of state.sessions) digest.update(sessionCanonical(session)).update("\n");
-      for (const sealed of this.readReceipts(key)) digest.update(sealed.digest).update("\n");
+      // `receipts` also cross-checks each row against its session (generation, revision, state), so a receipt moved or edited to fit another session fails here.
+      for (const sealed of this.receipts(key)) digest.update(sealed.digest).update("\n");
     }
     const orphan = this.db.query(`SELECT EXISTS(SELECT 1 FROM guidance_probe_receipts r LEFT JOIN guidance_probe_manifests m ON m.project=r.project AND m.id=r.manifest_id WHERE m.id IS NULL)
       OR EXISTS(SELECT 1 FROM guidance_probe_sessions s LEFT JOIN guidance_probe_manifests m ON m.project=s.project AND m.id=s.manifest_id WHERE m.id IS NULL)
@@ -903,6 +911,14 @@ export class GuidanceProbeFixtureHost {
     const result = this.store.reserveSession({ ...input, preparedFrame }, this.options.revalidate);
     if (result.kind === "existing") return result.receipt;
     const reservation = result.reservation;
+    // Output the port retained for a measurement that is not sealed with its record has no row, so no prune could ever reach it: it is discarded by the port,
+    // by the identity the port captured. It never throws into the host and never touches a record the port did not create.
+    let observed: ProbeFakeObservation | undefined, sealedRetained = false;
+    const discard = (): void => {
+      const retained = observed?.measured?.retained;
+      if (!retained || sealedRetained) return;
+      try { ports.discardRetained?.(retained); } catch { /* the port's own identity check is the only authority; a failure leaves the directory, never a wrong delete */ }
+    };
     try {
       this.options.onReserved?.(reservation);
       const state = this.store.read(input.key)!;
@@ -941,14 +957,21 @@ export class GuidanceProbeFixtureHost {
       await Promise.allSettled([...pendingEffects]);
       if (launch.kind === "failed") throw launch.error;
       const observation = launch.observation;
+      observed = observation;
       const matched = this.matchObservation(observation, reservation, frame, slot.role === "worker");
       if (!matched) this.store.latchHold(reservation, "observation");
       // Settlement and receipt are one transaction (the contract's Sealing step 3): a session is never visible as settled without its receipt. An
       // observation that carries no measurement, or that did not match, is sealed with the conservative one: teardown not verified, nothing observed.
       const measured: ProbeMeasuredSession = matched && observation.measured ? { ...observation.measured, startedAt } : unmeasuredSession(startedAt, matched ? observation.servedModel : null);
-      return this.store.settleAndSeal({ reservation, outcome: matched ? observation.outcome : "unknown",
-        candidateArtifactSha256: matched ? observation.candidateArtifactSha256 : null, now: this.options.now() }, matched ? observation.usage : "unknown", measured).receipt;
+      const settled = this.store.settleAndSeal({ reservation, outcome: matched ? observation.outcome : "unknown",
+        candidateArtifactSha256: matched ? observation.candidateArtifactSha256 : null, now: this.options.now() }, matched ? observation.usage : "unknown", measured);
+      // Sealed with its own record: the receipt row now owns the directory. Anything else (an unmatched observation sealed conservatively, or a settlement that
+      // latched a lost clock and sealed nothing) leaves the directory with no owner, so it is discarded.
+      sealedRetained = matched && settled.sealed !== undefined && measured.retained !== undefined;
+      discard();
+      return settled.receipt;
     } catch {
+      discard();
       const saved = this.store.read(input.key)?.sessions.find(item => item.slotId === reservation.slotId);
       // A failed atomic settle rolled the settlement and the receipt back together, so the session is still open here. Settle it as unknown WITH its
       // conservative receipt; if even that cannot be written, latch the observation hold so the experiment cannot present a clean result. A session left

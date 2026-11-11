@@ -45,6 +45,12 @@ behavior, sampling control or model quality. The live trial stays unapproved (T4
 | Prune acts only after `expiresAt`, only with the current plan digest, and only on files whose recorded identity (device, inode, change time) still matches | Store prune cases and `test/guidance-probe-cleanup.test.ts` |
 | A slot is marked pruned only when nothing was kept | mixed-slot case where one file is swapped between preview and prune |
 | Integrity covers receipts; an orphan receipt row fails recovery | Store integrity cases |
+| Retained output always has an owner (R1) | `test/guidance-probe-retention-ownership.test.ts`, real adapter + Store + fixture host: a fallback model, a failed seal and a lost clock each leave no retained directory and the port's `discardRetained` ran once; a matching model keeps its directory owned by the receipt row; a forged record with the real identity reaches no delete |
+| The receipt byte bound holds the largest valid manifest (R2) | `test/guidance-probe-receipts.test.ts` and the Store test: 64 entries with the longest names, and with 64 exclusions, round-trip within the derived `receiptBytes`; a seal of a record hydration would refuse is refused whole, never stored |
+| Both walks are bounded in entries (R3) | `test/guidance-probe-cleanup.test.ts`: scratch past the entry cap is unmeasured, output past it is excluded whole as `over_walk_cap` with nothing hashed or retained, the two walks have separate budgets, a directory far over the cap is abandoned in bounded time; an over-long name is `invalid_name` under a digest label, never raw |
+| Reconcile visits every experiment and names its failures (N4) | Store test: a corrupt experiment that sorts first is reported with its key and the next one is still reconciled; with no callback the failure is thrown only after every key was tried |
+| Integrity cross-checks receipts against sessions (N5) | an edited generation, or a success for a session that did not close, fails the recovery integrity pass |
+| An in-flight session blocks a prune on its own (N6) | a cancelled (otherwise prunable) experiment with a running session is `experiment_active` and removes nothing |
 
 Mutation checks (each reverted afterwards, final tree equals the tested tree). Each of
 these changes makes at least one test fail: copying fingerprints from the manifest,
@@ -54,7 +60,11 @@ transaction, a held experiment blocking forever, `usageUnknown` blocking, an unc
 revision, expiry ignoring the clock, harvest before the stop, depth skipped silently,
 scratch unmeasured ignored, retention re-reading the path, the daemon never calling
 reconcile, the recovery release never calling it, and reconciling while a recovery is
-held. Two things are not mutation-tested and said so: dropping `O_NONBLOCK` is covered
+held. Mutation checks for the second review round (each reverted): the host never discarding
+unowned output, the adapter trusting any record it is handed, the old 16384 receipt bound,
+no entry cap in either walk, reconcile stopping at the first failure, integrity reading
+receipts without the session cross-check, and prune without its in-flight guard. Each
+fails at least one test. Two things are not mutation-tested and said so: dropping `O_NONBLOCK` is covered
 by a test with a 20 s bound that hung, so a regression there fails by timeout rather than
 by assertion; and the harvest's own `closed` guard is defence in depth behind the throw of
 a failed close, so removing it changes no observable behaviour. An earlier pass found the

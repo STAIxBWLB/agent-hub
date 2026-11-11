@@ -842,12 +842,34 @@ exact experiment and slot ids, the reservation generation and revision, and:
 
 `ProbeOutputManifestV1` lists at most 64 entries of `{ relative, sha256, bytes }`, with
 each file at most 1 MiB and the total at most the slot's declared `outputBytes`. Paths are
-workspace-relative under the declared output root, regular files with link count 1 only.
+workspace-relative under the declared output root, regular files with link count 1 only,
+at most 256 UTF-8 bytes (`PROBE_OUTPUT_LIMITS.nameBytes`) and free of control and format
+characters (`probeOutputName`, the one check for a manifest entry, an exclusion and a
+retained record). A name that fails it is never hashed: it is an exclusion
+(`invalid_name`) recorded under a digest label, never raw.
 Anything else (symlink, hardlink, device, a path outside the declared writes, a file over
-the cap, a tree nested deeper than 8 directory levels) is not hashed: it is recorded as a
-closed `excluded` reason (`over_depth` for the nesting limit) and the receipt cannot be
-`succeeded`. The walk limit never skips silently: scratch nested past it is reported as
-unmeasured, which counts as over the scratch cap.
+the cap, a tree nested deeper than 8 directory levels, a walk past the entry cap) is not
+hashed: it is recorded as a closed `excluded` reason (`over_file_cap` for a file past 1 MiB,
+`over_total_cap` when the slot's total bound would be crossed, `over_depth` for the nesting
+limit, `over_walk_cap` for the entry cap) and the receipt cannot be `succeeded`. The walk
+limits never skip silently: scratch nested past the depth limit, or holding more entries
+than the cap, is reported as unmeasured, which counts as over the scratch cap.
+
+Both walks (output, then scratch, each with its own budget of `PROBE_WALK_ENTRIES` = 4096
+directory entries) run synchronously on the daemon's event loop, so the number of entries
+they visit is bounded as well as the bytes: a confined child that leaves a million empty
+files is far under every byte cap and would otherwise stall the control socket and every
+peer. Reaching the entry cap is treated like the depth cap. Output: whatever the unfinished
+walk had read is discarded, nothing is hashed or retained, and the whole output root is
+excluded as `over_walk_cap`. Scratch: unmeasured, hence `storage_over_cap`.
+
+The byte bound of a receipt, `PROBE_OUTPUT_LIMITS.receiptBytes`, is **derived** from the
+largest valid receipt, never chosen: 64 entries and 64 exclusions of the longest allowed
+names (each name byte can cost two in JSON) plus every other field at its own maximum. A
+session that meets every success condition and writes 64 files with the longest names
+therefore still seals as a success. `sealReceipt` writes only a receipt that its own
+hydration would accept (it parses what it is about to store), so a record the reader would
+refuse is a refused seal, never permanent storage corruption.
 
 ### Sealing
 
@@ -925,6 +947,14 @@ other read never write: a Store opened read-only (`new GuidanceProbeStore(file, 
 a connection that cannot write) changes no row, and `reconcile` through it fails. `reconcile` is
 idempotent: a second call finds no unreconciled session and writes nothing. A reconciled
 `unknown` receipt counts in the outcome denominator as `unknown`, never as `failed`.
+One bad experiment never hides the others: `reconcile` visits every experiment key, hands
+each failure and its key to an optional `onFailure` callback (the daemon logs the experiment
+id prefix and the error class, never content) and carries on; it returns
+`{ reconciled, failed }`. With no callback the first failure is thrown only after every key
+was tried, so a caller can never mistake a partial pass for a full one. The recovery
+integrity pass reads receipts through the same session cross-check as `receipts()`
+(generation, revision and a state that session could have produced), so an edited pair is
+caught at restart, not only on a later read.
 
 ### Comparability and the outcome denominator (AC4)
 
@@ -993,7 +1023,10 @@ can still expire afterwards. `usageUnknown` alone never blocks a prune: it descr
 measurements, not whether work is running. A receipt is never deleted in any case.
 
 A prune removes retained output and workspace bytes only. It never deletes a receipt or an
-output manifest.
+output manifest. A session still `reserved` or `running` blocks the prune of its
+experiment even when the experiment is otherwise finished (a cancel that has not yet
+reached every session): the in-flight guard is its own check, tested apart from the
+state rule.
 
 Locks: receipts and prune plans use the Store's SQLite transaction, so no file lock and
 no stale-holder recovery are introduced. If implementation finds a file-level lock is
@@ -1030,6 +1063,19 @@ output is hashed and nothing is kept. Past the declared scratch or output cap, o
 scratch nested past the walk limit, nothing is retained and the receipt carries
 `storage_over_cap`. Hydration checks every receipt against its session row: generation,
 revision and a state that session could have produced.
+
+**Retained output always has an owner.** Retention happens in the adapter, before the host
+seals, so the adapter may have copied output the host then declines to seal with that
+record: an observation that did not match its reservation (a fallback model is the AC4
+case), a seal that failed and was replaced by the conservative one, a settlement that lost
+its clock and sealed nothing. A directory with no row can never be previewed or pruned. So
+the ports carry one optional call, `discardRetained(record)`, and the host makes it for
+every measurement it did not seal together with its own `retained` record (on the match
+path after the settle, and on the failure path before the conservative settle). The port
+removes only a record that is exactly one it created (it keeps its own bounded ledger of
+canonical records, so a forged or altered record reaches no delete), and it removes by the
+identity captured at creation. It never throws into the host. The receipt of such a
+session carries no retained record, and no directory of it remains.
 
 Public `show` computes `comparable` as the older expression AND the sealed-receipt verdict,
 so the flag only ever gets stricter. A store that cannot be read yields `false`.

@@ -130,6 +130,12 @@ export interface ProbeFakeEffects {
 export interface GuidanceProbeFakePorts {
   launch(input: ProbeFakeLaunch, effects: ProbeFakeEffects, signal: AbortSignal): Promise<ProbeFakeObservation>;
   stop(input: ProbeFakeStop, signal: AbortSignal): Promise<ProbeFakeStopObservation>;
+  /**
+   * Remove output the port itself retained for a launch whose measurement the host did not seal with that record: an observation that did not match the
+   * reservation (a fallback model, for one), a failed seal, a settlement that lost its clock. Without it that directory has no row, so no prune could ever
+   * reach it. The port removes only what it created, by the identity it captured, and never throws into the host.
+   */
+  discardRetained?(retained: ProbeRetainedRecord): void;
 }
 export interface ProbePublicReceipt extends ProbeReceipt { experimentId: string; taskId: number; evidence: "declaration" | "fixture" | "unknown" }
 export interface ProbePublicStatus extends ProbePublicReceipt { counters: ProbeCounters; cancelRequested: boolean; notNeeded: number; comparable: boolean; authoring: "admitted_fixture" | "uncontrolled" | "unknown" }
@@ -372,11 +378,25 @@ export const guidanceProbeNonGuidanceInputHash = (task: string, baselineContext:
 /** Retained output is eligible for a prune this long after its receipt seals. A constant, not a setting; nothing deletes automatically. */
 export const PROBE_RETENTION_DAYS = 14;
 export const PROBE_RETENTION_MS = PROBE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-export const PROBE_OUTPUT_LIMITS = Object.freeze({ entries: 64, fileBytes: 1024 * 1024, receiptBytes: 16384 });
+/**
+ * The bounds of one receipt, and the largest valid receipt they allow. `receiptBytes` is DERIVED from them, never chosen: a session that meets every success
+ * condition and writes 64 files with the longest allowed names must still seal as a success, so the byte bound can never sit below the largest valid manifest.
+ * A name is at most `nameBytes` UTF-8 bytes; in JSON each of those bytes can cost two (a quote or a backslash), plus the surrounding quotes. Control and format
+ * characters are refused outright (`probeOutputName`), so no byte costs more than two. `FIXED_RECEIPT_BYTES` covers every other field at its own maximum:
+ * three bounded ids and model names, eight digests, the counters, the limits array and the keys (measured at about 3 KB; the test builds the real maximum).
+ */
+const OUTPUT_NAME_BYTES = 256, OUTPUT_ENTRIES = 64;
+const NAME_JSON_BYTES = 2 * OUTPUT_NAME_BYTES + 2;
+const ENTRY_JSON_BYTES = NAME_JSON_BYTES + 160, EXCLUDED_JSON_BYTES = NAME_JSON_BYTES + 64, FIXED_RECEIPT_BYTES = 4096;
+export const PROBE_OUTPUT_LIMITS = Object.freeze({ entries: OUTPUT_ENTRIES, fileBytes: 1024 * 1024, nameBytes: OUTPUT_NAME_BYTES,
+  receiptBytes: FIXED_RECEIPT_BYTES + OUTPUT_ENTRIES * (ENTRY_JSON_BYTES + 1) + OUTPUT_ENTRIES * (EXCLUDED_JSON_BYTES + 1) });
+/** The one name check for an output path in a manifest, an exclusion or a retained record: bounded, relative, no control or format characters, no `..`. */
+export const probeOutputName = (value: unknown): value is string => executionText(value, PROBE_OUTPUT_LIMITS.nameBytes) && !/\p{Cf}/u.test(value)
+  && !value.startsWith("/") && !value.split("/").includes("..");
 
 export type ProbeReceiptState = "succeeded" | "failed" | "cancelled" | "timed_out" | "unavailable" | "unknown";
 export type ProbeReceiptLimit = "usage_unknown" | "served_model_unobserved" | "served_model_mismatch" | "teardown_unverified" | "output_truncated" | "storage_over_cap" | "coverage_unverified";
-export type ProbeExcludedReason = "not_regular" | "linked" | "outside_declared_writes" | "over_file_cap" | "changed_while_read" | "over_entry_cap" | "over_depth";
+export type ProbeExcludedReason = "not_regular" | "linked" | "outside_declared_writes" | "over_file_cap" | "over_total_cap" | "changed_while_read" | "over_entry_cap" | "over_depth" | "over_walk_cap" | "invalid_name";
 export interface ProbeOutputEntry { relative: string; sha256: string; bytes: number }
 export interface ProbeOutputExcluded { relative: string; reason: ProbeExcludedReason }
 export interface ProbeOutputManifestV1 { v: 1; entries: readonly ProbeOutputEntry[]; excluded: readonly ProbeOutputExcluded[]; totalBytes: number }
@@ -417,7 +437,7 @@ export interface ProbeOutcomeCounts { succeeded: number; failed: number; cancell
 
 const RECEIPT_STATES: readonly ProbeReceiptState[] = ["succeeded", "failed", "cancelled", "timed_out", "unavailable", "unknown"];
 const RECEIPT_LIMITS: readonly ProbeReceiptLimit[] = ["usage_unknown", "served_model_unobserved", "served_model_mismatch", "teardown_unverified", "output_truncated", "storage_over_cap", "coverage_unverified"];
-const EXCLUDED_REASONS: readonly ProbeExcludedReason[] = ["not_regular", "linked", "outside_declared_writes", "over_file_cap", "changed_while_read", "over_entry_cap", "over_depth"];
+const EXCLUDED_REASONS: readonly ProbeExcludedReason[] = ["not_regular", "linked", "outside_declared_writes", "over_file_cap", "over_total_cap", "changed_while_read", "over_entry_cap", "over_depth", "over_walk_cap", "invalid_name"];
 
 /** Digest over the canonical record without its own digest field. */
 export function probeReceiptDigest(receipt: Omit<ProbeReceiptV1, "digest">): string {
@@ -448,14 +468,13 @@ export function parseProbeReceipt(value: unknown): ProbeReceiptV1 | undefined {
     let total = 0; const names = new Set<string>();
     for (const entry of output.entries as unknown[]) {
       const e = object(entry, ["relative", "sha256", "bytes"]);
-      required(typeof e.relative === "string" && e.relative.length > 0 && Buffer.byteLength(e.relative) <= 512 && !e.relative.startsWith("/") && !e.relative.split("/").includes("..")
-        && probeSha256(e.sha256) && probeInteger(e.bytes) && e.bytes <= PROBE_OUTPUT_LIMITS.fileBytes && !names.has(e.relative));
+      required(probeOutputName(e.relative) && probeSha256(e.sha256) && probeInteger(e.bytes) && e.bytes <= PROBE_OUTPUT_LIMITS.fileBytes && !names.has(e.relative));
       names.add(e.relative as string); total += e.bytes as number;
     }
     required(total === output.totalBytes);
     for (const entry of output.excluded as unknown[]) {
       const e = object(entry, ["relative", "reason"]);
-      required(typeof e.relative === "string" && e.relative.length > 0 && Buffer.byteLength(e.relative) <= 512 && EXCLUDED_REASONS.includes(e.reason as ProbeExcludedReason));
+      required(probeOutputName(e.relative) && EXCLUDED_REASONS.includes(e.reason as ProbeExcludedReason));
     }
     required(probeSha256(f.digest));
     const { digest, ...rest } = f as unknown as ProbeReceiptV1;
@@ -548,7 +567,7 @@ export function capOutput(output: ProbeOutputManifestV1, maximum: number): Probe
   const entries: ProbeOutputEntry[] = [], excluded: ProbeOutputExcluded[] = [...output.excluded];
   let total = 0;
   for (const entry of output.entries) {
-    if (entries.length >= PROBE_OUTPUT_LIMITS.entries || total + entry.bytes > maximum) { excluded.push({ relative: entry.relative, reason: entries.length >= PROBE_OUTPUT_LIMITS.entries ? "over_entry_cap" : "over_file_cap" }); continue; }
+    if (entries.length >= PROBE_OUTPUT_LIMITS.entries || total + entry.bytes > maximum) { excluded.push({ relative: entry.relative, reason: entries.length >= PROBE_OUTPUT_LIMITS.entries ? "over_entry_cap" : "over_total_cap" }); continue; }
     entries.push(entry); total += entry.bytes;
   }
   return { v: 1, entries, excluded: excluded.slice(0, PROBE_OUTPUT_LIMITS.entries), totalBytes: total };
@@ -580,8 +599,7 @@ export function parseProbeRetained(value: unknown): ProbeRetainedRecord | undefi
     const seen = new Set<string>();
     for (const item of f.files as unknown[]) {
       const e = object(item, ["relative", "dev", "ino", "bytes", "ctimeNs"]);
-      required(typeof e.relative === "string" && e.relative.length > 0 && Buffer.byteLength(e.relative) <= 512 && !e.relative.startsWith("/") && !e.relative.split("/").includes("..")
-        && probeInteger(e.dev) && probeInteger(e.ino) && probeInteger(e.bytes) && e.bytes <= PROBE_OUTPUT_LIMITS.fileBytes && !seen.has(e.relative)
+      required(probeOutputName(e.relative) && probeInteger(e.dev) && probeInteger(e.ino) && probeInteger(e.bytes) && e.bytes <= PROBE_OUTPUT_LIMITS.fileBytes && !seen.has(e.relative)
         && typeof e.ctimeNs === "string" && /^[0-9]{1,24}$/.test(e.ctimeNs));
       seen.add(e.relative as string);
     }

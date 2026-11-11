@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { chmodSync, constants, closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync, readFileSync, readSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync, readSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { executionText, EXECUTION_REFERENCE_LIMITS } from "../hub/execution-reference.ts";
 import { hubGitSync } from "../hub/git.ts";
-import { guidanceProbeCanonical, GUIDANCE_PROBE_LIMITS, PROBE_OUTPUT_LIMITS, type ProbeDataPolicyV1, type ProbeExcludedReason, type ProbeOutputEntry, type ProbeOutputExcluded,
+import { guidanceProbeCanonical, GUIDANCE_PROBE_LIMITS, PROBE_OUTPUT_LIMITS, probeOutputName, type ProbeDataPolicyV1, type ProbeExcludedReason, type ProbeOutputEntry, type ProbeOutputExcluded,
   type ProbeOutputManifestV1, type ProbeRetainedRecord, type ProbeSlot, type ProbeTree } from "../hub/guidance-probes.ts";
 import { foldSegment } from "../hub/permission-mode.ts";
 import { realPath } from "../hub/project.ts";
@@ -252,8 +252,15 @@ export interface ProbeCollected {
 }
 /** The deepest directory level read under output or scratch. Anything deeper is excluded (output) or makes scratch unmeasured, never silently skipped. */
 export const PROBE_WALK_DEPTH = 8;
+/**
+ * The most directory entries read in ONE walk (output, then scratch separately). The walk is synchronous on the daemon's event loop, so a confined child that
+ * leaves a million empty files (well under every byte cap) must not stall the control socket and every peer. Reaching it is a limit, never a silent stop:
+ * output is excluded whole (`over_walk_cap`, nothing hashed or retained from a walk that did not finish) and scratch becomes unmeasured, which is over the cap.
+ */
+export const PROBE_WALK_ENTRIES = 4096;
 /** Test seam only: a hook that runs between a file's lstat and its open, to swap the file the way a racing process would. */
-export interface ProbeCollectSeam { beforeOpen?(file: string): void }
+export interface ProbeCollectSeam { beforeOpen?(file: string): void; walkEntries?: number }
+class WalkCapReached extends Error {}
 
 /**
  * Collect a finished session's declared output into a manifest: every regular, link-count-1 file under the output root is read through its opened descriptor
@@ -266,15 +273,23 @@ export interface ProbeCollectSeam { beforeOpen?(file: string): void }
 export function collectProbeOutput(workspace: ProbeWorkspace, maxBytes: number, seam: ProbeCollectSeam = {}): ProbeCollected {
   probeWorkspacePhysical(workspace);
   const entries: ProbeOutputEntry[] = [], excluded: ProbeOutputExcluded[] = [], contents = new Map<string, Buffer>();
-  let total = 0;
+  let total = 0, visited = 0;
+  const walkCap = seam.walkEntries ?? PROBE_WALK_ENTRIES;
   const declared = workspace.allowedWrites.filter(path => path === workspace.output || path.startsWith(workspace.output + "/"));
   const within = (file: string): boolean => declared.some(path => file === path || file.startsWith(path + "/"));
-  const exclude = (relative: string, reason: ProbeExcludedReason): void => { if (excluded.length < PROBE_OUTPUT_LIMITS.entries) excluded.push({ relative, reason }); };
+  // An exclusion is itself a receipt field, so its name must pass the same check as any other: a name that is too long or carries a control or format
+  // character is recorded under a stable digest label with the `invalid_name` reason, never dropped and never written raw.
+  const exclude = (relative: string, reason: ProbeExcludedReason): void => {
+    if (excluded.length >= PROBE_OUTPUT_LIMITS.entries) return;
+    if (!probeOutputName(relative)) { excluded.push({ relative: `invalid-name-${digest(relative).slice(0, 32)}`, reason: "invalid_name" }); return; }
+    excluded.push({ relative, reason });
+  };
   const walk = (directory: string, depth: number): void => {
     if (depth > PROBE_WALK_DEPTH) { exclude(directory.slice(workspace.root.length + 1), "over_depth"); return; }
     const handle = opendirSync(directory);
     try {
       for (let item = handle.readSync(); item; item = handle.readSync()) {
+        if (++visited > walkCap) throw new WalkCapReached();
         const file = join(directory, item.name), relative = file.slice(workspace.root.length + 1);
         const before = lstatSync(file, { throwIfNoEntry: false });
         if (!before) continue;
@@ -282,10 +297,12 @@ export function collectProbeOutput(workspace: ProbeWorkspace, maxBytes: number, 
         if (before.isDirectory()) { walk(file, depth + 1); continue; }
         if (!before.isFile()) { exclude(relative, "not_regular"); continue; }
         if (before.nlink !== 1) { exclude(relative, "linked"); continue; }
+        // A name the receipt could not carry (past the name bound, or with a control or format character) is never hashed or retained: it is an exclusion.
+        if (!probeOutputName(relative)) { exclude(relative, "invalid_name"); continue; }
         if (!within(file)) { exclude(relative, "outside_declared_writes"); continue; }
         if (before.size > PROBE_OUTPUT_LIMITS.fileBytes) { exclude(relative, "over_file_cap"); continue; }
         if (entries.length >= PROBE_OUTPUT_LIMITS.entries) { exclude(relative, "over_entry_cap"); continue; }
-        if (total + before.size > maxBytes) { exclude(relative, "over_file_cap"); continue; }
+        if (total + before.size > maxBytes) { exclude(relative, "over_total_cap"); continue; }
         seam.beforeOpen?.(file);
         let fd: number;
         try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
@@ -303,20 +320,29 @@ export function collectProbeOutput(workspace: ProbeWorkspace, maxBytes: number, 
       }
     } finally { handle.closeSync(); }
   };
-  walk(workspace.output, 0);
+  try { walk(workspace.output, 0); }
+  catch (error) {
+    if (!(error instanceof WalkCapReached)) throw error;
+    // The walk did not finish, so nothing it read is a complete answer: discard it and exclude the whole output with the reason that forbids a success.
+    entries.length = 0; excluded.length = 0; contents.clear(); total = 0;
+    exclude(workspace.output.slice(workspace.root.length + 1), "over_walk_cap");
+  }
   let scratch = 0, scratchUnmeasured = false;
   const measure = (directory: string, depth: number): void => {
     if (depth > PROBE_WALK_DEPTH) { scratchUnmeasured = true; return; }
     const handle = opendirSync(directory);
     try {
       for (let item = handle.readSync(); item; item = handle.readSync()) {
+        if (++visited > walkCap) throw new WalkCapReached();
         const file = join(directory, item.name), stat = lstatSync(file, { throwIfNoEntry: false });
         if (!stat) continue;
         if (stat.isDirectory()) measure(file, depth + 1); else if (stat.isFile()) scratch += stat.size;
       }
     } finally { handle.closeSync(); }
   };
-  measure(workspace.scratch, 0);
+  visited = 0;
+  try { measure(workspace.scratch, 0); }
+  catch (error) { if (!(error instanceof WalkCapReached)) throw error; scratchUnmeasured = true; }
   entries.sort((a, b) => a.relative < b.relative ? -1 : a.relative > b.relative ? 1 : 0);
   return { manifest: { v: 1, entries, excluded, totalBytes: total }, contents, scratchBytes: scratch, scratchUnmeasured };
 }

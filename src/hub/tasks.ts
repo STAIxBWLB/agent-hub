@@ -5187,6 +5187,7 @@ export class Tasks {
         return dependency.fakePorts!.launch(input, effects, signal);
       },
       stop: (input, signal) => dependency.fakePorts!.stop(input, signal),
+      ...(dependency.fakePorts.discardRetained ? { discardRetained: record => dependency.fakePorts!.discardRetained!(record) } : {}),
     };
     let reserved = false, returned = false;
     const runner = new GuidanceProbeFixtureHost(dependency.store, { ports, revalidate: current, now: () => this.d.now?.() ?? Date.now(),

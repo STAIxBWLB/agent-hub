@@ -438,7 +438,8 @@ test("an output past the declared cap is excluded, never retained or hashed, so 
   const cap = probe.limits.outputBytes;
   const { observed } = await harvestRun("x".repeat(cap + 1), root);
   expect(observed.measured!.output.entries).toEqual([]);
-  expect(observed.measured!.output.excluded).toEqual([{ relative: "output/answer.txt", reason: "over_file_cap" }]);
+  // One file under the 1 MiB file cap but past the slot's total output bound: that is the total budget, not a per-file cap.
+  expect(observed.measured!.output.excluded).toEqual([{ relative: "output/answer.txt", reason: "over_total_cap" }]);
   expect(observed.measured!.retained).toBeUndefined();
   expect(readdirSync(root)).toEqual([]);
 });

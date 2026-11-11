@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { GUIDANCE_PROBE_MODEL, PROBE_OUTPUT_LIMITS, PROBE_RETENTION_MS, classifyProbeComparability, parseProbeReceipt, probeHash, probeOutcomeCounts, probeReceiptDigest,
+import { GUIDANCE_PROBE_MODEL, PROBE_OUTPUT_LIMITS, PROBE_RETENTION_MS, classifyProbeComparability, parseProbeReceipt, parseProbeRetained, probeHash, probeOutcomeCounts, probeOutputName, probeReceiptDigest,
   type ProbeReceiptV1 } from "../src/hub/guidance-probes.ts";
 
 // #1226 T3: the pure receipt contract. Storage, reconcile and cleanup have their own files; nothing here touches a database, a process or a clock.
@@ -161,5 +161,54 @@ describe("comparability and the outcome denominator (AC4)", () => {
       { slotId: "a", state: "unknown_held" }, { slotId: "b", state: "running" }, { slotId: "c", state: "planned" }, { slotId: "d", state: "not_needed" },
     ], []);
     expect(counts).toEqual({ succeeded: 0, failed: 0, cancelled: 0, timed_out: 0, unavailable: 0, unknown: 2, planned: 1, not_needed: 1 });
+  });
+});
+
+// R2: the receipt byte bound is derived from the largest valid receipt, so a session that meets every success condition and writes the most files with the
+// longest allowed names still seals as a success instead of throwing at the digest and being recorded unknown with an empty manifest.
+describe("the receipt byte bound holds the largest valid receipt (R2)", () => {
+  /** A name at the exact byte limit whose JSON form is the longest the bound allows: every byte a double quote would cost two, but those are refused, so a plain
+   *  name at the limit with multi-byte characters (up to 3 bytes each) is the realistic worst case; a backslash-free ASCII name is the cheapest. Use both. */
+  const longName = (index: number, bytes: number = PROBE_OUTPUT_LIMITS.nameBytes): string => {
+    const head = `output/${String(index).padStart(3, "0")}-`; return head + "x".repeat(bytes - Buffer.byteLength(head));
+  };
+  const widest = (index: number): string => { const head = `output/${String(index).padStart(3, "0")}-`; const rest = PROBE_OUTPUT_LIMITS.nameBytes - Buffer.byteLength(head);
+    return head + "\u20ac".repeat(Math.floor(rest / 3)) + "x".repeat(rest % 3); };
+  const manifest = (name: (index: number) => string, excludedName: (index: number) => string) => {
+    const entries = Array.from({ length: PROBE_OUTPUT_LIMITS.entries }, (_, i) => ({ relative: name(i), sha256: sha(`f${i}`), bytes: 1 }));
+    const excluded = Array.from({ length: PROBE_OUTPUT_LIMITS.entries }, (_, i) => ({ relative: excludedName(i), reason: "over_depth" as const }));
+    return { v: 1 as const, entries, excluded, totalBytes: entries.length };
+  };
+  test("the derived bound is above the real maximum: 64 entries of the longest names plus 64 exclusions round-trip", () => {
+    for (const name of [longName, widest]) {
+      const output = manifest(name, name);
+      // A success needs no exclusion, so build the success case with entries only and the maximal failure case with both.
+      const success = receipt({ output: { ...output, excluded: [] }, state: "succeeded" });
+      expect(Buffer.byteLength(JSON.stringify(success))).toBeLessThanOrEqual(PROBE_OUTPUT_LIMITS.receiptBytes);
+      expect(parseProbeReceipt(JSON.parse(JSON.stringify(success)))).toEqual(success);
+      const failed = receipt({ output, state: "failed" });
+      expect(Buffer.byteLength(JSON.stringify(failed))).toBeLessThanOrEqual(PROBE_OUTPUT_LIMITS.receiptBytes);
+      expect(parseProbeReceipt(JSON.parse(JSON.stringify(failed)))).toEqual(failed);
+    }
+  });
+  test("the bound is derived, not chosen: it is at least what the largest receipt serializes to, with room for every other field", () => {
+    const output = manifest(longName, longName);
+    const biggest = receipt({ output, state: "failed", servedModel: "m".repeat(256), experimentId: "e".repeat(256), slotId: "s".repeat(256),
+      limits: ["usage_unknown", "served_model_unobserved", "served_model_mismatch", "teardown_unverified", "output_truncated", "storage_over_cap", "coverage_unverified"] });
+    expect(PROBE_OUTPUT_LIMITS.receiptBytes).toBeGreaterThan(Buffer.byteLength(JSON.stringify(biggest)));
+    expect(parseProbeReceipt(JSON.parse(JSON.stringify(biggest)))).toEqual(biggest);
+  });
+  test("a name past the name bound, or with a control or format character, is refused", () => {
+    const over = receipt({ output: { v: 1, entries: [{ relative: longName(0, PROBE_OUTPUT_LIMITS.nameBytes + 1), sha256: sha("a"), bytes: 1 }], excluded: [], totalBytes: 1 } });
+    expect(parseProbeReceipt(JSON.parse(JSON.stringify(over)))).toBeUndefined();
+    for (const bad of ["output/a\u0000b", "output/a\u202eb", "output/a\nb"]) {
+      expect(parseProbeReceipt(JSON.parse(JSON.stringify(receipt({ output: { v: 1, entries: [{ relative: bad, sha256: sha("a"), bytes: 1 }], excluded: [], totalBytes: 1 } }))))).toBeUndefined();
+    }
+  });
+  test("probeOutputName is the one check for entries, exclusions and retained records", () => {
+    expect(probeOutputName("output/answer.txt")).toBe(true);
+    expect(probeOutputName("/etc/passwd")).toBe(false); expect(probeOutputName("output/../x")).toBe(false); expect(probeOutputName("")).toBe(false);
+    expect(probeOutputName("a".repeat(PROBE_OUTPUT_LIMITS.nameBytes))).toBe(true); expect(probeOutputName("a".repeat(PROBE_OUTPUT_LIMITS.nameBytes + 1))).toBe(false);
+    expect(parseProbeRetained({ directory: "/r", dev: 1, ino: 2, files: [{ relative: "o".repeat(PROBE_OUTPUT_LIMITS.nameBytes + 1), dev: 1, ino: 3, bytes: 1, ctimeNs: "1" }] })).toBeUndefined();
   });
 });

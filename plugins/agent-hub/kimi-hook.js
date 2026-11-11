@@ -8375,7 +8375,7 @@ function canonical3(value) {
 }
 var GUIDANCE_PROBE_LIMITS, registrationScaffoldBytes, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL = "qwen27b/qwen3.8-27b", GuidanceProbeError, invalid = () => {
   throw new GuidanceProbeError("invalid");
-}, probeHash = (text) => createHash5("sha256").update(text, "utf8").digest("hex"), probeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, guidanceProbeCanonical = (value, maximum = GUIDANCE_PROBE_LIMITS.recordBytes) => canonical3(inert(value, maximum)), PROBE_RETENTION_DAYS = 14, PROBE_RETENTION_MS, PROBE_OUTPUT_LIMITS, PROBE_RECEIPT_ROW_BYTES;
+}, probeHash = (text) => createHash5("sha256").update(text, "utf8").digest("hex"), probeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, guidanceProbeCanonical = (value, maximum = GUIDANCE_PROBE_LIMITS.recordBytes) => canonical3(inert(value, maximum)), PROBE_RETENTION_DAYS = 14, PROBE_RETENTION_MS, OUTPUT_NAME_BYTES = 256, OUTPUT_ENTRIES = 64, NAME_JSON_BYTES, ENTRY_JSON_BYTES, EXCLUDED_JSON_BYTES, FIXED_RECEIPT_BYTES = 4096, PROBE_OUTPUT_LIMITS, PROBE_RECEIPT_ROW_BYTES;
 var init_guidance_probes = __esm(() => {
   init_execution_reference();
   GUIDANCE_PROBE_LIMITS = Object.freeze({
@@ -8406,7 +8406,15 @@ var init_guidance_probes = __esm(() => {
     }
   };
   PROBE_RETENTION_MS = PROBE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  PROBE_OUTPUT_LIMITS = Object.freeze({ entries: 64, fileBytes: 1024 * 1024, receiptBytes: 16384 });
+  NAME_JSON_BYTES = 2 * OUTPUT_NAME_BYTES + 2;
+  ENTRY_JSON_BYTES = NAME_JSON_BYTES + 160;
+  EXCLUDED_JSON_BYTES = NAME_JSON_BYTES + 64;
+  PROBE_OUTPUT_LIMITS = Object.freeze({
+    entries: OUTPUT_ENTRIES,
+    fileBytes: 1024 * 1024,
+    nameBytes: OUTPUT_NAME_BYTES,
+    receiptBytes: FIXED_RECEIPT_BYTES + OUTPUT_ENTRIES * (ENTRY_JSON_BYTES + 1) + OUTPUT_ENTRIES * (EXCLUDED_JSON_BYTES + 1)
+  });
   PROBE_RECEIPT_ROW_BYTES = PROBE_OUTPUT_LIMITS.receiptBytes;
 });
 
@@ -8503,7 +8511,7 @@ var init_probe_workspace = __esm(() => {
 });
 
 // src/local/tools.ts
-import { lstatSync as lstatSync15, mkdirSync as mkdirSync9, readFileSync as readFileSync8, statSync as statSync3, writeFileSync as writeFileSync8 } from "fs";
+import { lstatSync as lstatSync15, mkdirSync as mkdirSync9, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync8 } from "fs";
 import { dirname as dirname12, join as join15, relative as relative4, resolve as resolve11 } from "path";
 function probeCurrent(probe) {
   try {
@@ -8700,7 +8708,7 @@ async function runTool(name, rawArgs, ctx) {
         const file = guardPath(ctx, String(a.path), "read");
         if (statSync3(file).size > 5000000)
           return "error: file is larger than 5 MB; use bash (head, grep, sed -n) to look at parts of it";
-        const lines = readFileSync8(file, "utf8").split(`
+        const lines = readFileSync7(file, "utf8").split(`
 `);
         const from = Math.max(1, Number(a.offset) || 1);
         const out = lines.slice(from - 1, from - 1 + (Number(a.limit) || 2000)).map((l, i) => `${from + i}	${l}`).join(`
@@ -8741,7 +8749,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
       case "edit": {
         let file = guardPath(ctx, String(a.path), "write");
         const approvedTarget = file;
-        let text = readFileSync8(file, "utf8");
+        let text = readFileSync7(file, "utf8");
         let count = text.split(String(a.old)).length - 1;
         if (!a.old || count !== 1)
           return `error: \`old\` must match exactly once, it matched ${count} times`;
@@ -8755,7 +8763,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
           return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("target_changed")) : "error: path target changed during approval; inspect before retrying";
-        text = readFileSync8(file, "utf8");
+        text = readFileSync7(file, "utf8");
         count = text.split(String(a.old)).length - 1;
         if (count !== 1)
           return `error: file changed during approval; \`old\` must match exactly once, it matched ${count} times`;
@@ -8768,7 +8776,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
           probeCurrent(ctx.probe);
           if (ctx.signal?.aborted)
             return formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped"));
-          if (guardPath(ctx, String(a.path), "write") !== approvedTarget || readFileSync8(file, "utf8") !== text)
+          if (guardPath(ctx, String(a.path), "write") !== approvedTarget || readFileSync7(file, "utf8") !== text)
             return formatProbeToolRefusal(new ProbeToolRefusal("target_changed"));
         }
         writeFileSync8(file, replacement);
@@ -12364,14 +12372,14 @@ var init_curated_cache_state = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/formats.ts
-import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, openSync as openSync8, readFileSync as readFileSync9, readSync as readSync6 } from "fs";
+import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, openSync as openSync8, readFileSync as readFileSync8, readSync as readSync6 } from "fs";
 var MAX_BYTES4, SEMVER, READER_VERSION;
 var init_formats = __esm(() => {
   MAX_BYTES4 = 64 * 1024;
   SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
   READER_VERSION = (() => {
     try {
-      const { version } = JSON.parse(readFileSync9(new URL("../../package.json", import.meta.url), "utf8"));
+      const { version } = JSON.parse(readFileSync8(new URL("../../package.json", import.meta.url), "utf8"));
       return typeof version === "string" && SEMVER.test(version) ? version : undefined;
     } catch {
       return;
@@ -17888,12 +17896,12 @@ var init_launch2 = __esm(() => {
 
 // src/adapters/claude-task-sessions.ts
 import { randomUUID as randomUUID8 } from "crypto";
-import { mkdirSync as mkdirSync11, readFileSync as readFileSync10 } from "fs";
+import { mkdirSync as mkdirSync11, readFileSync as readFileSync9 } from "fs";
 import { dirname as dirname13 } from "path";
 function readState(file) {
   let text;
   try {
-    text = readFileSync10(file, "utf8");
+    text = readFileSync9(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { version: 1, sessions: {} };
@@ -18881,7 +18889,7 @@ function builtinCliEntries(definitions) {
   return Object.freeze(definitions.flatMap((definition) => definition.cli.entry ? [Object.freeze({ ...definition.cli.entry, command: definition.cli.command })] : []));
 }
 // src/adapters/definitions/native-cli-entry-claude.ts
-import { readFileSync as readFileSync11 } from "fs";
+import { readFileSync as readFileSync10 } from "fs";
 import { join as join21 } from "path";
 import { randomUUID as randomUUID10 } from "crypto";
 async function runClaudeEntry(ctx) {
@@ -18935,13 +18943,13 @@ async function runClaudeEntry(ctx) {
   let original;
   for (const file of [join21(executionCwd, ".claude", "settings.local.json"), join21(executionCwd, ".claude", "settings.json"), join21(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
-      original ??= JSON.parse(readFileSync11(file, "utf8")).statusLine;
+      original ??= JSON.parse(readFileSync10(file, "utf8")).statusLine;
     } catch {}
   }
   const facts = claudeObservationHooks(projectConfig(), { script: join21(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync11(join21(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync10(join21(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
   const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join21(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
@@ -19037,7 +19045,7 @@ var init_native_cli_entry_codex = () => {};
 
 // src/cli/kimi-plugin.ts
 import { randomUUID as randomUUID11 } from "crypto";
-import { closeSync as closeSync10, lstatSync as lstatSync19, mkdirSync as mkdirSync12, openSync as openSync10, readFileSync as readFileSync12, renameSync as renameSync5, rmdirSync as rmdirSync4, unlinkSync as unlinkSync4, writeFileSync as writeFileSync10 } from "fs";
+import { closeSync as closeSync10, lstatSync as lstatSync19, mkdirSync as mkdirSync12, openSync as openSync10, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync4, unlinkSync as unlinkSync4, writeFileSync as writeFileSync10 } from "fs";
 import { dirname as dirname14, isAbsolute as isAbsolute8, join as join22 } from "path";
 function file(path, cap) {
   const stat = lstatSync19(path, { throwIfNoEntry: false });
@@ -19045,7 +19053,7 @@ function file(path, cap) {
     return;
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > cap)
     throw new Error(`${path} must be a bounded regular file`);
-  return { stat, bytes: readFileSync12(path) };
+  return { stat, bytes: readFileSync11(path) };
 }
 function parse2(value, name) {
   if (!value)
@@ -19081,7 +19089,7 @@ function atomic(path, bytes, before) {
 }
 function removeFile(path, expected) {
   const current = lstatSync19(path, { throwIfNoEntry: false });
-  if (!current || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !readFileSync12(path).equals(expected))
+  if (!current || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !readFileSync11(path).equals(expected))
     return;
   unlinkSync4(path);
 }
@@ -19758,7 +19766,7 @@ var init_native_cli_entry_jcode = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-preview-claude.ts
-import { readFileSync as readFileSync13 } from "fs";
+import { readFileSync as readFileSync12 } from "fs";
 import { join as join24 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
@@ -19769,7 +19777,7 @@ function previewClaude(ctx) {
   let original;
   for (const file of [join24(cwd, ".claude/settings.local.json"), join24(cwd, ".claude/settings.json"), join24(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
-      original ??= JSON.parse(readFileSync13(file, "utf8")).statusLine;
+      original ??= JSON.parse(readFileSync12(file, "utf8")).statusLine;
     } catch {}
   }
   const facts = claudeObservationHooks(config, { script: join24(cliDir, "facts-hook.ts"), stateDir });
@@ -19980,7 +19988,7 @@ var init_native_config_policy = __esm(() => {
 });
 
 // src/adapters/definitions/native-policy-aux.ts
-import { closeSync as closeSync11, constants as constants9, fstatSync as fstatSync9, openSync as openSync11, readdirSync as readdirSync3, readFileSync as readFileSync14 } from "fs";
+import { closeSync as closeSync11, constants as constants9, fstatSync as fstatSync9, openSync as openSync11, readdirSync as readdirSync3, readFileSync as readFileSync13 } from "fs";
 import { isAbsolute as isAbsolute9, join as join27, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
@@ -20089,7 +20097,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
     const st = fstatSync9(fd);
     if (!st.isFile() || st.size > 1024 * 1024)
       return;
-    return readFileSync14(fd, "utf8");
+    return readFileSync13(fd, "utf8");
   } catch {
     return;
   } finally {
@@ -20146,7 +20154,7 @@ var init_native_cli_launch_common = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-claude-launch.ts
-import { mkdirSync as mkdirSync14, writeFileSync as writeFileSync11, renameSync as renameSync6, unlinkSync as unlinkSync5, readFileSync as readFileSync15 } from "fs";
+import { mkdirSync as mkdirSync14, writeFileSync as writeFileSync11, renameSync as renameSync6, unlinkSync as unlinkSync5, readFileSync as readFileSync14 } from "fs";
 import { randomUUID as randomUUID12 } from "crypto";
 import { resolve as resolve17, join as join28 } from "path";
 function claudeChannel(userArgs) {
@@ -20157,7 +20165,7 @@ function claudeChannel(userArgs) {
     if (!path)
       continue;
     try {
-      const server = JSON.parse(readFileSync15(resolve17(path), "utf8")).mcpServers?.["agent-hub"];
+      const server = JSON.parse(readFileSync14(resolve17(path), "utf8")).mcpServers?.["agent-hub"];
       if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve17(value) === bundle))
         return "server:agent-hub";
     } catch {}
@@ -20181,7 +20189,7 @@ function claudeNativeLaunch(ctx) {
         throw new Error("--settings requires a JSON object or readable file so the hub permission hook can be installed");
       let caller;
       try {
-        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync15(resolve17(value), "utf8"));
+        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync14(resolve17(value), "utf8"));
         if (!caller || typeof caller !== "object" || Array.isArray(caller))
           throw new Error("not an object");
       } catch {
@@ -20267,11 +20275,11 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync12, existsSync as existsSync9, fstatSync as fstatSync10, openSync as openSync12, readFileSync as readFileSync16, readSync as readSync8 } from "fs";
+import { appendFileSync, closeSync as closeSync12, existsSync as existsSync9, fstatSync as fstatSync10, openSync as openSync12, readFileSync as readFileSync15, readSync as readSync8 } from "fs";
 function readEvents(file, since = 0) {
   if (!existsSync9(file))
     return [];
-  return readFileSync16(file, "utf8").split(`
+  return readFileSync15(file, "utf8").split(`
 `).flatMap((line) => {
     const event = parseEventLine(line, since);
     return event === undefined ? [] : [event];
@@ -21588,7 +21596,7 @@ import { relative as relative7, resolve as resolve19, isAbsolute as isAbsolute11
 
 // src/hub/control-client.ts
 init_project();
-import { readFileSync as readFileSync17 } from "fs";
+import { readFileSync as readFileSync16 } from "fs";
 import { join as join33, resolve as resolve18 } from "path";
 
 // src/hub/tool-request.ts
@@ -21797,8 +21805,8 @@ function controlProtocolWindow(descriptor) {
 }
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync17(join33(stateDir, "status.json"), "utf8"));
-    const token = readFileSync17(join33(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync16(join33(stateDir, "status.json"), "utf8"));
+    const token = readFileSync16(join33(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
