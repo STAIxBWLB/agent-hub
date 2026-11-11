@@ -1,6 +1,6 @@
 {
   "private": true,
   "dependencies": {
-    "@staix/agent-hub": "0.35.0"
+    "@staix/agent-hub": "0.36.0"
   }
 }
