@@ -9,7 +9,7 @@ import vectors from "./fixtures/guidance-variant-v1.json";
 import { GuidanceProbeFixtureHost, GuidanceProbeStore } from "../src/hub/guidance-probe-store.ts";
 import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL, GuidanceProbeError, guidanceProbeCanonical, guidanceProbeManifestKey, guidanceProbeWorkerFrame,
   parseGuidanceProbeCommand, parseGuidanceProbeManifest, parseGuidanceProbeRegistration, probeHash,
-  type ProbeReservation, type ProbeEffectAdmission, type ProbeChildBinding, type ProbeFakeObservation } from "../src/hub/guidance-probes.ts";
+  type ProbeReservation, type ProbeEffectAdmission, type ProbeChildBinding, type ProbeFakeObservation, type ProbeFakeEffects } from "../src/hub/guidance-probes.ts";
 import { FakeGuidanceProbeProvider, fakeEffectValue, guidanceProbeFixture, guidanceProbeFixtureKey } from "./fakes/guidance-probe-provider.ts";
 
 const cleanup: (() => void)[] = [];
@@ -845,4 +845,23 @@ describe("T2 owner-prepared input and compound resources", () => {
       expect(f.store.read(f.key)!.counters.workerAttempts).toBe(0);
     }
   });
+});
+
+
+test("T2 captured effect currentness closes with its port even while the experiment has later slots", async () => {
+  const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider();
+  let captured: ProbeFakeEffects | undefined;
+  provider.script = async (input, effects) => {
+    captured = effects;
+    expect(() => effects.current()).not.toThrow();
+    const request = { sequence: 0, unit: "model_calls" as const, reservedTokens: 20, descriptorSha256: probeHash("captured effect") };
+    await effects.runEffect(request, async () => fakeEffectValue(request, "answer", 10));
+    return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL,
+      inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.inputSha256,
+      nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
+  };
+  const host = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100 });
+  expect((await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal)).state).toBe("active");
+  if (!captured) throw new Error("expected captured capability");
+  expect(() => captured!.current()).toThrow("uncertain");
 });

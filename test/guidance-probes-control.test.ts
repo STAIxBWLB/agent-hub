@@ -6,7 +6,7 @@ import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { USER } from "../src/hub/envelope.ts";
+import { HUB, USER, newEnvelope } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { parseRole, parseRoleDocument, taskRoleText } from "../src/hub/roles.ts";
 import { SHIPPED_ROLES } from "../src/hub/shipped-roles.ts";
@@ -241,6 +241,86 @@ test("same native conductor session preserves exact identity but a different req
   expect({ generation: peer.sessionGeneration, nativeSession: peer.nativeSession }).toEqual(native);
   await expect(f.tasks.guidanceProbeStart("claude", receipt.id, 0)).rejects.toBeInstanceOf(PreEffectToolRefusal);
   expect(f.store.integrity()).toEqual(before); expect(f.provider.launches).toHaveLength(1);
+});
+
+test("an ordinary delivered hub message preserves the admitted conductor probe and its next effect", async () => {
+  const f = await fixture(), receipt = await f.tasks.guidanceProbeRegister("claude", f.registration());
+  let ready!: () => void, release!: () => void, received!: () => void;
+  const observed = new Promise<void>(resolve => { ready = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const delivered = new Promise<void>(resolve => { received = resolve; });
+  clean.push(release);
+  const peer = f.bus.peers.get("claude")!, beforeDelivery = f.bus.lastDeliveredTo("claude").map(item => item.id);
+  peer.deliver = async () => { received(); };
+  let nextEffect = false;
+  f.provider.script = async (input, effects) => {
+    const first = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("before-ordinary-delivery"), reservedTokens: 20 };
+    await effects.runEffect(first, async () => fakeEffectValue(first, "first fixture result", 5));
+    ready(); await gate;
+    const next = { sequence: 1, unit: "model_calls" as const, descriptorSha256: probeHash("after-ordinary-delivery"), reservedTokens: 20 };
+    await effects.runEffect(next, async () => { nextEffect = true; return fakeEffectValue(next, "next fixture result", 5); });
+    return { ...closed(input), usage: "known_fixture" };
+  };
+  const running = f.tasks.guidanceProbeStart("claude", receipt.id, 0).then(value => ({ value }), error => { ready(); return { error }; });
+  await observed;
+  const message = newEnvelope(HUB, "Ordinary public coordination update.", { to: ["claude"], priority: "important" });
+  expect(f.bus.publish(message)).toEqual(["claude"]);
+  await delivered;
+  expect(f.bus.lastDeliveredTo("claude").map(item => item.id)).not.toEqual(beforeDelivery);
+  release();
+  const result = await running;
+  expect("value" in result).toBe(true); expect(nextEffect).toBe(true);
+  const state = f.store.read({ projectKey: f.projectKey, id: receipt.id })!;
+  expect(state.admissionHold).toBe("none"); expect(state.sessions[0]!.state).toBe("closed_fixture");
+  expect(state.counters.modelCalls).toBe(2); expect(state.counters.tokensObservedKnown).toBe(10);
+  expect(f.provider.stops).toHaveLength(0); expect(f.tasks.guidanceProbesPending()).toBe(0);
+});
+
+for (const changed of ["role", "roster", "privacy"] as const) test(`an admitted conductor probe still refuses its next effect after ${changed} changes`, async () => {
+  const f = await fixture(), receipt = await f.tasks.guidanceProbeRegister("claude", f.registration());
+  let ready!: () => void, release!: () => void;
+  const observed = new Promise<void>(resolve => { ready = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  clean.push(release);
+  let nextEffect = false;
+  f.provider.script = async (input, effects) => {
+    const first = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash(`before-${changed}-change`), reservedTokens: 20 };
+    await effects.runEffect(first, async () => fakeEffectValue(first, "first fixture result", 5));
+    ready(); await gate;
+    const next = { sequence: 1, unit: "model_calls" as const, descriptorSha256: probeHash(`after-${changed}-change`), reservedTokens: 20 };
+    await effects.runEffect(next, async () => { nextEffect = true; return fakeEffectValue(next, "must not run", 5); });
+    return { ...closed(input), usage: "known_fixture" };
+  };
+  const running = f.tasks.guidanceProbeStart("claude", receipt.id, 0).then(value => ({ value }), error => { ready(); return { error }; });
+  await observed;
+  const key = { projectKey: f.projectKey, id: receipt.id };
+  expect(f.store.read(key)!.counters.modelCalls).toBe(1);
+  if (changed === "role") f.roles.claude = ["implementer"];
+  else if (changed === "roster") f.roster.delete("claude");
+  else f.control.private = true;
+  release();
+  const result = await running;
+  expect("error" in result).toBe(true); expect(nextEffect).toBe(false);
+  expect(f.store.read(key)!.counters.modelCalls).toBe(1);
+  expect(f.store.read(key)!.receipt.state).toBe("unknown_held");
+  await f.tasks.stopGuidanceProbes();
+  expect(f.tasks.guidanceProbesPending()).toBe(0);
+});
+
+test("ordinary G1 reads retain their strict delivered-input snapshot fence", async () => {
+  const f = await fixture(), variant = await f.variant();
+  const query = { taskId: variant.taskId, taskCreated: variant.taskCreated, experimentId: variant.experimentId, id: variant.id };
+  expect(f.tasks.guidanceVariantRead("codex", query).state).toBe("available");
+  const records = f.board.guidanceVariants.bind(f.board);
+  let delivered = false;
+  f.board.guidanceVariants = (...args) => {
+    const current = records(...args);
+    if (!delivered) {
+      delivered = true;
+      f.bus.publish(newEnvelope(HUB, "A new public G1 input context.", { to: ["codex"], priority: "important" }));
+    }
+    return current;
+  };
+  expect(f.tasks.guidanceVariantRead("codex", query)).toEqual({ state: "unavailable" });
+  expect(delivered).toBe(true); expect(f.bus.lastDeliveredTo("codex")).toHaveLength(1);
 });
 
 test("real shipped G1 provenance stays private under unrelated deny while exact rendered private input refuses before binding", async () => {

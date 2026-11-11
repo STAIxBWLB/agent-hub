@@ -5,7 +5,7 @@ import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-pr
 import { GuidanceProbeError, GUIDANCE_PROBE_STOP_TIMEOUT_MS, GUIDANCE_PROBE_FENCE_INTERVAL_MS, guidanceProbeCanonical, guidanceProbeManifestKey,
   parseGuidanceProbeRegistration, probeHash, probeSha256, probeInteger, probeSessionGeneration,
   type ProbeChildBinding, type ProbeStoredState, type ProbePublicReceipt, type ProbePublicStatus, type ProbeHostBinding,
-  type ProbeAdmissionRecheck, type ProbeReservation, type ProbeSlot, type GuidanceProbeFakePorts, type GuidanceProbeManifestV1 } from "./guidance-probes.ts";
+  type ProbeAdmissionRecheck, type ProbeReservation, type ProbeSlot, type GuidanceProbeFakePorts, type GuidanceProbeManifestV1, type ProbeWorkerFramePreparer } from "./guidance-probes.ts";
 import { GuidanceVariantError, GUIDANCE_PAGE_MAX_RECORDS, GUIDANCE_REPLY_MAX_BYTES, guidanceVariantSectionDiff, guidanceProtectedSectionNames, parseGuidancePageResult, parseGuidanceDiffResult, parseGuidanceListQuery, parseGuidanceIdQuery, guidancePageCursor, guidancePageAfter, guidanceVariantMetadata, parseGuidanceVariantV1, validateGuidanceVariantV1, parseGuidanceSelector, type GuidanceVariantV1, type GuidanceStoredRecord, type GuidanceSelector, type GuidanceIdSelector, type GuidanceWriteFence, type GuidanceWriteReceipt, type GuidanceCurrent, type GuidancePublicRecord, type GuidancePageResult, type GuidanceDiffResult, type GuidanceReadResult } from "./guidance-variants.ts";
 import { buildEntryDiagnostic } from "./build-entry.ts";
 import { taskShowAllowed } from "./conductor.ts";
@@ -143,7 +143,8 @@ export interface TasksDeps {
   guidanceProbes?: {
     store: GuidanceProbeStore;
     fakePorts?: GuidanceProbeFakePorts;
-    prepareEditorFrame?: (state: ProbeStoredState, slot: ProbeSlot) => string;
+    prepareWorkerFrame?: ProbeWorkerFramePreparer;
+    prepareEditorFrame?: (state: ProbeStoredState, slot: ProbeSlot) => string | Promise<string>;
     session?: (by: PeerId) => { generation: string | number; nativeSession: string | null; requestConnectionId: string; current: () => void } | undefined;
     timer?: { set(callback: () => void, ms: number): unknown; clear(handle: unknown): void };
   };
@@ -5176,7 +5177,7 @@ export class Tasks {
     };
     let reserved = false, returned = false;
     const runner = new GuidanceProbeFixtureHost(dependency.store, { ports, revalidate: current, now: () => this.d.now?.() ?? Date.now(),
-      prepareEditorFrame: dependency.prepareEditorFrame, onReserved: () => { reserved = true; } });
+      prepareWorkerFrame: dependency.prepareWorkerFrame, prepareEditorFrame: dependency.prepareEditorFrame, onReserved: () => { reserved = true; } });
     entry.promise = (async () => {
       try {
         const saved = await runner.start({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, entry.controller.signal);
@@ -5210,7 +5211,7 @@ export class Tasks {
     } catch { throw new Error("guidance probe cancellation is unconfirmed; inspect its retained intent and owned drain before retrying"); }
   }
   private guidanceProbeRequest(by: PeerId): { check: () => void; generation: number | string; nativeSession: string | null; requestConnectionId: string } {
-    const request = this.guidanceRequest(by);
+    const request = this.guidanceRequest(by, "probe");
     if (!this.personOrConductor(by)) throw new PreEffectToolRefusal("guidance probes require the person or current configured conductor; use an admitted operational session");
     const session = this.d.guidanceProbes?.session?.(by);
     if (!session || !probeSessionGeneration(session.generation) || !executionText(session.requestConnectionId, EXECUTION_REFERENCE_LIMITS.id)
@@ -5258,18 +5259,18 @@ export class Tasks {
       role: { id: role.id, layer: role.layer, baselineSha256: role.hash }, authoring: "uncontrolled", sourceSessionId: null };
   }
 
-  private guidanceRequest(by: PeerId): () => void {
+  private guidanceRequest(by: PeerId, mode: "guidance" | "probe" = "guidance"): () => void {
     if (!executionText(by, EXECUTION_REFERENCE_LIMITS.id) || !executionLinkActor(by) || by === HUB || by === "admin")
       throw new PreEffectToolRefusal("guidance requires a current local task actor; ask the task owner or the person");
     const request = this.requestCheck(by, () => this.studyHold());
     const peer = by === USER ? undefined : this.d.bus.peers.get(by), generation = peer?.sessionGeneration, session = peer?.nativeSession;
-    const delivery = () => this.d.bus.lastDeliveredTo(by).map(item => item.id).join("\n"), delivered = delivery();
+    const delivery = () => this.d.bus.lastDeliveredTo(by).map(item => item.id).join("\n"), delivered = mode === "guidance" ? delivery() : undefined;
     const check = () => {
       request();
       if (this.d.privateTurn?.(by) || this.reviewObserverTurn(by))
         throw new PreEffectToolRefusal("guidance is unavailable during private or review input; retry in a public owner context");
       if (by !== USER && (!peer || this.d.bus.peers.get(by) !== peer || "sessionGeneration" in peer && generation === undefined
-        || peer.sessionGeneration !== generation || peer.nativeSession !== session || delivery() !== delivered))
+        || peer.sessionGeneration !== generation || peer.nativeSession !== session || mode === "guidance" && delivery() !== delivered))
         throw new PreEffectToolRefusal("guidance request session changed or is unavailable; reload the task in the current session before retrying");
     };
     check(); return check;

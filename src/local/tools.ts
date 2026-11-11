@@ -7,6 +7,7 @@ import { isDenied } from "./deny.ts";
 import { docRead, type DocReadContext, type DocReadPort } from "./doc-read.ts";
 import { webFetch, type WebFetchContext, type WebFetchPort } from "./web-fetch.ts";
 import { OUTPUT_CAP, sandboxedExec } from "./sandbox.ts";
+import { PROBE_WORKSPACE_LIMITS, probeRelativePath } from "./probe-workspace.ts";
 
 export { isDenied };
 
@@ -21,7 +22,65 @@ const approvalError = (picked: ToolApproval, denied: string): string | undefined
 
 export type ShellPermitPolicy = { forceAsk?: true };
 export type ShellExecutionCheck = "valid" | "ask" | "aborted";
+/** Constructor-only probe authority. Model arguments never create or widen this capability. */
+export interface ProbeToolRestriction {
+  readonly root: string;
+  readonly writableRoots: readonly string[];
+  current(): void;
+  reserveWrite(bytes: number, canonicalPath: string): Promise<void>;
+}
+export interface ProbeToolResourcePlan {
+  readonly scratchBytes: number;
+  readonly outputBytes: number;
+  readonly target?: string;
+  readonly maximumBytes: number;
+}
+interface ProbeToolPlanState { root: string; target?: string; maximum: number; identity?: string; used: boolean }
+const probeToolPlans = new WeakMap<ProbeToolResourcePlan, ProbeToolPlanState>();
+function probeTargetIdentity(target: string): string | undefined {
+  const stat = lstatSync(target, { throwIfNoEntry: false });
+  if (!stat) return undefined;
+  if (!stat.isFile() || stat.nlink !== 1) throw new Error("probe write target is not a regular private file");
+  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
+}
+/** Content-free pre-admission plan. A paid conservative reservation is not measured filesystem usage. */
+export function planProbeTool(name: string, rawArgs: string, ctx: ToolContext): ProbeToolResourcePlan {
+  if (!ctx.probe) throw new Error("probe tool capability unavailable");
+  ctx.probe.current();
+  const root = realPath(ctx.cwd);
+  let target: string | undefined, maximum = 0, identity: string | undefined;
+  try {
+    if (name === "write" || name === "edit") {
+      const value = JSON.parse(rawArgs || "{}");
+      target = guardPath(ctx, String(value.path), "write"); identity = probeTargetIdentity(target);
+      if (name === "write") maximum = Buffer.byteLength(String(value.content ?? ""), "utf8");
+      else {
+        const stat = lstatSync(target, { throwIfNoEntry: false });
+        if (!stat || !stat.isFile()) throw new Error("probe edit target unavailable");
+        maximum = Math.min(PROBE_WORKSPACE_LIMITS.fileBytes, stat.size + Buffer.byteLength(String(value.new ?? ""), "utf8"));
+      }
+      if (maximum > PROBE_WORKSPACE_LIMITS.fileBytes) throw new Error("probe write exceeds file ceiling");
+    }
+  } catch { target = undefined; maximum = 0; identity = undefined; }
+  const kind = target === undefined ? undefined : relative(root, target).split("/")[0];
+  const plan: ProbeToolResourcePlan = Object.freeze({ scratchBytes: kind === "scratch" ? maximum : 0,
+    outputBytes: kind === "output" ? maximum : 0, ...(target === undefined ? {} : { target }), maximumBytes: maximum });
+  probeToolPlans.set(plan, { root, target, maximum, identity, used: false });
+  return plan;
+}
+/** Verify the already-charged compound tool reservation immediately before its sole filesystem write. */
+export function requireProbeToolWrite(plan: ProbeToolResourcePlan, bytes: number, canonicalPath: string, ctx: ToolContext): void {
+  ctx.probe?.current();
+  const state = probeToolPlans.get(plan);
+  if (!ctx.probe || !state || state.used || state.target === undefined || !Number.isSafeInteger(bytes) || bytes < 0
+    || bytes > state.maximum || realPath(ctx.cwd) !== state.root || canonicalPath !== state.target
+    || guardPath(ctx, relative(state.root, canonicalPath), "write") !== state.target || probeTargetIdentity(canonicalPath) !== state.identity) {
+    throw new Error("probe tool reservation or target changed");
+  }
+  state.used = true;
+}
 export interface ToolContext {
+  probe?: ProbeToolRestriction;
   readOnly?: string[];
   cwd: string;
   /** Extra denylist entries from config: substrings of the project-relative path. */
@@ -56,7 +115,18 @@ const lexists = (p: string) => {
 };
 
 /** Absolute path inside cwd after resolving symlinks, or an Error. `write` also refuses .git and .agenthub. */
-export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny" | "readOnly">, path: string, mode: "read" | "write"): string {
+export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny" | "readOnly" | "probe">, path: string, mode: "read" | "write"): string {
+  if (ctx.probe) {
+    ctx.probe.current();
+    if (realPath(ctx.probe.root) !== realPath(ctx.cwd)) throw new Error("probe workspace binding changed");
+    if (path === "/workspace") path = ".";
+    else if (path.startsWith("/workspace/")) path = path.slice("/workspace/".length);
+    else if (path.startsWith("/") || /^[a-z]:/i.test(path)) throw new Error("probe path is outside the logical workspace");
+    if (!(mode === "read" && path === ".") && !probeRelativePath(path)) throw new Error("probe path is not an admitted relative name");
+    const normalized = relative(realPath(ctx.cwd), resolve(realPath(ctx.cwd), path));
+    if (!(mode === "read" && !normalized) && !probeRelativePath(normalized)) throw new Error("probe path is outside its relative-name boundary");
+    path = normalized || ".";
+  }
   const root = realPath(ctx.cwd);
   const abs = resolve(root, path);
   // Resolve symlinks on the deepest part that exists: a link pointing outside must not pass as an inside path.
@@ -77,12 +147,25 @@ export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny" | "readOnly">, p
   // (`insideRoot`, #555): a name outside it (`../o/.env`, a link into the project) is no project path for any policy to name, and it was never refused before #541.
   const typed = relative(root, abs), inside = insideRoot(typed);
   if (isDenied(rel, ctx.deny) || inside && isDenied(typed, ctx.deny)) throw new Error(`${path} is on the secrets denylist`);
+  if (ctx.probe) {
+    const stat = lstatSync(real, { throwIfNoEntry: false });
+    if ((stat?.nlink ?? 1) > 1 || stat?.isFile() && stat.size > PROBE_WORKSPACE_LIMITS.fileBytes) throw new Error("probe file identity or byte ceiling is unavailable");
+  }
   // Not secret, but writing .git or .agenthub changes what runs outside the worker's control. Names are compared
   // folded: a new `.GIT/config` is `.git/config` to a case-insensitive disk, and git then runs what it names.
   if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed))) throw new Error(`${path} is not writable by the local worker`);
   // Identity refusal is stable even when realPath names a protected hardlink alias.
   if (mode === "write" && ctx.readOnly?.length && (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? [])) throw new Error("target is protected by data.readonly");
+  if (ctx.probe && mode === "write") {
+    const allowed = ctx.probe.writableRoots.some(approved => {
+      const entry = resolve(root, approved), part = relative(root, entry).split("/");
+      return part.length > 1 && ["scratch", "output"].includes(part[0]!) && insideRoot(relative(root, entry))
+        && insideRoot(relative(entry, real)) && insideRoot(relative(entry, abs));
+    });
+    if (!allowed || (lstatSync(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1) throw new Error("probe write target is not admitted");
+    ctx.probe.current();
+  }
   return real;
 }
 
@@ -154,6 +237,10 @@ export function toolResultFailed(name: string, output: string): boolean {
 
 /** Executes one tool call. Never throws: every failure comes back as text for the model to read. */
 export async function runTool(name: string, rawArgs: string, ctx: ToolContext): Promise<string> {
+  if (ctx.probe) {
+    try { ctx.probe.current(); } catch { return "error: probe authority is unavailable"; }
+    if (!["read", "write", "edit"].includes(name)) return "error: tool is unavailable in the confined probe";
+  }
   let a: Record<string, any>;
   try {
     a = JSON.parse(rawArgs || "{}");
@@ -180,6 +267,13 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         if (ctx.signal?.aborted) return "error: turn cancelled before write";
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget) return "error: path target changed during approval; inspect before retrying";
+        if (ctx.probe) {
+          const bytes = Buffer.byteLength(content, "utf8");
+          if (bytes > PROBE_WORKSPACE_LIMITS.fileBytes) return "error: probe file exceeds its admitted ceiling";
+          await ctx.probe.reserveWrite(bytes, file);
+          ctx.probe.current();
+          if (ctx.signal?.aborted || guardPath(ctx, String(a.path), "write") !== approvedTarget) return "error: probe write binding changed";
+        }
         mkdirSync(dirname(file), { recursive: true });
         writeFileSync(file, content);
         return `wrote ${a.path}`;
@@ -199,7 +293,15 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         text = readFileSync(file, "utf8");
         count = text.split(String(a.old)).length - 1;
         if (count !== 1) return `error: file changed during approval; \`old\` must match exactly once, it matched ${count} times`;
-        writeFileSync(file, text.replace(String(a.old), () => String(a.new ?? "")));
+        const replacement = text.replace(String(a.old), () => String(a.new ?? ""));
+        if (ctx.probe) {
+          const bytes = Buffer.byteLength(replacement, "utf8");
+          if (bytes > PROBE_WORKSPACE_LIMITS.fileBytes) return "error: probe file exceeds its admitted ceiling";
+          await ctx.probe.reserveWrite(bytes, file);
+          ctx.probe.current();
+          if (ctx.signal?.aborted || guardPath(ctx, String(a.path), "write") !== approvedTarget || readFileSync(file, "utf8") !== text) return "error: probe edit binding changed";
+        }
+        writeFileSync(file, replacement);
         return `edited ${a.path}`;
       }
       case "bash": {
@@ -255,6 +357,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         return `error: unknown tool ${name}`;
     }
   } catch (e) {
+    if (ctx.probe) return "error: confined probe tool operation refused";
     return `error: ${(e as Error).message}`;
   }
 }
