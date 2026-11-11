@@ -931,7 +931,11 @@ as the session's output.
 
 Cleanup touches only resources the host created and still owns, verified at the moment
 of removal by captured physical identity (device, inode, directory/file kind, link count)
-exactly as `materializeProbeWorkspace` already does for its failure cleanup. A path whose
+exactly as `materializeProbeWorkspace` already does for its failure cleanup. Inode numbers
+are recycled (Linux reuses one straight after an unlink), so a retained file's identity also
+carries its change time in nanoseconds (`ctimeNs`): a replacement made later has a later
+change time even with the same inode. A directory has no stable change time, so it is
+identified by device and inode only. A path whose
 identity differs, a replaced root, a bystander file or a symlink swap is left alone and
 reported as `retained: <reason>`; cleanup never recurses into or deletes a name it did not
 create. It never follows a link and never touches another session's resources.

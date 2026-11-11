@@ -277,8 +277,8 @@ describe("prune: preview first, owned bytes only, receipts never", () => {
     const root = mkdtempSync(join(tmpdir(), "ahub-probe-prune-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
     const directory = join(root, "retained-1"); mkdirSync(join(directory, "output"), { recursive: true });
     const output = join(directory, "output", "answer.txt"); writeFileSync(output, "answer");
-    const file = statSync(output), dir = statSync(directory);
-    const record = { directory, dev: dir.dev, ino: dir.ino, files: [{ relative: "output/answer.txt", dev: file.dev, ino: file.ino, bytes: 6 }] };
+    const file = statSync(output, { bigint: true }), dir = statSync(directory);
+    const record = { directory, dev: dir.dev, ino: dir.ino, files: [{ relative: "output/answer.txt", dev: Number(file.dev), ino: Number(file.ino), bytes: 6, ctimeNs: file.ctimeNs.toString() }] };
     const sealed = reservations.map((reservation, index) => f.store.sealReceipt(reservation, measured(index === 0
       ? { retained: record, output: { v: 1, entries: [{ relative: "output/answer.txt", sha256: probeHash("answer"), bytes: 6 }], excluded: [], totalBytes: 6 }, ...measuredFor(index) } : measuredFor(index))));
     return { ...f, db: f.file, root, directory, output, sealed, record };
@@ -330,12 +330,14 @@ describe("prune: preview first, owned bytes only, receipts never", () => {
   test("a plan approved before the owned set changed is refused afterwards", async () => {
     const f = await terminal(); const now = f.sealed[0]!.expiresAt;
     const approved = f.store.previewPrune(f.key, now, fs);
+    await Bun.sleep(30); // one filesystem timestamp tick: a recycled inode is told apart by its change time
     rmSync(f.output); writeFileSync(f.output, "a replacement now owned by someone else");
     expect(() => f.store.prune(f.key, now, approved.digest, fs)).toThrow(GuidanceProbeError);
     expect(existsSync(f.output)).toBe(true);
   });
   test("a replaced file is kept: the slot stays retained and its replacement is untouched", async () => {
     const f = await terminal(); const now = f.sealed[0]!.expiresAt;
+    await Bun.sleep(30); // one filesystem timestamp tick: a recycled inode is told apart by its change time
     rmSync(f.output); writeFileSync(f.output, "not ours");
     const plan = f.store.previewPrune(f.key, now, fs);
     const result = f.store.prune(f.key, now, plan.digest, fs);
@@ -353,12 +355,13 @@ describe("prune: preview first, owned bytes only, receipts never", () => {
     const second = join(f.directory, "output", "second.txt"); writeFileSync(second, "two"); const s2 = statSync(second);
     const db = new Database(f.db); try {
       const row = db.query("SELECT retained FROM guidance_probe_receipts WHERE slot_id='baseline'").get() as { retained: string };
-      const record = JSON.parse(row.retained); record.files.push({ relative: "output/second.txt", dev: s2.dev, ino: s2.ino, bytes: 3 });
+      const record = JSON.parse(row.retained); record.files.push({ relative: "output/second.txt", dev: s2.dev, ino: s2.ino, bytes: 3, ctimeNs: statSync(second, { bigint: true }).ctimeNs.toString() });
       db.query("UPDATE guidance_probe_receipts SET retained=? WHERE slot_id='baseline'").run(JSON.stringify(record));
     } finally { db.close(); }
     const plan = f.store.previewPrune(f.key, now, fs);
     expect(plan.slots.find(item => item.slotId === "baseline")!.remove.map(item => item.relative).sort()).toEqual(["output/answer.txt", "output/second.txt"]);
     // Between the person's preview and the prune, make the second file a stranger's. A fresh digest is computed inside prune, so approve THAT plan's digest.
+    await Bun.sleep(30); // one filesystem timestamp tick: a recycled inode is told apart by its change time
     rmSync(second); writeFileSync(second, "not ours");
     const current = f.store.previewPrune(f.key, now, fs);
     const result = f.store.prune(f.key, now, current.digest, fs);

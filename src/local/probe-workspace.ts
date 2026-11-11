@@ -315,7 +315,7 @@ export function retainProbeOutput(workspace: ProbeWorkspace, manifest: ProbeOutp
   const directory = realPath(mkdtempSync(join(root, "retained-")));
   const identity = directoryIdentity(directory);
   chmodSync(directory, 0o700);
-  const files: { relative: string; dev: number; ino: number; bytes: number }[] = [];
+  const files: { relative: string; dev: number; ino: number; bytes: number; ctimeNs: string }[] = [];
   try {
     for (const entry of manifest.entries) {
       const source = join(workspace.root, entry.relative);
@@ -328,7 +328,7 @@ export function retainProbeOutput(workspace: ProbeWorkspace, manifest: ProbeOutp
       const dest = join(directory, entry.relative);
       mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
       const fd = openSync(dest, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o400);
-      try { const created = fstatSync(fd); writeFileSync(fd, bytes); files.push({ relative: entry.relative, dev: created.dev, ino: created.ino, bytes: bytes.length }); }
+      try { writeFileSync(fd, bytes); const created = fstatSync(fd, { bigint: true }); files.push({ relative: entry.relative, dev: Number(created.dev), ino: Number(created.ino), bytes: bytes.length, ctimeNs: created.ctimeNs.toString() }); }
       finally { closeSync(fd); }
     }
   } catch (error) {
@@ -347,10 +347,10 @@ export function previewRetained(retained: ProbeRetained): { remove: { relative: 
     return { remove, keep: [{ relative: ".", reason: "directory_replaced_or_missing" }] };
   }
   for (const file of retained.files) {
-    const stat = lstatSync(join(retained.directory, file.relative), { throwIfNoEntry: false });
+    const stat = lstatSync(join(retained.directory, file.relative), { throwIfNoEntry: false, bigint: true });
     if (!stat) continue;
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.dev !== file.dev || stat.ino !== file.ino) keep.push({ relative: file.relative, reason: "identity_changed" });
-    else remove.push({ relative: file.relative, bytes: stat.size });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || Number(stat.dev) !== file.dev || Number(stat.ino) !== file.ino || stat.ctimeNs.toString() !== file.ctimeNs) keep.push({ relative: file.relative, reason: "identity_changed" });
+    else remove.push({ relative: file.relative, bytes: Number(stat.size) });
   }
   return { remove, keep };
 }
@@ -368,9 +368,9 @@ export function removeRetained(retained: ProbeRetained, partial = false): { remo
   }
   const parents = new Set<string>();
   for (const file of retained.files) {
-    const path = join(retained.directory, file.relative), stat = lstatSync(path, { throwIfNoEntry: false });
+    const path = join(retained.directory, file.relative), stat = lstatSync(path, { throwIfNoEntry: false, bigint: true });
     if (!stat) continue;
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.dev !== file.dev || stat.ino !== file.ino) { kept.push({ relative: file.relative, reason: "identity_changed" }); continue; }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || Number(stat.dev) !== file.dev || Number(stat.ino) !== file.ino || stat.ctimeNs.toString() !== file.ctimeNs) { kept.push({ relative: file.relative, reason: "identity_changed" }); continue; }
     unlinkSync(path); removed.push(file.relative);
     for (let parent = dirname(path); parent !== retained.directory && parent.startsWith(retained.directory + "/"); parent = dirname(parent)) parents.add(parent);
   }

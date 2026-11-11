@@ -100,11 +100,24 @@ describe("retention copies exactly the manifest, and removal touches only what t
   test("a file replaced after retention (same name, new inode) is a bystander and survives", async () => {
     const { kept } = await retained();
     const target = join(kept.directory, "output/answer.txt");
+    // Linux recycles an inode number straight after an unlink, so the replacement may reuse it; the change time still tells the two files apart once the
+    // filesystem's timestamp tick has passed, which it always has between a retention and a prune (days apart). Wait one tick rather than race it.
+    await Bun.sleep(30);
     rmSync(target); writeFileSync(target, "someone else's file");
     const result = removeRetained(kept);
     expect(result.kept).toContainEqual({ relative: "output/answer.txt", reason: "identity_changed" });
     expect(readFileSync(target, "utf8")).toBe("someone else's file");
     expect(existsSync(kept.directory)).toBe(true);
+  });
+  test("the same device and inode with a different change time is another file: kept, in preview and in removal (a recycled inode)", async () => {
+    const { kept } = await retained();
+    const recycled = { ...kept, files: kept.files.map(file => ({ ...file, ctimeNs: (BigInt(file.ctimeNs) - 1_000_000n).toString() })) };
+    expect(previewRetained(recycled).remove).toEqual([]);
+    expect(previewRetained(recycled).keep).toContainEqual({ relative: "output/answer.txt", reason: "identity_changed" });
+    const result = removeRetained(recycled);
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toContainEqual({ relative: "output/answer.txt", reason: "identity_changed" });
+    expect(readFileSync(join(kept.directory, "output/answer.txt"), "utf8")).toBe("answer");
   });
   test("a file swapped for a symlink to a victim never deletes the victim", async () => {
     const { kept, root } = await retained();

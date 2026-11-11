@@ -549,7 +549,15 @@ export function capOutput(output: ProbeOutputManifestV1, maximum: number): Probe
  * A retained output directory the host created, with the identity it recorded at creation. Kept beside the receipt in its own column and out of the
  * digested receipt body: a receipt never carries a physical path. Prune acts on nothing that is not recorded here and still matches by identity.
  */
-export interface ProbeRetainedRecord { directory: string; dev: number; ino: number; files: readonly { relative: string; dev: number; ino: number; bytes: number }[] }
+/**
+ * A host-created retention directory and the identity of each file in it. Inode numbers are recycled (Linux reuses one straight after an unlink), so a file's
+ * identity is its device, inode AND change time in nanoseconds: a replacement created later always has a later `ctimeNs`, even when it reuses the inode.
+ * ponytail: ctime granularity is the filesystem's (a few milliseconds on Linux), so a replacement created in the very same tick as the original with a recycled
+ * inode would match; retention-to-prune is days, so the window is the retention call itself. A per-file content hash re-check at prune is the upgrade path.
+ * ponytail: a directory has no stable change time (it moves with every entry), so its identity is device and inode only. Deleting a replaced empty directory
+ * under the host's own random-named retention root is the ceiling; a stable directory identity (a host-written marker file) is the upgrade path.
+ */
+export interface ProbeRetainedRecord { directory: string; dev: number; ino: number; files: readonly { relative: string; dev: number; ino: number; bytes: number; ctimeNs: string }[] }
 /** The filesystem half of prune, injected so the Store (src/hub) never imports src/local. Both calls are identity-checked by their implementation. */
 export interface ProbeRetentionFs {
   preview(retained: ProbeRetainedRecord): { remove: { relative: string; bytes: number }[]; keep: { relative: string; reason: string }[] };
@@ -562,9 +570,10 @@ export function parseProbeRetained(value: unknown): ProbeRetainedRecord | undefi
     required(probeInteger(f.dev) && probeInteger(f.ino) && Array.isArray(f.files) && f.files.length <= PROBE_OUTPUT_LIMITS.entries);
     const seen = new Set<string>();
     for (const item of f.files as unknown[]) {
-      const e = object(item, ["relative", "dev", "ino", "bytes"]);
+      const e = object(item, ["relative", "dev", "ino", "bytes", "ctimeNs"]);
       required(typeof e.relative === "string" && e.relative.length > 0 && Buffer.byteLength(e.relative) <= 512 && !e.relative.startsWith("/") && !e.relative.split("/").includes("..")
-        && probeInteger(e.dev) && probeInteger(e.ino) && probeInteger(e.bytes) && e.bytes <= PROBE_OUTPUT_LIMITS.fileBytes && !seen.has(e.relative));
+        && probeInteger(e.dev) && probeInteger(e.ino) && probeInteger(e.bytes) && e.bytes <= PROBE_OUTPUT_LIMITS.fileBytes && !seen.has(e.relative)
+        && typeof e.ctimeNs === "string" && /^[0-9]{1,24}$/.test(e.ctimeNs));
       seen.add(e.relative as string);
     }
     return f as unknown as ProbeRetainedRecord;
