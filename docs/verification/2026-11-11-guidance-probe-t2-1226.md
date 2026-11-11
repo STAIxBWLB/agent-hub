@@ -39,8 +39,12 @@ hand-edited and remote build outputs were not copied back. Subsequent
 committed-head freshness verification at
 `60606e56da5570ff2843211e89d8ed6ddb1cde5a` passed with the existing tracked
 assets; build admission deferral alone did not establish stale bundles. The
-required gate continued into the full suite. Its completed result and the
-final-head non-test/incremental gate remain separately reported in the PR.
+required gate continued into the full suite. It then reported two registry-guard
+failures for the kind-specific LocalPeer factory in generic `src/local/` and was
+stopped (exit 130); its owned container was observed absent. The implementation
+moves that factory to `src/adapters/local-probe.ts`, preserving the empty
+registry baseline and every assertion. Final-head validation remains separately
+reported in the PR.
 
 The focused set covers T1 lifecycle/recovery/control, complete request parity,
 role input separation, source/tree/binary binding, compound model/file budgets,

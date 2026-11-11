@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } f
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalPeer, localProbeFingerprints, prepareLocalProbeInput, type LocalOptions } from "../src/adapters/local-worker.ts";
-import { createGuidanceProbeLocalAdapter } from "../src/local/probe-session.ts";
+import { createGuidanceProbeLocalAdapter } from "../src/adapters/local-probe.ts";
 import { ProbeLocalError, probeLocalEffect, type ProbeLocalEffectScope, type ProbeLocalModelConfig, type ProbeLocalSession } from "../src/local/probe-types.ts";
 import { probeWorkspacePrivateRoot, type ProbeWorkspace } from "../src/local/probe-workspace.ts";
 import type { ProbeConfinement } from "../src/local/probe-sandbox.ts";

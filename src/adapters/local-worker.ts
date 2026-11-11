@@ -115,7 +115,7 @@ const probeRoleInstruction = (role: Exclude<ProbeSlot["role"], "worker">): strin
 })[role];
 
 function probeRuntimeHash(): string {
-  const sources = [import.meta.url, new URL("../local/probe-types.ts", import.meta.url), new URL("../local/probe-session.ts", import.meta.url),
+  const sources = [import.meta.url, new URL("../local/probe-types.ts", import.meta.url), new URL("./local-probe.ts", import.meta.url),
     new URL("../local/probe-workspace.ts", import.meta.url), new URL("../local/probe-sandbox.ts", import.meta.url),
     new URL("../local/tools.ts", import.meta.url), new URL("../local/sandbox.ts", import.meta.url), new URL("../omniroute/client.ts", import.meta.url)].map(value => {
     const file = openSync(new URL(value), constants.O_RDONLY | constants.O_NOFOLLOW);

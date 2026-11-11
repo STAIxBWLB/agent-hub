@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import { LocalPeer, localProbeFingerprints, prepareLocalProbeInput } from "../adapters/local-worker.ts";
+import { LocalPeer, localProbeFingerprints, prepareLocalProbeInput } from "./local-worker.ts";
 import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, probeHash,
   type ProbeFakeLaunch, type ProbeFakeObservation, type ProbeReservation, type ProbeResourceCharges, type ProbeSlot, type ProbeStoredState } from "../hub/guidance-probes.ts";
 import { materializeProbeWorkspace, probeWorkspaceCurrent, PROBE_WORKSPACE_LIMITS,
-  type ProbeWorkspace } from "./probe-workspace.ts";
-import { ProbeConfinementError, requireProbeConfinement, verifyProbeConfinement, type ProbeConfinement } from "./probe-sandbox.ts";
+  type ProbeWorkspace } from "../local/probe-workspace.ts";
+import { ProbeConfinementError, requireProbeConfinement, verifyProbeConfinement, type ProbeConfinement } from "../local/probe-sandbox.ts";
 import { ProbeLocalError, probeLocalEffect, type ProbeLocalAdapter, type ProbeLocalAdapterOptions, type ProbeLocalEffectScope,
-  type ProbeLocalSource, type ProbePreparedLocalInput } from "./probe-types.ts";
+  type ProbeLocalSource, type ProbePreparedLocalInput } from "../local/probe-types.ts";
 
 interface Prepared {
   state: ProbeStoredState;

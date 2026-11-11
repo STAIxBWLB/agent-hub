@@ -25,7 +25,7 @@ paths:
   - test/fakes/guidance-probe-provider.ts
   - src/adapters/local-worker.ts
   - src/local/probe-types.ts
-  - src/local/probe-session.ts
+  - src/adapters/local-probe.ts
   - src/local/probe-workspace.ts
   - src/local/probe-sandbox.ts
   - src/local/tools.ts
@@ -619,7 +619,8 @@ model-free OS-boundary canaries only.
 ### Same loop, separate host lifecycle
 
 A host-created probe capability drives a fresh private `LocalPeer` through its
-existing `run` / `call` / tool loop. The factory constructs explicit options; it
+existing `run` / `call` / tool loop. The kind-specific factory lives in
+`src/adapters/local-probe.ts`; generic file/sandbox helpers stay in `src/local/`. The factory constructs explicit options; it
 never spreads ordinary peer options or accepts a purpose from a model envelope,
 manifest, configuration or wire field. The private peer is never added to Bus,
 ordinary recovery or a live session. A constructor-only `workspaceOwned`
