@@ -7898,8 +7898,10 @@ async function probeCommand(argv, opts) {
       } catch {}
       const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}
 (output truncated)` : output;
-      resolve({ code, output: cancelled ? `${clipped}
-(probe command cancelled)` : clipped, quiescent, ...quiescent ? {} : { stop } });
+      const observed = child.signalCode ? `${clipped}
+(probe command signal: ${child.signalCode}; owned pid: ${child.pid})` : clipped;
+      resolve({ code, output: cancelled ? `${observed}
+(probe command cancelled)` : observed, quiescent, ...quiescent ? {} : { stop } });
     };
     const abort = () => {
       cancelled = true;
@@ -7907,7 +7909,8 @@ async function probeCommand(argv, opts) {
     };
     const timer = setTimeout(abort, opts.timeoutMs ?? 5000);
     opts.signal?.addEventListener("abort", abort, { once: true });
-    child.once("error", () => {
+    child.once("error", (error) => {
+      output = `error: probe command spawn failed (${error.code ?? "unknown"})`;
       finish(null);
     });
     child.once("close", (code) => {
@@ -16938,9 +16941,11 @@ var init_probe_sandbox = __esm(() => {
   init_probe_workspace();
   ProbeConfinementError = class ProbeConfinementError extends Error {
     stop;
-    constructor(stop = async () => {}) {
+    diagnostic;
+    constructor(stop = async () => {}, diagnostic) {
       super("probe OS confinement is unavailable or its owned command has not quiesced");
       this.stop = stop;
+      this.diagnostic = diagnostic;
     }
   };
   proofs = new WeakMap;
