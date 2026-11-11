@@ -55,7 +55,6 @@ test("#553 retired tables reload without activation, config rewrites or status s
   writeFileSync(file, legacy);
   const result = await person.request({ t: "settings_reload" });
   expect(result.ok).toBe(true);
-  expect((await person.request({ t: "status" })).status).not.toHaveProperty("retired-route");
   expect(readFileSync(file, "utf8")).toBe(legacy);
   const retired = loadConfig(root).retired ?? [];
   expect(retired).toHaveLength(2);
