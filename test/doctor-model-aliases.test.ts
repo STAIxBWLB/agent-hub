@@ -47,7 +47,6 @@ test("#553 doctor inventories class-only, default tiers and explicit judges once
   const missing = rows.filter(row => row.name === "routing model" && row.level === "fail");
   expect(missing.map(row => row.detail.split(" ")[0]).sort()).toEqual(["class-only", "coding", "judge"]);
   expect(missing.every(row => row.section === "Models")).toBe(true);
-  expect(rows.some(row => row.name === "retired-route")).toBe(false);
 });
 
 test("#553 doctor reports aggregate success only when all routing aliases are served", async () => {

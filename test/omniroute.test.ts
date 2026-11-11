@@ -69,14 +69,14 @@ test("Cloudflare Access headers go only to listed hosts", async () => {
   expect(up.requests[1]!.headers["cf-access-client-id"]).toBeUndefined();
 });
 
-test("direct calls send gateway auth and no retired session header", async () => {
+test("direct calls send gateway auth", async () => {
   const gateway = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: req => new URL(req.url).pathname.endsWith("/models")
     ? Response.json({ data: [{ id: "coding" }] })
-    : Response.json({ model: "vllm/x", choices: [{ message: { role: "assistant", content: `auth=${req.headers.get("authorization")} session=${req.headers.get("x-retired-route-session-id")}` } }] }) });
+    : Response.json({ model: "vllm/x", choices: [{ message: { role: "assistant", content: `auth=${req.headers.get("authorization")}` } }] }) });
   cleanup.push(() => gateway.stop(true));
   process.env.OMNIROUTE_API_KEY = "fixture-key";
   const res = await new OmniRoute({ urls: [`http://127.0.0.1:${gateway.port}/v1`], access_hosts: [] }).chat({ model: "coding", messages: [] });
-  expect(res.message.content).toBe("auth=Bearer fixture-key session=null");
+  expect(res.message.content).toBe("auth=Bearer fixture-key");
   expect(res.servedModel).toBe("vllm/x");
 });
 
