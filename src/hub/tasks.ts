@@ -5158,6 +5158,12 @@ export class Tasks {
     if (active) {
       if (active.requestedRevision !== revision || active.variantId !== variantId)
         throw new PreEffectToolRefusal("another owned probe attempt is still settling; inspect its state before explicitly starting the next stage");
+      const captured = active.current().host;
+      if (captured.actor !== host.actor || captured.sessionGeneration !== host.sessionGeneration || captured.nativeSession !== host.nativeSession
+        || captured.requestConnectionId !== host.requestConnectionId)
+        throw new PreEffectToolRefusal("guidance probe active start belongs to another request session; inspect its retained id without replaying it");
+      // Frame preparation has not granted a reservation. A duplicate is only a read of truthful current metadata.
+      if (!active.reservation) return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), true);
       const replay = dependency.store.reserveSession({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, current);
       if (replay.kind !== "existing") throw new Error("guidance probe start is unconfirmed; inspect retained state before any further work");
       return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), true);

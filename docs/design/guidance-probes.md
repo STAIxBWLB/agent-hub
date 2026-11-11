@@ -775,6 +775,13 @@ hold. Keep the actual request/socket capability, original connection UUID, peer
 identity, generation/native session, current conductor role/roster, task epoch/
 flow, G1 applicability and fresh privacy/review checks. Unknown proof refuses.
 Generic G1 request operations retain their existing delivery fence; only the
-probe-owned helper omits delivery-id equality. Tests add an ordinary delivered
+probe-owned helper omits delivery-id equality. While an asynchronous initial
+frame is still being prepared, an exact same-session duplicate returns only the
+truthful current receipt (`already: true`, possibly still declaration evidence),
+without reserving a slot or charging a frame. The original captured actor,
+generation, native session and connection UUID must still match; another
+connection cannot borrow the pending start. After reservation, the existing
+Store replay path applies. No replay call may create an unframed reservation.
+Tests add an ordinary delivered
 message during a running fake effect and prove continuity, then independently
 change authority/privacy and prove the next effect is refused.
