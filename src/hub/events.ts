@@ -1,7 +1,7 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import type { TaskAttribution } from "./attribution.ts";
 import type { PeerId } from "./envelope.ts";
-import type { SwitchTrace } from "../models/route/stage.ts";
+import type { StageSwitchTrace as SwitchTrace } from "../models/route/stage-fallback.ts";
 import type { ScreenRecord } from "./inference.ts";
 
 export interface RoleIdentity { id: string; layer: "shipped" | "project"; hash: string }

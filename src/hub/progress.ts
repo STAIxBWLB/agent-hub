@@ -10,7 +10,7 @@ const MAX_STATES = 256;
 const MAX_OBSERVATIONS = 28;
 const MAX_TEXT = 500;
 
-type NativeToolObservation = ToolObservation & { turn?: string };
+export type NativeToolObservation = ToolObservation & { turn?: string };
 
 /** The host-owned progress factory's grouped record, not a provider normalizer schema. */
 export interface ProgressConversation {

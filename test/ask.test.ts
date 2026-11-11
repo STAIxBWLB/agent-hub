@@ -19,13 +19,13 @@ afterEach(() => {
 function setup(script?: Script, opts: { onCampus?: boolean; memory?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-ask-"));
   const board = new Board(join(dir, "hub.db"));
-  board.propose("claude", { title: "harden the switchyard sidecar", class: "implement" });
+  board.propose("claude", { title: "harden the retired-route sidecar", class: "implement" });
   board.update(1, "hub", "assigned", { owner: "codex", reviewer: "claude" });
   board.update(1, "codex", "accepted", { state: "in_progress" });
   board.propose("user", { title: "fix the record of 900101-1234567", class: "implement", signals: ["pii"] });
   const logFile = join(dir, "hub.log");
-  writeFileSync(logFile, "2026-09-18T09:00:00.000Z switchyard: yesterday's run, must not be evidence\n2026-09-19T09:59:00.000Z ahub up pid=1 control=127.0.0.1:4600 cwd=/p\n2026-09-19T10:00:00.000Z switchyard: off, falling back to fixed_model on OmniRoute (exited with code 1)\n2026-09-19T10:00:05.000Z state kimi -> idle\n");
-  const mem = startFakeMemWorker({ claude: ["65001 10:00a decision switchyard sidecar fallback design"] });
+  writeFileSync(logFile, "2026-09-18T09:00:00.000Z retired-route: yesterday's run, must not be evidence\n2026-09-19T09:59:00.000Z ahub up pid=1 control=127.0.0.1:4600 cwd=/p\n2026-09-19T10:00:00.000Z retired-route: off, falling back to fixed_model on OmniRoute (exited with code 1)\n2026-09-19T10:00:05.000Z state kimi -> idle\n");
+  const mem = startFakeMemWorker({ claude: ["65001 10:00a decision retired-route sidecar fallback design"] });
   cleanup.push(mem.stop);
   let model: ReturnType<typeof startFakeModelServer> | undefined;
   let inference: Inference | undefined;
@@ -49,7 +49,7 @@ function setup(script?: Script, opts: { onCampus?: boolean; memory?: boolean } =
 
 test("evidence comes from the board, shared memory and the log, and the answer rests on it", async () => {
   const { deps, model } = setup(() => ({ content: "Codex is hardening the sidecar [task #1]; the fallback design was decided earlier [#65001]." }));
-  const res = await ask("what is happening with the switchyard sidecar?", deps);
+  const res = await ask("what is happening with the retired-route sidecar?", deps);
   expect(res.answer).toContain("[task #1]");
   expect(res.evidence.map((e) => e.id)).toEqual(expect.arrayContaining(["task #1", "#65001", "#65002", "log 09-19 10:00:00.000"]));
   expect(res.found).toBe(true);
@@ -132,7 +132,7 @@ test("grouped citations count; a question that carries PII skips the memory work
 test("one huge row cannot empty the evidence; keywords skip question filler and keep short Korean words", async () => {
   const { deps } = setup(undefined);
   deps.board.propose("kimi", { title: "x".repeat(20_000), class: "implement" });
-  const { evidence } = await gather("switchyard sidecar", deps);
+  const { evidence } = await gather("retired-route sidecar", deps);
   expect(evidence.length).toBeGreaterThan(3);
   expect(Math.max(...evidence.map((e) => e.text.length))).toBeLessThanOrEqual(300);
   expect(evidence[0]!.id).toBe("task #1"); // the row that matches the question leads
@@ -154,7 +154,7 @@ test("the on-campus probe runs only when PII is involved", async () => {
 test("found by a second reviewer (Kimi, through the hub): run marker, PII in log lines, 'nothing found' inside a real answer, same-second lines", async () => {
   const { deps } = setup(undefined);
   // the marker is what the daemon really writes ("ahub up pid="), so an earlier run's lines are not evidence
-  const earlier = await gather("yesterday's switchyard run", deps);
+  const earlier = await gather("yesterday's retired-route run", deps);
   expect(earlier.evidence.some((e) => e.text.includes("yesterday"))).toBe(false);
 
   // a log line that carries PII is handled like a PII task row: absent off campus, marked on campus
@@ -192,14 +192,14 @@ test("ask evidence skips memory bookkeeping and preserves note privacy", async (
     const { deps } = setup(undefined, { memory: false, onCampus });
     deps.board.update(1, "codex", "done", {}, "private completion detail", { withheld: true });
     deps.board.update(1, "hub", "memory reference started", {});
-    const result = await gather("switchyard", deps);
+    const result = await gather("retired-route", deps);
     const row = result.evidence.find(item => item.id === "task #1")!;
     expect(row.text).toContain("last: done by codex");
     expect(row.text).not.toContain("memory reference started");
     expect(row.text.includes("private completion detail")).toBe(onCampus);
     deps.board.update(1, "claude", "reviewed", {}, "public review detail");
     deps.board.update(1, "hub", "memory reference started", {});
-    const ordinary = await gather("switchyard", deps);
+    const ordinary = await gather("retired-route", deps);
     expect(ordinary.evidence.find(item => item.id === "task #1")!.text).toContain("last: reviewed by claude (public review detail)");
   }
 });

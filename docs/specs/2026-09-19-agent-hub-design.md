@@ -44,7 +44,7 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
   vLLM serves `deepseek-ai/DeepSeek-V4-Flash-0731`; GLM-5.3-Flash and
   Qwen3.8-27B are planned (internal deployment plan).
   OpenCode 1.18.31 already has a `dgx-dsv4f` provider for this gateway.
-- Routing policy engine: NVIDIA-NeMo/Switchyard v0.2.0 (Apache-2.0). Route types
+- Historical routing policy engine, superseded by [Hub Model Routes](../design/model-routes.md) in #1352: NVIDIA-NeMo/Switchyard v0.2.0 (Apache-2.0). Route types
   `llm_classifier`, `stage_router`, `escalation_router`; `auto` needs a source build
   until v0.3.0. Standalone `switchyard-server` proxies `/v1/chat/completions`,
   `/v1/messages`, `/v1/responses` and forwards to any `base_url` upstream. Stability:
@@ -71,6 +71,8 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
   PII never leaves the campus network (internal routing criteria).
 
 ## Amendment: retire the Switchyard sidecar (#553, 2026-10-20)
+
+Historical amendment. #1352 supersedes the source-port and provenance requirements below with the newly authored [Hub Model Routes](../design/model-routes.md). The reserved port offset remains 3 under a neutral name; derived modules, their upstream checker and Apache notice are retired. The unrelated Tabler Icons notice remains.
 
 - All model routing runs in process. Remove `src/switchyard/`, the external binary,
   generated config, lifecycle, health/status/doctor entries, `AGENTHUB_SWITCHYARD_BIN`
@@ -370,7 +372,7 @@ pii = "local_only"                      # hard: on-prem models only
 budget_paused = "skip_peer"
 ```
 
-L2 in-process routing (2026-10-04 source port): `[hub_routes."hub/<id>"]` selects
+Historical L2 in-process routing (2026-10-04 source port, superseded by [Hub Model Routes](../design/model-routes.md) in #1352): `[hub_routes."hub/<id>"]` selects
 stage, plan_execute, advisor or escalation policies inside the hub. The host retains
 transport, budget admission and complete-turn history ownership; algorithms make decisions
 from normalized chat input and bounded session state. See
@@ -719,7 +721,7 @@ M6 internal inference, packaging
 - Room v1 excludes hosted multi-tenant service, multi-owner rooms, forward secrecy, traffic-metadata hiding, approval or permission-request relay, and cross-machine instances. Shared boards, remote roles and remote task ownership remain excluded; memory crosses only through the separate agent-mem git sync. No hub server is exposed.
 - OmniRoute daemon on the Mac; pooling subscription OAuth through any gateway.
 - Gemini CLI and OpenCode adapters beyond the ACP fallback note.
-- Switchyard `auto` route until v0.3.0 ships.
+- Historical exclusion, superseded in #1352: Switchyard `auto` route until v0.3.0 ships. Current routing uses the hub-owned route implementation and optional adec choices.
 - Running Claude Code itself on a local model (depends on the Anthropic-to-chat
   translation check in the OmniRoute plan v1, Phase 0).
 - A hub-owned memory store, cmem.ai cloud sync, automatic corpus building (a project
@@ -1517,7 +1519,7 @@ two-machine receipts remain separate verification.
 | Risk | Mitigation |
 | --- | --- |
 | Claude channels are research preview; flag or protocol may change | Adapter isolated in one file; plugin version pinned to a Claude Code range; `hub_inbox` fallback |
-| Model routing algorithm drift | In-process golden tests, Apache-2.0 notices and upstream provenance check |
+| Model routing algorithm drift | Hub-owned spec-derived tests and optional adec policy choices; the historical source-port provenance check is superseded in #1352 |
 | Anthropic-to-chat translation drops `tool_use` | Claude never runs on local models in this design |
 | Local worker executes untrusted room text | Untrusted framing, cwd scope, denylist, no `--unattended` by default |
 | Steering a Codex turn changes its plan mid-flight | Only `important` steers; default tier is `status` |

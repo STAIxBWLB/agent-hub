@@ -92,7 +92,7 @@ import { INSTANCE_CONFIG_FILES, readInstanceConfig, withoutInertInstancePolicy, 
 import { instanceBudgetHooks, projectBudgetHeadroom } from "./instance-budget.ts";
 import { resolveInstanceExecutionCwd } from "./instance-execution.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
-import type { ToolObservation } from "../models/route/signals.ts";
+import type { NativeToolObservation as ToolObservation } from "./progress.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, fstatSync, mkdirSync, readFileSync, renameSync, rmSync, watchFile, unwatchFile, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";

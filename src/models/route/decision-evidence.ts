@@ -1,6 +1,6 @@
 import { looksSecret } from "@staix/agent-mem";
 import type { ChatMessage } from "../../omniroute/client.ts";
-import type { CodingAgentDimensions } from "./stage.ts";
+import type { CodingAgentDimensions } from "./stage-evidence.ts";
 
 const SOURCE_BYTES = 64 * 1024;
 const USER_BYTES = 2048, ASSISTANT_BYTES = 1024, TOOL_BYTES = 2048;

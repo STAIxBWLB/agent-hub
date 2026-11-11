@@ -4703,8 +4703,9 @@ A new `routing.toml` from `ahub init` sets `[local]` and `implement` to `hub/sta
 `--model` pins the worker and bypasses route selection. A class with `fixed_model`
 and no `route` also calls that alias directly, even when `[local]` names a route.
 
-The Switchyard sidecar is retired (#553). No binary or generated model-router
-config is used, and its reserved port offset remains unused. Existing `[targets]`
+The hub owns its in-process fallback and escalation/advisor decisions, with
+optional adec model/effort choices (#1352). No separate routing binary or generated
+model-router config is used; reserved port offset 3 remains unused. Existing `[targets]`
 and `[routes]` tables are ignored and listed as retired settings in startup logs
 and doctor. Every route without the `hub/` prefix, including named legacy routes
 and `sy/` selections, uses the fixed alias with one warning. Loading or reloading
