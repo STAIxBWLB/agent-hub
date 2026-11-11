@@ -197,6 +197,24 @@ retains ownership and the profile for an explicit stop retry ([#1284](https://gi
 
 Permission decisions are bound to the authenticated caller and current session. A hub CLI call inside an agent session acts as that peer, not as the person; role and task checks still apply at each tool boundary. Permission modes are person-controlled, and a conductor role does not grant them. This avoids turning a received message into user consent ([#193](https://github.com/STAIxBWLB/agent-hub/issues/193), [#242](https://github.com/STAIxBWLB/agent-hub/issues/242)).
 
+## Confined guidance probe lifecycle (#1226 T2)
+
+The host-only `LocalPeer.runProbe` / `stopProbe` path reuses the local model/tool
+loop on a fresh private peer that never joins Bus or ordinary recovery. Ordinary
+`deliver` retains its existing behavior. Probe purpose suppresses ordinary
+capture, history, messaging, titles, route/usage/progress observers and learning;
+private correlated admissions and usage records remain separate. Stop closes
+new admissions and joins the actual run and owned cleanup before claiming
+quiescence. Unknown work retains its handle and hold.
+
+The [guidance probe contract](guidance-probes.md#t2-confined-adapter-contract)
+owns the complete-request binding, role input matrix, fixed model, resource
+reservations, path guards and verified deny-only sandbox. Its v1 tool capability
+is read/write/edit only. No arbitrary subprocess, hub, memory, package or network
+tool is available. The adapter factory is not wired into the daemon; source and
+fake-model checks and the model-free macOS boundary canary are separate from a
+real model/worker trial, which has not been authorized.
+
 ## Model, account, and memory boundaries
 
 Subscription-based native CLIs keep their own account authentication; those credentials are not pooled through the hub. Hub-owned inference, including internal summaries and local-worker model calls, uses the in-process model route and OmniRoute provider boundary. Prompt text may inform configured routing, but it cannot grant credential access or replace host routing policy. The optional local-worker adec consumer (#554) releases only bounded host-screened evidence, after campus/privacy and observer admission; native account, TUI, reviewer and task-assignment authority are unchanged. Shadow preserves the gateway model/effort and conversation; enforcement is refused at configuration load and no pair is applied. An explicit live model override bypasses the decision service. Current board/turn privacy and observer authority fence the optional request across waits and its proposal before telemetry; an authority change refuses the stale turn, and the refusal is not converted into a fixed-model fallback. There is no new gateway or native turn/spawn effort path. This separates native subscription identity from hub service credentials ([#553](https://github.com/STAIxBWLB/agent-hub/issues/553)).

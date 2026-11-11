@@ -7,9 +7,9 @@ import { parseGuidanceVariantV1, renderGuidanceVariantV1 } from "../src/hub/guid
 import { parseRole, taskRoleText } from "../src/hub/roles.ts";
 import vectors from "./fixtures/guidance-variant-v1.json";
 import { GuidanceProbeFixtureHost, GuidanceProbeStore } from "../src/hub/guidance-probe-store.ts";
-import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL, guidanceProbeCanonical, guidanceProbeManifestKey, guidanceProbeWorkerFrame,
+import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL, GuidanceProbeError, guidanceProbeCanonical, guidanceProbeManifestKey, guidanceProbeWorkerFrame,
   parseGuidanceProbeCommand, parseGuidanceProbeManifest, parseGuidanceProbeRegistration, probeHash,
-  type ProbeReservation, type ProbeEffectAdmission, type ProbeChildBinding, type ProbeFakeObservation } from "../src/hub/guidance-probes.ts";
+  type ProbeReservation, type ProbeEffectAdmission, type ProbeChildBinding, type ProbeFakeObservation, type ProbeFakeEffects } from "../src/hub/guidance-probes.ts";
 import { FakeGuidanceProbeProvider, fakeEffectValue, guidanceProbeFixture, guidanceProbeFixtureKey } from "./fakes/guidance-probe-provider.ts";
 
 const cleanup: (() => void)[] = [];
@@ -777,4 +777,110 @@ describe("guidance probe private atomic ledger", () => {
     db.query("UPDATE guidance_probe_sessions SET body=? WHERE project=? AND manifest_id=? AND ordinal=0").run("x".repeat(GUIDANCE_PROBE_SESSION_BYTES + 1), f.key.projectKey, f.key.id);
     expect(() => f.store.read(f.key)).toThrow("storage"); expect(() => f.store.integrity()).toThrow("storage");
   });
+});
+
+describe("T2 owner-prepared input and compound resources", () => {
+  test("resource overflow rolls back call, token and every coupled reservation before effects", () => {
+    const f = fixture(); f.register(); const reservation = f.reserve();
+    const before = f.store.integrity(), totals = f.store.read(f.key)!.counters;
+    const over = { ...f.effect(reservation), charges: { inputBytes: 20, scratchBytes: 1001, outputBytes: 5 } };
+    expect(() => f.store.admitEffect(over, f.revalidate)).toThrow("budget");
+    expect(f.store.integrity()).toEqual(before);
+    expect(f.store.read(f.key)!.counters).toEqual(totals);
+    const input = { ...f.effect(reservation), charges: { inputBytes: 20, scratchBytes: 100, outputBytes: 5 } };
+    const grant = f.store.admitEffect(input, f.revalidate);
+    expect(grant.kind).toBe("granted");
+    if (grant.kind !== "granted") throw new Error("expected compound reservation");
+    input.charges.scratchBytes = 999;
+    expect(grant.admission.charges).toEqual({ inputBytes: 20, scratchBytes: 100, outputBytes: 5 });
+    f.usage(grant.admission, 10); f.store.settleEffect({ admission: grant.admission, outcome: "settled" });
+    expect(f.store.read(f.key)!.counters).toMatchObject({ modelCalls: 1, tokensReserved: 20, scratchBytes: 100, outputBytes: 5 });
+    const paid = f.store.read(f.key)!.counters;
+    expect(f.store.admitEffect(grant.admission, f.revalidate).kind).toBe("existing");
+    expect(f.store.read(f.key)!.counters).toEqual(paid);
+    expect(() => f.store.admitEffect(input, f.revalidate)).toThrow("changed");
+  });
+
+  test("host setup spends storage without synthetic calls; actual initial frame and later input are charged once", async () => {
+    const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider();
+    const frame = JSON.stringify({ model: GUIDANCE_PROBE_MODEL, messages: [{ role: "system", content: "mandatory host fixture policy" }, { role: "user", content: "actual complete fixture request" }], tools: [] });
+    const nonGuidance = probeHash("complete request with its guidance slot empty");
+    const before = f.store.read(f.key)!.counters.inputBytes;
+    let copies = 0;
+    provider.script = async (input, effects) => {
+      expect(input.inputFrame).toBe(frame); expect(input.inputSha256).toBe(probeHash(frame));
+      expect(input.nonGuidanceInputSha256).toBe(nonGuidance);
+      const setup = { sequence: 0, unit: "resources" as const, descriptorSha256: probeHash("host setup"), charges: { scratchBytes: 100 } };
+      await effects.runEffect(setup, async () => { copies++; return fakeEffectValue(setup, true, 0); });
+      expect(f.store.read(f.key)!.counters).toMatchObject({ modelCalls: 0, toolCalls: 0, scratchBytes: 100 });
+      expect((await effects.runEffect(setup, async () => { copies++; return fakeEffectValue(setup, true, 0); })).kind).toBe("existing");
+      for (const sequence of [1, 2]) {
+        const request = { sequence, unit: "model_calls" as const, reservedTokens: 20, descriptorSha256: probeHash(`actual request ${sequence}`), ...(sequence === 2 ? { charges: { inputBytes: 30 } } : {}) };
+        await effects.runEffect(request, async () => fakeEffectValue(request, "answer", 10));
+      }
+      return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL,
+        inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.inputSha256,
+        nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
+    };
+    const host = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100,
+      prepareWorkerFrame: async () => ({ inputFrame: frame, nonGuidanceInputSha256: nonGuidance }) });
+    const result = await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal);
+    expect(result.state).toBe("active"); expect(copies).toBe(1);
+    expect(f.store.read(f.key)!.counters).toMatchObject({ modelCalls: 2, toolCalls: 0, scratchBytes: 100, inputBytes: before + Buffer.byteLength(frame) + 30 });
+    expect(f.store.read(f.key)!.sessions[0]!.coverage.coverageVerified).toBe(true);
+  });
+
+  test("async preparation revalidates authority before reservation and malformed custom frames never fall back", async () => {
+    for (const malformed of [false, true]) {
+      const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider();
+      let current = true;
+      const host = new GuidanceProbeFixtureHost(f.store, { ports: provider,
+        revalidate: () => { if (!current) throw new GuidanceProbeError("changed"); return f.revalidate(); }, now: () => 100,
+        prepareWorkerFrame: async () => {
+          if (!malformed) current = false;
+          return malformed ? undefined as never : { inputFrame: "full request", nonGuidanceInputSha256: probeHash("fixed") };
+        } });
+      await expect(host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal)).rejects.toThrow(malformed ? "invalid" : "changed");
+      expect(provider.launches).toHaveLength(0);
+      expect(f.store.read(f.key)!.counters.workerAttempts).toBe(0);
+    }
+  });
+});
+
+
+test("T2 captured effect currentness closes with its port even while the experiment has later slots", async () => {
+  const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider();
+  let captured: ProbeFakeEffects | undefined;
+  provider.script = async (input, effects) => {
+    captured = effects;
+    expect(() => effects.current()).not.toThrow();
+    const request = { sequence: 0, unit: "model_calls" as const, reservedTokens: 20, descriptorSha256: probeHash("captured effect") };
+    await effects.runEffect(request, async () => fakeEffectValue(request, "answer", 10));
+    return { reservation: input.reservation, outcome: "closed_fixture", servedModel: GUIDANCE_PROBE_MODEL,
+      inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.inputSha256,
+      nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "known_fixture" };
+  };
+  const host = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100 });
+  expect((await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal)).state).toBe("active");
+  if (!captured) throw new Error("expected captured capability");
+  expect(() => captured!.current()).toThrow("uncertain");
+});
+
+
+test("T2 resources-only usage must be attested zero before any subsequent model effect", async () => {
+  const f = fixture(); f.register(); const provider = new FakeGuidanceProbeProvider(); let models = 0;
+  provider.script = async (input, effects) => {
+    const setup = { sequence: 0, unit: "resources" as const, descriptorSha256: probeHash("invalid resource usage"), charges: { scratchBytes: 10 } };
+    await effects.runEffect(setup, async () => fakeEffectValue(setup, undefined, 1));
+    expect(f.store.read(f.key)!.counters.usageUnknown).toBe(true);
+    const request = { sequence: 1, unit: "model_calls" as const, reservedTokens: 20, descriptorSha256: probeHash("must not model") };
+    await expect(effects.runEffect(request, async () => { models++; return fakeEffectValue(request, "answer", 10); })).rejects.toThrow("uncertain");
+    return { reservation: input.reservation, outcome: "unknown", servedModel: GUIDANCE_PROBE_MODEL,
+      inputFrameHash: input.inputSha256, workerEffectiveInputHash: input.inputSha256,
+      nonGuidanceInputSha256: input.nonGuidanceInputSha256, candidateArtifactSha256: null, usage: "unknown" };
+  };
+  const host = new GuidanceProbeFixtureHost(f.store, { ports: provider, revalidate: f.revalidate, now: () => 100 });
+  const result = await host.start({ key: f.key, expectedRevision: 0, host: f.host, now: 100 }, new AbortController().signal);
+  expect(result.state).toBe("unknown_held"); expect(models).toBe(0);
+  expect(f.store.read(f.key)!.counters).toMatchObject({ modelCalls: 0, toolCalls: 0, scratchBytes: 10, usageUnknown: true });
 });

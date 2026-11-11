@@ -7620,7 +7620,7 @@ var init_deny = __esm(() => {
 
 // src/local/sandbox.ts
 import { spawn as spawn8, spawnSync as spawnSync3 } from "child_process";
-import { existsSync as existsSync7, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync5 } from "fs";
+import { existsSync as existsSync7, lstatSync as lstatSync12, mkdtempSync as mkdtempSync4, readdirSync, rmdirSync as rmdirSync2, rmSync as rmSync5 } from "fs";
 import { homedir as homedir4, tmpdir as tmpdir4 } from "os";
 import { dirname as dirname10, join as join13, resolve as resolve10 } from "path";
 function developerDir() {
@@ -7746,6 +7746,8 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
 `);
 }
 function sandboxedExec(argv, opts) {
+  if (opts.probe)
+    return probeCommand(argv, opts);
   if (opts.readOnlyData && /\(allow file-write\* \(subpath /.test(opts.profile))
     return Promise.resolve({ code: null, output: "error: data.readonly command profile contains a broad write grant" });
   if (!sandboxAvailable())
@@ -7807,6 +7809,108 @@ function sandboxedExec(argv, opts) {
     child.on("exit", (code, signal) => setTimeout(() => (killGroup(), finish(code, signal)), 500).unref());
   });
 }
+async function probeCommand(argv, opts) {
+  const proof = opts.probe;
+  if (!sandboxAvailable())
+    return { code: null, output: "error: probe confinement needs macOS sandbox-exec", quiescent: true };
+  try {
+    proof.physical();
+    proof.current();
+    const root = realPath(proof.workspaceRoot), temporary = realPath(proof.temporaryRoot), home = realPath(proof.home);
+    if (realPath(opts.cwd) !== root || !temporary.startsWith(root + "/") || !opts.env || opts.env.HOME !== home || opts.env.PATH !== "/usr/bin:/bin:/usr/sbin:/sbin" || opts.env.LANG !== "C" || opts.env.TERM !== "dumb" || Object.keys(opts.env).some((key) => !["PATH", "HOME", "LANG", "TERM"].includes(key)))
+      throw new Error("probe command binding unavailable");
+    if (opts.signal?.aborted)
+      throw new Error("probe command cancelled");
+  } catch {
+    return { code: null, output: "error: probe command authority or environment unavailable", quiescent: true };
+  }
+  const own = realPath(mkdtempSync4(join13(proof.temporaryRoot, "command-")));
+  const created = lstatSync12(own);
+  let removed = false;
+  const dropOwn = () => {
+    if (removed)
+      return;
+    proof.physical();
+    const current = lstatSync12(own);
+    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== created.dev || current.ino !== created.ino || realPath(own) !== own)
+      throw new Error("probe command temp ownership changed");
+    rmdirSync2(own);
+    removed = true;
+  };
+  const env = { ...opts.env, TMPDIR: `${own}/` };
+  return new Promise((resolve) => {
+    let child;
+    try {
+      proof.current();
+      child = spawn8(SANDBOX_EXEC, ["-p", opts.profile, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    } catch {
+      try {
+        dropOwn();
+        resolve({ code: null, output: "error: probe command did not launch", quiescent: true });
+      } catch {
+        resolve({ code: null, output: "error: probe command setup cleanup is unconfirmed", quiescent: false, stop: async () => dropOwn() });
+      }
+      return;
+    }
+    trackGroup(child);
+    let output = "", settled = false, cancelled = false;
+    let pipeTimer;
+    const take = (data) => {
+      if (output.length < OUTPUT_CAP)
+        output += data.toString();
+    };
+    child.stdout?.on("data", take);
+    child.stderr?.on("data", take);
+    const stop = async () => {
+      await stopOwnedProcess(child, { group: true });
+      dropOwn();
+    };
+    const finish = async (code) => {
+      if (settled)
+        return;
+      settled = true;
+      clearTimeout(timer);
+      if (pipeTimer)
+        clearTimeout(pipeTimer);
+      opts.signal?.removeEventListener("abort", abort);
+      let quiescent = false;
+      try {
+        await stop();
+        quiescent = true;
+      } catch {}
+      const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}
+(output truncated)` : output;
+      const observed = child.signalCode ? `${clipped}
+(probe command signal: ${child.signalCode}; owned pid: ${child.pid})` : clipped;
+      resolve({ code, output: cancelled ? `${observed}
+(probe command cancelled)` : observed, quiescent, ...quiescent ? {} : { stop } });
+    };
+    const abort = () => {
+      cancelled = true;
+      finish(null);
+    };
+    const timer = setTimeout(abort, opts.timeoutMs ?? 5000);
+    opts.signal?.addEventListener("abort", abort, { once: true });
+    child.once("error", (error) => {
+      output = `error: probe command spawn failed (${error.code ?? "unknown"})`;
+      finish(null);
+    });
+    child.once("close", (code) => {
+      finish(code);
+    });
+    child.once("exit", (code) => {
+      pipeTimer = setTimeout(() => {
+        finish(code);
+      }, 500);
+    });
+    if (child.exitCode !== null || child.signalCode !== null)
+      pipeTimer = setTimeout(() => {
+        finish(child.exitCode);
+      }, 500);
+    if (opts.signal?.aborted)
+      abort();
+  });
+}
 function proxyEnv(network) {
   if (typeof network !== "object")
     return {};
@@ -7818,6 +7922,7 @@ var init_sandbox = __esm(() => {
   init_project();
   init_git();
   init_deny();
+  init_child_process();
   q = sbplString;
   HOME_READABLE = [".bun", ".cargo", ".rustup", ".local", ".npm", ".cache", ".pyenv", ".nvm", ".deno", "go", ".gitconfig", ".config/git", "Library/Caches", ".volta", ".asdf", ".nodenv", ".rbenv", ".sdkman", "Library/Application Support/fnm", "Library/pnpm"];
   CA_BUNDLES = ["/private/etc/ssl/cert.pem", "/opt/homebrew/etc/ca-certificates/cert.pem", "/opt/homebrew/etc/openssl@3/cert.pem", "/usr/local/etc/ca-certificates/cert.pem", "/usr/local/etc/openssl@3/cert.pem"];
@@ -7838,7 +7943,7 @@ var init_text_projection = __esm(() => {
 });
 
 // src/local/doc-read.ts
-import { lstatSync as lstatSync12 } from "fs";
+import { lstatSync as lstatSync13 } from "fs";
 import { extname } from "path";
 function docRead(file, shown, args, port, cwd) {
   const projections = port.projections();
@@ -7848,7 +7953,7 @@ function docRead(file, shown, args, port, cwd) {
   }
   let st;
   try {
-    st = lstatSync12(file);
+    st = lstatSync13(file);
   } catch {
     return `error: ${shown} cannot be read`;
   }
@@ -8170,34 +8275,353 @@ var init_web_fetch = __esm(() => {
   BLOCK_CLOSERS = new Set(["p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "br", "pre", "blockquote", "table"]);
 });
 
+// src/hub/execution-reference.ts
+function executionText(value, max) {
+  return typeof value === "string" && value.length > 0 && value.length <= max && Buffer.byteLength(value, "utf8") <= max && !/[\p{Cc}\p{Cs}]/u.test(value);
+}
+var EXECUTION_REFERENCE_LIMITS;
+var init_execution_reference = __esm(() => {
+  EXECUTION_REFERENCE_LIMITS = Object.freeze({ id: 256, projectKey: 256, revision: 128, kind: 64 });
+});
+
+// src/hub/guidance-probes.ts
+import { createHash as createHash5 } from "crypto";
+import { types } from "util";
+function inert(value, maximum) {
+  let remaining = maximum;
+  const seen = new Set;
+  const charge = (bytes) => {
+    remaining -= bytes;
+    if (remaining < 0)
+      invalid();
+  };
+  const copy = (item) => {
+    if (item === null || typeof item === "boolean" || typeof item === "number" && Number.isFinite(item)) {
+      charge(Buffer.byteLength(JSON.stringify(item)));
+      return item;
+    }
+    if (typeof item === "string") {
+      if (item.length > remaining)
+        invalid();
+      charge(Buffer.byteLength(JSON.stringify(item)));
+      return item;
+    }
+    if (!item || typeof item !== "object" || types.isProxy(item) || seen.has(item))
+      return invalid();
+    const array = Array.isArray(item), proto = Object.getPrototypeOf(item);
+    if (array ? proto !== Array.prototype : proto !== Object.prototype && proto !== null)
+      return invalid();
+    const keys = Reflect.ownKeys(item);
+    if (keys.length > remaining)
+      return invalid();
+    seen.add(item);
+    charge(2);
+    if (array) {
+      const length = Object.getOwnPropertyDescriptor(item, "length")?.value;
+      if (!probeInteger(length) || keys.length !== length + 1)
+        return invalid();
+      const result = [];
+      for (let index = 0;index < length; index++) {
+        const field = Object.getOwnPropertyDescriptor(item, String(index));
+        if (!field || !("value" in field) || !field.enumerable)
+          return invalid();
+        if (index)
+          charge(1);
+        result.push(copy(field.value));
+      }
+      seen.delete(item);
+      return result;
+    }
+    const result = Object.create(null);
+    let index = 0;
+    for (const key of keys) {
+      if (typeof key !== "string")
+        return invalid();
+      const field = Object.getOwnPropertyDescriptor(item, key);
+      if (!field || !("value" in field) || !field.enumerable)
+        return invalid();
+      charge(Buffer.byteLength(JSON.stringify(key)) + 1 + (index++ ? 1 : 0));
+      result[key] = copy(field.value);
+    }
+    seen.delete(item);
+    return result;
+  };
+  return copy(value);
+}
+function canonical3(value) {
+  if (Array.isArray(value))
+    return `[${value.map(canonical3).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical3(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+var GUIDANCE_PROBE_LIMITS, registrationScaffoldBytes, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MODEL = "qwen27b/qwen3.8-27b", GuidanceProbeError, invalid = () => {
+  throw new GuidanceProbeError("invalid");
+}, probeHash = (text) => createHash5("sha256").update(text, "utf8").digest("hex"), probeInteger = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, guidanceProbeCanonical = (value, maximum = GUIDANCE_PROBE_LIMITS.recordBytes) => canonical3(inert(value, maximum));
+var init_guidance_probes = __esm(() => {
+  init_execution_reference();
+  GUIDANCE_PROBE_LIMITS = Object.freeze({
+    recordBytes: 32768,
+    snapshotBytes: 32768,
+    storageBytes: 1073741824,
+    workerAttempts: 4,
+    editorAttempts: 5,
+    slots: 9,
+    hashLength: 64
+  });
+  registrationScaffoldBytes = Buffer.byteLength(JSON.stringify({ manifest: 0, snapshots: { task: "", baselineContext: "", dataPolicy: 0, systemPolicy: "", improverContext: "" } }));
+  GUIDANCE_PROBE_REGISTRATION_BYTES = GUIDANCE_PROBE_LIMITS.recordBytes + GUIDANCE_PROBE_LIMITS.snapshotBytes + 4 * 2 * GUIDANCE_PROBE_LIMITS.snapshotBytes + registrationScaffoldBytes;
+  GUIDANCE_PROBE_SESSION_BYTES = 4 * GUIDANCE_PROBE_LIMITS.recordBytes;
+  GuidanceProbeError = class GuidanceProbeError extends Error {
+    reason;
+    constructor(reason) {
+      super({
+        invalid: "invalid probe fields or bounds; reload the closed V1 declaration before retrying",
+        changed: "probe binding or revision changed; read the current task, G1 and probe before retrying",
+        budget: "probe aggregate budget is exhausted or unknown; inspect the retained accounting before a separate experiment",
+        held: "probe outcome is uncertain or already active; inspect retained state without replaying work",
+        runner: "probe runner is unavailable in production T1; use fake-only fixtures, not a live launch",
+        storage: "probe storage is invalid or unavailable; inspect retained probe state before retrying"
+      }[reason]);
+      this.reason = reason;
+      this.name = "GuidanceProbeError";
+    }
+  };
+});
+
+// src/local/probe-errors.ts
+function formatProbeToolRefusal(error) {
+  const reason = error instanceof ProbeToolRefusal && Object.hasOwn(reasons, error.code) ? reasons[error.code] : unknownReason;
+  return `error: ${reason}`;
+}
+var reasons, unknownReason = "confined probe operation refused; stop this operation and ask the host to inspect the admitted state", ProbeToolRefusal;
+var init_probe_errors = __esm(() => {
+  reasons = {
+    outside_workspace: "path is outside the admitted logical workspace; use a declared /workspace path",
+    invalid_path: "path is not an admitted relative name; use a declared /workspace file without traversal, dependency or internal-temp components",
+    unadmitted_write: "write target is not admitted; choose a target from the supplied logical /workspace/scratch or /workspace/output list",
+    file_ceiling: "file exceeds the 1 MiB file ceiling; reduce the file before requesting another admitted operation",
+    hardlinked_target: "hardlinked target is not a private probe file; ask the host for a fresh regular file",
+    nonregular_target: "target is not a regular probe file; choose a declared regular file",
+    authority_stopped: "probe authority is stopped or unavailable; stop this session and ask the host for a newly admitted session",
+    target_changed: "probe target or reservation changed; stop this operation and ask the host to inspect the admitted state",
+    tool_unavailable: "tool is unavailable in the confined probe; use only the admitted read, write and edit tools",
+    workspace_ceiling: "workspace reservation exceeds its admitted workspace ceiling (at most 64 MiB); reduce the declared data or ask the host for a new bounded session",
+    confinement_unavailable: "OS confinement or owned cleanup is unverified; stop this session and ask the host to inspect confinement and retained resources",
+    token_bound_unavailable: "trusted token upper-bound proof is unavailable; ask the host to prepare a frozen configuration before another model call",
+    token_ceiling: "model call exceeds the admitted token ceiling; reduce its declared input or ask the host for a new bounded session"
+  };
+  ProbeToolRefusal = class ProbeToolRefusal extends Error {
+    code;
+    constructor(code) {
+      super(Object.hasOwn(reasons, code) ? reasons[code] : unknownReason);
+      this.code = code;
+    }
+  };
+});
+
+// src/local/probe-workspace.ts
+import { chmodSync as chmodSync2, constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync14, mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync5, openSync as openSync6, opendirSync as opendirSync2, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname11, isAbsolute as isAbsolute6, join as join14 } from "path";
+function refused() {
+  throw new Error("probe workspace source, role, path or resource proof is unavailable");
+}
+function directoryIdentity(file) {
+  const stat = lstatSync14(file);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || realPath(file) !== file)
+    refused();
+  return { file, dev: stat.dev, ino: stat.ino };
+}
+function requireDirectory(identity) {
+  const current = directoryIdentity(identity.file);
+  if (current.dev !== identity.dev || current.ino !== identity.ino)
+    refused();
+}
+function probeRelativePath(value) {
+  return executionText(value, EXECUTION_REFERENCE_LIMITS.id) && !isAbsolute6(value) && !value.includes("\\") && !/^[a-z]:/i.test(value) && !isDenied(value) && value.split("/").every((part) => !!part && ![".", "..", ".git", ".agenthub", "node_modules", ".probe-temp"].includes(foldSegment(part)));
+}
+function probeWorkspacePhysical(workspace) {
+  const state = workspaces.get(workspace);
+  if (!state)
+    refused();
+  for (const directory of state.directories)
+    requireDirectory(directory);
+}
+function probeWorkspaceCurrent(workspace) {
+  const state = workspaces.get(workspace);
+  if (!state)
+    refused();
+  state.current();
+  probeWorkspacePhysical(workspace);
+  for (const entry of state.identities) {
+    const stat = lstatSync14(entry.file);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== entry.dev || stat.ino !== entry.ino || stat.size !== entry.size || stat.mtimeMs !== entry.mtimeMs || stat.ctimeMs !== entry.ctimeMs)
+      refused();
+  }
+}
+function reserveProbeWorkspaceBytes(workspace, bytes) {
+  probeWorkspaceCurrent(workspace);
+  const state = workspaces.get(workspace);
+  if (!integer(bytes))
+    refused();
+  if (state.charged + bytes > state.maximum)
+    throw new ProbeToolRefusal("workspace_ceiling");
+  state.charged += bytes;
+}
+var PROBE_WORKSPACE_LIMITS, workspaces, integer = (value) => Number.isSafeInteger(value) && value >= 0;
+var init_probe_workspace = __esm(() => {
+  init_execution_reference();
+  init_git();
+  init_guidance_probes();
+  init_permission_mode();
+  init_project();
+  init_deny();
+  init_probe_errors();
+  PROBE_WORKSPACE_LIMITS = Object.freeze({ fileBytes: 1024 * 1024, workspaceBytes: 64 * 1024 * 1024 });
+  workspaces = new WeakMap;
+});
+
 // src/local/tools.ts
-import { lstatSync as lstatSync13, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname11, join as join14, relative as relative4, resolve as resolve11 } from "path";
+import { lstatSync as lstatSync15, mkdirSync as mkdirSync9, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync8 } from "fs";
+import { dirname as dirname12, join as join15, relative as relative4, resolve as resolve11 } from "path";
+function probeCurrent(probe) {
+  try {
+    probe.current();
+  } catch {
+    throw new ProbeToolRefusal("authority_stopped");
+  }
+}
+function probeTargetIdentity(target) {
+  const stat = lstatSync15(target, { throwIfNoEntry: false });
+  if (!stat)
+    return;
+  if (!stat.isFile())
+    throw new ProbeToolRefusal("nonregular_target");
+  if (stat.nlink !== 1)
+    throw new ProbeToolRefusal("hardlinked_target");
+  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
+}
+function planProbeTool(name, rawArgs, ctx) {
+  if (!ctx.probe)
+    throw new ProbeToolRefusal("authority_stopped");
+  probeCurrent(ctx.probe);
+  const root = realPath(ctx.cwd);
+  let target, maximum = 0, identity;
+  try {
+    if (name === "write" || name === "edit") {
+      const value = JSON.parse(rawArgs || "{}");
+      target = guardPath(ctx, String(value.path), "write");
+      identity = probeTargetIdentity(target);
+      if (name === "write")
+        maximum = Buffer.byteLength(String(value.content ?? ""), "utf8");
+      else {
+        const stat = lstatSync15(target, { throwIfNoEntry: false });
+        if (!stat || !stat.isFile())
+          throw new ProbeToolRefusal("nonregular_target");
+        maximum = Math.min(PROBE_WORKSPACE_LIMITS.fileBytes, stat.size + Buffer.byteLength(String(value.new ?? ""), "utf8"));
+      }
+      if (maximum > PROBE_WORKSPACE_LIMITS.fileBytes)
+        throw new ProbeToolRefusal("file_ceiling");
+    }
+  } catch {
+    target = undefined;
+    maximum = 0;
+    identity = undefined;
+  }
+  const kind = target === undefined ? undefined : relative4(root, target).split("/")[0];
+  const plan = Object.freeze({
+    scratchBytes: kind === "scratch" ? maximum : 0,
+    outputBytes: kind === "output" ? maximum : 0,
+    ...target === undefined ? {} : { target },
+    maximumBytes: maximum
+  });
+  probeToolPlans.set(plan, { root, target, maximum, identity, used: false });
+  return plan;
+}
+function requireProbeToolWrite(plan, bytes, canonicalPath, ctx) {
+  if (ctx.probe)
+    probeCurrent(ctx.probe);
+  const state = probeToolPlans.get(plan);
+  if (!ctx.probe || !state || state.used || state.target === undefined || !Number.isSafeInteger(bytes) || bytes < 0 || bytes > state.maximum || realPath(ctx.cwd) !== state.root || canonicalPath !== state.target || guardPath(ctx, relative4(state.root, canonicalPath), "write") !== state.target || probeTargetIdentity(canonicalPath) !== state.identity) {
+    throw new ProbeToolRefusal("target_changed");
+  }
+  state.used = true;
+}
 function guardPath(ctx, path, mode) {
+  if (ctx.probe) {
+    probeCurrent(ctx.probe);
+    if (realPath(ctx.probe.root) !== realPath(ctx.cwd))
+      throw new ProbeToolRefusal("target_changed");
+    if (path === "/workspace")
+      path = ".";
+    else if (path.startsWith("/workspace/"))
+      path = path.slice("/workspace/".length);
+    else if (path.startsWith("/") || /^[a-z]:/i.test(path))
+      throw new ProbeToolRefusal("outside_workspace");
+    if (!(mode === "read" && path === ".") && !probeRelativePath(path))
+      throw new ProbeToolRefusal("invalid_path");
+    const normalized = relative4(realPath(ctx.cwd), resolve11(realPath(ctx.cwd), path));
+    if (!(mode === "read" && !normalized) && !probeRelativePath(normalized))
+      throw new ProbeToolRefusal("invalid_path");
+    path = normalized || ".";
+  }
   const root = realPath(ctx.cwd);
   const abs = resolve11(root, path);
   let existing = abs;
   while (!lexists(existing))
-    existing = dirname11(existing);
+    existing = dirname12(existing);
   let realExisting;
   try {
     realExisting = realPath(existing);
   } catch {
+    if (ctx.probe)
+      throw new ProbeToolRefusal("nonregular_target");
     throw new Error(`${path} goes through a dangling symlink`);
   }
-  const real = join14(realExisting, relative4(existing, abs));
+  const real = join15(realExisting, relative4(existing, abs));
   const rel = relative4(root, real);
-  if (rel.startsWith("..") || resolve11(root, rel) !== real)
+  if (rel.startsWith("..") || resolve11(root, rel) !== real) {
+    if (ctx.probe)
+      throw new ProbeToolRefusal("outside_workspace");
     throw new Error(`${path} is outside the project directory`);
+  }
   const typed = relative4(root, abs), inside = insideRoot(typed);
-  if (isDenied(rel, ctx.deny) || inside && isDenied(typed, ctx.deny))
+  if (isDenied(rel, ctx.deny) || inside && isDenied(typed, ctx.deny)) {
+    if (ctx.probe)
+      throw new ProbeToolRefusal("invalid_path");
     throw new Error(`${path} is on the secrets denylist`);
+  }
+  if (ctx.probe) {
+    const stat = lstatSync15(real, { throwIfNoEntry: false });
+    if (stat && !stat.isFile() && !(mode === "read" && stat.isDirectory()))
+      throw new ProbeToolRefusal("nonregular_target");
+    if (stat?.isFile() && stat.nlink !== 1)
+      throw new ProbeToolRefusal("hardlinked_target");
+    if (stat?.isFile() && stat.size > PROBE_WORKSPACE_LIMITS.fileBytes)
+      throw new ProbeToolRefusal("file_ceiling");
+    if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed) || matchesPolicy(root, path, ctx.readOnly ?? [])))
+      throw new ProbeToolRefusal("unadmitted_write");
+  }
   if (mode === "write" && (isHubWritePath(rel) || inside && isHubWritePath(typed)))
     throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && ctx.readOnly?.length && (lstatSync13(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync15(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? []))
     throw new Error("target is protected by data.readonly");
+  if (ctx.probe && mode === "write") {
+    const allowed = ctx.probe.writableRoots.some((approved) => {
+      const spelling = resolve11(ctx.probe.root), requested = resolve11(spelling, approved);
+      const fromSpelling = relative4(spelling, requested);
+      const suffix = insideRoot(fromSpelling) ? fromSpelling : relative4(root, requested);
+      if (!insideRoot(suffix))
+        return false;
+      const entry = resolve11(root, suffix), part = relative4(root, entry).split("/");
+      return part.length > 1 && ["scratch", "output"].includes(part[0]) && insideRoot(relative4(root, entry)) && insideRoot(relative4(entry, real)) && insideRoot(relative4(entry, abs));
+    });
+    if (!allowed)
+      throw new ProbeToolRefusal("unadmitted_write");
+    probeCurrent(ctx.probe);
+  }
   return real;
 }
 function gitArgsProblem(args, deny) {
@@ -8230,6 +8654,17 @@ function toolResultFailed(name, output) {
   return output.startsWith("error:");
 }
 async function runTool(name, rawArgs, ctx) {
+  if (ctx.probe) {
+    if (ctx.signal?.aborted)
+      return formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped"));
+    try {
+      probeCurrent(ctx.probe);
+    } catch (error) {
+      return formatProbeToolRefusal(error);
+    }
+    if (!["read", "write", "edit"].includes(name))
+      return formatProbeToolRefusal(new ProbeToolRefusal("tool_unavailable"));
+  }
   let a;
   try {
     a = JSON.parse(rawArgs || "{}");
@@ -8238,7 +8673,7 @@ async function runTool(name, rawArgs, ctx) {
   }
   try {
     if (ctx.signal?.aborted)
-      return "error: turn cancelled before tool execution";
+      return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped")) : "error: turn cancelled before tool execution";
     switch (name) {
       case "read": {
         const file = guardPath(ctx, String(a.path), "read");
@@ -8256,17 +8691,30 @@ async function runTool(name, rawArgs, ctx) {
         let file = guardPath(ctx, String(a.path), "write");
         const approvedTarget = file;
         const content = String(a.content ?? "");
+        if (ctx.probe && Buffer.byteLength(content, "utf8") > PROBE_WORKSPACE_LIMITS.fileBytes)
+          return formatProbeToolRefusal(new ProbeToolRefusal("file_ceiling"));
         const refused = approvalError(await ctx.permit(`write ${a.path} (${content.length} chars):
 ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), "error: the user did not approve this write");
         if (refused)
           return refused;
         if (ctx.signal?.aborted)
-          return "error: turn cancelled before write";
+          return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped")) : "error: turn cancelled before write";
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
-          return "error: path target changed during approval; inspect before retrying";
-        mkdirSync8(dirname11(file), { recursive: true });
-        writeFileSync7(file, content);
+          return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("target_changed")) : "error: path target changed during approval; inspect before retrying";
+        if (ctx.probe) {
+          const bytes = Buffer.byteLength(content, "utf8");
+          if (bytes > PROBE_WORKSPACE_LIMITS.fileBytes)
+            return formatProbeToolRefusal(new ProbeToolRefusal("file_ceiling"));
+          await ctx.probe.reserveWrite(bytes, file);
+          probeCurrent(ctx.probe);
+          if (ctx.signal?.aborted)
+            return formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped"));
+          if (guardPath(ctx, String(a.path), "write") !== approvedTarget)
+            return formatProbeToolRefusal(new ProbeToolRefusal("target_changed"));
+        }
+        mkdirSync9(dirname12(file), { recursive: true });
+        writeFileSync8(file, content);
         return `wrote ${a.path}`;
       }
       case "edit": {
@@ -8282,15 +8730,27 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         if (refused)
           return refused;
         if (ctx.signal?.aborted)
-          return "error: turn cancelled before edit";
+          return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped")) : "error: turn cancelled before edit";
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
-          return "error: path target changed during approval; inspect before retrying";
+          return ctx.probe ? formatProbeToolRefusal(new ProbeToolRefusal("target_changed")) : "error: path target changed during approval; inspect before retrying";
         text = readFileSync7(file, "utf8");
         count = text.split(String(a.old)).length - 1;
         if (count !== 1)
           return `error: file changed during approval; \`old\` must match exactly once, it matched ${count} times`;
-        writeFileSync7(file, text.replace(String(a.old), () => String(a.new ?? "")));
+        const replacement = text.replace(String(a.old), () => String(a.new ?? ""));
+        if (ctx.probe) {
+          const bytes = Buffer.byteLength(replacement, "utf8");
+          if (bytes > PROBE_WORKSPACE_LIMITS.fileBytes)
+            return formatProbeToolRefusal(new ProbeToolRefusal("file_ceiling"));
+          await ctx.probe.reserveWrite(bytes, file);
+          probeCurrent(ctx.probe);
+          if (ctx.signal?.aborted)
+            return formatProbeToolRefusal(new ProbeToolRefusal("authority_stopped"));
+          if (guardPath(ctx, String(a.path), "write") !== approvedTarget || readFileSync7(file, "utf8") !== text)
+            return formatProbeToolRefusal(new ProbeToolRefusal("target_changed"));
+        }
+        writeFileSync8(file, replacement);
         return `edited ${a.path}`;
       }
       case "bash": {
@@ -8365,12 +8825,14 @@ note: the sandbox does not let you move a branch, tag or HEAD, or stage inside a
         return `error: unknown tool ${name}`;
     }
   } catch (e) {
+    if (ctx.probe)
+      return formatProbeToolRefusal(e);
     return `error: ${e.message}`;
   }
 }
-var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, lexists = (p) => {
+var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, probeToolPlans, lexists = (p) => {
   try {
-    lstatSync13(p);
+    lstatSync15(p);
     return true;
   } catch {
     return false;
@@ -8388,8 +8850,11 @@ var init_tools = __esm(() => {
   init_doc_read();
   init_web_fetch();
   init_sandbox();
+  init_probe_workspace();
+  init_probe_errors();
   ApprovalWaitStop = class ApprovalWaitStop extends Error {
   };
+  probeToolPlans = new WeakMap;
   GIT_READ = new Set(["status", "diff", "log", "show", "ls-files", "blame", "rev-parse"]);
   GIT_WRITE = new Set(["add", "commit", "restore", "checkout", "switch", "stash", "mv", "rm", "branch", "merge", "rebase", "cherry-pick", "revert", "tag"]);
   str = { type: "string" };
@@ -8439,8 +8904,8 @@ var init_question_detach = __esm(() => {
 
 // src/adapters/pi.ts
 import { randomUUID as randomUUID5 } from "crypto";
-import { existsSync as existsSync8, mkdirSync as mkdirSync9 } from "fs";
-import { join as join15, resolve as resolve12 } from "path";
+import { existsSync as existsSync8, mkdirSync as mkdirSync10 } from "fs";
+import { join as join16, resolve as resolve12 } from "path";
 import { spawn as spawn9 } from "child_process";
 function piVersionAsync(command, cwd, timeoutMs = 1e4) {
   const [bin, ...prefix] = command;
@@ -9027,9 +9492,9 @@ var init_pi = __esm(() => {
       this.approvalAnswerEpoch = undefined;
       this.approvalStopReason = "";
       this.approvalAbortSent = false;
-      mkdirSync9(this.opts.stateDir, { recursive: true });
-      const sessions = join15(this.opts.stateDir, "pi-sessions");
-      mkdirSync9(sessions, { recursive: true, mode: 448 });
+      mkdirSync10(this.opts.stateDir, { recursive: true });
+      const sessions = join16(this.opts.stateDir, "pi-sessions");
+      mkdirSync10(sessions, { recursive: true, mode: 448 });
       if (this.opts.sessionFile) {
         try {
           validatePiSession(this.opts.stateDir, this.opts.cwd, this.opts.sessionFile, this.opts.sessionId);
@@ -9091,7 +9556,7 @@ var init_pi = __esm(() => {
         return new Response("not found", { status: 404 });
       } });
       this.server = bridge;
-      const extension = resolve12(join15(import.meta.dir, "../pi/extension.ts"));
+      const extension = resolve12(join16(import.meta.dir, "../pi/extension.ts"));
       const inherited = {};
       for (const key of ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"])
         if (process.env[key])
@@ -9996,12 +10461,6 @@ var init_queue_backpressure = __esm(() => {
   QUEUE_BACKPRESSURE_LIMITS = Object.freeze({ max_queued: 1e4, max_oldest_s: 604800 });
   DEFAULT_POLICY = Object.freeze({ max_queued: 0, max_oldest_s: 0 });
 });
-// src/hub/execution-reference.ts
-var EXECUTION_REFERENCE_LIMITS;
-var init_execution_reference = __esm(() => {
-  EXECUTION_REFERENCE_LIMITS = Object.freeze({ id: 256, projectKey: 256, revision: 128, kind: 64 });
-});
-
 // src/hub/execution-links.ts
 var EXECUTION_LINK_LIMITS;
 var init_execution_links = __esm(() => {
@@ -10566,9 +11025,9 @@ var init_shipped_roles = __esm(() => {
 });
 
 // src/hub/roles.ts
-import { createHash as createHash5 } from "crypto";
-import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync14, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
-import { join as join16 } from "path";
+import { createHash as createHash6 } from "crypto";
+import { constants as constants6, closeSync as closeSync7, fstatSync as fstatSync6, lstatSync as lstatSync16, openSync as openSync7, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
+import { join as join17 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
     throw new Error("invalid role size, encoding or file id");
@@ -10612,12 +11071,12 @@ function parseRole(text, stem, layer) {
   }
   const reviewStart = sections[4].index + sections[4][0].length;
   const review = body.slice(reviewStart, sections[5].index).trim();
-  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES), classes: list("classes", CLASSES), body, review, layer, hash: createHash5("sha256").update(text).digest("hex") };
+  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES), classes: list("classes", CLASSES), body, review, layer, hash: createHash6("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
-  const fd = openSync6(file, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
+  const fd = openSync7(file, constants6.O_RDONLY | constants6.O_NOFOLLOW | constants6.O_NONBLOCK);
   try {
-    const before = fstatSync5(fd);
+    const before = fstatSync6(fd);
     if (!before.isFile() || before.nlink !== 1 || before.size > 8192)
       throw new Error("role must be a bounded regular file");
     const bytes = Buffer.alloc(8193);
@@ -10627,12 +11086,12 @@ function projectRole(file) {
       if (length > 8192)
         throw new Error("role exceeds file cap");
     }
-    const after = fstatSync5(fd);
+    const after = fstatSync6(fd);
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || length !== after.size)
       throw new Error("role changed during read");
     return bytes.subarray(0, length).toString("utf8");
   } finally {
-    closeSync6(fd);
+    closeSync7(fd);
   }
 }
 function loadRoleCatalog(cwd) {
@@ -10647,9 +11106,9 @@ function loadRoleCatalog(cwd) {
   if (!cwd)
     return { roles, errors };
   try {
-    const config = join16(cwd, ".agenthub"), dir = join16(config, "roles");
+    const config = join17(cwd, ".agenthub"), dir = join17(config, "roles");
     for (const path of [config, dir]) {
-      const stat = lstatSync14(path);
+      const stat = lstatSync16(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error("unsafe role directory");
     }
@@ -10659,7 +11118,7 @@ function loadRoleCatalog(cwd) {
     for (const file of files) {
       const id = file.slice(0, -3);
       try {
-        roles.set(id, parseRole(projectRole(join16(dir, file)), id, "project"));
+        roles.set(id, parseRole(projectRole(join17(dir, file)), id, "project"));
       } catch {
         errors.push({ id: ID.test(id) ? id : "invalid-file-id", reason: "invalid or unsafe project role" });
       }
@@ -11884,7 +12343,7 @@ var init_curated_cache_state = __esm(() => {
 });
 
 // node_modules/@staix/agent-mem/src/memory/formats.ts
-import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, openSync as openSync7, readFileSync as readFileSync8, readSync as readSync5 } from "fs";
+import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, openSync as openSync8, readFileSync as readFileSync8, readSync as readSync5 } from "fs";
 var MAX_BYTES4, SEMVER, READER_VERSION;
 var init_formats = __esm(() => {
   MAX_BYTES4 = 64 * 1024;
@@ -13625,7 +14084,7 @@ var init_spec_read = __esm(() => {
 // src/models/route/adec.ts
 import { Agent, request as httpRequest } from "http";
 import { connect } from "net";
-import { types } from "util";
+import { types as types2 } from "util";
 function isAdecRouteEndpoint(value) {
   if (typeof value !== "string")
     return false;
@@ -13633,7 +14092,7 @@ function isAdecRouteEndpoint(value) {
   return !!match && (match[2] === undefined || Number(match[2]) <= 65535);
 }
 function record2(value, keys) {
-  if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+  if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
     return;
   const own = Reflect.ownKeys(value);
   if (own.length > keys.length)
@@ -13650,7 +14109,7 @@ function record2(value, keys) {
   return result;
 }
 function list(value, max) {
-  if (types.isProxy(value) || !Array.isArray(value) || value.length > max || Reflect.ownKeys(value).length !== value.length + 1)
+  if (types2.isProxy(value) || !Array.isArray(value) || value.length > max || Reflect.ownKeys(value).length !== value.length + 1)
     return;
   const result = [];
   for (let index = 0;index < value.length; index++) {
@@ -13929,7 +14388,7 @@ var init_config2 = __esm(() => {
 });
 
 // src/hub/routing.ts
-import { join as join17, resolve as resolve13 } from "path";
+import { join as join18, resolve as resolve13 } from "path";
 function effectiveLocalRoute(defaultRoute, classRoute, classFixedModel) {
   return classRoute ?? (classFixedModel === undefined ? defaultRoute : undefined);
 }
@@ -13942,7 +14401,7 @@ var init_routing = __esm(() => {
   init_spec_read();
   init_config2();
   init_stage_fallback();
-  TEMPLATE = join17(import.meta.dir, "..", "..", "templates", "routing.toml");
+  TEMPLATE = join18(import.meta.dir, "..", "..", "templates", "routing.toml");
   cache = new Map;
 });
 
@@ -14421,9 +14880,9 @@ var init_turn_state = __esm(() => {
 });
 
 // src/models/route/judge-choice.ts
-import { types as types2 } from "util";
+import { types as types3 } from "util";
 function data(value, key) {
-  if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value))
+  if (!value || typeof value !== "object" || types3.isProxy(value) || Array.isArray(value))
     return;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null)
@@ -14615,7 +15074,7 @@ var PACKET_BYTES = 1024, unit = (value) => typeof value === "number" && Number.i
 var init_judge_choice = () => {};
 
 // src/models/route/decision.ts
-import { createHash as createHash6 } from "crypto";
+import { createHash as createHash7 } from "crypto";
 function stagePacket(context, sensitive) {
   const evidence = context.stageEvidence;
   if (!evidence)
@@ -14721,7 +15180,7 @@ class DecisionRouteController {
     }
   }
   turnKey(purpose, context) {
-    return createHash6("sha256").update(JSON.stringify([purpose, context.route, context.scope, context.turn?.context.turn])).digest("hex");
+    return createHash7("sha256").update(JSON.stringify([purpose, context.route, context.scope, context.turn?.context.turn])).digest("hex");
   }
   decisionOptions(config) {
     const pairs = config.candidates?.flatMap((candidate) => candidate.efforts.map((effort) => ({ alias: candidate.alias, effort }))) ?? [];
@@ -15192,7 +15651,7 @@ var init_hub_prompts = __esm(() => {
 });
 
 // src/models/route/conversation-view.ts
-import { types as types3 } from "util";
+import { types as types4 } from "util";
 function captureJudgeConversation(source) {
   try {
     if (!array(source))
@@ -15282,13 +15741,13 @@ function captureJudgeConversation(source) {
   }
 }
 function record3(value) {
-  if (!value || typeof value !== "object" || types3.isProxy(value) || Array.isArray(value))
+  if (!value || typeof value !== "object" || types4.isProxy(value) || Array.isArray(value))
     return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 function array(value) {
-  return !!value && typeof value === "object" && !types3.isProxy(value) && Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
+  return !!value && typeof value === "object" && !types4.isProxy(value) && Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
 }
 function own2(value, key) {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -15297,7 +15756,7 @@ function own2(value, key) {
   if (!("value" in descriptor))
     throw unavailable;
   const result = descriptor.value;
-  if (result && typeof result === "object" && types3.isProxy(result))
+  if (result && typeof result === "object" && types4.isProxy(result))
     throw unavailable;
   return result;
 }
@@ -15490,8 +15949,8 @@ var init_judge_replies = __esm(() => {
 });
 
 // src/models/route/observation-signals.ts
-import { createHash as createHash7 } from "crypto";
-import { types as types4 } from "util";
+import { createHash as createHash8 } from "crypto";
+import { types as types5 } from "util";
 function own3(value, key) {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   if (descriptor && !("value" in descriptor))
@@ -15499,10 +15958,10 @@ function own3(value, key) {
   return descriptor?.value;
 }
 function plain2(value) {
-  return !!value && typeof value === "object" && !types4.isProxy(value) && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+  return !!value && typeof value === "object" && !types5.isProxy(value) && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 function dataArray(value) {
-  return !!value && typeof value === "object" && !types4.isProxy(value) && Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
+  return !!value && typeof value === "object" && !types5.isProxy(value) && Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype;
 }
 function command(argumentsText) {
   try {
@@ -15647,7 +16106,7 @@ function priorFailureContext(messages) {
   }
   return [...retained.values()];
 }
-var WIRE_BYTES2 = 2000000, OPERATION_BYTES = 256, unavailable2, digest2 = (value) => createHash7("sha256").update(value).digest("hex"), testName, testCommand;
+var WIRE_BYTES2 = 2000000, OPERATION_BYTES = 256, unavailable2, digest2 = (value) => createHash8("sha256").update(value).digest("hex"), testName, testCommand;
 var init_observation_signals = __esm(() => {
   init_conversation_view();
   init_stage_input();
@@ -16486,8 +16945,76 @@ function safeModelLabel(value) {
   return label.length > 0 && label.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._:/+@-]*$/.test(label) ? label : undefined;
 }
 
+// src/local/probe-types.ts
+async function probeLocalEffect(scope, unit, descriptor, charges, reservedTokens, effect) {
+  scope.current();
+  const request = {
+    sequence: scope.next(),
+    unit,
+    descriptorSha256: probeHash(descriptor),
+    ...charges ? { charges } : {},
+    ...reservedTokens === undefined ? {} : { reservedTokens }
+  };
+  const result = await scope.effects.runEffect(request, async (signal) => {
+    scope.current();
+    const observed = await effect(signal);
+    return { ...observed, observationSha256: probeHash(guidanceProbeCanonical({ request, usage: observed.usage })) };
+  });
+  if (result.kind !== "executed")
+    throw new ProbeLocalError("interrupted");
+  return result.value;
+}
+var ProbeLocalError, probeObservedTokens = (result) => {
+  const total = result.usage?.totalTokens;
+  return typeof total === "number" && Number.isSafeInteger(total) && total >= 0 ? total : null;
+};
+var init_probe_types = __esm(() => {
+  init_guidance_probes();
+  ProbeLocalError = class ProbeLocalError extends Error {
+    reason;
+    constructor(reason) {
+      super({
+        invalid: "guidance probe input or capability is invalid; ask the host to rebuild the admitted input before retrying",
+        drift: "guidance probe input or runtime changed; retain this session and preregister matching inputs before retrying",
+        model: "guidance probe served-model identity is changed or unverified; inspect model provenance and admit a matching session without fallback",
+        usage: "guidance probe model usage is missing or unknown; retain unknown cost and inspect provider accounting before retrying",
+        interrupted: "guidance probe authority or owned work stopped; join the owned stop and inspect retained state before retrying"
+      }[reason]);
+      this.reason = reason;
+      this.name = "ProbeLocalError";
+    }
+  };
+});
+
+// src/local/probe-sandbox.ts
+import { createHash as createHash9 } from "crypto";
+function requireProbeConfinement(proof, workspace) {
+  const state = proofs.get(proof);
+  if (!state || state.workspace !== workspace || proof.workspace !== workspace || proof.profile !== state.profile || digest3(JSON.stringify(proof.env)) !== state.digest)
+    throw new ProbeConfinementError;
+  state.current();
+}
+var ProbeConfinementError, proofs, digest3 = (value) => createHash9("sha256").update(value).digest("hex");
+var init_probe_sandbox = __esm(() => {
+  init_project();
+  init_deny();
+  init_sandbox();
+  init_probe_errors();
+  init_probe_workspace();
+  ProbeConfinementError = class ProbeConfinementError extends ProbeToolRefusal {
+    stop;
+    diagnostic;
+    constructor(stop = async () => {}, diagnostic) {
+      super("confinement_unavailable");
+      this.stop = stop;
+      this.diagnostic = diagnostic;
+    }
+  };
+  proofs = new WeakMap;
+});
+
 // src/adapters/local-worker.ts
-import { randomUUID as randomUUID7 } from "crypto";
+import { createHash as createHash10, randomUUID as randomUUID7 } from "crypto";
 function safeParse(json) {
   try {
     return JSON.parse(json) ?? {};
@@ -16504,7 +17031,7 @@ var HISTORY_CHARS = 1e5, TURN_CHARS = 120000, SIDE_EFFECTS2, ExecutionBudgetStop
   "If a message needs no work from you, answer in one line.",
   preamble
 ].filter(Boolean).join(`
-`), LocalPeer;
+`), probeSchemas = () => TOOL_SCHEMAS.filter((tool) => ["read", "write", "edit"].includes(tool.function.name)), LocalPeer;
 var init_local_worker = __esm(() => {
   init_model_token();
   init_memory_policy();
@@ -16515,12 +17042,19 @@ var init_local_worker = __esm(() => {
   init_sandbox();
   init_tools();
   init_routing();
+  init_guidance_probes();
+  init_probe_types();
+  init_probe_sandbox();
+  init_probe_workspace();
+  init_probe_errors();
   SIDE_EFFECTS2 = new Set(["write", "edit", "bash", "git", "hub_send"]);
   ExecutionBudgetStop = class ExecutionBudgetStop extends Error {
     budgetStop = true;
   };
   LocalPeer = class LocalPeer extends BasePeer {
     opts;
+    probeConfinement;
+    probeFixture;
     hubNative = true;
     deliveryOnly = true;
     hubOwned = true;
@@ -16573,10 +17107,22 @@ var init_local_worker = __esm(() => {
     currentObserverInputContext;
     observerInputReleasedId;
     sandboxProfile;
+    probeSession;
+    probePromise;
+    probeStarted = false;
+    probeStopping = false;
+    probeCalls = 0;
+    probeServedModel = null;
+    probeServedExact = false;
+    probeUsageKnown = true;
+    probeToolPlan;
+    probePermits = new Set;
     lastServedBy = "";
-    constructor(id, opts) {
+    constructor(id, opts, probeConfinement, probeFixture) {
       super(id, opts.watchdogMs);
       this.opts = opts;
+      this.probeConfinement = probeConfinement;
+      this.probeFixture = probeFixture;
       this.routes = new HubRouteRuntime({
         execute: async (model, messages, judge, signal, maxTokens) => {
           if (signal.aborted)
@@ -16606,7 +17152,7 @@ var init_local_worker = __esm(() => {
         onAdvisor: (event) => this.opts.onAdvisor?.(event),
         onRouteOutcome: (event) => this.opts.onRouteOutcome?.(event)
       });
-      this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny, opts.tools.readOnly);
+      this.sandboxProfile = probeConfinement?.profile ?? profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny, opts.tools.readOnly);
     }
     decisionContext() {
       const current = this.opts.routeDecisionContext?.();
@@ -16622,10 +17168,14 @@ var init_local_worker = __esm(() => {
       return { launch: { kind: "local", cwd: this.opts.cwd, model: this.opts.fixedModel, ...this.opts.route ? { route: this.opts.route } : {} }, sessionId: this.sessionId };
     }
     async start() {
+      if (this.probeConfinement)
+        throw new ProbeLocalError("invalid");
       this.opts.capture?.init(this.sessionId, "agent-hub local worker session");
       this.setState("idle");
     }
     async stop(reason) {
+      if (this.probeConfinement)
+        return this.stopProbe();
       this.endRouteTurn(this.labelTurnId, "failed");
       if (this.activeDeliveryId)
         this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "turn stopped before settlement" });
@@ -16637,7 +17187,76 @@ var init_local_worker = __esm(() => {
       this.setState("offline");
       await this.opts.capture?.end();
     }
+    async runProbe(session, signal) {
+      if (!this.probeConfinement || this.probeStarted || this.probePromise || this.state !== "offline" || this.history.length || this.title || this.activeDeliveryId || signal.aborted || session.purpose !== "guidance_probe" || session.confinement !== this.probeConfinement || session.workspace !== this.probeConfinement.workspace || session.workspace.root !== this.opts.cwd || this.opts.fixedModel !== GUIDANCE_PROBE_MODEL || this.opts.maxSteps !== session.config.maxSteps || session.prepared.inputSha256 !== probeHash(session.prepared.inputFrame) || JSON.stringify(session.prepared.request) !== session.prepared.inputFrame)
+        return Promise.reject(new ProbeLocalError("invalid"));
+      if (!this.probeFixture)
+        requireProbeConfinement(this.probeConfinement, session.workspace);
+      session.accounting.current();
+      this.probeStarted = true;
+      this.probeSession = session;
+      const turn = ++this.turn, controller = new AbortController;
+      this.abort = controller;
+      const cancel = () => controller.abort();
+      signal.addEventListener("abort", cancel, { once: true });
+      const msgs = JSON.parse(JSON.stringify(session.prepared.request.messages.slice(1)));
+      const progress = { sideEffects: 0, last: "", answerComplete: false };
+      this.probePromise = Promise.resolve().then(async () => {
+        session.accounting.current();
+        const answer = await this.run([], turn, msgs, progress, { pii: false }, {}, { excluded: false });
+        if (signal.aborted || controller.signal.aborted || this.probeStopping || turn !== this.turn)
+          throw new ProbeLocalError("interrupted");
+        await session.reserve({ outputBytes: Buffer.byteLength(answer, "utf8") }, "probe-final-output");
+        return {
+          answer,
+          complete: progress.answerComplete,
+          servedModel: this.probeServedModel,
+          servedModelExact: this.probeServedExact,
+          usageKnown: this.probeUsageKnown
+        };
+      }).catch((error) => {
+        if (error instanceof ProbeToolRefusal && error.code === "token_ceiling") {
+          if (signal.aborted || controller.signal.aborted || this.probeStopping || turn !== this.turn)
+            throw new ProbeLocalError("interrupted");
+          try {
+            session.accounting.current();
+          } catch {
+            throw new ProbeLocalError("interrupted");
+          }
+          return {
+            answer: "",
+            complete: false,
+            servedModel: this.probeServedModel,
+            servedModelExact: this.probeServedExact,
+            usageKnown: this.probeCalls > 0 && this.probeUsageKnown,
+            refusal: "token_ceiling",
+            reason: formatProbeToolRefusal(error)
+          };
+        }
+        throw error instanceof ProbeLocalError ? error : new ProbeLocalError("interrupted");
+      }).finally(async () => {
+        signal.removeEventListener("abort", cancel);
+        this.clearWatchdog();
+        await Promise.allSettled([...this.probePermits]);
+        this.probeSession = undefined;
+      });
+      return this.probePromise;
+    }
+    async stopProbe() {
+      this.probeStopping = true;
+      this.turn++;
+      this.abort?.abort();
+      this.clearWatchdog();
+      if (this.probePromise)
+        await this.probePromise.catch(() => {});
+      await this.probeConfinement?.stop();
+    }
+    probeObservation() {
+      return { servedModel: this.probeServedModel, servedModelExact: this.probeServedExact, usageKnown: this.probeUsageKnown };
+    }
     async deliver(envs, deliveryId) {
+      if (this.probeConfinement)
+        throw new ProbeLocalError("invalid");
       if (this.state !== "idle") {
         if (deliveryId)
           this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
@@ -16753,6 +17372,13 @@ var init_local_worker = __esm(() => {
       });
     }
     onWatchdog() {
+      if (this.probeConfinement) {
+        this.probeStopping = true;
+        this.turn++;
+        this.abort?.abort();
+        this.clearWatchdog();
+        return;
+      }
       this.endRouteTurn(this.labelTurnId, "failed");
       if (this.activeDeliveryId)
         this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn watchdog timeout", failureCause: "timeout" });
@@ -16770,6 +17396,7 @@ var init_local_worker = __esm(() => {
       const turnSignal = this.abort.signal;
       const remoteTurn = envs.some(remoteEnvelope);
       const capture = policy?.pii || remoteTurn ? undefined : this.opts.capture;
+      const activeCapture = this.probeConfinement ? undefined : capture;
       if (policy?.pii && !await this.opts.omni.onCampus()) {
         return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
       }
@@ -16778,7 +17405,9 @@ var init_local_worker = __esm(() => {
       this.routeReviewScope = reviewScope;
       if (turn !== this.turn || turnSignal.aborted)
         return "";
-      const fixedPrompt = this.turnRecordPrompt(system(this.opts.cwd, this.opts.preamble));
+      const fixedPrompt = this.probeConfinement ? this.probeSession?.prepared.request.messages[0]?.content ?? (() => {
+        throw new ProbeLocalError("invalid");
+      })() : this.turnRecordPrompt(system(this.opts.cwd, this.opts.preamble));
       const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
       let usedTools = false;
       let captureInvocation = 0;
@@ -16787,7 +17416,8 @@ var init_local_worker = __esm(() => {
         const res = await this.call(msgs, policy, envs, selection, fixedPrompt);
         if (turn !== this.turn)
           return "";
-        this.touch();
+        if (!this.probeConfinement)
+          this.touch();
         msgs.push(res.message);
         progress.last = res.message.content?.trim() || progress.last;
         if (!res.message.tool_calls?.length) {
@@ -16797,16 +17427,16 @@ var init_local_worker = __esm(() => {
           if (concluded === undefined)
             continue;
           if (usedTools && !reviewScope.excluded)
-            capture?.summarize(concluded.answer);
+            activeCapture?.summarize(concluded.answer);
           progress.answerComplete = concluded.complete;
           return concluded.answer;
         }
-        if (res.message.tool_calls.some((call) => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments)))
+        if (!this.probeConfinement && res.message.tool_calls.some((call) => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments)))
           reviewScope.excluded = true;
         const results = [];
         try {
           for (const call of res.message.tool_calls) {
-            const alive = setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), 30000);
+            const alive = this.probeConfinement ? undefined : setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), 30000);
             const name = call.function.name;
             try {
               await this.requireBudget(envs, "tool_calls");
@@ -16818,11 +17448,31 @@ var init_local_worker = __esm(() => {
             }
             const taskToolName = name.replace(/^mcp__[^ ]+__/, "");
             const reviewNoteWrite = taskToolName === "hub_remember" || taskToolName === "hub_task_propose";
-            const running = reviewScope.excluded && reviewNoteWrite ? Promise.resolve("error: anchored review in this batch; save notes in a later turn") : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
-            const output = await running.finally(() => clearInterval(alive));
+            const toolRun = () => this.probeConfinement && !["read", "write", "edit"].includes(name) ? Promise.resolve(formatProbeToolRefusal(new ProbeToolRefusal("tool_unavailable"))) : reviewScope.excluded && reviewNoteWrite ? Promise.resolve("error: anchored review in this batch; save notes in a later turn") : (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii, signal: turnSignal }).catch((e) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
+            const probe = this.probeSession;
+            const running = probe ? (async () => {
+              try {
+                const plan = planProbeTool(name, call.function.arguments, ctx);
+                if (!this.probeFixture)
+                  reserveProbeWorkspaceBytes(probe.workspace, plan.scratchBytes + plan.outputBytes);
+                this.probeToolPlan = plan;
+                const charges = { scratchBytes: plan.scratchBytes, outputBytes: plan.outputBytes };
+                return await probeLocalEffect(probe.accounting, "tool_calls", JSON.stringify({ name, arguments: call.function.arguments }), charges, undefined, async () => ({ value: await toolRun(), usage: 1 }));
+              } catch (error) {
+                if (error instanceof ProbeToolRefusal)
+                  return formatProbeToolRefusal(error);
+                throw error;
+              }
+            })() : toolRun();
+            const output = await running.finally(() => {
+              clearInterval(alive);
+              if (probe)
+                this.probeToolPlan = undefined;
+            });
             if (turn !== this.turn)
               return "";
-            this.touch();
+            if (!this.probeConfinement)
+              this.touch();
             usedTools = true;
             if (SIDE_EFFECTS2.has(call.function.name) && !output.startsWith("error:"))
               progress.sideEffects++;
@@ -16836,30 +17486,50 @@ var init_local_worker = __esm(() => {
             if (!remoteTurn && !reviewScope.excluded && name !== "hub_set_title" && name !== "hub_ask" && !reviewCaptureExcluded(name, call.function.arguments))
               this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
             if (!reviewScope.excluded && name !== "hub_send" && name !== "doc_read" && name !== "web_fetch" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
-              capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+              activeCapture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
           }
         } finally {
-          if (results.length)
+          if (results.length && !this.probeConfinement)
             this.routes.observeResults(res.routeDecision, res.message, results);
         }
       }
       if (usedTools && !reviewScope.excluded)
-        capture?.summarize(progress.last);
-      this.opts.onLimit?.("steps");
+        activeCapture?.summarize(progress.last);
+      if (!this.probeConfinement)
+        this.opts.onLimit?.("steps");
       return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
     }
     toolSchemas() {
+      if (this.probeConfinement)
+        return probeSchemas();
       const extra = [...this.opts.tools.docRead ? [DOC_READ_SCHEMA] : [], ...this.opts.tools.webFetch ? [WEB_FETCH_SCHEMA] : []];
       return extra.length ? [...TOOL_SCHEMAS, ...extra] : TOOL_SCHEMAS;
     }
     toolContext(envs, turnSignal, pii, reply) {
       const executionGeneration = this.turn;
-      return {
+      const probe = this.probeSession;
+      const context = {
         ...this.opts.tools.docRead ? { docRead: { ...this.opts.tools.docRead, pii } } : {},
         ...this.opts.tools.webFetch ? { webFetch: { ...this.opts.tools.webFetch, pii } } : {},
         cwd: this.opts.cwd,
         deny: this.opts.tools.deny,
         readOnly: this.opts.tools.readOnly,
+        ...probe ? { probe: {
+          root: probe.workspace.root,
+          writableRoots: probe.workspace.allowedWrites,
+          current: () => {
+            if (turnSignal.aborted || this.probeStopping)
+              throw new ProbeToolRefusal("authority_stopped");
+            probe.accounting.current();
+            if (!this.probeFixture)
+              requireProbeConfinement(probe.confinement, probe.workspace);
+          },
+          reserveWrite: async (bytes, canonicalPath) => {
+            if (!this.probeToolPlan)
+              throw new ProbeLocalError("invalid");
+            requireProbeToolWrite(this.probeToolPlan, bytes, canonicalPath, context);
+          }
+        } } : {},
         permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath, input, policy) => {
           if (turnSignal.aborted)
             return "aborted";
@@ -16878,7 +17548,8 @@ var init_local_worker = __esm(() => {
             if (provenance.source === "expired" && provenance.eligibleExpiry !== false && ++this.approvalExpiries >= 2) {
               this.approvalStopReason = "Local turn stopped after two unanswered approvals; no person answered. Do not retry the calls; inspect prior work before handoff or stopping.";
               try {
-                this.opts.onApprovalStop?.(this.approvalStopReason);
+                if (!this.probeConfinement)
+                  this.opts.onApprovalStop?.(this.approvalStopReason);
               } catch {}
             }
           };
@@ -16889,9 +17560,14 @@ var init_local_worker = __esm(() => {
             };
             const onAbort = () => finish("aborted");
             turnSignal.addEventListener("abort", onAbort, { once: true });
-            this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath, input, policy).then(finish, (error) => {
+            const asking = this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath, input, policy);
+            if (this.probeConfinement)
+              this.probePermits.add(asking);
+            asking.then(finish, (error) => {
               turnSignal.removeEventListener("abort", onAbort);
               reject(error);
+            }).finally(() => {
+              this.probePermits.delete(asking);
             });
           });
           if (generation !== this.turn || turnSignal.aborted && picked !== "expired")
@@ -16904,9 +17580,11 @@ var init_local_worker = __esm(() => {
         },
         shellExecutionCheck: (input) => turnSignal.aborted || executionGeneration !== this.turn ? "aborted" : this.opts.tools.shellExecutionCheck?.(input) ?? "valid",
         sandboxProfile: this.sandboxProfile,
-        sandboxEnv: { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },
+        sandboxEnv: this.probeConfinement ? { ...this.probeConfinement.env } : { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },
         signal: turnSignal,
         send: (text, to) => {
+          if (this.probeConfinement)
+            return "error: messaging unavailable in guidance probe";
           const result = this.onMessage?.(text, pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) });
           if (typeof result === "string")
             return `not sent: ${result}`;
@@ -16915,6 +17593,7 @@ var init_local_worker = __esm(() => {
           return pii ? "sent to the console user only (PII task)" : "sent";
         }
       };
+      return context;
     }
     reportBudgetStop(e, msgs, progress, reply, privateHistory, deliveryId, remoteTurn = false, reviewTurn = false) {
       this.opts.onLimit?.("budget");
@@ -16929,6 +17608,8 @@ var init_local_worker = __esm(() => {
         this.delivery({ id: deliveryId, state: "needs_review", reason: message });
     }
     async requireBudget(envs, unit) {
+      if (this.probeConfinement)
+        return;
       if (!this.opts.admitBudget)
         return;
       const decisions = await this.opts.admitBudget(envs, unit);
@@ -16962,6 +17643,8 @@ var init_local_worker = __esm(() => {
         msgs.push({ role: "tool", tool_call_id, content: result });
     }
     async call(turnMsgs, policy, envs, selection, fixedPrompt = system(this.opts.cwd, this.opts.preamble)) {
+      if (this.probeConfinement)
+        return this.callProbe(turnMsgs, fixedPrompt);
       const { omni } = this.opts;
       const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined;
       if (route && !route.startsWith("hub/") && !this.warnedLegacyRoutes.has(route)) {
@@ -16986,7 +17669,45 @@ var init_local_worker = __esm(() => {
       this.recordUsage(res, fixedModel, task);
       return res;
     }
+    async callProbe(turnMsgs, fixedPrompt) {
+      const probe = this.probeSession;
+      if (!probe || this.probeStopping || this.abort?.signal.aborted)
+        throw new ProbeToolRefusal("authority_stopped");
+      probe.accounting.current();
+      if (!this.probeFixture)
+        requireProbeConfinement(probe.confinement, probe.workspace);
+      const body = JSON.parse(JSON.stringify({
+        model: GUIDANCE_PROBE_MODEL,
+        messages: [{ role: "system", content: fixedPrompt }, ...turnMsgs.map(({ is_error: _internal, ...message }) => message)],
+        tools: probe.prepared.request.tools,
+        max_tokens: probe.config.maxOutputTokens,
+        stream: false
+      }));
+      const frame = JSON.stringify(body), first = this.probeCalls === 0;
+      if (first && frame !== probe.prepared.inputFrame)
+        throw new ProbeLocalError("drift");
+      const upper = probe.config.tokenUpperBound, inputBytes = Buffer.byteLength(frame, "utf8");
+      if (upper !== undefined && (probe.config.maxOutputTokens > upper || inputBytes > upper - probe.config.maxOutputTokens))
+        throw new ProbeToolRefusal("token_ceiling");
+      const result = await probeLocalEffect(probe.accounting, "model_calls", frame, first ? undefined : { inputBytes }, probe.config.tokenUpperBound, async (signal) => {
+        if (signal.aborted || this.abort?.signal.aborted)
+          throw new ProbeLocalError("interrupted");
+        const value = await this.opts.omni.chat(body, { signal: this.abort.signal });
+        return { value, usage: probeObservedTokens(value) };
+      });
+      this.probeCalls++;
+      this.probeServedModel = result.servedModel ?? null;
+      this.probeServedExact = result.servedModelExact === true;
+      this.probeUsageKnown = this.probeUsageKnown && probeObservedTokens(result) !== null;
+      if (!this.probeUsageKnown)
+        throw new ProbeLocalError("usage");
+      if (result.servedModel !== GUIDANCE_PROBE_MODEL || result.servedModelExact !== true)
+        throw new ProbeLocalError("model");
+      return result;
+    }
     releaseObserverInput(context, envs) {
+      if (this.probeConfinement)
+        return;
       if (!context || this.currentObserverInputContext !== context || this.observerInputReleasedId === context.inputId)
         return;
       this.observerInputReleasedId = context.inputId;
@@ -17037,6 +17758,8 @@ var init_local_worker = __esm(() => {
       }
     }
     async conclude(msgs, policy, turn, step, maxSteps, answer, signal, decisionId, selection, fixedPrompt = system(this.opts.cwd, this.opts.preamble)) {
+      if (this.probeConfinement)
+        return { answer, complete: true };
       const route = selection?.model === undefined ? effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel) : undefined, config = this.hubConfig(route);
       if (!route || !config)
         return { answer, complete: true };
@@ -17050,6 +17773,8 @@ var init_local_worker = __esm(() => {
       return step + 1 < maxSteps ? undefined : { answer: `(review requested changes; step limit reached) ${answer}`, complete: false };
     }
     observeTool(call, output, policy, nativeTurn) {
+      if (this.probeConfinement)
+        return;
       if (policy?.pii || call.function.name === "doc_read" || call.function.name === "web_fetch")
         return;
       try {
@@ -17058,6 +17783,8 @@ var init_local_worker = __esm(() => {
       } catch {}
     }
     recordUsage(res, requestedModel, task) {
+      if (this.probeConfinement)
+        return;
       try {
         this.opts.onUsage?.({
           id: randomUUID7(),
@@ -17157,8 +17884,8 @@ var init_launch2 = __esm(() => {
 
 // src/adapters/claude-task-sessions.ts
 import { randomUUID as randomUUID8 } from "crypto";
-import { mkdirSync as mkdirSync10, readFileSync as readFileSync9 } from "fs";
-import { dirname as dirname12 } from "path";
+import { mkdirSync as mkdirSync11, readFileSync as readFileSync9 } from "fs";
+import { dirname as dirname13 } from "path";
 function readState(file) {
   let text;
   try {
@@ -17195,7 +17922,7 @@ class ClaudeTaskSessions {
   }
   write(sessions) {
     const next = { version: 1, sessions };
-    mkdirSync10(dirname12(this.file), { recursive: true, mode: 448 });
+    mkdirSync11(dirname13(this.file), { recursive: true, mode: 448 });
     atomicPrivateJSON(this.file, next);
     this.state = next;
   }
@@ -17285,9 +18012,9 @@ var WITHHELD = "Claude implementer turn failed (details withheld)";
 
 // src/adapters/claude-implementer.ts
 import { randomUUID as randomUUID9 } from "crypto";
-import { lstatSync as lstatSync15, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
+import { lstatSync as lstatSync17, mkdtempSync as mkdtempSync6, rmSync as rmSync7, writeFileSync as writeFileSync9 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
-import { join as join18 } from "path";
+import { join as join19 } from "path";
 function provenVersion(binding) {
   return provenVersions.get(binding);
 }
@@ -17343,10 +18070,10 @@ function claudeImplementerArgs(turn, mcp, settings, prompt, model) {
 async function proveClaudeImplementer(peer, command) {
   const binary = Bun.which(command[0], { PATH: process.env.PATH }) ?? command[0];
   const fingerprint = () => {
-    const file = realPath(binary), stat = lstatSync15(file);
+    const file = realPath(binary), stat = lstatSync17(file);
     return [file, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
   };
-  const binding = fingerprint(), home = mkdtempSync5(join18(tmpdir5(), "ahub-claude-proof-"));
+  const binding = fingerprint(), home = mkdtempSync6(join19(tmpdir5(), "ahub-claude-proof-"));
   let version = "", timedOut = false;
   const child = new OwnedPrintChild({
     peer,
@@ -17355,7 +18082,7 @@ async function proveClaudeImplementer(peer, command) {
     cwd: home,
     input: "",
     envMode: "replace",
-    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join18(home, ".claude") },
+    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join19(home, ".claude") },
     maxFrameBytes: 4096,
     maxOutputBytes: 4096,
     onLine: (line) => {
@@ -17391,7 +18118,7 @@ async function proveClaudeImplementer(peer, command) {
   } finally {
     clearTimeout(timer);
     await child.stop();
-    rmSync6(home, { recursive: true, force: true });
+    rmSync7(home, { recursive: true, force: true });
   }
 }
 var provenVersions, ClaudeImplementerPeer;
@@ -17434,7 +18161,7 @@ var init_claude_implementer = __esm(() => {
       if (options.mode !== undefined && options.mode !== "ask" && options.mode !== "ask-when-needed")
         throw new Error("Claude implementer refuses unsupported permission mode");
       this.mode = options.mode ?? "ask";
-      this.sessions = new ClaudeTaskSessions(join18(options.stateDir, claudeStateFile("claude-task-sessions", id)));
+      this.sessions = new ClaudeTaskSessions(join19(options.stateDir, claudeStateFile("claude-task-sessions", id)));
     }
     get permissionModeState() {
       return this.mode;
@@ -17603,10 +18330,10 @@ var init_claude_implementer = __esm(() => {
           this.observerSessionIdValue = turn.sessionId;
           this.currentInputContext = inputContext;
           this.options.beforeInput?.(inputContext, group.envs);
-          const launchId = randomUUID9(), directory = mkdtempSync5(join18(this.options.stateDir, "claude-child-")), settings = join18(directory, "settings.json");
+          const launchId = randomUUID9(), directory = mkdtempSync6(join19(this.options.stateDir, "claude-child-")), settings = join19(directory, "settings.json");
           let launchFailureTrace;
-          this.cleanup = () => rmSync6(directory, { recursive: true, force: true });
-          writeFileSync8(settings, sessionSettings(undefined, { script: this.options.factsHook, stateDir: this.options.stateDir, purpose: "permission" }), { mode: 384, flag: "wx" });
+          this.cleanup = () => rmSync7(directory, { recursive: true, force: true });
+          writeFileSync9(settings, sessionSettings(undefined, { script: this.options.factsHook, stateDir: this.options.stateDir, purpose: "permission" }), { mode: 384, flag: "wx" });
           const env = {
             AGENTHUB_MODE: "tools",
             AGENTHUB_PEER_ID: this.id,
@@ -17932,12 +18659,12 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, lstatSync as lstatSync16, openSync as openSync8, readSync as readSync6 } from "fs";
+import { closeSync as closeSync9, constants as constants8, fstatSync as fstatSync8, lstatSync as lstatSync18, openSync as openSync9, readSync as readSync6 } from "fs";
 import { homedir as homedir5 } from "os";
-import { isAbsolute as isAbsolute6, join as join19, relative as relative5 } from "path";
-import { createHash as createHash8 } from "crypto";
+import { isAbsolute as isAbsolute7, join as join20, relative as relative5 } from "path";
+import { createHash as createHash11 } from "crypto";
 function decodeAgyHook(event, value) {
-  if (!EVENTS2.includes(event) || !record4(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute6(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute6(path)))
+  if (!EVENTS2.includes(event) || !record4(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute7(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute7(path)))
     return;
   if (event === "Stop" && typeof value.fullyIdle !== "boolean")
     return;
@@ -17984,19 +18711,19 @@ function readAgyTranscript(session, transcript, options) {
   if (!UUID2.test(session))
     return empty;
   const home = process.env.HOME ?? homedir5();
-  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join19(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
+  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join20(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
   if (!candidates.includes(transcript))
     return empty;
   let fd;
   try {
     let cursor = home;
     for (const name of relative5(home, transcript).split("/")) {
-      cursor = join19(cursor, name);
-      if (lstatSync16(cursor).isSymbolicLink())
+      cursor = join20(cursor, name);
+      if (lstatSync18(cursor).isSymbolicLink())
         return empty;
     }
-    fd = openSync8(transcript, constants7.O_RDONLY | constants7.O_NOFOLLOW);
-    const stat = fstatSync7(fd);
+    fd = openSync9(transcript, constants8.O_RDONLY | constants8.O_NOFOLLOW);
+    const stat = fstatSync8(fd);
     if (!stat.isFile() || stat.nlink !== 1)
       return empty;
     if (options?.unchanged && stat.size === options.unchanged.size && stat.mtimeMs === options.unchanged.mtimeMs)
@@ -18059,11 +18786,11 @@ function readAgyTranscript(session, transcript, options) {
           const totalTokens = inputTokens + outputTokens + cacheReadTokens;
           if (Number.isSafeInteger(totalTokens)) {
             const at = typeof row.created_at === "string" && Number.isFinite(Date.parse(row.created_at)) ? row.created_at : undefined;
-            (out.usage ??= []).push({ id: createHash8("sha256").update(`${session}:usage:${row.step_index}`).digest("hex"), index: row.step_index, inputTokens, outputTokens, cacheReadTokens, totalTokens, ...at ? { at } : {} });
+            (out.usage ??= []).push({ id: createHash11("sha256").update(`${session}:usage:${row.step_index}`).digest("hex"), index: row.step_index, inputTokens, outputTokens, cacheReadTokens, totalTokens, ...at ? { at } : {} });
           }
         }
         if (options?.completion !== false && row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
-          out.completion = { id: createHash8("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
+          out.completion = { id: createHash11("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
       }
       if (out.completion && (!hasSince || start <= options.sinceOffset) || start === resumeAt || window === cap)
         return out;
@@ -18072,7 +18799,7 @@ function readAgyTranscript(session, transcript, options) {
     return empty;
   } finally {
     if (fd !== undefined)
-      closeSync8(fd);
+      closeSync9(fd);
   }
 }
 var EVENTS2, UUID2, record4 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
@@ -18151,7 +18878,7 @@ function builtinCliEntries(definitions) {
 }
 // src/adapters/definitions/native-cli-entry-claude.ts
 import { readFileSync as readFileSync10 } from "fs";
-import { join as join20 } from "path";
+import { join as join21 } from "path";
 import { randomUUID as randomUUID10 } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
@@ -18202,17 +18929,17 @@ async function runClaudeEntry(ctx) {
     }
   }
   let original;
-  for (const file of [join20(executionCwd, ".claude", "settings.local.json"), join20(executionCwd, ".claude", "settings.json"), join20(process.env.HOME ?? "", ".claude", "settings.json")]) {
+  for (const file of [join21(executionCwd, ".claude", "settings.local.json"), join21(executionCwd, ".claude", "settings.json"), join21(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync10(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(projectConfig(), { script: join20(cliDir, "facts-hook.ts"), stateDir });
+  const facts = claudeObservationHooks(projectConfig(), { script: join21(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync10(join20(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync10(join21(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
-  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join20(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
+  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join21(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
   try {
     let launchRecord;
@@ -18306,10 +19033,10 @@ var init_native_cli_entry_codex = () => {};
 
 // src/cli/kimi-plugin.ts
 import { randomUUID as randomUUID11 } from "crypto";
-import { closeSync as closeSync9, lstatSync as lstatSync17, mkdirSync as mkdirSync11, openSync as openSync9, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync9 } from "fs";
-import { dirname as dirname13, isAbsolute as isAbsolute7, join as join21 } from "path";
+import { closeSync as closeSync10, lstatSync as lstatSync19, mkdirSync as mkdirSync12, openSync as openSync10, readFileSync as readFileSync11, renameSync as renameSync5, rmdirSync as rmdirSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync10 } from "fs";
+import { dirname as dirname14, isAbsolute as isAbsolute8, join as join22 } from "path";
 function file(path, cap) {
-  const stat = lstatSync17(path, { throwIfNoEntry: false });
+  const stat = lstatSync19(path, { throwIfNoEntry: false });
   if (!stat)
     return;
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > cap)
@@ -18329,27 +19056,27 @@ function parse2(value, name) {
   }
 }
 function atomic(path, bytes, before) {
-  const current = lstatSync17(path, { throwIfNoEntry: false });
+  const current = lstatSync19(path, { throwIfNoEntry: false });
   if (before ? !current || current.dev !== before.dev || current.ino !== before.ino : current)
     throw new Error(`${path} changed before its managed write`);
   const temporary = `${path}.${randomUUID11()}.tmp`;
   let fd;
   try {
-    fd = openSync9(temporary, "wx", 384);
-    writeFileSync9(fd, bytes);
-    closeSync9(fd);
+    fd = openSync10(temporary, "wx", 384);
+    writeFileSync10(fd, bytes);
+    closeSync10(fd);
     fd = undefined;
     renameSync5(temporary, path);
   } finally {
     if (fd !== undefined)
-      closeSync9(fd);
+      closeSync10(fd);
     try {
       unlinkSync3(temporary);
     } catch {}
   }
 }
 function removeFile(path, expected) {
-  const current = lstatSync17(path, { throwIfNoEntry: false });
+  const current = lstatSync19(path, { throwIfNoEntry: false });
   if (!current || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !readFileSync11(path).equals(expected))
     return;
   unlinkSync3(path);
@@ -18374,13 +19101,13 @@ function staleOwner(record, options) {
   }
 }
 function plan2(options) {
-  if (!isAbsolute7(options.home) || !isAbsolute7(options.hookScript) || !/^[A-Za-z0-9._:-]{1,128}$/.test(options.launchId))
+  if (!isAbsolute8(options.home) || !isAbsolute8(options.hookScript) || !/^[A-Za-z0-9._:-]{1,128}$/.test(options.launchId))
     throw new Error("Kimi home, hook bundle and launch identity must be valid");
   directory(options.home);
   const hook = file(options.hookScript, MAX_HOOK);
   if (!hook)
     throw new Error("Kimi hook bundle is missing");
-  const root = join21(options.home, "plugins"), managed = join21(root, "managed", ID2), installed = join21(root, "installed.json");
+  const root = join22(options.home, "plugins"), managed = join22(root, "managed", ID2), installed = join22(root, "installed.json");
   const installedBefore = file(installed, MAX_INSTALLED), document = parse2(installedBefore, installed);
   if (document && (document.version !== 1 || !Array.isArray(document.plugins)))
     throw new Error(`${installed} has an unsupported shape`);
@@ -18393,11 +19120,11 @@ function plan2(options) {
   if (record && (record.root !== managed || record.source !== "local-path" || record.origin !== "custom" || record.enabled !== true || typeof record.originalSource !== "string" || record.agentHubLaunch !== options.launchId && options.replaceStale !== true)) {
     throw new Error("Kimi's agent-hub plugin belongs to another launch or is disabled; it was not changed");
   }
-  const manifestBefore = file(join21(managed, "kimi.plugin.json"), MAX_INSTALLED), hookBefore = file(join21(managed, "kimi-hook.js"), MAX_HOOK);
+  const manifestBefore = file(join22(managed, "kimi.plugin.json"), MAX_INSTALLED), hookBefore = file(join22(managed, "kimi-hook.js"), MAX_HOOK);
   const nextManifest = Buffer.from(`${JSON.stringify(manifest(), null, 2)}
 `);
   const now = new Date(options.now ?? Date.now()).toISOString();
-  const changed = !record || record.agentHubLaunch !== options.launchId || !record.agentHubOwner || !manifestBefore?.bytes.equals(nextManifest) || !hookBefore?.bytes.equals(hook.bytes) || record.originalSource !== dirname13(options.hookScript);
+  const changed = !record || record.agentHubLaunch !== options.launchId || !record.agentHubOwner || !manifestBefore?.bytes.equals(nextManifest) || !hookBefore?.bytes.equals(hook.bytes) || record.originalSource !== dirname14(options.hookScript);
   const nextRecord = {
     id: ID2,
     root: managed,
@@ -18406,7 +19133,7 @@ function plan2(options) {
     enabled: true,
     installedAt: typeof record?.installedAt === "string" ? record.installedAt : now,
     updatedAt: changed ? now : typeof record?.updatedAt === "string" ? record.updatedAt : now,
-    originalSource: dirname13(options.hookScript),
+    originalSource: dirname14(options.hookScript),
     agentHubLaunch: options.launchId,
     agentHubOwner: record && record.agentHubLaunch === options.launchId && record.agentHubOwner ? record.agentHubOwner : ownerProof(options)
   };
@@ -18418,36 +19145,36 @@ function plan2(options) {
     ...record ? { record } : {},
     changed,
     targets: [
-      { path: join21(managed, "kimi.plugin.json"), next: nextManifest, ...manifestBefore ? { before: manifestBefore } : {} },
-      { path: join21(managed, "kimi-hook.js"), next: hook.bytes, ...hookBefore ? { before: hookBefore } : {} },
+      { path: join22(managed, "kimi.plugin.json"), next: nextManifest, ...manifestBefore ? { before: manifestBefore } : {} },
+      { path: join22(managed, "kimi-hook.js"), next: hook.bytes, ...hookBefore ? { before: hookBefore } : {} },
       { path: installed, next: Buffer.from(`${JSON.stringify(nextDocument, null, 2)}
 `), ...installedBefore ? { before: installedBefore } : {} }
     ]
   };
 }
 function kimiPluginPreview(home, hookScript) {
-  if (!isAbsolute7(home) || !isAbsolute7(hookScript))
+  if (!isAbsolute8(home) || !isAbsolute8(hookScript))
     throw new Error("Kimi home and hook bundle must be absolute paths");
   directory(home, false);
   if (!file(hookScript, MAX_HOOK))
     throw new Error("Kimi hook bundle is missing");
-  return { file: join21(home, "plugins", "managed", ID2), changed: true, action: "only after Kimi 2.5.2 is confirmed, install the launch-scoped completion plugin and remove it on exit; other versions keep the existing TUI with no plugin" };
+  return { file: join22(home, "plugins", "managed", ID2), changed: true, action: "only after Kimi 2.5.2 is confirmed, install the launch-scoped completion plugin and remove it on exit; other versions keep the existing TUI with no plugin" };
 }
 function locked(options, run) {
-  if (!isAbsolute7(options.home))
+  if (!isAbsolute8(options.home))
     throw new Error("Kimi home must be an absolute path");
   directory(options.home);
-  const path = join21(options.home, "agent-hub-plugin.lock");
+  const path = join22(options.home, "agent-hub-plugin.lock");
   let fd;
   try {
-    fd = openSync9(path, "wx", 384);
+    fd = openSync10(path, "wx", 384);
   } catch {
     throw new Error(`Another Kimi plugin replacement is active or left a stale lock; retry after it exits or inspect ${path}`);
   }
   try {
     return run();
   } finally {
-    closeSync9(fd);
+    closeSync10(fd);
     unlinkSync3(path);
   }
 }
@@ -18456,9 +19183,9 @@ function ensureKimiPlugin(options) {
     const current = plan2(options);
     if (!current.changed)
       return { changed: false };
-    for (const path of [join21(options.home, "plugins"), join21(options.home, "plugins", "managed"), current.managed]) {
+    for (const path of [join22(options.home, "plugins"), join22(options.home, "plugins", "managed"), current.managed]) {
       if (!directory(path, false))
-        mkdirSync11(path, { mode: 448 });
+        mkdirSync12(path, { mode: 448 });
     }
     for (const target of current.targets)
       atomic(target.path, target.next, target.before?.stat);
@@ -18481,15 +19208,15 @@ function cleanupKimiPlugin(options) {
     atomic(current.installed, Buffer.from(`${JSON.stringify(next, null, 2)}
 `), installedBefore?.stat);
     const [manifestTarget, hookTarget] = current.targets;
-    removeFile(join21(current.managed, "kimi.plugin.json"), manifestTarget.next);
-    removeFile(join21(current.managed, "kimi-hook.js"), hookTarget.next);
+    removeFile(join22(current.managed, "kimi.plugin.json"), manifestTarget.next);
+    removeFile(join22(current.managed, "kimi-hook.js"), hookTarget.next);
     try {
-      rmdirSync2(current.managed);
+      rmdirSync3(current.managed);
     } catch {}
   });
 }
 var EVENTS3, ID2 = "agent-hub", MAX_INSTALLED, MAX_HOOK, object8 = (value) => !!value && typeof value === "object" && !Array.isArray(value), directory = (path, required = true) => {
-  const stat = lstatSync17(path, { throwIfNoEntry: false });
+  const stat = lstatSync19(path, { throwIfNoEntry: false });
   if (stat && (!stat.isDirectory() || stat.isSymbolicLink()))
     throw new Error(`${path} must be a plain directory`);
   if (!stat && required)
@@ -18504,10 +19231,10 @@ var init_kimi_plugin = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-entry-kimi.ts
-import { join as join22, resolve as resolve14 } from "path";
+import { join as join23, resolve as resolve14 } from "path";
 import { homedir as homedir6 } from "os";
 import { spawn as spawn10, spawnSync as spawnSync4 } from "child_process";
-import { mkdirSync as mkdirSync12 } from "fs";
+import { mkdirSync as mkdirSync13 } from "fs";
 function kimiTuiVersionGate(stdout) {
   const verdict = assessVersion("kimi-tui", COMPAT["kimi-tui"].parse(stdout));
   if (!verdict.ok)
@@ -18626,16 +19353,16 @@ async function runKimiEntry(ctx) {
         if (!gate.ok) {
           result = await runKimiTui(launch.cmd, launch.args, cwd, nativeEnv);
         } else {
-          const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join22(nativeEnv.HOME ?? homedir6(), ".kimi-code");
+          const nativeHome = nativeEnv.KIMI_CODE_HOME ?? join23(nativeEnv.HOME ?? homedir6(), ".kimi-code");
           let nativeLaunchId, completionEnv, plugin;
           try {
-            mkdirSync12(nativeHome, { recursive: true, mode: 448 });
+            mkdirSync13(nativeHome, { recursive: true, mode: 448 });
             const native = await hub.request({ t: "native_hook_launch", op: "begin", peer, nativeHome });
             if (!native.ok || typeof native.launchId !== "string" || typeof native.instanceId !== "string")
               throw new Error(native.error ?? "native hook launch was not admitted");
             nativeLaunchId = native.launchId;
             plugin = { home: nativeHome, hookScript: resolve14(serverBundle, "../kimi-hook.js"), launchId: native.launchId, replaceStale: true };
-            console.error(`Kimi TUI completion facts: installing a launch-scoped native plugin under ${join22(nativeHome, "plugins", "managed", "agent-hub")}; it will be removed after this TUI exits`);
+            console.error(`Kimi TUI completion facts: installing a launch-scoped native plugin under ${join23(nativeHome, "plugins", "managed", "agent-hub")}; it will be removed after this TUI exits`);
             ensureKimiPlugin(plugin);
             completionEnv = { ...nativeEnv, AGENTHUB_INSTANCE_ID: native.instanceId, AGENTHUB_LAUNCH_ID: native.launchId, AGENTHUB_HOOK_PURPOSE: "facts" };
           } catch (error) {
@@ -18646,7 +19373,7 @@ async function runKimiEntry(ctx) {
               try {
                 cleanupKimiPlugin(plugin);
               } catch {
-                console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join22(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
+                console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join23(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
               }
           }
           if (completionEnv) {
@@ -18659,7 +19386,7 @@ async function runKimiEntry(ctx) {
                 try {
                   cleanupKimiPlugin(plugin);
                 } catch {
-                  console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join22(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
+                  console.error(`Managed Kimi plugin cleanup refused: files or ownership changed; inspect ${join23(nativeHome, "plugins", "managed", "agent-hub")} before removing it`);
                 }
             }
           } else {
@@ -19028,7 +19755,7 @@ var init_native_cli_entry_jcode = __esm(() => {
 
 // src/adapters/definitions/native-cli-preview-claude.ts
 import { readFileSync as readFileSync12 } from "fs";
-import { join as join23 } from "path";
+import { join as join24 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
   const { buildLaunch, claudeObservationHooks } = ctx.helpers;
@@ -19036,13 +19763,13 @@ function previewClaude(ctx) {
   let envNames = state.envNames;
   let launch;
   let original;
-  for (const file of [join23(cwd, ".claude/settings.local.json"), join23(cwd, ".claude/settings.json"), join23(process.env.HOME ?? "", ".claude/settings.json")]) {
+  for (const file of [join24(cwd, ".claude/settings.local.json"), join24(cwd, ".claude/settings.json"), join24(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync12(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(config, { script: join23(cliDir, "facts-hook.ts"), stateDir });
-  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join23(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
+  const facts = claudeObservationHooks(config, { script: join24(cliDir, "facts-hook.ts"), stateDir });
+  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join24(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
   const safeArgs = args.map((arg, i) => {
     if (args[i - 1] === "--settings")
       return "{}";
@@ -19053,7 +19780,7 @@ function previewClaude(ctx) {
     return publicArg(arg);
   });
   const publicLaunch = buildLaunch("claude", safeArgs, { preview: true, unattended, statusLine: {
-    script: join23(cliDir, "statusline-tee.ts"),
+    script: join24(cliDir, "statusline-tee.ts"),
     stateDir,
     ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {}
   }, facts });
@@ -19086,7 +19813,7 @@ function previewCodex(ctx) {
 var init_native_cli_preview_codex = () => {};
 
 // src/adapters/definitions/native-cli-preview-kimi.ts
-import { join as join24 } from "path";
+import { join as join25 } from "path";
 import { homedir as homedir7 } from "os";
 function previewKimi(ctx) {
   const { args, cwd, stateDir, cliDir, config } = ctx;
@@ -19112,10 +19839,10 @@ function previewKimi(ctx) {
     const nativeEnv = nativeLaunchEnv("kimi", childEnv());
     envNames = Object.keys(nativeEnv).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_HOOK_PURPOSE"]);
     unresolved.push({ field: "nativeLaunchId", reason: "native completion facts bind to the launch admitted by the running hub" });
-    const home = nativeEnv.KIMI_CODE_HOME ?? join24(nativeEnv.HOME ?? homedir7(), ".kimi-code");
-    completionPlugin = kimiPluginPreview(home, join24(cliDir, "../../plugins/agent-hub/kimi-hook.js"));
+    const home = nativeEnv.KIMI_CODE_HOME ?? join25(nativeEnv.HOME ?? homedir7(), ".kimi-code");
+    completionPlugin = kimiPluginPreview(home, join25(cliDir, "../../plugins/agent-hub/kimi-hook.js"));
   }
-  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join24(cliDir, "../../plugins/agent-hub/server.js"), mode);
+  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join25(cliDir, "../../plugins/agent-hub/server.js"), mode);
   kimiMetadata = { mode, mcp: { file, action, changed, tracked }, ...completionPlugin ? { completionPlugin } : {} };
   return finishPreview(ctx, launch, envNames, unresolved, kimiMetadata);
 }
@@ -19124,7 +19851,7 @@ var init_native_cli_preview_kimi = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-preview-pi.ts
-import { join as join25, resolve as resolve16 } from "path";
+import { join as join26, resolve as resolve16 } from "path";
 function previewPi(ctx) {
   const { args, stateDir, cliDir, config } = ctx;
   const { relayModelIds, buildPiLaunch, startModeOf } = ctx.helpers;
@@ -19159,7 +19886,7 @@ function previewPi(ctx) {
     tools: [],
     preamble: REDACTED,
     maxSteps: config.pi.max_steps
-  }, {}, resolve16(join25(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
+  }, {}, resolve16(join26(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
   launch = pi;
   envNames = Object.keys(pi.env).concat(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"].filter((key) => process.env[key] !== undefined));
   if (mode === "tui")
@@ -19249,8 +19976,8 @@ var init_native_config_policy = __esm(() => {
 });
 
 // src/adapters/definitions/native-policy-aux.ts
-import { closeSync as closeSync10, constants as constants8, fstatSync as fstatSync8, openSync as openSync10, readdirSync as readdirSync3, readFileSync as readFileSync13 } from "fs";
-import { isAbsolute as isAbsolute8, join as join26, normalize } from "path";
+import { closeSync as closeSync11, constants as constants9, fstatSync as fstatSync9, openSync as openSync11, readdirSync as readdirSync3, readFileSync as readFileSync13 } from "fs";
+import { isAbsolute as isAbsolute9, join as join27, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
 }
@@ -19295,13 +20022,13 @@ function localCrashPlan(meta) {
 }
 function claudePlugins(root, cwd) {
   const enabled = new Map;
-  for (const file of [join26(root, "settings.json"), ...cwd ? [join26(cwd, ".claude", "settings.json"), join26(cwd, ".claude", "settings.local.json")] : []]) {
+  for (const file of [join27(root, "settings.json"), ...cwd ? [join27(cwd, ".claude", "settings.json"), join27(cwd, ".claude", "settings.local.json")] : []]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object")
       for (const [key, on] of Object.entries(map))
         enabled.set(key, on === true);
   }
-  const installed = json(join26(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
+  const installed = json(join27(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
   const out = [];
   for (const [key, on] of enabled) {
     if (!on)
@@ -19315,7 +20042,7 @@ function claudePlugins(root, cwd) {
   return out;
 }
 function codexPlugins(root) {
-  const config = text2(join26(root, "config.toml"));
+  const config = text2(join27(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -19334,7 +20061,7 @@ function codexPlugins(root) {
       continue;
     let versions = [];
     try {
-      versions = readdirSync3(join26(root, "plugins", "cache", market, plugin));
+      versions = readdirSync3(join27(root, "plugins", "cache", market, plugin));
     } catch {}
     out.push({ name, version: versions.length === 1 ? version2(versions[0]) : null });
   }
@@ -19349,13 +20076,13 @@ function parsePiContinuity(value) {
   return { sessionId: value.sessionId, ...value.sessionFile === undefined ? {} : { sessionFile: value.sessionFile }, ...value.backend === undefined ? {} : { backend: value.backend }, ...value.model === undefined ? {} : { model: value.model } };
 }
 function absoluteContinuityPath(value) {
-  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) && isAbsolute8(value) && normalize(value) === value;
+  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) && isAbsolute9(value) && normalize(value) === value;
 }
 var str3 = (value) => typeof value === "string" && value ? value : undefined, PLUGINS, CLAUDE_ONLY, text2 = (file) => {
   let fd;
   try {
-    fd = openSync10(file, constants8.O_RDONLY | constants8.O_NONBLOCK);
-    const st = fstatSync8(fd);
+    fd = openSync11(file, constants9.O_RDONLY | constants9.O_NONBLOCK);
+    const st = fstatSync9(fd);
     if (!st.isFile() || st.size > 1024 * 1024)
       return;
     return readFileSync13(fd, "utf8");
@@ -19363,7 +20090,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
     return;
   } finally {
     if (fd !== undefined)
-      closeSync10(fd);
+      closeSync11(fd);
   }
 }, json = (file) => {
   try {
@@ -19372,7 +20099,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   } catch {
     return;
   }
-}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join26(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join26(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
+}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join27(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join27(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
 var init_native_policy_aux = __esm(() => {
   PLUGINS = new Map([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
   CLAUDE_ONLY = new Map([["codex@openai-codex", "codex-plugin"]]);
@@ -19415,9 +20142,9 @@ var init_native_cli_launch_common = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-claude-launch.ts
-import { mkdirSync as mkdirSync13, writeFileSync as writeFileSync10, renameSync as renameSync6, unlinkSync as unlinkSync4, readFileSync as readFileSync14 } from "fs";
+import { mkdirSync as mkdirSync14, writeFileSync as writeFileSync11, renameSync as renameSync6, unlinkSync as unlinkSync4, readFileSync as readFileSync14 } from "fs";
 import { randomUUID as randomUUID12 } from "crypto";
-import { resolve as resolve17, join as join27 } from "path";
+import { resolve as resolve17, join as join28 } from "path";
 function claudeChannel(userArgs) {
   const bundle = resolve17(import.meta.dir, "../../../plugins/agent-hub/server.js");
   for (let i = 0;i < userArgs.length; i++) {
@@ -19479,10 +20206,10 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join27(stateDir, `claude-settings-${randomUUID12()}.json`);
+      const file = join28(stateDir, `claude-settings-${randomUUID12()}.json`);
       try {
-        mkdirSync13(stateDir, { recursive: true, mode: 448 });
-        writeFileSync10(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
+        mkdirSync14(stateDir, { recursive: true, mode: 448 });
+        writeFileSync11(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
         renameSync6(`${file}.tmp`, file);
       } catch {
         try {
@@ -19536,7 +20263,7 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync11, existsSync as existsSync9, fstatSync as fstatSync9, openSync as openSync11, readFileSync as readFileSync15, readSync as readSync7 } from "fs";
+import { appendFileSync, closeSync as closeSync12, existsSync as existsSync9, fstatSync as fstatSync10, openSync as openSync12, readFileSync as readFileSync15, readSync as readSync7 } from "fs";
 function readEvents(file, since = 0) {
   if (!existsSync9(file))
     return [];
@@ -19562,13 +20289,13 @@ var init_events = () => {};
 // src/cli/recovery-session-file.ts
 import { statSync as statSync4 } from "fs";
 import { homedir as homedir8 } from "os";
-import { join as join28 } from "path";
+import { join as join29 } from "path";
 function checkedSessionPath(binding, kind) {
   if (kind === "rollout")
-    return join28(binding.launch.env.CODEX_HOME ?? join28(homedir8(), ".codex"), "sessions");
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join28(homedir8(), ".claude");
+    return join29(binding.launch.env.CODEX_HOME ?? join29(homedir8(), ".codex"), "sessions");
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join29(homedir8(), ".claude");
   const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return join28(config, "projects", slug, `${binding.sessionId}.jsonl`);
+  return join29(config, "projects", slug, `${binding.sessionId}.jsonl`);
 }
 function recordedFileState(file) {
   try {
@@ -19581,7 +20308,7 @@ var init_recovery_session_file = () => {};
 
 // src/adapters/definitions/native-recovery.ts
 import { readdirSync as readdirSync4 } from "fs";
-import { basename as basename5, join as join29 } from "path";
+import { basename as basename5, join as join30 } from "path";
 var rolloutState = (binding) => {
   try {
     return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
@@ -19605,7 +20332,7 @@ var init_native_recovery = __esm(() => {
       if (phase !== "plan")
         return false;
       let current, started = false, turned = false;
-      for (const e of readEvents(join29(stateDir, "events.jsonl"))) {
+      for (const e of readEvents(join30(stateDir, "events.jsonl"))) {
         if (e.type === "native_thread" && e.peer === binding.peer) {
           current = e.thread;
           if (e.thread === binding.sessionId && e.fresh)
@@ -19707,20 +20434,20 @@ function claudeWindows(rateLimits) {
 }
 
 // src/adapters/kimi-tui-facts.ts
-import { closeSync as closeSync12, constants as constants9, fstatSync as fstatSync10, lstatSync as lstatSync18, openSync as openSync12, readSync as readSync8, readdirSync as readdirSync5 } from "fs";
-import { createHash as createHash9 } from "crypto";
-import { basename as basename6, dirname as dirname14, isAbsolute as isAbsolute9, join as join30, relative as relative6 } from "path";
+import { closeSync as closeSync13, constants as constants10, fstatSync as fstatSync11, lstatSync as lstatSync20, openSync as openSync13, readSync as readSync8, readdirSync as readdirSync5 } from "fs";
+import { createHash as createHash12 } from "crypto";
+import { basename as basename6, dirname as dirname15, isAbsolute as isAbsolute10, join as join31, relative as relative6 } from "path";
 import { homedir as homedir9 } from "os";
 function decodeKimiTuiHook(event, value) {
-  if (!EVENTS4.includes(event) || !record5(value) || value.hook_event_name !== event || value.client_type !== "kimi_code_cli" || typeof value.session_id !== "string" || !SESSION.test(value.session_id) || typeof value.cwd !== "string" || !isAbsolute9(value.cwd) || value.cwd.length > 4096)
+  if (!EVENTS4.includes(event) || !record5(value) || value.hook_event_name !== event || value.client_type !== "kimi_code_cli" || typeof value.session_id !== "string" || !SESSION.test(value.session_id) || typeof value.cwd !== "string" || !isAbsolute10(value.cwd) || value.cwd.length > 4096)
     return;
-  if ((event === "TurnStarted" || event === "Interrupt") && !integer(value.turn_id))
+  if ((event === "TurnStarted" || event === "Interrupt") && !integer2(value.turn_id))
     return;
   if (event === "TaskStarted" && (typeof value.task_id !== "string" || !TASK.test(value.task_id)))
     return;
-  const home = process.env.KIMI_CODE_HOME ?? join30(process.env.HOME ?? homedir9(), ".kimi-code");
-  const transcriptPath = value.agentHubTranscriptPath ?? join30(home, "session_index.jsonl");
-  if (typeof transcriptPath !== "string" || !isAbsolute9(transcriptPath) || transcriptPath.length > 4096)
+  const home = process.env.KIMI_CODE_HOME ?? join31(process.env.HOME ?? homedir9(), ".kimi-code");
+  const transcriptPath = value.agentHubTranscriptPath ?? join31(home, "session_index.jsonl");
+  if (typeof transcriptPath !== "string" || !isAbsolute10(transcriptPath) || transcriptPath.length > 4096)
     return;
   const phase = { TurnStarted: "start", Stop: "stop", StopFailure: "stop", Interrupt: "stop", SessionEnd: "session", TaskStarted: "pre", Notification: "post" }[event];
   return { event, phase, sessionId: value.session_id, transcriptPath, workspacePaths: [value.cwd], tool: "", input: {} };
@@ -19729,12 +20456,12 @@ function encodeKimiTuiHook() {
   return;
 }
 function readBytes(path, cap, tail = false) {
-  const link = lstatSync18(path);
+  const link = lstatSync20(path);
   if (!link.isFile() || link.isSymbolicLink() || link.nlink !== 1)
     throw new Error("not a regular file");
-  const fd = openSync12(path, constants9.O_RDONLY | constants9.O_NOFOLLOW);
+  const fd = openSync13(path, constants10.O_RDONLY | constants10.O_NOFOLLOW);
   try {
-    const stat = fstatSync10(fd);
+    const stat = fstatSync11(fd);
     if (!stat.isFile() || stat.nlink !== 1 || !tail && stat.size > cap)
       throw new Error("invalid file");
     const length = Math.min(stat.size, cap), start = tail ? stat.size - length : 0;
@@ -19748,11 +20475,11 @@ function readBytes(path, cap, tail = false) {
     }
     return bytes;
   } finally {
-    closeSync12(fd);
+    closeSync13(fd);
   }
 }
 function sessionDirectory(index, session) {
-  const home = dirname14(index), sessions = realPath(join30(home, "sessions"));
+  const home = dirname15(index), sessions = realPath(join31(home, "sessions"));
   let listed;
   for (const line of readBytes(index, INDEX_CAP).toString("utf8").split(`
 `)) {
@@ -19787,8 +20514,8 @@ function taskInventory(agents) {
       continue;
     if (!entry.isDirectory())
       continue;
-    const tasks = join30(agents, entry.name, "tasks");
-    const dir = lstatSync18(tasks, { throwIfNoEntry: false });
+    const tasks = join31(agents, entry.name, "tasks");
+    const dir = lstatSync20(tasks, { throwIfNoEntry: false });
     if (!dir)
       continue;
     if (!dir.isDirectory() || dir.isSymbolicLink())
@@ -19799,14 +20526,14 @@ function taskInventory(agents) {
     for (const name of files) {
       if (!TASK.test(name.slice(0, -5)))
         throw new Error("invalid task name");
-      const row = JSON.parse(readBytes(join30(tasks, name), TASK_CAP).toString("utf8"));
+      const row = JSON.parse(readBytes(join31(tasks, name), TASK_CAP).toString("utf8"));
       if (!record5(row) || row.taskId !== name.slice(0, -5) || typeof row.status !== "string")
         throw new Error("invalid task");
       if (row.status === "running" && row.endedAt === null) {
         active++;
         continue;
       }
-      const terminal = ["completed", "failed", "cancelled"].includes(row.status) && integer(row.endedAt);
+      const terminal = ["completed", "failed", "cancelled"].includes(row.status) && integer2(row.endedAt);
       if (!terminal)
         throw new Error("unknown task state");
     }
@@ -19814,11 +20541,11 @@ function taskInventory(agents) {
   return active;
 }
 function readKimiTuiTranscript(session, index) {
-  if (!SESSION.test(session) || basename6(index) !== "session_index.jsonl" || !isAbsolute9(index))
+  if (!SESSION.test(session) || basename6(index) !== "session_index.jsonl" || !isAbsolute10(index))
     return empty();
   try {
     const directory = sessionDirectory(index, session);
-    const wire = join30(directory, "agents", "main", "wire.jsonl");
+    const wire = join31(directory, "agents", "main", "wire.jsonl");
     if (!inside2(directory, realPath(wire)))
       return empty();
     const bytes = readBytes(wire, WIRE_CAP, true);
@@ -19844,21 +20571,21 @@ function readKimiTuiTranscript(session, index) {
       }
       if (!record5(row))
         return empty();
-      if (row.type === "turn.prompt" && integer(row.turnId) && record5(row.origin) && typeof row.origin.kind === "string") {
+      if (row.type === "turn.prompt" && integer2(row.turnId) && record5(row.origin) && typeof row.origin.kind === "string") {
         const turn = row.turnId, id = typeof row.promptId === "string" ? row.promptId : typeof row.origin.notificationId === "string" ? row.origin.notificationId : `turn-${turn}`;
         const prompt = { turn, id, origin: row.origin.kind };
         prompts.set(turn, prompt);
         started = prompt;
-      } else if (row.type === "turn.ended" && integer(row.turnId) && ["completed", "failed", "cancelled"].includes(String(row.reason))) {
+      } else if (row.type === "turn.ended" && integer2(row.turnId) && ["completed", "failed", "cancelled"].includes(String(row.reason))) {
         const turn = row.turnId;
         ends.set(turn, { turn, reason: row.reason });
       } else if (row.type === "prompt.completed" && typeof row.promptId === "string" && ["completed", "failed"].includes(String(row.reason))) {
         promptEnds.set(row.promptId, row.reason);
-        if (integer(row.turnId))
+        if (integer2(row.turnId))
           promptEndTurnIds.set(row.turnId, row.promptId);
       } else if (row.type === "prompt.aborted" && typeof row.promptId === "string") {
         promptEnds.set(row.promptId, "cancelled");
-        if (integer(row.turnId))
+        if (integer2(row.turnId))
           promptEndTurnIds.set(row.turnId, row.promptId);
       } else if (row.type === "turn.prompt" || row.type === "turn.ended")
         return empty();
@@ -19868,25 +20595,25 @@ function readKimiTuiTranscript(session, index) {
       const prompt = prompts.get(turn), promptReason = prompt ? promptEnds.get(prompt.id) : undefined, turnPromptId = promptEndTurnIds.get(turn);
       if (!prompt || promptReason !== undefined && promptReason !== end.reason || turnPromptId !== undefined && turnPromptId !== prompt.id)
         continue;
-      completion = { id: createHash9("sha256").update(`${session}:${turn}:${prompt.id}:${end.reason}`).digest("hex"), index: turn, reason: end.reason };
+      completion = { id: createHash12("sha256").update(`${session}:${turn}:${prompt.id}:${end.reason}`).digest("hex"), index: turn, reason: end.reason };
     }
     let background;
     try {
-      background = taskInventory(join30(directory, "agents"));
+      background = taskInventory(join31(directory, "agents"));
     } catch {}
     return {
       factIds: [],
       ...completion ? { completion } : {},
-      ...started ? { started: { id: createHash9("sha256").update(`${session}:${started.turn}:${started.id}`).digest("hex"), index: started.turn, origin: started.origin } } : {},
+      ...started ? { started: { id: createHash12("sha256").update(`${session}:${started.turn}:${started.id}`).digest("hex"), index: started.turn, origin: started.origin } } : {},
       ...background === undefined ? {} : { background }
     };
   } catch {
     return empty();
   }
 }
-var EVENTS4, SESSION, AGENT, TASK, INDEX_CAP, WIRE_CAP, TASK_CAP, MAX_AGENTS = 256, MAX_TASKS = 256, record5 = (value) => !!value && typeof value === "object" && !Array.isArray(value), integer = (value) => Number.isSafeInteger(value) && value >= 0, inside2 = (root, path) => {
+var EVENTS4, SESSION, AGENT, TASK, INDEX_CAP, WIRE_CAP, TASK_CAP, MAX_AGENTS = 256, MAX_TASKS = 256, record5 = (value) => !!value && typeof value === "object" && !Array.isArray(value), integer2 = (value) => Number.isSafeInteger(value) && value >= 0, inside2 = (root, path) => {
   const rel = relative6(root, path);
-  return rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute9(rel);
+  return rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute10(rel);
 }, empty = () => ({ factIds: [] }), KIMI_TUI_FACTS_HOOK;
 var init_kimi_tui_facts = __esm(() => {
   init_project();
@@ -20260,7 +20987,7 @@ var init_native_cli_entry_qwen = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-preview-qwen.ts
-import { join as join31 } from "path";
+import { join as join32 } from "path";
 function previewQwen(ctx) {
   const { tool, args, cwd, stateDir, cliDir, config } = ctx;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
@@ -20290,7 +21017,7 @@ function previewQwen(ctx) {
     form: "headless",
     projectRoot: cwd,
     stateDir,
-    entrypoint: join31(cliDir, "main.js"),
+    entrypoint: join32(cliDir, "main.js"),
     userArgs: [],
     unattended: false,
     env: {},
@@ -20388,9 +21115,9 @@ var init_qwen = __esm(() => {
 
 // src/adapters/configured-acp.ts
 import { basename as basename7 } from "path";
-import { types as types5 } from "util";
+import { types as types6 } from "util";
 function fields(raw, at) {
-  if (!raw || typeof raw !== "object" || types5.isProxy(raw) || Array.isArray(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) || Object.getOwnPropertySymbols(raw).length)
+  if (!raw || typeof raw !== "object" || types6.isProxy(raw) || Array.isArray(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) || Object.getOwnPropertySymbols(raw).length)
     return fail(at, "must be a plain own-data object");
   const result = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(raw));
   if (Object.values(result).some((d) => !Object.hasOwn(d, "value") || !d.enumerable))
@@ -20403,7 +21130,7 @@ function text4(raw, at, max = 4096) {
   return raw;
 }
 function list3(raw, at, max) {
-  if (!Array.isArray(raw) || types5.isProxy(raw) || Object.getPrototypeOf(raw) !== Array.prototype || Object.getOwnPropertySymbols(raw).length)
+  if (!Array.isArray(raw) || types6.isProxy(raw) || Object.getPrototypeOf(raw) !== Array.prototype || Object.getOwnPropertySymbols(raw).length)
     return fail(at, "must be a string array");
   const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(raw));
   const length = descriptors.length?.value;
@@ -20568,7 +21295,7 @@ var init_native_cli_doctor = __esm(() => {
 });
 
 // src/adapters/registry.ts
-import { types as types6 } from "util";
+import { types as types7 } from "util";
 function immutable(value, seen = new WeakSet) {
   if (!value || typeof value !== "object" || seen.has(value))
     return value;
@@ -20602,19 +21329,19 @@ function deriveAdapterLists(definitions) {
   });
 }
 function ownField(value, key) {
-  if (!value || typeof value !== "object" || types6.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+  if (!value || typeof value !== "object" || types7.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
     return;
   const field = Object.getOwnPropertyDescriptor(value, key);
   return field && Object.hasOwn(field, "value") && field.enumerable ? field.value : undefined;
 }
 function declaredKind(id, instances, catalog = definitions) {
-  if (!instances || typeof instances !== "object" || types6.isProxy(instances) || Array.isArray(instances) || ![Object.prototype, null].includes(Object.getPrototypeOf(instances)))
+  if (!instances || typeof instances !== "object" || types7.isProxy(instances) || Array.isArray(instances) || ![Object.prototype, null].includes(Object.getPrototypeOf(instances)))
     return;
   const field = Object.getOwnPropertyDescriptor(instances, id);
   if (!field || !Object.hasOwn(field, "value") || !field.enumerable)
     return;
   const entry = field.value;
-  if (!entry || typeof entry !== "object" || types6.isProxy(entry) || Array.isArray(entry) || ![Object.prototype, null].includes(Object.getPrototypeOf(entry)))
+  if (!entry || typeof entry !== "object" || types7.isProxy(entry) || Array.isArray(entry) || ![Object.prototype, null].includes(Object.getPrototypeOf(entry)))
     return;
   const kind = Object.getOwnPropertyDescriptor(entry, "kind");
   if (!kind || !Object.hasOwn(kind, "value") || !kind.enumerable || typeof kind.value !== "string" || !catalog.has(kind.value))
@@ -20632,13 +21359,13 @@ function definitionOf(id, instances) {
 function resolvedDefinition(id, kind, instances, catalog) {
   const definition = kind === undefined ? undefined : catalog.get(kind);
   const declaration = ownField(instances, id), roles = ownField(declaration, "roles");
-  const reviewerOnly = Array.isArray(roles) && !types6.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
+  const reviewerOnly = Array.isArray(roles) && !types7.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
   const variant = definition?.reviewerVariant;
   const fresh = variant?.reviewer?.declaration === "automatic" || ownField(declaration, "review_mode") === "fresh";
   const headless = kind !== id && ownField(declaration, "start_mode") === "headless";
   if (variant && headless && reviewerOnly && fresh)
     return variant;
-  const roleValues = Array.isArray(roles) && !types6.isProxy(roles) && roles.length <= 4 ? Array.from({ length: roles.length }, (_, index) => Object.getOwnPropertyDescriptor(roles, String(index))?.value) : [];
+  const roleValues = Array.isArray(roles) && !types7.isProxy(roles) && roles.length <= 4 ? Array.from({ length: roles.length }, (_, index) => Object.getOwnPropertyDescriptor(roles, String(index))?.value) : [];
   const writerRoles = roleValues.includes("implementer") && roleValues.every((role) => role === "implementer" || role === "verifier");
   return headless && writerRoles && definition?.headlessVariant ? definition.headlessVariant : definition;
 }
@@ -28169,16 +28896,16 @@ init_project();
 // src/hub/instance-config.ts
 init_registry();
 import { readFileSync as readFileSync17 } from "fs";
-import { join as join34 } from "path";
+import { join as join35 } from "path";
 
 // src/adapters/external-metadata.ts
-import { types as types7 } from "util";
+import { types as types8 } from "util";
 var MAX_MODULES = 16;
 var fail2 = (reason) => {
   throw new Error(`external adapter: ${reason}`);
 };
 function moduleDataObject(value) {
-  if (!value || typeof value !== "object" || types7.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
+  if (!value || typeof value !== "object" || types8.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
     return fail2("plain own-data object required");
   const fields = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   if (Object.values(fields).some((field) => !Object.hasOwn(field, "value") || !field.enumerable))
@@ -28191,7 +28918,7 @@ function moduleText(value, max) {
   return value;
 }
 function moduleArray(value, max) {
-  if (!Array.isArray(value) || types7.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > max || Object.getOwnPropertySymbols(value).length)
+  if (!Array.isArray(value) || types8.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > max || Object.getOwnPropertySymbols(value).length)
     return fail2("bounded array required");
   const fields = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   if (Object.keys(fields).length !== value.length + 1)
@@ -28282,8 +29009,8 @@ init_registry();
 // src/hub/config-trust.ts
 init_child_process();
 init_git();
-import { lstatSync as lstatSync19, statSync as statSync5 } from "fs";
-import { dirname as dirname15, join as join32 } from "path";
+import { lstatSync as lstatSync21, statSync as statSync5 } from "fs";
+import { dirname as dirname16, join as join33 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
   "permission_modes",
@@ -28323,7 +29050,7 @@ function configTracked(cwd, name) {
     return;
   let opened;
   try {
-    opened = statSync5(join32(cwd, ".agenthub", name));
+    opened = statSync5(join33(cwd, ".agenthub", name));
   } catch {}
   return r.stdout.split("\x00").filter(Boolean).some((row) => {
     const path = row.slice(row.indexOf("\t") + 1);
@@ -28332,7 +29059,7 @@ function configTracked(cwd, name) {
     if (!opened)
       return path === `.agenthub/${name}`;
     try {
-      const s = statSync5(join32(cwd, path));
+      const s = statSync5(join33(cwd, path));
       return !!opened && s.dev === opened.dev && s.ino === opened.ino;
     } catch {
       return false;
@@ -28390,11 +29117,11 @@ function readAdapterModuleDeclarations(cwd, layers) {
 // src/hub/control-client.ts
 init_project();
 import { readFileSync as readFileSync16 } from "fs";
-import { join as join33, resolve as resolve18 } from "path";
+import { join as join34, resolve as resolve18 } from "path";
 
 // src/hub/tool-request.ts
 init_capabilities();
-import { createHash as createHash10, randomUUID as randomUUID13 } from "crypto";
+import { createHash as createHash13, randomUUID as randomUUID13 } from "crypto";
 var TOOL_WRITE_FEATURE = "tool_write_idempotency";
 var RETENTION_MS = 15 * 60 * 1000;
 var MAX_REPLY_BYTES = 64 * 1024;
@@ -28494,8 +29221,8 @@ function controlProtocolWindow(descriptor) {
 }
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync16(join33(stateDir, "status.json"), "utf8"));
-    const token = readFileSync16(join33(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync16(join34(stateDir, "status.json"), "utf8"));
+    const token = readFileSync16(join34(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
@@ -28766,23 +29493,10 @@ init_guidance_variants();
 init_db_schema();
 init_guidance_variants();
 init_execution_reference();
-
-// src/hub/guidance-probes.ts
-init_execution_reference();
-var GUIDANCE_PROBE_LIMITS = Object.freeze({
-  recordBytes: 32768,
-  snapshotBytes: 32768,
-  storageBytes: 1073741824,
-  workerAttempts: 4,
-  editorAttempts: 5,
-  slots: 9,
-  hashLength: 64
-});
-var registrationScaffoldBytes = Buffer.byteLength(JSON.stringify({ manifest: 0, snapshots: { task: "", baselineContext: "", dataPolicy: 0, systemPolicy: "", improverContext: "" } }));
-var GUIDANCE_PROBE_REGISTRATION_BYTES = GUIDANCE_PROBE_LIMITS.recordBytes + GUIDANCE_PROBE_LIMITS.snapshotBytes + 4 * 2 * GUIDANCE_PROBE_LIMITS.snapshotBytes + registrationScaffoldBytes;
-var GUIDANCE_PROBE_SESSION_BYTES = 4 * GUIDANCE_PROBE_LIMITS.recordBytes;
+init_guidance_probes();
 
 // src/hub/tasks.ts
+init_guidance_probes();
 init_guidance_variants();
 
 // src/hub/execution-lineage-owner.ts
@@ -28919,7 +29633,7 @@ var LEARNING_DEFAULTS = { windowMs: 30 * 24 * 3600000, threshold: 3, maxGroups: 
 init_deliverables();
 
 // src/hub/deliverable-files.ts
-import { constants as constants10, lstatSync as lstatSync20 } from "fs";
+import { constants as constants11, lstatSync as lstatSync22 } from "fs";
 init_tools();
 init_deny();
 init_permission_mode();
@@ -28927,7 +29641,7 @@ init_project();
 init_path_policy();
 init_deliverables();
 var CHUNK = 1024 * 1024;
-var NOFOLLOW = constants10.O_NOFOLLOW ?? 0;
+var NOFOLLOW = constants11.O_NOFOLLOW ?? 0;
 
 // src/hub/tasks.ts
 init_src();
@@ -28992,11 +29706,11 @@ var TITLE_READ_MAX = 1024 * 1024;
 var TITLE_LINE_MAX = 64 * 1024;
 
 // src/hub/instances.ts
-import { types as types8 } from "util";
+import { types as types9 } from "util";
 init_project();
 init_registry();
 init_permission_mode();
-import { dirname as dirname16, isAbsolute as isAbsolute10, sep as sep3 } from "path";
+import { dirname as dirname17, isAbsolute as isAbsolute11, sep as sep3 } from "path";
 init_model_token();
 init_model_token();
 var JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile"];
@@ -29009,7 +29723,7 @@ var fail4 = (field, reason) => {
   throw new Error(`${field}: ${reason}`);
 };
 function fields2(value, field) {
-  if (!value || typeof value !== "object" || types8.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
+  if (!value || typeof value !== "object" || types9.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
     return fail4(field, "must be a plain own-data object");
   const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   if (Object.values(descriptors).some((entry) => !Object.hasOwn(entry, "value") || !entry.enumerable))
@@ -29017,7 +29731,7 @@ function fields2(value, field) {
   return descriptors;
 }
 function roles(value, field) {
-  if (!Array.isArray(value) || types8.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length)
+  if (!Array.isArray(value) || types9.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length)
     return fail4(field, "must be a role array");
   const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   const length = descriptors.length?.value;
@@ -29034,7 +29748,7 @@ function roles(value, field) {
 }
 function jcodeInstanceFields(entry, path) {
   const home = entry.jcode_home?.value;
-  if (typeof home !== "string" || !isAbsolute10(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
+  if (typeof home !== "string" || !isAbsolute11(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
     return fail4(`${path}.jcode_home`, "is required: a nonempty control-free absolute path of at most 4096 UTF-8 bytes, other than the base Jcode's home");
   const out = { jcode_home: home };
   for (const key of ["provider", "model", "provider_profile"]) {
@@ -29231,7 +29945,7 @@ var INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"];
 function readInstanceConfigLayers(cwd) {
   return INSTANCE_CONFIG_FILES.flatMap((name) => {
     try {
-      return [{ name, raw: JSON.parse(readFileSync17(join34(cwd, ".agenthub", name), "utf8")) }];
+      return [{ name, raw: JSON.parse(readFileSync17(join35(cwd, ".agenthub", name), "utf8")) }];
     } catch (error) {
       if (error.code === "ENOENT")
         return [];
@@ -30314,7 +31028,7 @@ function datetime(args) {
   return new RegExp(`^${dateSource}T(?:${timeRegex})$`);
 }
 var anyString = /^[\s\S]{0,}$/;
-var integer2 = /^-?\d+$/;
+var integer3 = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
 var boolean = /^(?:true|false)$/i;
 var _null = /^null$/i;
@@ -34119,7 +34833,7 @@ function stringifyKeyNames(bySchema, json, visited) {
     return rest;
   rest.type = "string";
   if (!values)
-    rest.pattern = (types.includes("number") ? number : integer2).source;
+    rest.pattern = (types.includes("number") ? number : integer3).source;
   return rest;
 }
 var pendingRecords = new WeakMap;
@@ -37624,7 +38338,7 @@ class StdioServerTransport {
 
 // src/adapters/claude-channel.ts
 import { readFileSync as readFileSync18 } from "fs";
-import { join as join37 } from "path";
+import { join as join38 } from "path";
 
 // src/hub/channel-project.ts
 init_registry();
@@ -37632,8 +38346,8 @@ init_registry();
 // src/hub/instance-execution.ts
 init_git();
 init_project();
-import { lstatSync as lstatSync21 } from "fs";
-import { join as join35, resolve as resolve20 } from "path";
+import { lstatSync as lstatSync23 } from "fs";
+import { join as join36, resolve as resolve20 } from "path";
 var refuse = (reason) => {
   throw new Error(`instance execution workspace refused: ${reason}`);
 };
@@ -37675,12 +38389,12 @@ function resolveInstanceExecutionCwd(projectRoot, id, declarations, roles, adapt
   try {
     root = realPath(projectRoot);
     cwd = realPath(resolve20(root, declaration.worktree));
-    if (!lstatSync21(root).isDirectory() || !lstatSync21(cwd).isDirectory())
+    if (!lstatSync23(root).isDirectory() || !lstatSync23(cwd).isDirectory())
       return refuse("workspace is not a directory");
   } catch {
     return refuse("workspace paths are unavailable");
   }
-  const expected = join35(root, ".worktrees", id);
+  const expected = join36(root, ".worktrees", id);
   if (cwd !== expected)
     return refuse("worktree must be the exact managed instance directory");
   const inventory = git(root, ["worktree", "list", "--porcelain", "-z"]);
@@ -37710,7 +38424,7 @@ function resolveInstanceExecutionCwd(projectRoot, id, declarations, roles, adapt
 // src/hub/channel-project.ts
 init_project();
 import { existsSync as existsSync10 } from "fs";
-import { join as join36 } from "path";
+import { join as join37 } from "path";
 function channelProject(cwd, env, policyRoles) {
   const override = env.AGENTHUB_STATE_DIR?.trim(), declared = env.AGENTHUB_PROJECT_DIR?.trim();
   if (env.AGENTHUB_MODE === "tools" && override && declared)
@@ -37740,7 +38454,7 @@ function channelProject(cwd, env, policyRoles) {
   const inherited = inheritedStateDir(own.root, env);
   if (inherited)
     return { root: own.root, stateDir: inherited, inherited: true };
-  if (override && !existsSync10(join36(own.root, ".agenthub", "config.json")))
+  if (override && !existsSync10(join37(own.root, ".agenthub", "config.json")))
     return asSession();
   return { root: own.root, stateDir: own.stateDir, inherited: false };
 }
@@ -37751,7 +38465,7 @@ init_hub_tools();
 init_envelope();
 
 // src/hub/native-permission-request.ts
-import { types as types9 } from "util";
+import { types as types10 } from "util";
 var NATIVE_PERMISSION_PROBE_MAX_BYTES = 4096;
 var NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH = 4;
 var MAX_DEPTH = 8;
@@ -37786,7 +38500,7 @@ function buildNativePermissionProbe(request) {
         charge(value === null ? 4 : typeof value === "boolean" ? value ? 4 : 5 : String(value).length);
         return value;
       }
-      if (!value || typeof value !== "object" || types9.isProxy(value) || ancestors.has(value))
+      if (!value || typeof value !== "object" || types10.isProxy(value) || ancestors.has(value))
         throw new Error;
       const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
       if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
@@ -37876,7 +38590,7 @@ function currentClaudeChannelEvidence() {
 var own5 = channelProject(process.cwd(), process.env, (root) => {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync18(join37(root, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync18(join38(root, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -37902,7 +38616,7 @@ var channel = !toolsMode && channelEvidence === "development-channel-launch";
 function roles2() {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync18(join37(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync18(join38(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -37921,7 +38635,7 @@ function sessionProfile() {
     for (const name of ["config.json", "config.local.json"]) {
       let data;
       try {
-        data = JSON.parse(readFileSync18(join37(projectRoot2, ".agenthub", name), "utf8"));
+        data = JSON.parse(readFileSync18(join38(projectRoot2, ".agenthub", name), "utf8"));
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -37948,7 +38662,7 @@ function sessionRoles() {
     const read = (name) => {
       let raw;
       try {
-        raw = JSON.parse(readFileSync18(join37(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
+        raw = JSON.parse(readFileSync18(join38(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
       } catch {
         return {};
       }
@@ -37979,14 +38693,14 @@ var HELD = `another session is attached to the hub as "${peerId}"; this one is s
 var INBOX_CAP = 200;
 function sessionSupported() {
   try {
-    return (JSON.parse(readFileSync18(join37(stateDir, "status.json"), "utf8")).features ?? []).includes("session_identity");
+    return (JSON.parse(readFileSync18(join38(stateDir, "status.json"), "utf8")).features ?? []).includes("session_identity");
   } catch {
     return false;
   }
 }
 function peerHeld() {
   try {
-    const status = JSON.parse(readFileSync18(join37(stateDir, "status.json"), "utf8"));
+    const status = JSON.parse(readFileSync18(join38(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
     if (channel && peer?.toolsOnly && !peer.claiming)
       return false;

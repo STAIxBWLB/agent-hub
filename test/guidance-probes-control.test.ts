@@ -6,7 +6,7 @@ import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { USER } from "../src/hub/envelope.ts";
+import { HUB, USER, newEnvelope } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { parseRole, parseRoleDocument, taskRoleText } from "../src/hub/roles.ts";
 import { SHIPPED_ROLES } from "../src/hub/shipped-roles.ts";
@@ -14,6 +14,7 @@ import { guidanceVariantKey, type GuidanceVariantPayloadV1 } from "../src/hub/gu
 import { GuidanceProbeStore } from "../src/hub/guidance-probe-store.ts";
 import { GuidanceProbeError, GUIDANCE_PROBE_MODEL, GUIDANCE_PROBE_REGISTRATION_BYTES, GUIDANCE_PROBE_STOP_TIMEOUT_MS, guidanceProbeManifestKey, parseGuidanceProbePublicReceipt,
   parseGuidanceProbePublicStatus, parseGuidanceProbeRegistration, parseGuidanceProbeSubcommand, probeHash, probeSessionGeneration,
+  guidanceProbeWorkerFrame, guidanceProbeNonGuidanceInputHash,
   type GuidanceProbeFakePorts, type ProbeFakeEffects, type ProbeFakeLaunch, type ProbeFakeObservation, type ProbePublicReceipt, type ProbePublicStatus } from "../src/hub/guidance-probes.ts";
 import { CONDUCTOR_DAEMON_OPERATIONS, conductorOperation, operationalRequestLabel } from "../src/hub/operational-authority.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
@@ -241,6 +242,121 @@ test("same native conductor session preserves exact identity but a different req
   expect({ generation: peer.sessionGeneration, nativeSession: peer.nativeSession }).toEqual(native);
   await expect(f.tasks.guidanceProbeStart("claude", receipt.id, 0)).rejects.toBeInstanceOf(PreEffectToolRefusal);
   expect(f.store.integrity()).toEqual(before); expect(f.provider.launches).toHaveLength(1);
+});
+
+test("same-CAS duplicates during async worker preparation neither reserve an unframed slot nor borrow another connection", async () => {
+  const f = await fixture(), registered = await f.tasks.guidanceProbeRegister("claude", f.registration());
+  let ready!: () => void, release!: () => void;
+  const preparing = new Promise<void>(resolve => { ready = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  clean.push(release);
+  let preparations = 0;
+  f.dependency.prepareWorkerFrame = async (state, _slot, guidance) => {
+    preparations++; ready(); await gate;
+    const { task, baselineContext, systemPolicy } = state.registration.snapshots;
+    return { inputFrame: guidanceProbeWorkerFrame(task, baselineContext, systemPolicy, guidance),
+      nonGuidanceInputSha256: guidanceProbeNonGuidanceInputHash(task, baselineContext, systemPolicy) };
+  };
+  const running = f.tasks.guidanceProbeStart("claude", registered.id, 0).then(value => ({ value }), error => { ready(); return { error }; });
+  await preparing;
+  const key = { projectKey: f.projectKey, id: registered.id }, before = f.store.integrity(), counters = f.store.read(key)!.counters;
+  expect(counters.workerAttempts).toBe(0); expect(f.provider.launches).toHaveLength(0);
+  const duplicate = await f.tasks.guidanceProbeStart("claude", registered.id, 0);
+  expect(duplicate.already).toBe(true); expect(duplicate.state).toBe("declared"); expect(duplicate.evidence).toBe("declaration");
+  expect(f.store.integrity()).toEqual(before); expect(f.store.read(key)!.counters).toEqual(counters); expect(preparations).toBe(1);
+  await expect(f.tasks.guidanceProbeStart(USER, registered.id, 0)).rejects.toBeInstanceOf(PreEffectToolRefusal);
+  const originalSession = f.dependency.session!;
+  f.dependency.session = by => {
+    const captured = originalSession(by);
+    return captured && { ...captured, requestConnectionId: "separate-conductor-request-connection" };
+  };
+  try { await expect(f.tasks.guidanceProbeStart("claude", registered.id, 0)).rejects.toBeInstanceOf(PreEffectToolRefusal); }
+  finally { f.dependency.session = originalSession; }
+  expect(f.store.integrity()).toEqual(before); expect(f.store.read(key)!.counters.workerAttempts).toBe(0); expect(preparations).toBe(1);
+  release(); const completed = await running;
+  expect("value" in completed).toBe(true); expect(f.provider.launches).toHaveLength(1); expect(preparations).toBe(1);
+  expect(f.store.read(key)!.counters.workerAttempts).toBe(1); expect(f.store.read(key)!.counters.modelCalls).toBe(1);
+  expect(f.store.read(key)!.counters.inputBytes).toBe(counters.inputBytes + Buffer.byteLength(f.provider.launches[0]!.inputFrame));
+  expect(f.store.read(key)!.sessions[0]!.state).toBe("closed_fixture"); expect(f.tasks.guidanceProbesPending()).toBe(0);
+});
+
+test("an ordinary delivered hub message preserves the admitted conductor probe and its next effect", async () => {
+  const f = await fixture(), receipt = await f.tasks.guidanceProbeRegister("claude", f.registration());
+  let ready!: () => void, release!: () => void, received!: () => void;
+  const observed = new Promise<void>(resolve => { ready = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const delivered = new Promise<void>(resolve => { received = resolve; });
+  clean.push(release);
+  const peer = f.bus.peers.get("claude")!, beforeDelivery = f.bus.lastDeliveredTo("claude").map(item => item.id);
+  peer.deliver = async () => { received(); };
+  let nextEffect = false;
+  f.provider.script = async (input, effects) => {
+    const first = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash("before-ordinary-delivery"), reservedTokens: 20 };
+    await effects.runEffect(first, async () => fakeEffectValue(first, "first fixture result", 5));
+    ready(); await gate;
+    const next = { sequence: 1, unit: "model_calls" as const, descriptorSha256: probeHash("after-ordinary-delivery"), reservedTokens: 20 };
+    await effects.runEffect(next, async () => { nextEffect = true; return fakeEffectValue(next, "next fixture result", 5); });
+    return { ...closed(input), usage: "known_fixture" };
+  };
+  const running = f.tasks.guidanceProbeStart("claude", receipt.id, 0).then(value => ({ value }), error => { ready(); return { error }; });
+  await observed;
+  const message = newEnvelope(HUB, "Ordinary public coordination update.", { to: ["claude"], priority: "important" });
+  expect(f.bus.publish(message)).toEqual(["claude"]);
+  await delivered;
+  expect(f.bus.lastDeliveredTo("claude").map(item => item.id)).not.toEqual(beforeDelivery);
+  release();
+  const result = await running;
+  expect("value" in result).toBe(true); expect(nextEffect).toBe(true);
+  const state = f.store.read({ projectKey: f.projectKey, id: receipt.id })!;
+  expect(state.admissionHold).toBe("none"); expect(state.sessions[0]!.state).toBe("closed_fixture");
+  expect(state.counters.modelCalls).toBe(2); expect(state.counters.tokensObservedKnown).toBe(10);
+  expect(f.provider.stops).toHaveLength(0); expect(f.tasks.guidanceProbesPending()).toBe(0);
+});
+
+for (const changed of ["role", "roster", "privacy"] as const) test(`an admitted conductor probe still refuses its next effect after ${changed} changes`, async () => {
+  const f = await fixture(), receipt = await f.tasks.guidanceProbeRegister("claude", f.registration());
+  let ready!: () => void, release!: () => void;
+  const observed = new Promise<void>(resolve => { ready = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  clean.push(release);
+  let nextEffect = false;
+  f.provider.script = async (input, effects) => {
+    const first = { sequence: 0, unit: "model_calls" as const, descriptorSha256: probeHash(`before-${changed}-change`), reservedTokens: 20 };
+    await effects.runEffect(first, async () => fakeEffectValue(first, "first fixture result", 5));
+    ready(); await gate;
+    const next = { sequence: 1, unit: "model_calls" as const, descriptorSha256: probeHash(`after-${changed}-change`), reservedTokens: 20 };
+    await effects.runEffect(next, async () => { nextEffect = true; return fakeEffectValue(next, "must not run", 5); });
+    return { ...closed(input), usage: "known_fixture" };
+  };
+  const running = f.tasks.guidanceProbeStart("claude", receipt.id, 0).then(value => ({ value }), error => { ready(); return { error }; });
+  await observed;
+  const key = { projectKey: f.projectKey, id: receipt.id };
+  expect(f.store.read(key)!.counters.modelCalls).toBe(1);
+  if (changed === "role") f.roles.claude = ["implementer"];
+  else if (changed === "roster") f.roster.delete("claude");
+  else f.control.private = true;
+  release();
+  const result = await running;
+  expect("error" in result).toBe(true); expect(nextEffect).toBe(false);
+  expect(f.store.read(key)!.counters.modelCalls).toBe(1);
+  expect(f.store.read(key)!.receipt.state).toBe("unknown_held");
+  await f.tasks.stopGuidanceProbes();
+  expect(f.tasks.guidanceProbesPending()).toBe(0);
+});
+
+test("ordinary G1 reads retain their strict delivered-input snapshot fence", async () => {
+  const f = await fixture(), variant = await f.variant();
+  const query = { taskId: variant.taskId, taskCreated: variant.taskCreated, experimentId: variant.experimentId, id: variant.id };
+  expect(f.tasks.guidanceVariantRead("codex", query).state).toBe("available");
+  const records = f.board.guidanceVariants.bind(f.board);
+  let delivered = false;
+  f.board.guidanceVariants = (...args) => {
+    const current = records(...args);
+    if (!delivered) {
+      delivered = true;
+      f.bus.publish(newEnvelope(HUB, "A new public G1 input context.", { to: ["codex"], priority: "important" }));
+    }
+    return current;
+  };
+  expect(f.tasks.guidanceVariantRead("codex", query)).toEqual({ state: "unavailable" });
+  expect(delivered).toBe(true); expect(f.bus.lastDeliveredTo("codex")).toHaveLength(1);
 });
 
 test("real shipped G1 provenance stays private under unrelated deny while exact rendered private input refuses before binding", async () => {

@@ -89,6 +89,20 @@ test("provider usage and served-model provenance are normalized without filling 
   expect(result.usage).not.toHaveProperty("cacheWriteTokens");
 });
 
+for (const [name, raw, served, exact] of [
+  ["exact", "qwen27b/qwen3.8-27b", "qwen27b/qwen3.8-27b", true],
+  ["trimmed", " qwen27b/qwen3.8-27b ", "qwen27b/qwen3.8-27b", undefined],
+  ["missing", undefined, undefined, undefined],
+] as const) test(`served-model exact provenance is positive only for an unchanged raw identity: ${name}`, async () => {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: req => new URL(req.url).pathname.endsWith("/models")
+    ? Response.json({ data: [] })
+    : Response.json({ ...(raw === undefined ? {} : { model: raw }), choices: [{ message: { role: "assistant", content: "fixture answer" } }] }) });
+  cleanup.push(() => server.stop(true)); process.env.OMNIROUTE_API_KEY = "fixture-key";
+  const result = await new OmniRoute({ urls: [`http://127.0.0.1:${server.port}/v1`], access_hosts: [] }).chat({ model: "qwen27b/qwen3.8-27b", messages: [] });
+  expect(result.servedModel).toBe(served);
+  expect(result.servedModelExact).toBe(exact);
+});
+
 test("routing.toml: shipped default loads; a project file wins; a file without fixed_model is refused", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const routing = loadRouting(dir);

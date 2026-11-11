@@ -64,6 +64,9 @@ export interface ProbeChildBinding {
 export interface ProbeAdmissionRecheck { host: ProbeHostBinding; child?: ProbeChildBinding }
 /** Hash/size of the exact frame built once by the trusted host before atomic admission. */
 export interface ProbePreparedFrame { slotId: string; sha256: string; bytes: number }
+export interface ProbePreparedWorkerFrame { inputFrame: string; nonGuidanceInputSha256: string }
+export type ProbeWorkerFramePreparer = (state: ProbeStoredState, slot: ProbeSlot, guidance: string) => ProbePreparedWorkerFrame | Promise<ProbePreparedWorkerFrame>;
+export interface ProbeResourceCharges { inputBytes?: number; scratchBytes?: number; outputBytes?: number }
 export interface ProbeSessionAdmission {
   key: ProbeKey; expectedRevision: number; host: ProbeHostBinding; child?: ProbeChildBinding; preparedFrame?: ProbePreparedFrame; now: number;
 }
@@ -74,7 +77,7 @@ export interface ProbeStartSelector {
 }
 export interface ProbeReceipt { id: string; revision: number; state: ProbeState; already: boolean }
 export type ProbeReservationResult = { kind: "granted"; reservation: ProbeReservation } | { kind: "existing"; receipt: ProbeReceipt };
-export interface ProbeEffectAdmission { reservation: ProbeReservation; sequence: number; unit: ProbeBudgetUnit; amount: number; reservedTokens?: number; descriptorSha256: string; now: number }
+export interface ProbeEffectAdmission { reservation: ProbeReservation; sequence: number; unit: ProbeBudgetUnit; amount: number; reservedTokens?: number; charges?: ProbeResourceCharges; descriptorSha256: string; now: number }
 export type ProbeEffectAdmissionResult = { kind: "granted"; admission: ProbeEffectAdmission } | { kind: "existing"; state: "pending" | "settled" | "unknown" };
 export interface ProbeEffectSettlement { admission: ProbeEffectAdmission; outcome: "settled" | "unknown" }
 export interface ProbeSessionSettlement { reservation: ProbeReservation; outcome: "closed_fixture" | "failed_known" | "unknown"; candidateArtifactSha256: string | null; now: number }
@@ -108,10 +111,12 @@ export interface ProbeFakeObservation {
 }
 export interface ProbeFakeStop { reservation: ProbeReservation }
 export interface ProbeFakeStopObservation { reservation: ProbeReservation; stopped: "known_fixture" | "unknown" }
-export interface ProbeFakeEffectRequest { sequence: number; unit: "model_calls" | "tool_calls"; descriptorSha256: string; reservedTokens?: number }
+export interface ProbeFakeEffectRequest { sequence: number; unit: "model_calls" | "tool_calls" | "resources"; descriptorSha256: string; reservedTokens?: number; charges?: ProbeResourceCharges }
 export interface ProbeFakeEffectValue<T> { value: T; usage: number | null; observationSha256: string }
 export type ProbeFakeEffectResult<T> = { kind: "executed"; value: T } | { kind: "existing"; state: "pending" | "settled" | "unknown" };
 export interface ProbeFakeEffects {
+  /** Fresh captured actor/G1/ledger fence; no authority is reconstructed from metadata. */
+  current(): void;
   runEffect<T>(request: ProbeFakeEffectRequest, effect: (signal: AbortSignal) => Promise<ProbeFakeEffectValue<T>>): Promise<ProbeFakeEffectResult<T>>;
 }
 /** Host test constructor only: never selected by manifest, configuration or a wire field. */
