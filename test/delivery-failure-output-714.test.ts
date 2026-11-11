@@ -57,5 +57,5 @@ test("queue show presents each recorded public-safe failure class without invent
   expect(legacy).not.toContain("adapter refused");
   const held = normalized(text(renderQueueShow({ id: "d-held", state: "needs_review" }, undefined, now)));
   expect(held).not.toContain("not recorded");
-  expect(held).toContain("--action completed|retry|discard");
+  expect(held).toContain("--action retry"); expect(held).toContain("use --action completed instead if the peer already handled it, or discard if it is stale"); // #1399: one runnable action, the others named
 });

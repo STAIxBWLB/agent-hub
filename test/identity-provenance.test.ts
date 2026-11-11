@@ -222,7 +222,7 @@ test("an envelope an adapter publishes itself carries the origin of the sending 
 // Item 12 and AC10: the rule is in every managed block `ahub init` can write, so an agent in any profile reads it. A new block that drops it fails here.
 test("AC5: every managed AGENTS block carries the other-projects and session rule, and this repository's own block matches the template", () => {
   const blocks = [["template", readFileSync(join(import.meta.dir, "../templates/AGENTS.block.md"), "utf8")],
-    ...["general", "research", "writing"].map(name => [name, (JSON.parse(readFileSync(join(import.meta.dir, `../templates/profiles/${name}.json`), "utf8")) as { agents: string }).agents] as const)];
+    ...["general", "research", "writing"].map(name => [name, `${readFileSync(join(import.meta.dir, "../templates/AGENTS.block.md"), "utf8").trim()}\n\n${(JSON.parse(readFileSync(join(import.meta.dir, `../templates/profiles/${name}.json`), "utf8")) as { agents: string }).agents}`] as const)]; // #1399: rendered as init does
   for (const [name, text] of blocks) {
     expect(text, name).toContain("never by attaching to that project's hub or sending as one of its peers");
     expect(text, name).toContain("hub_task_handoff");

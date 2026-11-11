@@ -18,7 +18,7 @@ import { toolWriteOperation } from "../hub/tool-request.ts";
 import { channelProject } from "../hub/channel-project.ts";
 import { VERSION } from "../version.ts";
 import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
-import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
+import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, PERSON_COMMAND_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
 import { renderHeldHint } from "../hub/delivery-hints.ts";
 import { acceptsNativePermissionRequest, buildNativePermissionProbe, NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH } from "../hub/native-permission-request.ts";
 import { currentClaudeChannelEvidence } from "./claude-channel-evidence.ts";
@@ -170,6 +170,7 @@ const INSTRUCTIONS = [
     : []),
   HUB_MESSAGE_INSTRUCTION,
   ACTIONABLE_MESSAGE_INSTRUCTION,
+  PERSON_COMMAND_INSTRUCTION,
   "Start a hub_send text with [IMPORTANT] only when the recipient must see it now (it interrupts a running Codex turn), with [FYI] for a note that needs nobody's turn. Unmarked messages are batched.",
   "Do not acknowledge messages that need no answer; every hub_send costs the other agents a turn.",
   ...(channel ? ["If a push was missed or a tool result reports queued important messages, call hub_inbox to read the daemon queue and any local failed-push buffer."] : []),

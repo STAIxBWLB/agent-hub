@@ -3020,7 +3020,7 @@ export class Tasks {
       if (excluded.includes(peer)) continue;
       const queue = this.d.bus.queueSummary(peer), wip = this.wip(peer, task.id), limit = this.wipLimit(peer);
       if (wip >= limit) parts.push(`${peer} WIP full (${wip}/${limit}); no eligible planner WIP capacity`);
-      else if (queue.heldBy) parts.push(`${peer} has a held queue (a delivery is held; resolve it with ahub queue list)`);
+      else if (queue.heldBy) parts.push(`${peer} has a held queue (delivery ${queue.heldBy} is held; ahub queue show ${queue.heldBy} prints the full resolve command for the person)`);
       else if (queue.needsReview > 0) parts.push(`${peer} has ${queue.needsReview} delivery(ies) in needs_review`);
       const refusal = queueBackpressure(peer, pressure.queueBackpressure, peerEntry(pressure.queues, peer), pressure.now ?? NaN);
       if (refusal) parts.push(`${peer} ${refusal.reason}`);

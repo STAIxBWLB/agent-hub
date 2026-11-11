@@ -131,6 +131,7 @@ import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { installedVersions } from "./console-versions.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
+import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
@@ -1479,11 +1480,11 @@ const commands: Record<string, () => Promise<void> | void> = {
         const shown = await hub.request({ t: "queue", op: "show", id });
         if (!shown.ok) fail(shown.error,shown.refusalAudited===true,shown.authorityRefused);
         if (options.json) return console.log(JSON.stringify(shown.delivery, null, 2));
-        return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now()), options.color);
+        return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now(), process.cwd()), options.color);
       }
       const { one, rest: extra } = takeFlags(flags, ["--action", "--reason", "--revision"], []);
       const rawRevision = one["--revision"], parsedRevision = rawRevision === undefined ? undefined : Number(rawRevision);
-      if (extra.length || !["completed", "retry", "discard"].includes(one["--action"] ?? "") || !one["--reason"]?.trim() || (rawRevision !== undefined && (!/^\d+$/.test(rawRevision) || !Number.isSafeInteger(parsedRevision)))) fail("usage: ahub queue resolve <id> --action completed|retry|discard --reason <text> [--revision N]");
+      if (!queueResolveArgsValid(one["--action"], one["--reason"], rawRevision, extra)) fail("usage: ahub queue resolve <id> --action completed|retry|discard --reason <text> [--revision N]");
       let revision = parsedRevision;
       if (revision === undefined) {
         const shown = await hub.request({ t: "queue", op: "show", id });
@@ -1493,7 +1494,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const result = await hub.request({ t: "queue", op: "resolve", id, revision, action: one["--action"], reason: one["--reason"] });
       if (!result.ok) fail(result.error,result.refusalAudited===true,result.authorityRefused);
       if (options.json) console.log(JSON.stringify(result.delivery, null, 2));
-      else printOutput(renderQueueShow(result.delivery, options.columns, Date.now()), options.color);
+      else printOutput(renderQueueShow(result.delivery, options.columns, Date.now(), process.cwd()), options.color);
     } finally { hub.close(); }
   },
 
@@ -3103,6 +3104,12 @@ const commands: Record<string, () => Promise<void> | void> = {
 
     try {
       for (const check of runtimePruneHealth()) row(check.ok, check.name, check.detail);
+      // #1399: a project initialised by an older ahub keeps that version's instruction block until init runs again; doctor says so with the command.
+      try {
+        const stale = planInit(cwd).some(change => change.path === join(cwd, "AGENTS.md"));
+        row(stale ? undefined : true, "hub instructions", // a warning, never a failure: doctor's exit code stays what it was for a project that has not refreshed yet
+           stale ? `the managed block in AGENTS.md differs from this ahub version; preview with: cd ${cwd} && ahub init --dry-run; apply with: cd ${cwd} && ahub init --yes (text outside the markers is kept), then commit AGENTS.md` : "AGENTS.md managed block matches this ahub version");
+      } catch (error) { row(false, "hub instructions", `AGENTS.md could not be checked: ${error instanceof Error ? error.message : "unknown error"}; run ahub init --dry-run to see why`); }
       const catalog = loadRoleCatalog(cwd);
       for (const error of catalog.errors) row(false, "catalog role", `${error.id}: ${error.reason}`);
       try {

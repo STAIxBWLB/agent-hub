@@ -900,7 +900,7 @@ test("unknown receipt IDs and maintenance are distinct from orphan container war
 test("queue show prints a resolve hint for a failed row, and says nothing is left for one a resolution settled (#1096 AC2)", () => {
   const flat = (rows: ReturnType<typeof renderQueueShow>) => rows.map(row => row.map(span => span.text).join("")).join("\n").replace(/\s+/g, " ");
   const failed = flat(renderQueueShow({ id: "d-failed", peer: "codex", state: "failed", revision: 1898 }, 200, now));
-  expect(failed).toContain("ahub queue resolve d-failed --action discard|completed --reason <text>");
+  expect(failed).toContain(`ahub queue resolve d-failed --revision 1898 --action discard --reason "to codex"`); expect(failed).toContain("use --action completed instead if it was already handled"); // #1399: runnable as printed
   expect(failed).toContain("the person or the conductor");
   const retried = flat(renderQueueShow({ id: "d-failed", peer: "codex", state: "failed", revision: 1898, resolvedBy: "retry" }, 200, now));
   expect(retried).toContain("already resolved by retry; nothing is left to do for this row");
@@ -908,6 +908,6 @@ test("queue show prints a resolve hint for a failed row, and says nothing is lef
   const discarded = flat(renderQueueShow({ id: "d-failed", peer: "codex", state: "failed", revision: 1898, resolvedBy: "discard" }, 200, now));
   expect(discarded).toContain("already resolved by discard; nothing is left to do for this row");
   // The needs_review hint is unchanged, and a state with no action gets none.
-  expect(flat(renderQueueShow({ id: "d-held", state: "needs_review" }, 200, now))).toContain("ahub queue resolve d-held --action completed|retry|discard --reason <text>");
+  expect(flat(renderQueueShow({ id: "d-held", state: "needs_review" }, 200, now))).toContain(`ahub queue resolve d-held --action retry --reason "settled by the person" (retry sends it again; use --action completed instead if the peer already handled it, or discard if it is stale)`); // #1399
   expect(flat(renderQueueShow({ id: "d-done", state: "completed" }, 200, now))).not.toContain("ahub queue resolve");
 });

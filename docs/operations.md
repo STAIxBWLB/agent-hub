@@ -1082,7 +1082,11 @@ ahub up
 ```
 
 `ahub init` writes the project configuration and managed instruction blocks.
-Run it after an upgrade when those blocks need refreshing. For a new repository
+Run it after an upgrade when those blocks need refreshing: `ahub doctor` has a
+`hub instructions` row that warns when the block in `AGENTS.md` differs from the
+one this version writes, and prints the preview (`ahub init --dry-run`) and
+apply (`ahub init --yes`) commands with the project path. Init replaces only the
+text between the markers; commit `AGENTS.md` afterwards (#1399). For a new repository
 using advise or enforce, follow the [SDLC quickstart sequence](quickstart.md#a-new-project-with-sdlc-advise-or-enforce).
 
 After a successful init, the short next-steps block says to review and commit

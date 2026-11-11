@@ -1,3 +1,4 @@
+import { queueResolveCommand } from "./person-command.ts";
 import { isClosedTaskState, type HistoryEntry, type Task, type TaskMoveReason, type TaskStall } from "./board.ts";
 import { sanitize, type Kind, type Priority } from "./envelope.ts";
 
@@ -139,11 +140,11 @@ export class SupervisionFeed {
     return sent;
   }
 
-  needsReview(peer: string, deliveryId: string): boolean {
+  needsReview(peer: string, deliveryId: string, command = queueResolveCommand({ id: deliveryId, peer })): boolean {
     const conductor = this.recipient();
     const key = `${conductor}:${peer}:${deliveryId}`;
     if (!conductor || this.holds.has(key)) return false;
-    const sent = this.send(`hold:${peer}:${deliveryId}`, `${peer}: needs_review hold; delivery ${deliveryId}; ask the person to resolve it with ahub queue resolve`, "important");
+    const sent = this.send(`hold:${peer}:${deliveryId}`, `${peer}: needs_review hold; delivery ${deliveryId}; give the person this command exactly as printed: ${command}`, "important");
     if (sent) this.holds.add(key);
     return sent;
   }

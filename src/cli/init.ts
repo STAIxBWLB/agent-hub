@@ -212,7 +212,9 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
   }
   const agents = join(cwd, "AGENTS.md");
   const existing = existsSync(agents) ? readFileSync(agents, "utf8") : "";
-  const hubBlock = upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents || readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8"));
+  // #1399: one source for the block. A shipped profile's `agents` is only its addition, appended to the template; a project's own `profile_overrides.agents` still replaces the whole block.
+  const template = readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8");
+  const hubBlock = upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents ? `${template.trim()}\n\n${profile.agents}` : template);
   const instructions = specsBlock(hubBlock, specsEnabled(cwd, settings)); // #1064 T3: a project that turned specs off keeps no block
   write(agents, guarded ? releaseBlock(instructions) : instructions, "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");
   const claude = join(cwd, "CLAUDE.md");
