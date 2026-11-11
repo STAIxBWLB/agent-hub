@@ -1480,7 +1480,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         const shown = await hub.request({ t: "queue", op: "show", id });
         if (!shown.ok) fail(shown.error,shown.refusalAudited===true,shown.authorityRefused);
         if (options.json) return console.log(JSON.stringify(shown.delivery, null, 2));
-        return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now(), process.cwd()), options.color);
+        return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now(), cwd), options.color);
       }
       const { one, rest: extra } = takeFlags(flags, ["--action", "--reason", "--revision"], []);
       const rawRevision = one["--revision"], parsedRevision = rawRevision === undefined ? undefined : Number(rawRevision);
@@ -1494,7 +1494,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const result = await hub.request({ t: "queue", op: "resolve", id, revision, action: one["--action"], reason: one["--reason"] });
       if (!result.ok) fail(result.error,result.refusalAudited===true,result.authorityRefused);
       if (options.json) console.log(JSON.stringify(result.delivery, null, 2));
-      else printOutput(renderQueueShow(result.delivery, options.columns, Date.now(), process.cwd()), options.color);
+      else printOutput(renderQueueShow(result.delivery, options.columns, Date.now(), cwd), options.color);
     } finally { hub.close(); }
   },
 
