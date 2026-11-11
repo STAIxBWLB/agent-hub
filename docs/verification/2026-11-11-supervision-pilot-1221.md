@@ -11,6 +11,14 @@ Sealed at `16b8251657a2` (main), running hub 0.36.0, `supervision.mode` set to `
 person with `ahub settings set supervision.mode shadow`. The value is machine-local, off by
 default, and absent from `.agenthub/config.json`.
 
+Added after reading 3, with the frame above unchanged. The release merge `95c1e533294`
+(2026-11-11 20:00:53 KST) landed after reading 3, so readings 0 through 3 were taken on hub
+0.36.0 and every later reading names the hub version that produced it (the installed `ahub`
+reports 0.37.0). The measured sources are byte-identical between the seal commit and that merge:
+`git diff --name-only 16b8251657a2..95c1e533294 -- 'src/hub/supervision*' src/hub/conductor.ts
+src/hub/settled-roles.ts` prints nothing, so the frozen case set, the stopping rule and the
+thresholds below still describe the code under measurement.
+
 ## Frozen case set
 
 The rules under measurement are the merged T1 rules, at version 1 of each family. The set is
