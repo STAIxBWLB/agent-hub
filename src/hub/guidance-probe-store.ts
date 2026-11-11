@@ -10,7 +10,7 @@ import { GUIDANCE_PROBE_LIMITS, GUIDANCE_PROBE_SESSION_BYTES, GUIDANCE_PROBE_MOD
   type ProbeEffectSettlement, type ProbeSessionSettlement, type ProbeUsageObservation, type ProbeCancellation,
   type ProbeIntegrity, type ProbeChildBinding, type GuidanceProbeFakePorts, type ProbeFakeEffects,
   type ProbeFakeEffectRequest, type ProbeFakeEffectValue, type ProbeFakeEffectResult, type ProbeFakeObservation, type ProbeSlot, type ProbeStartSelector,
-  type ProbePreparedFrame, type ProbeSessionCoverage } from "./guidance-probes.ts";
+  type ProbePreparedFrame, type ProbeSessionCoverage, type ProbeResourceCharges, type ProbeWorkerFramePreparer } from "./guidance-probes.ts";
 
 interface Effect { admission: ProbeEffectAdmission; state: "pending" | "settled" | "unknown"; usageHash: string | null; observed: number | null }
 interface Session extends ProbeSession { host?: ProbeHostBinding; effect: Effect | null }
@@ -66,6 +66,26 @@ function hold(state: Stored, reason: Exclude<Stored["admissionHold"], "none">): 
 function increment(value: number, amount = 1): number { if (!probeInteger(value) || !probeInteger(amount) || amount > Number.MAX_SAFE_INTEGER - value) return fail("budget"); return value + amount; }
 function charge(state: Stored, name: keyof Omit<ProbeCounters, "usageUnknown">, amount: number, maximum: number): void {
   const next = increment(state.counters[name], amount); if (next > maximum) fail("budget"); state.counters[name] = next;
+}
+/** Closed host-only resource reservation, copied before authority callbacks or effects. */
+function resourceCharges(value: unknown, reason: "invalid" | "storage" = "invalid"): ProbeResourceCharges | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const copied: unknown = JSON.parse(canonical(value));
+    if (!copied || typeof copied !== "object" || Array.isArray(copied)) return fail(reason);
+    const fields = copied as Record<string, unknown>;
+    if (Object.keys(fields).some(name => !["inputBytes", "scratchBytes", "outputBytes"].includes(name))
+      || Object.values(fields).some(amount => !probeInteger(amount))) return fail(reason);
+    return fields as ProbeResourceCharges;
+  } catch { return fail(reason); }
+}
+function chargeResources(state: Stored, extra: ProbeResourceCharges | undefined): void {
+  if (!extra) return;
+  for (const name of ["inputBytes", "scratchBytes", "outputBytes"] as const) {
+    const amount = extra[name];
+    if (amount !== undefined) charge(state, name, amount, state.registration.manifest.limits[name]);
+  }
+  if (state.counters.scratchBytes > GUIDANCE_PROBE_LIMITS.storageBytes - state.counters.outputBytes) fail("budget");
 }
 function elapsed(state: Stored, now: number, first = false): void {
   if (!probeInteger(now) || state.lastWall !== null && now < state.lastWall) fail("held");
@@ -222,6 +242,7 @@ export class GuidanceProbeStore {
         || probeHash(session.child.guidance) !== session.child.guidanceSha256 || !["admitted_fixture", "uncontrolled"].includes(session.child.authoring))) return fail("storage");
       if (session.effect) {
         const effect = session.effect, admission = effect.admission;
+        if (admission) resourceCharges(admission.charges, "storage");
         if (!admission || !["pending", "settled", "unknown"].includes(effect.state) || !probeInteger(admission.sequence) || !probeInteger(admission.amount)
           || !probeSha256(admission.descriptorSha256) || !same(admission.reservation.key, key) || admission.reservation.slotId !== slot.id
           || admission.reservation.generation !== session.generation || admission.reservation.revision !== session.revision
@@ -409,12 +430,14 @@ export class GuidanceProbeStore {
       const limits = state.registration.manifest.limits;
       const names = { model_calls: ["modelCalls", limits.modelCalls], tool_calls: ["toolCalls", limits.toolCalls], tokens: ["tokensReserved", limits.tokens], input_bytes: ["inputBytes", limits.inputBytes], scratch_bytes: ["scratchBytes", limits.scratchBytes], output_bytes: ["outputBytes", limits.outputBytes] } as const;
       const target = names[input.unit]; if (!target || target[1] === undefined) return fail("budget");
+      const extra = resourceCharges(input.charges);
       charge(state, target[0], input.amount, target[1]);
+      chargeResources(state, extra);
       if (input.unit === "model_calls") {
         if (limits.tokens !== undefined && !probeInteger(input.reservedTokens)) return fail("budget");
         if (input.reservedTokens !== undefined) charge(state, "tokensReserved", input.reservedTokens, limits.tokens ?? Number.MAX_SAFE_INTEGER);
       } else if (input.reservedTokens !== undefined) return fail("invalid");
-      const admitted = { ...input, now };
+      const admitted = { ...input, ...(extra === undefined ? {} : { charges: extra }), now };
       session.effect = { admission: admitted, state: "pending", usageHash: null, observed: null }; session.state = "running";
       if (input.unit === "model_calls") session.coverage.modelCalls = increment(session.coverage.modelCalls, input.amount);
       else if (input.unit === "tool_calls") session.coverage.toolCalls = increment(session.coverage.toolCalls, input.amount);
@@ -562,7 +585,8 @@ export class GuidanceProbeFixtureHost {
     ports?: GuidanceProbeFakePorts;
     revalidate: () => ProbeAdmissionRecheck;
     now: () => number;
-    prepareEditorFrame?: (state: ProbeStoredState, slot: ProbeSlot) => string;
+    prepareEditorFrame?: (state: ProbeStoredState, slot: ProbeSlot) => string | Promise<string>;
+    prepareWorkerFrame?: ProbeWorkerFramePreparer;
     onReserved?: (reservation: ProbeReservation) => void;
   }) {}
   async start(input: ProbeSessionAdmission, signal: AbortSignal): Promise<ProbeReceipt> {
@@ -575,9 +599,20 @@ export class GuidanceProbeFixtureHost {
     const slot = current.registration.manifest.slots.find(item => item.id === (original?.slotId ?? current.sessions.find(item => item.state === "planned")?.slotId));
     if (!slot) return fail("held");
     const selectedGuidance = slot.arm === "baseline" ? current.binding.baselineGuidance : input.child?.guidance;
-    const inputFrame = slot.role === "worker" && typeof selectedGuidance === "string"
+    let preparedInput: string | undefined, preparedNonGuidance: string | undefined;
+    if (slot.role === "worker" && typeof selectedGuidance === "string" && this.options.prepareWorkerFrame) {
+      const prepared = await this.options.prepareWorkerFrame(current, slot, selectedGuidance);
+      if (!prepared || !probeSha256(prepared.nonGuidanceInputSha256) || typeof prepared.inputFrame !== "string") return fail("invalid");
+      preparedInput = prepared.inputFrame; preparedNonGuidance = prepared.nonGuidanceInputSha256;
+    }
+    let preparedEditor: string | undefined;
+    if (slot.role !== "worker" && this.options.prepareEditorFrame) {
+      const prepared = this.options.prepareEditorFrame(current, slot);
+      preparedEditor = typeof prepared === "string" ? prepared : await prepared;
+    }
+    const inputFrame = preparedInput !== undefined ? preparedInput : slot.role === "worker" && typeof selectedGuidance === "string"
       ? guidanceProbeWorkerFrame(current.registration.snapshots.task, current.registration.snapshots.baselineContext, current.registration.snapshots.systemPolicy, selectedGuidance)
-      : this.options.prepareEditorFrame?.(current, slot);
+      : preparedEditor;
     if (typeof inputFrame !== "string" || Buffer.byteLength(inputFrame) === 0) return fail("invalid");
     const preparedFrame: ProbePreparedFrame = { slotId: slot.id, sha256: probeHash(inputFrame), bytes: Buffer.byteLength(inputFrame) };
     const result = this.store.reserveSession({ ...input, preparedFrame }, this.options.revalidate);
@@ -586,7 +621,7 @@ export class GuidanceProbeFixtureHost {
     try {
       this.options.onReserved?.(reservation);
       const state = this.store.read(input.key)!;
-      const snapshots = state.registration.snapshots, frame = { inputFrame, nonGuidanceInputSha256: guidanceProbeNonGuidanceInputHash(snapshots.task, snapshots.baselineContext, snapshots.systemPolicy) };
+      const snapshots = state.registration.snapshots, frame = { inputFrame, nonGuidanceInputSha256: preparedNonGuidance ?? guidanceProbeNonGuidanceInputHash(snapshots.task, snapshots.baselineContext, snapshots.systemPolicy) };
       let effectsOpen = true;
       const pendingEffects = new Set<Promise<void>>();
       const effects = this.effects(reservation, signal, {
@@ -639,17 +674,24 @@ export class GuidanceProbeFixtureHost {
       && (value.candidateArtifactSha256 === null || probeSha256(value.candidateArtifactSha256));
   }
   private effects(reservation: ProbeReservation, signal: AbortSignal, lifetime: EffectLifetime): ProbeFakeEffects {
-    return { runEffect: <T>(request: ProbeFakeEffectRequest, effect: (signal: AbortSignal) => Promise<ProbeFakeEffectValue<T>>): Promise<ProbeFakeEffectResult<T>> => {
+    const current = (): void => {
+      if (!lifetime.open() || signal.aborted || this.store.checkInvocation(reservation, this.options.revalidate).state !== "active" || signal.aborted) return fail("held");
+    };
+    return { current, runEffect: <T>(request: ProbeFakeEffectRequest, effect: (signal: AbortSignal) => Promise<ProbeFakeEffectValue<T>>): Promise<ProbeFakeEffectResult<T>> => {
       const operation = (async (): Promise<ProbeFakeEffectResult<T>> => {
         if (!lifetime.open() || signal.aborted) return fail("held");
-        if (!request || !["model_calls", "tool_calls"].includes(request.unit)) return fail("invalid");
-        const requested: ProbeEffectAdmission = { reservation, sequence: request.sequence, unit: request.unit, amount: 1,
-          descriptorSha256: request.descriptorSha256, ...(request.reservedTokens === undefined ? {} : { reservedTokens: request.reservedTokens }), now: this.options.now() };
+        if (!request || !["model_calls", "tool_calls", "resources"].includes(request.unit)) return fail("invalid");
+        const extra = resourceCharges(request.charges);
+        if (request.unit === "resources" && (request.reservedTokens !== undefined || !extra || !Object.values(extra).some(value => value > 0))) return fail("invalid");
+        const requested: ProbeEffectAdmission = { reservation, sequence: request.sequence,
+          unit: request.unit === "resources" ? "input_bytes" : request.unit, amount: request.unit === "resources" ? 0 : 1,
+          descriptorSha256: request.descriptorSha256, ...(request.reservedTokens === undefined ? {} : { reservedTokens: request.reservedTokens }),
+          ...(extra === undefined ? {} : { charges: extra }), now: this.options.now() };
         const granted = this.store.admitEffect(requested, this.options.revalidate);
         if (granted.kind === "existing") return granted;
         const admission = granted.admission, release = lifetime.track();
         try {
-          if (signal.aborted || this.store.checkInvocation(reservation, this.options.revalidate).state !== "active" || signal.aborted) return fail("held");
+          current();
           const result = await effect(signal);
           const observed = result.usage, visibleHash = probeHash(canonical({ request, usage: observed }));
           if (result.observationSha256 !== visibleHash) this.store.latchHold(reservation, "observation");
