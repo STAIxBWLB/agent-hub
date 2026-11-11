@@ -32,7 +32,11 @@ const subpath = (value: string) => `(subpath ${q(value)})`;
 const outside = (filters: readonly string[]): string => `(require-all ${filters.map(filter => `(require-not ${filter})`).join(" ")})`;
 const PROOF_TIMEOUT_MS = 5000;
 const PROOF_TOKEN = "probe-boundary-canary";
-const COMMANDS = ["/bin/sh", "/bin/cat", "/bin/ln", "/bin/mv", "/usr/bin/nc"] as const;
+// /bin/bash: on macOS /bin/sh is a stub that re-execs /bin/bash as its variant (/private/var/select/sh), so the proof's own `sh -c` cannot start without it.
+// Only this model-free proof runs these programs: probe dispatch refuses bash and git before any command (test "probe dispatch refuses all invented non-file calls"),
+// so the grant widens the profile, not what a probe tool can do.
+const COMMANDS = ["/bin/sh", "/bin/cat", "/bin/ln", "/bin/mv", "/usr/bin/nc", "/bin/bash"] as const;
+const SH_VARIANT_SELECTOR = "/private/var/select/sh";
 
 function restrictedProfile(workspace: ProbeWorkspace, controlPort?: number): string {
   probeWorkspaceCurrent(workspace);
@@ -40,12 +44,13 @@ function restrictedProfile(workspace: ProbeWorkspace, controlPort?: number): str
   // Never grant all of /System: its Volumes/Data aliases can lead back to operator files.
   const systemData = ["/System/Library", "/usr/lib", "/private/var/db/dyld",
     "/System/Volumes/Preboot/Cryptexes/OS/System/Library", "/System/Volumes/Preboot/Cryptexes/OS/usr/lib"];
-  // dyld reads the root directory node at process start: without literal("/") every program aborts SIGABRT (exit 134) before main (sandbox-exec, macOS 27.0.1).
+  // literal("/") is the root directory node only, not its children: dyld reads that node's data at every process start, and without it every program
+  // (nc, sh, cat) aborts with SIGABRT before it runs (bisected with plain sandbox-exec on macOS 27.0.1). No other grant rides on it.
   const data = [literal("/"), subpath(workspace.root), ...systemData.map(subpath),
-    ...programs.map(literal), literal("/dev/null"), literal("/dev/random"), literal("/dev/urandom")];
+    ...programs.map(literal), literal(SH_VARIANT_SELECTOR), literal("/dev/null"), literal("/dev/random"), literal("/dev/urandom")];
   // Traversal metadata is permitted only for ancestors of an actual runtime or owned role root.
   const ancestors = new Set<string>(["/"]);
-  for (const root of [workspace.root, ...programs, ...systemData]) {
+  for (const root of [workspace.root, ...programs, SH_VARIANT_SELECTOR, ...systemData]) {
     for (let parent = dirname(root); ; parent = dirname(parent)) { ancestors.add(parent); if (parent === "/") break; }
   }
   return [profile(workspace.root, controlPort === undefined ? false : { proxyPort: controlPort }),
