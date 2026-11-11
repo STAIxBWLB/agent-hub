@@ -800,3 +800,157 @@ Store replay path applies. No replay call may create an unframed reservation.
 Tests add an ordinary delivered
 message during a running fake effect and prove continuity, then independently
 change authority/privacy and prove the next effect is refused.
+
+
+## T3 receipts, reconcile and cleanup contract
+
+This section is a contract proposal for review before implementation, on merged T2
+(`fa53e8b1`). It does not enable a runner, claim native confinement or authorize a real
+model or worker trial. The constructor-only host adapter stays unwired. T3 adds evidence
+and cleanup around sessions the existing lifecycle already runs; it changes no admission,
+budget, fence or authority rule.
+
+### What a receipt is
+
+A receipt is the host's immutable observation of one finished session, written once after
+the process tree is known quiescent and the output is collected. It is not a provider
+claim: every field is computed by the host from what it admitted, measured or read back.
+
+`ProbeReceiptV1` is closed, inert JSON, canonical and bounded like the manifest. It binds
+exact experiment and slot ids, the reservation generation and revision, and:
+
+- `requestedModel` and `servedModel`: exact literals. `servedModel` is `null` when the
+  host could not observe it. No normalization, alias or slash splitting.
+- `inputFrameSha256` and, for a worker, `workerEffectiveInputSha256` and
+  `nonGuidanceInputSha256`; `guidanceSha256` for the admitted slot.
+- `runtimeSha256`, `toolsetSha256`, `modelConfigSha256`, read from the host's own
+  fingerprints at seal time, never copied from the declaration.
+- `startedAt`, `endedAt` and `elapsedMs` from the Store's trusted clock.
+- `state`: one of `succeeded`, `failed`, `cancelled`, `timed_out`, `unavailable`,
+  `unknown`. `succeeded` requires every condition under "Sealing" below.
+- `usage`: per-session model calls and tool calls with their known counts, and observed
+  tokens or `null`. A gap stays `null`; a sum is never filled in.
+- `limits`: the closed list of observation limits that applied (for example
+  `usage_unknown`, `served_model_unobserved`, `teardown_unverified`, `output_truncated`).
+- `output`: a `ProbeOutputManifestV1`, below.
+- `digest`: SHA-256 of the canonical record without this field.
+
+`ProbeOutputManifestV1` lists at most 64 entries of `{ relative, sha256, bytes }`, with
+each file at most 1 MiB and the total at most the slot's declared `outputBytes`. Paths are
+workspace-relative under the declared output root, regular files with link count 1 only.
+Anything else (symlink, hardlink, device, a path outside the declared writes, a file over
+the cap) is not hashed: it is recorded as a closed `excluded` reason and the receipt
+cannot be `succeeded`.
+
+### Sealing
+
+The adapter's `close` path already stops the peer and confinement and joins owned work.
+Sealing happens in that same owned lifecycle, after `stopProbe` and confinement stop have
+both reported known quiescence, and before the workspace is released:
+
+1. Collect the output manifest by reading each declared output file through its captured
+   identity (device, inode, link count, size), hashing the bytes read, and re-checking the
+   identity after the read. A file that changed while read is excluded, not hashed twice.
+2. Build the receipt from host state only, then compute its digest.
+3. Write it in one `BEGIN IMMEDIATE` transaction together with the session settlement, so
+   a receipt and its session state are never separately visible.
+
+A receipt is `succeeded` only if all of these hold: the session settled `closed_fixture`
+with verified coverage; `servedModel` equals `requestedModel`; teardown is known
+quiescent; no output entry was excluded; no hold is latched; and the elapsed ceiling was
+not hit. A timeout, an abort, a token or step ceiling, an uncertain stop and a hold each
+map to a non-success state. **A timeout is never `succeeded`**, whatever partial output
+exists. There is no path that upgrades a receipt after it is written.
+
+Immutability: a second `sealReceipt` for the same reservation with identical content
+returns the stored receipt (`already: true`); different content refuses and latches the
+observation hold. There is no update and no delete short of the experiment's expiry
+prune.
+
+### Tamper, torn writes and crash
+
+Receipts live in the same `hub.db`, so a torn receipt is a rolled-back transaction, not a
+half file. The Store hydrates a receipt only if its digest recomputes, its experiment, slot,
+generation and revision match the session row, and its `state` is consistent with the
+session state. Any mismatch is `storage` corruption: the experiment becomes unknown-held,
+shows no success and is never silently repaired.
+
+Output files are re-verified against their manifest only through the same captured
+identities, while the workspace is still owned. After the workspace is released the
+manifest is the record; the bytes are not claimed to still exist unless retained
+(next section).
+
+Crash after admission: on reopen, a session found `reserved` or `running` with no receipt
+is reconciled to `unknown_held` with receipt state `unknown` and limit
+`teardown_unverified`. Reconcile never launches, retries or restarts a session, and never
+turns an in-flight session into a failure or a success. It only records that the host
+cannot vouch for it. The lane stays held until a person or conductor cancels it through
+the existing `cancelIntent`.
+
+### Comparability and the outcome denominator (AC4)
+
+`classifyProbeComparability` is a pure function over the experiment's receipts and
+returns `{ comparable, reasons }`, with a closed reason list: `served_model_mismatch`,
+`served_model_unobserved`, `input_drift` (a worker's non-guidance hash differs from the
+baseline's, or a fingerprint differs), `usage_unknown`, `incomplete_coverage`,
+`teardown_unverified`, `authoring_uncontrolled`, `missing_receipt`.
+
+- A pair is incomparable if either side has a reason. One reason is enough; reasons are
+  listed, not ranked.
+- The public `comparable` flag becomes this function's result. It replaces the current
+  inline expression in `Tasks.guidanceProbeProjection` and may only get stricter: every
+  case the current expression calls incomparable stays incomparable.
+- The outcome denominator is every preregistered attempt slot that was reserved:
+  `succeeded`, `failed`, `cancelled`, `timed_out`, `unavailable` and `unknown` all count.
+  Slots never started stay `planned` or `not_needed` and are reported separately as such;
+  they are neither successes nor failures. A failed, cancelled or unavailable arm is
+  never dropped from the denominator, and the status shows the per-state counts.
+- Usage gaps stay `null`. No cost or money figure is derived: this task adds no price
+  table, so total money remains unknown.
+
+### Cleanup and the 1 GiB cap (AC6)
+
+The experiment's declared `inputBytes + scratchBytes + outputBytes` is already capped at
+1 GiB at admission. T3 adds no second source of truth: retained storage is accounted from
+the receipts' output manifests plus the retained workspace bytes the host recorded.
+
+Cleanup touches only resources the host created and still owns, verified at the moment
+of removal by captured physical identity (device, inode, directory/file kind, link count)
+exactly as `materializeProbeWorkspace` already does for its failure cleanup. A path whose
+identity differs, a replaced root, a bystander file or a symlink swap is left alone and
+reported as `retained: <reason>`; cleanup never recurses into or deletes a name it did not
+create. It never follows a link and never touches another session's resources.
+
+`previewPrune(key, now)` is read-only and returns the exact list of what a prune would
+remove (relative names and byte counts, no content) and what it would keep and why.
+`prune(key, now, planDigest)` takes that preview's digest and refuses if the owned set has
+changed since, so a prune only ever does what the person saw. Retained output expires
+after the experiment's `retention` days (default 14, a named operational setting, not a
+manifest field) and only after the experiment is terminal and unheld. An unknown-held or
+active experiment is never pruned.
+
+Locks: receipts and prune plans use the Store's SQLite transaction, so no file lock and
+no stale-holder recovery are introduced. If implementation finds a file-level lock is
+unavoidable it must follow `SourceRegistry.locked` (publish whole by `link(2)`, never
+unlink on another's behalf, fail closed on a stale holder, name the file) and ship a
+two-recoverer test (#329).
+
+### Scope boundary
+
+T3 adds: the receipt and output manifest types and pure parsing in `guidance-probes.ts`;
+one additive private table in the Store (`guidance_probe_receipts`) with receipt
+hydration, tamper checks and reconcile folded into the existing integrity and recovery
+passes; `sealReceipt`, `readReceipt`, `previewPrune` and `prune`; output collection and
+owned cleanup in the adapter and workspace modules; the comparability function; and fake
+fixtures for the mismatch, tamper, crash and teardown cases. It does not add a CLI verb,
+a wire operation, a daemon runner, a config key, a real model call or a live trial (T4).
+`show` gains the receipt-derived counts and the comparability reasons, nothing else.
+
+### Open choices for the reviewer
+
+1. Retention default of 14 days and its home as an operational setting: acceptable, or
+   should prune be person-triggered only with no automatic expiry in T3?
+2. Whether `reconcile` should run on every Store open or only through an explicit host
+   call at daemon start (my proposal: the explicit call, so a read-only open never writes).
+3. Whether `show` may expose per-state denominator counts to the public projection or only
+   to the private status.
