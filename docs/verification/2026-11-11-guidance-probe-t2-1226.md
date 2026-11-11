@@ -23,6 +23,21 @@ prove OS confinement, provider behavior, sampling control or model quality.
 | `b403a263204feaf47204ee45561cc4ce4ff3562f` | Remote typecheck and owner-ledger tests | 59 pass, 0 fail, 363 assertions; complete-frame admission, compound rollback, replay and async currentness |
 | `bf2bba1deb7032be889d9a7550cb7c811099a11f` | Initial full-source preflight | Typecheck failed on nullable narrowing and one new async fixture literal; tests not run |
 | `6faf1b0e1ce87a69071122dfd77f799fd607ee93` | Corrected remote typecheck and 13 focused files | 241 pass, 22 macOS skips, 0 fail, 11385 assertions; skipped legs are not native proof |
+| `c14387136f8e51e2af79f199b57ed405fe2d1823` | Async-preparation duplicate fix: typecheck, inventory and 3 focused files | 101 pass, 1 macOS skip, 0 fail, 700 assertions; deterministic barrier verifies no unframed reservation or double launch |
+
+The first required changed gate at `e60557cccb2fbd585935f98c5d4bbca4dd51c7b7`
+was deliberately stopped (exit 130) after static review found that a duplicate
+could reserve an unframed slot while the original asynchronous frame was pending.
+The owned container was observed absent after teardown. That run is not a green
+gate. The fix returns current metadata only until the original reservation exists,
+while checking the original actor/session/connection and preserving admitted replay.
+
+After this source fix, normal pinned local bundle regeneration was deferred by
+fresh resource admission (exit 75, memory pressure warning), including one
+conductor-requested retry. The build did not start. Generated files were not
+hand-edited and remote build outputs were not copied back. A conductor rebuild
+and a new final-head changed gate are required; prior source checks do not prove
+bundle freshness.
 
 The focused set covers T1 lifecycle/recovery/control, complete request parity,
 role input separation, source/tree/binary binding, compound model/file budgets,
