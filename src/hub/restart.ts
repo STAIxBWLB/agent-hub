@@ -48,6 +48,7 @@ export interface RestartSnapshot {
     budgetDigest: string;
     modelOverrides?: { count: number; digest: string };
     guidanceVariants?: { experiments: number; variants: number; digest: string };
+    guidanceProbes?: { experiments: number; sessions: number; digest: string };
     executionReferences?: { count: number; digest: string };
     /** Whole captured binding set; portable identities are covered alongside queue/board integrity. */
     externalBindingsDigest?: string;
@@ -120,6 +121,12 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     const value = s.integrity.guidanceVariants;
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "digest,experiments,variants"
       || !Number.isSafeInteger(value.experiments) || value.experiments < 0 || !Number.isSafeInteger(value.variants) || value.variants < value.experiments
+      || typeof value.digest !== "string" || value.digest.length !== 64 || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
+  }
+  if (s.integrity && Object.hasOwn(s.integrity, "guidanceProbes")) {
+    const value = s.integrity.guidanceProbes;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "digest,experiments,sessions"
+      || !Number.isSafeInteger(value.experiments) || value.experiments < 0 || !Number.isSafeInteger(value.sessions) || value.sessions < value.experiments
       || typeof value.digest !== "string" || value.digest.length !== 64 || !/^[a-f0-9]{64}$/.test(value.digest)) return undefined;
   }
   if (s.integrity && Object.hasOwn(s.integrity, "executionReferences")) {

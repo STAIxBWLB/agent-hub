@@ -1,3 +1,11 @@
+import { requireConductor } from "./conductor.ts";
+import { pathCandidates } from "@staix/agent-mem";
+import { renderGuidanceVariantV1 } from "./guidance-variants.ts";
+import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-probe-store.ts";
+import { GuidanceProbeError, GUIDANCE_PROBE_STOP_TIMEOUT_MS, GUIDANCE_PROBE_FENCE_INTERVAL_MS, guidanceProbeCanonical, guidanceProbeManifestKey,
+  parseGuidanceProbeRegistration, probeHash, probeSha256, probeInteger, probeSessionGeneration,
+  type ProbeChildBinding, type ProbeStoredState, type ProbePublicReceipt, type ProbePublicStatus, type ProbeHostBinding,
+  type ProbeAdmissionRecheck, type ProbeReservation, type ProbeSlot, type GuidanceProbeFakePorts, type GuidanceProbeManifestV1 } from "./guidance-probes.ts";
 import { GuidanceVariantError, GUIDANCE_PAGE_MAX_RECORDS, GUIDANCE_REPLY_MAX_BYTES, guidanceVariantSectionDiff, guidanceProtectedSectionNames, parseGuidancePageResult, parseGuidanceDiffResult, parseGuidanceListQuery, parseGuidanceIdQuery, guidancePageCursor, guidancePageAfter, guidanceVariantMetadata, parseGuidanceVariantV1, validateGuidanceVariantV1, parseGuidanceSelector, type GuidanceVariantV1, type GuidanceStoredRecord, type GuidanceSelector, type GuidanceIdSelector, type GuidanceWriteFence, type GuidanceWriteReceipt, type GuidanceCurrent, type GuidancePublicRecord, type GuidancePageResult, type GuidanceDiffResult, type GuidanceReadResult } from "./guidance-variants.ts";
 import { buildEntryDiagnostic } from "./build-entry.ts";
 import { taskShowAllowed } from "./conductor.ts";
@@ -131,6 +139,14 @@ interface PreparedSpecInspection {
 export interface ReleaseWindow { at: number; host: boolean; quota: boolean; idle: boolean; reasons: string[]; current?: () => boolean; close?: () => Promise<void>; }
 
 export interface TasksDeps {
+  /** Private host-owned probe ledger and fixture ports. No configuration, wire or model-selected runner. */
+  guidanceProbes?: {
+    store: GuidanceProbeStore;
+    fakePorts?: GuidanceProbeFakePorts;
+    prepareEditorFrame?: (state: ProbeStoredState, slot: ProbeSlot) => string;
+    session?: (by: PeerId) => { generation: string | number; nativeSession: string | null; requestConnectionId: string; current: () => void } | undefined;
+    timer?: { set(callback: () => void, ms: number): unknown; clear(handle: unknown): void };
+  };
   adapterCatalog?: ProjectAdapterCatalog;
   /** Host-bound evidence only; absent/expired observations never admit a release cut. */
   releaseWindow?: () => Promise<ReleaseWindow>;
@@ -510,7 +526,17 @@ function hasReviewAnchorInput(raw: unknown): boolean {
   } catch { return true; }
 }
 
+interface GuidanceProbeRuntime {
+  id: string; by: PeerId; controller: AbortController; current: () => ProbeAdmissionRecheck;
+  requestedRevision: number; variantId?: string;
+  reservation?: ProbeReservation; promise?: Promise<ProbePublicReceipt>; stopPromise?: Promise<void>;
+  launched: boolean; launchSettled: boolean; stopSettled: boolean; stopKnown: boolean; stopRequested: boolean;
+  watch?: { handle: unknown }; failure?: Error;
+}
 export class Tasks {
+  private guidanceProbeStopping = false;
+  private guidanceProbeAdmissions = 0;
+  private readonly guidanceProbeActive = new Map<string, GuidanceProbeRuntime>();
   private readonly findingPlacements = new WeakMap<ReviewReadiness, { binding: string; placements: Map<string, ReviewAnchorStatus>; placementOnly: boolean }>();
   private findingPlacementBinding(task: Task): string {
     return JSON.stringify([task.id, task.created, this.reviewHead(task), task.refs.paths, task.plan, this.reviewFindingSets(task)]);
@@ -4953,6 +4979,283 @@ export class Tasks {
       }
       return readExecutionLineage(snapshot.source, snapshot.query);
     } catch { return { state: "unavailable" }; }
+  }
+
+  private guidanceProbeTimer(): NonNullable<NonNullable<TasksDeps["guidanceProbes"]>["timer"]> {
+    return this.d.guidanceProbes?.timer ?? {
+      set: (callback, ms) => { const timer = setTimeout(callback, ms); timer.unref?.(); return timer; },
+      clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    };
+  }
+  /** Owned in-process work only, not persisted held lanes or a quiescence assertion. */
+  guidanceProbesPending = (): number => this.guidanceProbeAdmissions + this.guidanceProbeActive.size;
+  async stopGuidanceProbes(): Promise<void> {
+    this.guidanceProbeStopping = true;
+    const active = [...this.guidanceProbeActive.values()];
+    for (const entry of active) this.guidanceProbeAbort(entry, "observation", true);
+    if (this.guidanceProbesPending() === 0) return;
+    await this.guidanceProbeDrain(active);
+    if (this.guidanceProbesPending() !== 0) throw new Error("guidance probe admission drain is unconfirmed; retain project storage and explicitly retry after owned callbacks settle");
+  }
+  private async guidanceProbeDrain(active: GuidanceProbeRuntime[]): Promise<void> {
+    const settled = Promise.allSettled(active.flatMap(entry => [entry.promise, entry.stopPromise].filter((value): value is Promise<ProbePublicReceipt> | Promise<void> => value !== undefined)));
+    let timeout: { handle: unknown } | undefined;
+    try {
+      await Promise.race([settled, new Promise<never>((_resolve, reject) => {
+        timeout = { handle: this.guidanceProbeTimer().set(() => reject(new Error("guidance probe stop is unconfirmed after the owned drain bound; retain the held lane and explicitly drain after its fixture callbacks settle")), GUIDANCE_PROBE_STOP_TIMEOUT_MS) };
+      })]);
+      if (active.some(entry => this.guidanceProbeActive.get(entry.id) === entry)) throw new Error("guidance probe stop evidence is unknown; retain owned handles and explicitly retry the drain after matching fixture stop evidence");
+    } finally { if (timeout !== undefined) this.guidanceProbeTimer().clear(timeout.handle); }
+  }
+  private guidanceProbeClearWatch(entry: GuidanceProbeRuntime): void {
+    if (entry.watch !== undefined) { this.guidanceProbeTimer().clear(entry.watch.handle); entry.watch = undefined; }
+  }
+  private guidanceProbeRetire(entry: GuidanceProbeRuntime): void {
+    if (this.guidanceProbeActive.get(entry.id) !== entry || !entry.launchSettled || entry.stopRequested && (!entry.stopSettled || !entry.stopKnown)) return;
+    this.guidanceProbeClearWatch(entry); this.guidanceProbeActive.delete(entry.id);
+  }
+  private guidanceProbeAbort(entry: GuidanceProbeRuntime, reason: "elapsed" | "observation", explicitStop = false): void {
+    if (this.guidanceProbeActive.get(entry.id) !== entry) return;
+    this.guidanceProbeClearWatch(entry);
+    if (entry.reservation) {
+      try { this.d.guidanceProbes!.store.latchHold(entry.reservation, reason); }
+      catch { entry.failure = new Error("guidance probe hold bookkeeping is unconfirmed; inspect retained state before any further work"); }
+    }
+    entry.controller.abort();
+    if (!entry.launched || !entry.reservation) { this.guidanceProbeRetire(entry); return; }
+    if (entry.stopRequested && (!entry.stopSettled || entry.stopKnown || !explicitStop)) return;
+    const reservation = entry.reservation, ports = this.d.guidanceProbes!.fakePorts!;
+    entry.stopRequested = true; entry.stopSettled = false; entry.stopKnown = false;
+    entry.stopPromise = (async () => {
+      try {
+        const result = await ports.stop({ reservation }, new AbortController().signal);
+        entry.stopKnown = result?.stopped === "known_fixture" && guidanceProbeCanonical(result.reservation) === guidanceProbeCanonical(reservation);
+        if (!entry.stopKnown) entry.failure = new Error("guidance probe stop evidence is unknown; inspect the owned reservation and explicitly drain without replaying it");
+      } catch { entry.failure = new Error("guidance probe stop failed; retain owned handles and explicitly drain before closing project storage"); }
+      finally { entry.stopSettled = true; this.guidanceProbeRetire(entry); }
+    })();
+  }
+  private guidanceProbeWatch(entry: GuidanceProbeRuntime): void {
+    if (this.guidanceProbeActive.get(entry.id) !== entry || entry.controller.signal.aborted) return;
+    try {
+      entry.current();
+      const state = this.d.guidanceProbes!.store.read({ projectKey: this.guidanceProject(), id: entry.id });
+      if (!state || !entry.reservation || state.firstReservedAt === null) throw new Error("owned probe clock is unavailable");
+      const now = this.d.now?.() ?? Date.now(), elapsed = now - state.firstReservedAt;
+      if (!probeInteger(elapsed) || elapsed < state.counters.elapsedHighWaterMs || state.admissionHold !== "none") { this.guidanceProbeAbort(entry, "elapsed"); return; }
+      const remaining = state.registration.manifest.limits.elapsedMs - elapsed;
+      if (remaining <= 0) { this.guidanceProbeAbort(entry, "elapsed"); return; }
+      entry.watch = { handle: this.guidanceProbeTimer().set(() => {
+        if (this.guidanceProbeActive.get(entry.id) !== entry || entry.controller.signal.aborted) return;
+        entry.watch = undefined; this.guidanceProbeWatch(entry);
+      }, Math.min(GUIDANCE_PROBE_FENCE_INTERVAL_MS, remaining)) };
+    } catch { this.guidanceProbeAbort(entry, "observation"); }
+  }
+  private guidanceProbeProjection(state: ProbeStoredState, already = false): ProbePublicStatus {
+    const holds = state.admissionHold !== "none" || state.counters.usageUnknown;
+    const authoring: ProbePublicStatus["authoring"] = state.sessions.some(item => item.child?.authoring === "uncontrolled") ? "uncontrolled"
+      : state.sessions.some(item => item.child?.authoring === "admitted_fixture") ? "admitted_fixture" : "unknown";
+    const launchedSessions = state.sessions.filter(item => item.coverage.launchExposed);
+    const verifiedCoverage = launchedSessions.length > 0 && launchedSessions.every(item => item.coverage.coverageVerified)
+      && state.sessions.filter(item => item.state === "closed_fixture").every(item => item.coverage.coverageVerified)
+      && state.sessions.every(item => item.state !== "failed_known" || item.coverage.preLaunchFailure || item.coverage.coverageVerified);
+    const evidence: ProbePublicReceipt["evidence"] = state.counters.workerAttempts + state.counters.editorAttempts === 0 ? "declaration"
+      : holds || !verifiedCoverage || state.sessions.some(item => ["reserved", "running", "unknown_held"].includes(item.state)) ? "unknown" : "fixture";
+    return { ...state.receipt, already, taskId: state.registration.manifest.task.id,
+      experimentId: this.guidancePublicField(state.registration.manifest.experimentId), evidence,
+      counters: { ...state.counters }, cancelRequested: state.cancelRequested, notNeeded: state.notNeeded, authoring,
+      comparable: state.receipt.state === "closed_fixture" && !holds && verifiedCoverage && authoring === "admitted_fixture" };
+  }
+  private guidanceProbeReceipt(state: ProbeStoredState, already = false): ProbePublicReceipt {
+    const { counters: _counters, cancelRequested: _cancelRequested, notNeeded: _notNeeded, comparable: _comparable, authoring: _authoring, ...result } = this.guidanceProbeProjection(state, already);
+    return result;
+  }
+  private guidanceProbeState(by: PeerId, id: string, check: () => void): ProbeStoredState {
+    check();
+    if (!probeSha256(id)) throw new PreEffectToolRefusal("guidance probe id is invalid; use the exact registered content id");
+    if (!this.d.guidanceProbes) throw new PreEffectToolRefusal("guidance probe storage is unavailable; restart a supporting hub before retrying");
+    const state = this.d.guidanceProbes.store.read({ projectKey: this.guidanceProject(), id });
+    if (!state) throw new PreEffectToolRefusal("guidance probe is unavailable; inspect a registered declaration in this project");
+    this.guidanceProbeTask(by, state.registration.manifest.task, false); check(); return state;
+  }
+  private guidanceProbeHost(by: PeerId, manifest: GuidanceProbeManifestV1, request: ReturnType<Tasks["guidanceProbeRequest"]>, history?: ProbeHostBinding): ProbeHostBinding {
+    request.check();
+    const projectKey = this.guidanceProject();
+    if (projectKey !== manifest.projectKey) throw new PreEffectToolRefusal("guidance probe project changed; register within the current project namespace");
+    const task = this.guidanceProbeTask(by, manifest.task, history === undefined);
+    const binding = { projectKey, actor: by, task: { id: task.id, created: task.created, flowRevision: task.history.length },
+      sessionGeneration: request.generation, nativeSession: request.nativeSession, requestConnectionId: request.requestConnectionId };
+    // A narrowing cancellation carries its original baseline as history, never a new applicability grant.
+    if (history) return { ...binding, role: history.role, baselineGuidance: history.baselineGuidance };
+    const role = this.guidanceRole(task);
+    return { ...binding, role: { id: role.id, layer: role.layer, baselineSha256: role.hash }, baselineGuidance: taskRoleText(role) };
+  }
+  private guidanceProbeSnapshotClear(state: ProbeStoredState["registration"]): boolean {
+    return Object.entries(state.snapshots).every(([field, value]) => {
+      const text = field === "dataPolicy" ? guidanceProbeCanonical(value) : value as string;
+      return this.nameable(text) && !looksSecret(text);
+    });
+  }
+  private guidanceProbeRenderedClear(text: string): boolean {
+    if (!this.nameable(text) || looksSecret(text)) return false;
+    const policy = [...this.d.deny ?? [], ...this.d.piiPaths ?? []];
+    if ([...pathCandidates(text)].some(candidate => matchesPolicyLexically(this.d.cwd, candidate, policy))) return false;
+    return !policy.some(entry => {
+      const literal = entry.replace(/^\.\//, "").split(/[*?[\]{}]/)[0]!.replace(/\/+$/, "");
+      return /[/\s]/.test(literal) && text.includes(literal);
+    });
+  }
+  async guidanceProbeRegister(by: PeerId, value: unknown): Promise<ProbePublicReceipt> {
+    const request = this.guidanceProbeRequest(by), registration = parseGuidanceProbeRegistration(value);
+    if (!registration) throw new PreEffectToolRefusal("guidance probe declaration is invalid or oversized; use the closed V1 envelope without trimming its snapshots");
+    const binding = this.guidanceProbeHost(by, registration.manifest, request);
+    if (!this.guidanceProbeSnapshotClear(registration)) throw new PreEffectToolRefusal("guidance probe inputs are private; register public task-local inputs in a current public session");
+    this.guidanceProbeAdmissions++;
+    let wrote = false;
+    try {
+      const saved = this.d.guidanceProbes!.store.register(registration, binding, () => {
+        if (!this.guidanceProbeSnapshotClear(registration)) throw new PreEffectToolRefusal("guidance probe input policy changed; inspect its current public scope before retrying");
+        return this.guidanceProbeHost(by, registration.manifest, request);
+      });
+      wrote = !saved.already;
+      const state = this.guidanceProbeState(by, saved.id, request.check);
+      return this.guidanceProbeReceipt(state, saved.already);
+    } catch (error) {
+      if (!wrote && (error instanceof PreEffectToolRefusal || error instanceof GuidanceProbeError && error.reason !== "storage")) throw error;
+      throw new Error("guidance probe registration is unconfirmed; inspect retained state before explicitly retrying");
+    }
+    finally { this.guidanceProbeAdmissions--; }
+  }
+  async guidanceProbeShow(by: PeerId, id: string): Promise<ProbePublicStatus> {
+    const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);
+    request.check(); return this.guidanceProbeProjection(state);
+  }
+  async guidanceProbeStart(by: PeerId, id: string, revision: number, variantId?: string): Promise<ProbePublicReceipt> {
+    const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);
+    const host = this.guidanceProbeHost(by, state.registration.manifest, request);
+    if (!probeInteger(revision) || variantId !== undefined && !probeSha256(variantId))
+      throw new PreEffectToolRefusal("guidance probe start selector is invalid; use its current CAS revision and exact G1 id");
+    const dependency = this.d.guidanceProbes!;
+    // No production runner: refuse before original-child selection, G1 raw read, binding, reservation or timer.
+    if (!dependency.fakePorts) throw new PreEffectToolRefusal("guidance probe runner is unavailable in production T1; use fake-only fixtures, not a live launch");
+    const key = { projectKey: host.projectKey, id }, original = dependency.store.startSelector(key, revision);
+    if (original && (original.actor !== by || original.sessionGeneration !== host.sessionGeneration || original.nativeSession !== host.nativeSession
+      || original.requestConnectionId !== host.requestConnectionId)) throw new PreEffectToolRefusal("guidance probe original start belongs to another request session; inspect its retained id without replaying it");
+    const slot = original ? state.registration.manifest.slots.find(item => item.id === original.slotId)
+      : state.registration.manifest.slots.find(item => state.sessions.find(session => session.slotId === item.id)?.state === "planned");
+    if (!slot) throw new PreEffectToolRefusal("guidance probe has no eligible slot; inspect its retained terminal or held state");
+    if (original && original.variantId !== (variantId ?? null)) throw new PreEffectToolRefusal("guidance probe original selector differs; inspect its original G1 id without rebinding the start");
+    const needsVariant = slot.role === "worker" && slot.arm !== "baseline";
+    if (needsVariant !== (variantId !== undefined)) throw new PreEffectToolRefusal("guidance probe next worker needs its existing G1 id only; use --variant for the next non-baseline worker");
+    const current = (): ProbeAdmissionRecheck => {
+      const fresh = this.guidanceProbeHost(by, state.registration.manifest, request);
+      if (!this.guidanceProbeSnapshotClear(state.registration)) throw new PreEffectToolRefusal("guidance probe input privacy changed; retain its declaration and use current public inputs");
+      return { host: fresh, ...(variantId === undefined ? {} : { child: this.guidanceProbeVariantBinding(by, this.guidanceProbeTask(by, state.registration.manifest.task, true), variantId) }) };
+    };
+    const prepared = current();
+    const active = this.guidanceProbeActive.get(id);
+    if (active) {
+      if (active.requestedRevision !== revision || active.variantId !== variantId)
+        throw new PreEffectToolRefusal("another owned probe attempt is still settling; inspect its state before explicitly starting the next stage");
+      const replay = dependency.store.reserveSession({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, current);
+      if (replay.kind !== "existing") throw new Error("guidance probe start is unconfirmed; inspect retained state before any further work");
+      return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), true);
+    }
+    const entry: GuidanceProbeRuntime = { id, by, requestedRevision: revision, ...(variantId === undefined ? {} : { variantId }), controller: new AbortController(), current, launched: false, launchSettled: false,
+      stopRequested: false, stopSettled: false, stopKnown: false };
+    this.guidanceProbeActive.set(id, entry);
+    const ports: GuidanceProbeFakePorts = {
+      launch: async (input, effects, signal) => {
+        entry.reservation = input.reservation;
+        this.guidanceProbeWatch(entry);
+        if (signal.aborted) throw new Error("owned probe was aborted before launch");
+        entry.launched = true;
+        return dependency.fakePorts!.launch(input, effects, signal);
+      },
+      stop: (input, signal) => dependency.fakePorts!.stop(input, signal),
+    };
+    let reserved = false, returned = false;
+    const runner = new GuidanceProbeFixtureHost(dependency.store, { ports, revalidate: current, now: () => this.d.now?.() ?? Date.now(),
+      prepareEditorFrame: dependency.prepareEditorFrame, onReserved: () => { reserved = true; } });
+    entry.promise = (async () => {
+      try {
+        const saved = await runner.start({ key, expectedRevision: revision, ...prepared, now: this.d.now?.() ?? Date.now() }, entry.controller.signal);
+        returned = true;
+        if (saved.state === "unknown_held" && entry.launched) {
+          this.guidanceProbeAbort(entry, "observation", true);
+          if (!entry.stopPromise) throw new Error("owned probe stop was not recorded; retain the held lane and explicitly inspect its outcome");
+          await entry.stopPromise;
+        }
+        request.check();
+        if (entry.failure) throw entry.failure;
+        return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), saved.already);
+      } catch (error) {
+        this.guidanceProbeAbort(entry, "observation");
+        if (!reserved && !returned && (error instanceof PreEffectToolRefusal || error instanceof GuidanceProbeError && error.reason !== "storage")) throw error;
+        throw new Error("guidance probe attempt outcome is unconfirmed; inspect its retained id without replaying work");
+      } finally { entry.launchSettled = true; this.guidanceProbeClearWatch(entry); this.guidanceProbeRetire(entry); }
+    })();
+    return entry.promise;
+  }
+  async guidanceProbeCancel(by: PeerId, id: string, revision: number): Promise<ProbePublicReceipt> {
+    const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);
+    if (!probeInteger(revision)) throw new PreEffectToolRefusal("guidance probe cancellation revision is invalid; inspect its current CAS revision");
+    const current = () => this.guidanceProbeHost(by, state.registration.manifest, request, state.binding), host = current();
+    try {
+      const saved = this.d.guidanceProbes!.store.cancelIntent({ key: { projectKey: host.projectKey, id }, expectedRevision: revision, host }, current);
+      const entry = this.guidanceProbeActive.get(id);
+      if (entry) { this.guidanceProbeAbort(entry, "observation", true); await this.guidanceProbeDrain([entry]); }
+      request.check();
+      return this.guidanceProbeReceipt(this.guidanceProbeState(by, id, request.check), saved.already);
+    } catch { throw new Error("guidance probe cancellation is unconfirmed; inspect its retained intent and owned drain before retrying"); }
+  }
+  private guidanceProbeRequest(by: PeerId): { check: () => void; generation: number | string; nativeSession: string | null; requestConnectionId: string } {
+    const request = this.guidanceRequest(by);
+    if (!this.personOrConductor(by)) throw new PreEffectToolRefusal("guidance probes require the person or current configured conductor; use an admitted operational session");
+    const session = this.d.guidanceProbes?.session?.(by);
+    if (!session || !probeSessionGeneration(session.generation) || !executionText(session.requestConnectionId, EXECUTION_REFERENCE_LIMITS.id)
+      || session.nativeSession !== null && !executionText(session.nativeSession, EXECUTION_REFERENCE_LIMITS.id))
+      throw new PreEffectToolRefusal("guidance probe request session is unavailable; reconnect through a current authenticated project connection");
+    const sessionCurrent = session.current;
+    const current = () => {
+      sessionCurrent(); request();
+      if (this.guidanceProbeStopping) throw new PreEffectToolRefusal("guidance probe admission is stopping; inspect retained work after the owned drain");
+      if (this.d.reviewOnly?.(by)) throw new PreEffectToolRefusal("guidance probes are unavailable in a review-only context; use a current public operational session");
+      if (by !== USER) {
+        try { requireConductor(by, this.d.roles); }
+        catch { throw new PreEffectToolRefusal("guidance probe conductor authority changed; refresh the configured role before retrying"); }
+        if (!this.d.bus.isRostered(by)) throw new PreEffectToolRefusal("guidance probe conductor is not currently rostered; restore current membership before retrying");
+      }
+    };
+    current(); return { check: current, generation: session.generation, nativeSession: session.nativeSession, requestConnectionId: session.requestConnectionId };
+  }
+  private guidanceProbeTask(by: PeerId, selected: { id: number; created: number; flowRevision: number }, admission: boolean): Task {
+    const task = this.guidanceTask(by, { taskId: selected.id, taskCreated: selected.created }, false);
+    if (admission && (task.history.length !== selected.flowRevision || !["in_progress", "changes_requested"].includes(task.state)))
+      throw new PreEffectToolRefusal(`guidance probe admission is stale or task state is ${task.state}; accept current work in in_progress or changes_requested and reload its revision`);
+    return task;
+  }
+  /** Actual probe actor only; the source owner validates/hydrates G1, never an impersonated read or separate SQL parser. */
+  private guidanceProbeVariantBinding(by: PeerId, task: Task, variantId: string): ProbeChildBinding {
+    if (by !== USER) {
+      try { requireConductor(by, this.d.roles); }
+      catch { throw new PreEffectToolRefusal("guidance probe conductor authority changed; reconnect in a current operational session"); }
+      if (!this.d.bus.isRostered(by)) throw new PreEffectToolRefusal("guidance probe conductor membership changed; restore current roster membership before retrying");
+    }
+    const current = this.guidanceProbeTask(by, { id: task.id, created: task.created, flowRevision: task.history.length }, true);
+    if (!probeSha256(variantId)) throw new PreEffectToolRefusal("guidance probe variant selector is invalid; choose an existing current G1 content id");
+    const project = this.guidanceProject(), role = this.guidanceRole(current);
+    const experiment = this.guidanceStorage("read", () => this.d.board.guidanceVariantLocation(project, current.id, current.created, variantId));
+    const record = experiment === undefined ? undefined : this.guidanceStorage("read", () => this.d.board.guidanceVariants(project, current.id, current.created, experiment)).find(item => item.variant.id === variantId);
+    if (!record || record.withdrawn || record.variant.flowRevision !== current.history.length || record.variant.baseline.roleId !== role.id
+      || record.variant.baseline.layer !== role.layer || record.variant.baseline.sha256 !== role.hash)
+      throw new PreEffectToolRefusal("guidance probe G1 is unavailable, withdrawn or stale; separately admit a current owner/person variant before retrying");
+    const guidance = renderGuidanceVariantV1(record.variant);
+    if (!this.guidanceProbeRenderedClear(guidance))
+      throw new PreEffectToolRefusal("guidance probe handoff text is private; use a current public G1 before retrying");
+    return { variantId, candidateSha256: record.variant.candidate.sha256, guidanceSha256: probeHash(guidance), guidance,
+      task: { id: current.id, created: current.created, flowRevision: current.history.length },
+      role: { id: role.id, layer: role.layer, baselineSha256: role.hash }, authoring: "uncontrolled", sourceSessionId: null };
   }
 
   private guidanceRequest(by: PeerId): () => void {

@@ -28673,6 +28673,30 @@ init_hub_tools();
 init_envelope();
 
 // src/hub/tasks.ts
+init_src();
+init_guidance_variants();
+
+// src/hub/guidance-probe-store.ts
+init_db_schema();
+init_guidance_variants();
+init_execution_reference();
+
+// src/hub/guidance-probes.ts
+init_execution_reference();
+var GUIDANCE_PROBE_LIMITS = Object.freeze({
+  recordBytes: 32768,
+  snapshotBytes: 32768,
+  storageBytes: 1073741824,
+  workerAttempts: 4,
+  editorAttempts: 5,
+  slots: 9,
+  hashLength: 64
+});
+var registrationScaffoldBytes = Buffer.byteLength(JSON.stringify({ manifest: 0, snapshots: { task: "", baselineContext: "", dataPolicy: 0, systemPolicy: "", improverContext: "" } }));
+var GUIDANCE_PROBE_REGISTRATION_BYTES = GUIDANCE_PROBE_LIMITS.recordBytes + GUIDANCE_PROBE_LIMITS.snapshotBytes + 4 * 2 * GUIDANCE_PROBE_LIMITS.snapshotBytes + registrationScaffoldBytes;
+var GUIDANCE_PROBE_SESSION_BYTES = 4 * GUIDANCE_PROBE_LIMITS.recordBytes;
+
+// src/hub/tasks.ts
 init_guidance_variants();
 
 // src/hub/execution-lineage-owner.ts

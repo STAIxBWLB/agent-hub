@@ -255,7 +255,8 @@ const projectConfig = () => {
 const stateDir = selected.stateDir;
 var operationalAuditReady=false, operationalRefusalRecorded=false;
 const caller = declaredInstances ? detectCliIdentity(process.env, declaredInstances) : unboundCaller;
-const commandLabel = cliCommandLabel(cmd, args, projectCatalog);
+const commandLabel = cmd === "guidance" && args[0] === "probe" && ["register", "start", "show", "cancel"].includes(args[1] ?? "")
+  ? `guidance probe ${args[1]}` : cliCommandLabel(cmd, args, projectCatalog);
 let commandAccess = classifyPeerCommand(cmd, args, projectCatalog);
 const continuationPeer = process.env.AGENTHUB_RECOVERY_CONDUCTOR;
 const continuationId = process.env.AGENTHUB_RECOVERY_OPERATION;
@@ -277,7 +278,10 @@ if (continuationPeer !== undefined) {
 }
 const conductorPeer = !liveTest && caller.role === "tools" && (recoveryRunnerContinuation || ["restart", "upgrade", "recovery"].includes(cmd) && commandAccess === "conductor") ? caller.peer : undefined;
 // Agent-authored content keeps its peer. Operational starts/holds may borrow console authority for live verification.
-const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed" && liveTestRefusal(cmd, args);
+const guidanceProbeDelegationRefused = liveTest && caller.role === "tools" && cmd === "guidance"
+  && args[0] === "probe" && ["register", "start", "show", "cancel"].includes(args[1] ?? "");
+const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed"
+  && (liveTestRefusal(cmd, args) || guidanceProbeDelegationRefused);
 const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "allowed" && !delegationRefused ? caller.peer : undefined;
 const identity = delegatedPeer || recoveryLauncher ? { role: "console" as const } : caller;
 operationalAuditReady=identity.role==="tools" && commandAccess==="conductor" && conductorOperation(cmd,args)!==undefined;
@@ -1246,6 +1250,53 @@ const commands: Record<string, () => Promise<void> | void> = {
   guidance: async () => {
     const { parseGuidanceCommand, validateGuidancePageReply, validateGuidanceDiffReply, validateGuidanceReceipt, renderGuidance, renderGuidanceReceipt } = await import("./guidance.ts");
     const { parseGuidanceVariantV1, GUIDANCE_RECORD_MAX_BYTES } = await import("../hub/guidance-variants.ts");
+    const { parseGuidanceProbeSubcommand, parseGuidanceProbeRegistration, GUIDANCE_PROBE_REGISTRATION_BYTES,
+      parseGuidanceProbePublicReceipt, parseGuidanceProbePublicStatus } = await import("../hub/guidance-probes.ts");
+    let probeCommand;
+    try { probeCommand = parseGuidanceProbeSubcommand(args); } catch { return fail("invalid guidance probe command; use probe register, start, show or cancel with the documented bounded arguments"); }
+    if (probeCommand) {
+      if (liveTest) return fail("live-test cannot perform guidance probe operations as the person; use a current person or configured conductor session");
+      let registration: ReturnType<typeof parseGuidanceProbeRegistration> | undefined;
+      if (probeCommand.op === "register") {
+        try {
+          const fd = openSync(resolve(invokedFrom, probeCommand.file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          try {
+            if (!fstatSync(fd).isFile()) return fail("the guidance probe file must be a bounded regular JSON file");
+            const bytes = Buffer.alloc(GUIDANCE_PROBE_REGISTRATION_BYTES + 1); let got = 0;
+            while (got < bytes.length) { const read = readSync(fd, bytes, got, bytes.length - got, null); if (!read) break; got += read; }
+            if (got > GUIDANCE_PROBE_REGISTRATION_BYTES) return fail("the guidance probe registration exceeds its derived envelope bound");
+            registration = parseGuidanceProbeRegistration(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, got))));
+            if (!registration) return fail("invalid guidance probe registration; retain its complete bounded manifest and snapshots without trimming");
+          } finally { closeSync(fd); }
+        } catch { return fail("cannot read a valid bounded guidance probe registration; check its closed V1 manifest and snapshots"); }
+      }
+      const hub = await connect();
+      try {
+        if (!hub.features.includes("guidance_probes")) return fail("running hub lacks guidance_probes; upgrade and restart the hub, then retry ahub guidance");
+        const request = probeCommand.op === "register" ? { t: "guidance_probe_register", registration: registration! }
+          : probeCommand.op === "start" ? { t: "guidance_probe_start", id: probeCommand.id, revision: probeCommand.revision, ...(probeCommand.variantId ? { variantId: probeCommand.variantId } : {}) }
+          : probeCommand.op === "cancel" ? { t: "guidance_probe_cancel", id: probeCommand.id, revision: probeCommand.revision }
+          : { t: "guidance_probe_show", id: probeCommand.id };
+        const result = await hub.request(request);
+        if (result.ok !== true) {
+          const detail = terminalText(result.error ?? "guidance probe outcome is unconfirmed").replace(/[\r\n]+/g, " ").slice(0, 512);
+          const nextStep = probeCommand.op === "register" ? "" : `; inspect ahub guidance probe show --id ${probeCommand.id} before any explicit retry`;
+          return fail(`${detail}${nextStep}`);
+        }
+        if (probeCommand.op === "show") {
+          const status = parseGuidanceProbePublicStatus(result.status);
+          if (!status) return fail("guidance probe status is malformed; refresh its id and current task context");
+          if (args.includes("--json")) console.log(JSON.stringify(status, null, 2));
+          else console.log(`guidance probe ${status.id}: ${status.state}; revision ${status.revision}; evidence ${status.evidence}; workers ${status.counters.workerAttempts}; editors ${status.counters.editorAttempts}; model calls ${status.counters.modelCalls}; tool calls ${status.counters.toolCalls}; token usage ${status.counters.usageUnknown || status.counters.modelCalls === 0 ? "unknown" : status.counters.tokensObservedKnown}; cancelled ${status.cancelRequested ? "yes" : "no"}`);
+        } else {
+          const receipt = parseGuidanceProbePublicReceipt(result.receipt);
+          if (!receipt) return fail("guidance probe receipt is malformed; inspect retained probe state before retrying");
+          if (args.includes("--json")) console.log(JSON.stringify(receipt, null, 2));
+          else console.log(`guidance probe ${receipt.id}: ${receipt.state}; revision ${receipt.revision}; evidence ${receipt.evidence}${receipt.already ? "; already recorded" : ""}`);
+        }
+      } finally { hub.close(); }
+      return;
+    }
     let command; try { command = parseGuidanceCommand(args); } catch (error) { return fail((error as Error).message); }
     if (liveTest && (command.op === "create" || command.op === "withdraw")) return fail("live-test cannot write guidance declarations as the person; use the current task actor without --live-test");
     let variant: ReturnType<typeof parseGuidanceVariantV1> | undefined;
