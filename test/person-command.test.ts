@@ -99,3 +99,11 @@ test("#1399 an older project's block is reported as stale by the plan doctor rea
     expect(planInit(dir).some(change => change.path === agents)).toBe(false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("#1399 the block states no heavy-job number of its own: it defers to the machine's admission tool and keeps one per repository only as the fallback", () => {
+  const template = readFileSync(join(import.meta.dir, "../templates/AGENTS.block.md"), "utf8");
+  expect(template).toContain("follow this machine's own limit");
+  expect(template).toContain("`dot admit`");
+  expect(template).toContain("without such a tool, run at most one per repository at a time");
+  expect(template).not.toContain("Run at most one heavy job");
+});
