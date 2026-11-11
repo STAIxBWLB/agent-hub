@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.36.0
+bun add -g github:STAIxBWLB/agent-hub#v0.37.0
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -47,6 +47,12 @@ move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
+
+## Upgrading to 0.37.0
+
+The `@staix/agent-mem` pin moves to 0.24.0, whose storage formats equal 0.23.1's (#1396). Raise a shared home's curated format floor to 0.24.0 only after every hub sharing that home runs 0.37.0. The Orca, Herdr and Claude Code companions are no longer in this package: install them from STAIxBWLB/ahub-orca, STAIxBWLB/ahub-herdr and STAIxBWLB/ahub-claude, which read ahub only through the companion CLI contract v1 (#1387, #1392). The replaced routing modules and their Apache notice are gone; routes, `stage` compatibility and route events behave as before (#1393). `ahub console` now shows the daemon, console, global CLI and Claude plugin versions, and an AHUB column per peer (#1386). Nothing else changes until you use it: `ahub sdlc authorize-release` can read a committed version source for a project without `package.json` (#1383), and `ahub guidance probe register|start|show|cancel` records a private probe declaration whose lifecycle runs only with test fixtures; production has no probe runner (#1391, #1395). N-1 is published 0.36.0 and control remains 16 through 17.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.37.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.36.0
 

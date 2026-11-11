@@ -1053,7 +1053,11 @@ plugin stale when the module changed after setup, so run `ahub setup` again afte
   tasks are cards, and overlap, conflict and cohort links and recent message arcs are links. Ids
   are project-prefixed, every running project's scene is merged within acon's caps (32 actors, 200
   cards, 64 links, newest links kept), and a project that has not answered within about 3 s is left
-  out of that poll. Only labels and states reach the scene, never message bodies, task details,
+  out of that poll (its last scene is kept as the baseline for its next answer). The running-project
+  listing is reused for 10 s and then refreshed in the background, concurrent reads share one
+  computation, and a viewer that passes back the combined cursor gets `changed: false` while the
+  scene, the per-project cursors and the project set are unchanged (#1380). Only labels and states
+  reach the scene, never message bodies, task details,
   approval titles or reasons; a PII task's card shows the `[pii]` stub.
 
 The companions read ahub only through the companion CLI contract,
@@ -3942,7 +3946,10 @@ capabilities still require their own labels. A disjoint window refuses with 4426
 The compatibility-floor `protocol` field remains readable by old clients.
 
 Release N-1 is counted in minor versions, separately from this protocol window
-(#1164, family contract entelecheia/ai-workspace#70). For 0.36.x, N-1 is 0.35.0,
+(#1164, family contract entelecheia/ai-workspace#70). For 0.37.x, N-1 is 0.36.0,
+the latest published patch of 0.36.x (exact `@staix/agent-mem` 0.23.1, control
+protocol 17 with descriptor floor 16). Every patch on 0.37.x keeps that release
+baseline. For 0.36.x, N-1 is 0.35.0,
 the latest published patch of 0.35.x (exact `@staix/agent-mem` 0.23.1, control
 protocol 17 with descriptor floor 16). Every patch on 0.36.x keeps that release
 baseline. For 0.35.x, N-1 is 0.34.1,
@@ -6448,6 +6455,7 @@ The selected project's configured conductor may run the commands below through i
 | research backfill / bench run / source add / goal link | Existing bounded CLI or daemon paths, with fixed audit labels |
 | start Jcode | Launcher-only peer the conductor is configured to start |
 | task unassign <id> [--role owner\|reviewer] [--revision N] | The actual conductor is recorded; no replacement is routed and no native work is stopped |
+| guidance probe register/start/show/cancel | Bounded private probe declaration and fake-only lifecycle through Tasks (#1226); `--live-test` is refused and production has no probe runner |
 | restart --yes | Only with a source-issued continuation proof for this project's own operation |
 | upgrade --yes --to <exact-version> | Only with proof for this project's supported exact-version upgrade; newer coordinator handoff is person-only |
 | recovery resume\|abort [<op-id>] | Only the initiating conductor's own restart/authorized-upgrade operation; the person keeps the normal recovery path |
