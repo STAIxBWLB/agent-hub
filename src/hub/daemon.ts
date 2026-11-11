@@ -4650,7 +4650,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (agentDrift.length && !stopping && !recoveryActive()) try { offerAgentDrift(); } catch { /* the next tick tries again */ }
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const [id, request] of permissions) if (request.expiresAt > Date.now()) supervision.approvalWaiting({ id, peer: request.peer, tool: request.tool ?? "unknown", createdAt: request.createdAt });
-      for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review" && row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(row.peer, row.id, holdCommand(row.peer, row.id));
+      for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review" && row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(row.peer, row.id, () => holdCommand(row.peer, row.id));
       feedBudgetPauses();
       supervision.checkRound();
       try {
@@ -7229,7 +7229,7 @@ export async function startDaemon(opts: DaemonOptions) {
       for (const peer of bus.knownPeers()) {
         const rows = heldRows(peer);
         if (!rows.some(row => !noticedHolds.has(row.id))) continue;
-        for (const row of rows) { noticedHolds.add(row.id); if (row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(peer, row.id, holdCommand(peer, row.id)); }
+        for (const row of rows) { noticedHolds.add(row.id); if (row.reason !== ACCEPTED_SETTLE_TIMEOUT_REASON) supervision.needsReview(peer, row.id, () => holdCommand(peer, row.id)); }
         notify(`${peer} queue ${queueHold(peer)}`);
       }
       writeStatus();

@@ -140,11 +140,11 @@ export class SupervisionFeed {
     return sent;
   }
 
-  needsReview(peer: string, deliveryId: string, command = queueResolveCommand({ id: deliveryId, peer })): boolean {
+  needsReview(peer: string, deliveryId: string, command: string | (() => string) = () => queueResolveCommand({ id: deliveryId, peer })): boolean { // a thunk is built only when the notice is sent, not on every tick
     const conductor = this.recipient();
     const key = `${conductor}:${peer}:${deliveryId}`;
     if (!conductor || this.holds.has(key)) return false;
-    const sent = this.send(`hold:${peer}:${deliveryId}`, `${peer}: needs_review hold; delivery ${deliveryId}; give the person this command exactly as printed: ${command}`, "important");
+    const sent = this.send(`hold:${peer}:${deliveryId}`, `${peer}: needs_review hold; delivery ${deliveryId}; give the person this command exactly as printed: ${typeof command === "string" ? command : command()}`, "important");
     if (sent) this.holds.add(key);
     return sent;
   }
