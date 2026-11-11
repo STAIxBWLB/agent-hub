@@ -1,4 +1,5 @@
 import { parseGuidanceListQuery, parseGuidanceIdQuery, parseGuidancePageResult, parseGuidanceDiffResult } from "./guidance-variants.ts";
+import { parseGuidanceProbeReceiptExport, probeSha256 } from "./guidance-probes.ts";
 import type { ActionMeta, InboxAnswers } from "@staix/agent-console/contract";
 import { assertExecutableRuntimeRoot } from "./project-runtime-state.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS } from "./planning.ts";
@@ -257,7 +258,29 @@ export function projectConsole(options: { registry: Registry; lifecycle: Lifecyc
     } catch { return { ok: false, error: "guidance read is unavailable; refresh the task scope or upgrade the hub before retrying" }; }
     finally { client?.close(); }
   };
-  return { list, act, answer, receipt, consoleControl, lineage, guidance };
+  /** Producer-only read port for one probe experiment; never forwards an action, an actor or a person-metadata claim, and writes nothing in the hub. */
+  const guidanceProbe = async (target: { projectId: unknown; instanceId: unknown }, input: unknown) => {
+    if (options.stopping?.()) return { ok: false, error: "guidance probe status is unavailable while the manager stops; reconnect before retrying" };
+    const project = typeof target.projectId === "string" ? registry.get(target.projectId) : undefined;
+    if (!project || typeof target.instanceId !== "string" || !target.instanceId) return { ok: false, error: "select a running project and current instance before reading a guidance probe" };
+    // A closed query: exactly one exact registered content id. Any other field is refused here rather than forwarded.
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => key !== "id") || !probeSha256((input as { id?: unknown }).id))
+      return { ok: false, error: "invalid guidance probe query; use the exact 64-character probe id" };
+    const id = (input as { id: string }).id;
+    let client: ControlClient | undefined;
+    try {
+      client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: target.instanceId });
+      if (!client.features.includes("guidance_probe_receipts")) return { ok: false, error: "running hub lacks guidance_probe_receipts; upgrade and restart the hub before reading a guidance probe" };
+      const result = await client.request({ t: "guidance_probe_receipts", id }, options.forwardTimeoutMs?.("guidance_probe_receipts", 10_000) ?? 10_000);
+      if (result.ok !== true) return { ok: false, error: typeof result.error === "string" ? result.error.slice(0, 512) : "guidance probe status is unavailable; refresh the probe id and the current daemon before retrying" };
+      const receipts = parseGuidanceProbeReceiptExport(result.receipts);
+      // The reply must be the experiment that was asked for: a well-formed export of another probe never satisfies this selection.
+      if (!receipts || receipts.status.id !== id) return { ok: false, error: "guidance probe receipts are malformed, fail their digest check or name another probe; do not rely on them" };
+      return { ok: true, receipts };
+    } catch { return { ok: false, error: "guidance probe status is unavailable; refresh the probe id or upgrade the hub before retrying" }; }
+    finally { client?.close(); }
+  };
+  return { list, act, answer, receipt, consoleControl, lineage, guidance, guidanceProbe };
 }
 
 export async function startManager(options: ManagerOptions = {}): Promise<ManagerHandle> {

@@ -1,6 +1,6 @@
 import { parseGuidanceCreateInput, parseGuidanceIdQuery } from "./guidance-variants.ts";
 import { GuidanceProbeStore } from "./guidance-probe-store.ts";
-import { GuidanceProbeError, probeSessionGeneration } from "./guidance-probes.ts";
+import { GuidanceProbeError, probeSessionGeneration, type ProbePublicReceipt, type ProbePublicStatus, type ProbeReceiptExport } from "./guidance-probes.ts";
 import { executionText, EXECUTION_REFERENCE_LIMITS } from "./execution-reference.ts";
 import { publicDeliveryBodies } from "./delivery-public.ts";
 import { GeneratedNoteRegistry, type GeneratedNoteProof } from "../memory/record-provenance.ts";
@@ -12306,12 +12306,13 @@ export async function startDaemon(opts: DaemonOptions) {
       case "guidance_probe_register":
       case "guidance_probe_start":
       case "guidance_probe_show":
+      case "guidance_probe_receipts":
       case "guidance_probe_cancel": {
         const role = c.role, actor = role === "console" ? USER : role === "tools" && typeof c.peer === "string" && PEER_ID.test(c.peer) ? c.peer : undefined;
         if ((role !== "console" && role !== "tools") || !actor) return void reply({ ok: false, error: "guidance probes require a person or the current configured conductor" });
         if (stopping || recoveryActive() || bus.isRecoveryHeld) return void reply({ ok: false, error: "recovery or shutdown is holding guidance probe operations; inspect retained state after release" });
         const operation = msg.t === "guidance_probe_register" ? "guidance probe register" : msg.t === "guidance_probe_start" ? "guidance probe start"
-          : msg.t === "guidance_probe_show" ? "guidance probe show" : "guidance probe cancel";
+          : msg.t === "guidance_probe_show" ? "guidance probe show" : msg.t === "guidance_probe_receipts" ? "guidance probe receipts" : "guidance probe cancel";
         let authorityCurrent: () => void;
         if (role === "tools") {
           try { authorityCurrent = admitOperational(sock, operation); }
@@ -12349,14 +12350,15 @@ export async function startDaemon(opts: DaemonOptions) {
         const run = () => {
           current();
           if (recoveryActive() || bus.isRecoveryHeld || stopping) throw new PreEffectToolRefusal("recovery or shutdown is holding guidance probe operations; inspect retained state after release");
-          const action = () => msg.t === "guidance_probe_register" ? tasks.guidanceProbeRegister(actor, input)
+          const action = (): Promise<ProbePublicReceipt | ProbePublicStatus | ProbeReceiptExport> => msg.t === "guidance_probe_register" ? tasks.guidanceProbeRegister(actor, input)
             : msg.t === "guidance_probe_start" ? tasks.guidanceProbeStart(actor, msg.id, msg.revision, msg.variantId)
             : msg.t === "guidance_probe_show" ? tasks.guidanceProbeShow(actor, msg.id)
+            : msg.t === "guidance_probe_receipts" ? tasks.guidanceProbeReceipts(actor, msg.id)
             : tasks.guidanceProbeCancel(actor, msg.id, msg.revision);
           const withRequest = () => guidanceProbeRequestContext.run(requestContext, action);
           return role === "tools" ? operationalContext.run({ actor, current }, withRequest) : withRequest();
         };
-        void Promise.resolve().then(run).then(value => reply(msg.t === "guidance_probe_show" ? { ok: true, status: value } : { ok: true, receipt: value }), error => {
+        void Promise.resolve().then(run).then(value => reply(msg.t === "guidance_probe_show" ? { ok: true, status: value } : msg.t === "guidance_probe_receipts" ? { ok: true, receipts: value } : { ok: true, receipt: value }), error => {
           if (error instanceof PreEffectToolRefusal || error instanceof GuidanceProbeError) return reply({ ok: false, error: error.message });
           if (error instanceof OperationalAuthorityError) return reply(operationalFailure(error));
           return reply({ ok: false, error: "guidance probe operation is unconfirmed; inspect retained state before retrying" });

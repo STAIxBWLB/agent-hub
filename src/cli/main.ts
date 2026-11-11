@@ -255,7 +255,7 @@ const projectConfig = () => {
 const stateDir = selected.stateDir;
 var operationalAuditReady=false, operationalRefusalRecorded=false;
 const caller = declaredInstances ? detectCliIdentity(process.env, declaredInstances) : unboundCaller;
-const commandLabel = cmd === "guidance" && args[0] === "probe" && ["register", "start", "show", "cancel"].includes(args[1] ?? "")
+const commandLabel = cmd === "guidance" && args[0] === "probe" && ["register", "start", "show", "receipts", "cancel"].includes(args[1] ?? "")
   ? `guidance probe ${args[1]}` : cliCommandLabel(cmd, args, projectCatalog);
 let commandAccess = classifyPeerCommand(cmd, args, projectCatalog);
 const continuationPeer = process.env.AGENTHUB_RECOVERY_CONDUCTOR;
@@ -279,7 +279,7 @@ if (continuationPeer !== undefined) {
 const conductorPeer = !liveTest && caller.role === "tools" && (recoveryRunnerContinuation || ["restart", "upgrade", "recovery"].includes(cmd) && commandAccess === "conductor") ? caller.peer : undefined;
 // Agent-authored content keeps its peer. Operational starts/holds may borrow console authority for live verification.
 const guidanceProbeDelegationRefused = liveTest && caller.role === "tools" && cmd === "guidance"
-  && args[0] === "probe" && ["register", "start", "show", "cancel"].includes(args[1] ?? "");
+  && args[0] === "probe" && ["register", "start", "show", "receipts", "cancel"].includes(args[1] ?? "");
 const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed"
   && (liveTestRefusal(cmd, args) || guidanceProbeDelegationRefused);
 const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "allowed" && !delegationRefused ? caller.peer : undefined;
@@ -1251,9 +1251,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     const { parseGuidanceCommand, validateGuidancePageReply, validateGuidanceDiffReply, validateGuidanceReceipt, renderGuidance, renderGuidanceReceipt } = await import("./guidance.ts");
     const { parseGuidanceVariantV1, GUIDANCE_RECORD_MAX_BYTES } = await import("../hub/guidance-variants.ts");
     const { parseGuidanceProbeSubcommand, parseGuidanceProbeRegistration, GUIDANCE_PROBE_REGISTRATION_BYTES,
-      parseGuidanceProbePublicReceipt, parseGuidanceProbePublicStatus } = await import("../hub/guidance-probes.ts");
+      parseGuidanceProbePublicReceipt, parseGuidanceProbePublicStatus, parseGuidanceProbeReceiptExport } = await import("../hub/guidance-probes.ts");
+    const { guidanceProbeStatusLines } = await import("../ui/guidance-view.ts");
     let probeCommand;
-    try { probeCommand = parseGuidanceProbeSubcommand(args); } catch { return fail("invalid guidance probe command; use probe register, start, show or cancel with the documented bounded arguments"); }
+    try { probeCommand = parseGuidanceProbeSubcommand(args); } catch { return fail("invalid guidance probe command; use probe register, start, show, receipts or cancel with the documented bounded arguments"); }
     if (probeCommand) {
       if (liveTest) return fail("live-test cannot perform guidance probe operations as the person; use a current person or configured conductor session");
       let registration: ReturnType<typeof parseGuidanceProbeRegistration> | undefined;
@@ -1273,9 +1274,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       const hub = await connect();
       try {
         if (!hub.features.includes("guidance_probes")) return fail("running hub lacks guidance_probes; upgrade and restart the hub, then retry ahub guidance");
+        if (probeCommand.op === "receipts" && !hub.features.includes("guidance_probe_receipts")) return fail("running hub lacks guidance_probe_receipts; upgrade and restart the hub, then retry ahub guidance probe receipts");
         const request = probeCommand.op === "register" ? { t: "guidance_probe_register", registration: registration! }
           : probeCommand.op === "start" ? { t: "guidance_probe_start", id: probeCommand.id, revision: probeCommand.revision, ...(probeCommand.variantId ? { variantId: probeCommand.variantId } : {}) }
           : probeCommand.op === "cancel" ? { t: "guidance_probe_cancel", id: probeCommand.id, revision: probeCommand.revision }
+          : probeCommand.op === "receipts" ? { t: "guidance_probe_receipts", id: probeCommand.id }
           : { t: "guidance_probe_show", id: probeCommand.id };
         const result = await hub.request(request);
         if (result.ok !== true) {
@@ -1283,7 +1286,12 @@ const commands: Record<string, () => Promise<void> | void> = {
           const nextStep = probeCommand.op === "register" ? "" : `; inspect ahub guidance probe show --id ${probeCommand.id} before any explicit retry`;
           return fail(`${detail}${nextStep}`);
         }
-        if (probeCommand.op === "show") {
+        if (probeCommand.op === "receipts") {
+          const exported = parseGuidanceProbeReceiptExport(result.receipts);
+          if (!exported) return fail("guidance probe receipts are malformed or fail their digest check; inspect retained probe state before relying on them");
+          if (args.includes("--json")) console.log(JSON.stringify(exported, null, 2));
+          else for (const line of guidanceProbeStatusLines(exported)) console.log(terminalText(line));
+        } else if (probeCommand.op === "show") {
           const status = parseGuidanceProbePublicStatus(result.status);
           if (!status) return fail("guidance probe status is malformed; refresh its id and current task context");
           if (args.includes("--json")) console.log(JSON.stringify(status, null, 2));

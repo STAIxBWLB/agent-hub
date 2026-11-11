@@ -3,8 +3,9 @@ import { pathCandidates } from "@staix/agent-mem";
 import { renderGuidanceVariantV1 } from "./guidance-variants.ts";
 import { GuidanceProbeFixtureHost, type GuidanceProbeStore } from "./guidance-probe-store.ts";
 import { GuidanceProbeError, GUIDANCE_PROBE_STOP_TIMEOUT_MS, GUIDANCE_PROBE_FENCE_INTERVAL_MS, guidanceProbeCanonical, guidanceProbeManifestKey,
-  parseGuidanceProbeRegistration, probeHash, probeSha256, probeInteger, probeSessionGeneration,
+  parseGuidanceProbeRegistration, parseGuidanceProbeReceiptExport, probeHash, probeSha256, probeInteger, probeSessionGeneration,
   type ProbeChildBinding, type ProbeStoredState, type ProbePublicReceipt, type ProbePublicStatus, type ProbeHostBinding,
+  type ProbeReceiptExport, type ProbeExportSlot, type ProbeReceiptV1, type ProbeRetentionState,
   type ProbeAdmissionRecheck, type ProbeReservation, type ProbeSlot, type GuidanceProbeFakePorts, type GuidanceProbeManifestV1, type ProbeWorkerFramePreparer } from "./guidance-probes.ts";
 import { GuidanceVariantError, GUIDANCE_PAGE_MAX_RECORDS, GUIDANCE_REPLY_MAX_BYTES, guidanceVariantSectionDiff, guidanceProtectedSectionNames, parseGuidancePageResult, parseGuidanceDiffResult, parseGuidanceListQuery, parseGuidanceIdQuery, guidancePageCursor, guidancePageAfter, guidanceVariantMetadata, parseGuidanceVariantV1, validateGuidanceVariantV1, parseGuidanceSelector, type GuidanceVariantV1, type GuidanceStoredRecord, type GuidanceSelector, type GuidanceIdSelector, type GuidanceWriteFence, type GuidanceWriteReceipt, type GuidanceCurrent, type GuidancePublicRecord, type GuidancePageResult, type GuidanceDiffResult, type GuidanceReadResult } from "./guidance-variants.ts";
 import { buildEntryDiagnostic } from "./build-entry.ts";
@@ -5137,6 +5138,42 @@ export class Tasks {
     let sealedComparable = false;
     try { sealedComparable = this.d.guidanceProbes!.store.outcome({ projectKey: this.guidanceProject(), id: state.receipt.id })?.comparability.comparable === true; } catch { /* fail closed */ }
     return sealedComparable ? status : { ...status, comparable: false };
+  }
+  /**
+   * T4 (#1226): the producer receipt reader and export. The same person/conductor, session and task fences as `guidanceProbeShow`, and read-only: it launches,
+   * reserves, writes and prunes nothing. It carries the status, the outcome denominator and the sealed receipts, each re-verified against its own digest by the
+   * Store, so a tampered row refuses the whole read instead of being skipped. Output names are model-written, so each receipt passes the same screen as any
+   * other public field; one that fails is replaced by its digest alone and the slot says `withheld`. A retained directory is a state, never a path.
+   */
+  async guidanceProbeReceipts(by: PeerId, id: string): Promise<ProbeReceiptExport> {
+    const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);
+    request.check();
+    const store = this.d.guidanceProbes!.store, key = { projectKey: this.guidanceProject(), id: state.receipt.id };
+    const status = await this.guidanceProbeShow(by, id);
+    let receipts: ProbeReceiptV1[], outcome: ReturnType<GuidanceProbeStore["outcome"]>, retention: Map<string, ProbeRetentionState>;
+    try { receipts = store.receipts(key); outcome = store.outcome(key); retention = store.retentionStates(key); }
+    catch (error) { if (error instanceof GuidanceProbeError) throw error; throw new GuidanceProbeError("storage"); }
+    if (!outcome) throw new GuidanceProbeError("storage");
+    request.check();
+    const bySlot = new Map(receipts.map(item => [item.slotId, item]));
+    const slots: ProbeExportSlot[] = state.registration.manifest.slots.map((slot, index) => {
+      const session = state.sessions[index]!, receipt = bySlot.get(slot.id);
+      const shown = receipt !== undefined && this.guidanceProbeReceiptClear(receipt);
+      return { slotId: slot.id, stage: slot.stage, role: slot.role, arm: slot.arm, state: session.state, receipt: shown ? receipt : null,
+        receiptDigest: receipt?.digest ?? null, withheld: receipt !== undefined && !shown, retention: retention.get(slot.id) ?? "none" };
+    });
+    // The sealed verdict can only make the public one stricter, exactly as in `show`: a status that already refused stays refused.
+    const comparable = status.comparable && outcome.comparability.comparable;
+    const result: ProbeReceiptExport = { v: 1, status: { ...status, comparable }, comparable, reasons: outcome.comparability.reasons, counts: outcome.counts, slots };
+    // What leaves this process is what the consumer's parser will accept: a result that does not round-trip is a storage fault, never a partial answer.
+    const checked = parseGuidanceProbeReceiptExport(JSON.parse(JSON.stringify(result)));
+    if (!checked) throw new GuidanceProbeError("storage");
+    return checked;
+  }
+  /** Every free-text name a receipt carries (output paths, exclusions, the served model) must pass the public-field screen; the digest alone is kept otherwise. */
+  private guidanceProbeReceiptClear(receipt: ProbeReceiptV1): boolean {
+    const names = [receipt.experimentId, receipt.slotId, receipt.servedModel ?? "", ...receipt.output.entries.map(item => item.relative), ...receipt.output.excluded.map(item => item.relative)];
+    return names.every(text => text === "" || this.guidanceFieldAllowed(text));
   }
   async guidanceProbeStart(by: PeerId, id: string, revision: number, variantId?: string): Promise<ProbePublicReceipt> {
     const request = this.guidanceProbeRequest(by), state = this.guidanceProbeState(by, id, request.check);

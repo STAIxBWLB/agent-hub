@@ -719,6 +719,19 @@ export class GuidanceProbeStore {
       limits: [...limits].sort(), output, expiresAt: endedAt + PROBE_RETENTION_MS };
     return { ...body, digest: probeReceiptDigest(body) };
   }
+  /**
+   * Read-only: where each sealed slot's retained output stands, as a state and never a path (a physical location is private to the host, and the producer
+   * export must not carry one). A slot with no row is absent from the map, which the reader reads as `none`.
+   */
+  retentionStates(key: ProbeKey): Map<string, "none" | "retained" | "pruned"> {
+    try {
+      return this.db.transaction(() => {
+        const result = new Map<string, "none" | "retained" | "pruned">();
+        for (const [slotId, entry] of this.retainedRows(key)) result.set(slotId, entry.pruned ? "pruned" : entry.record ? "retained" : "none");
+        return result;
+      })();
+    } catch (error) { if (error instanceof GuidanceProbeError) throw error; throw new GuidanceProbeError("storage"); }
+  }
   /** Private status: the outcome denominator and the comparability verdict with its reasons. Read-only; T4 decides what becomes public. */
   outcome(key: ProbeKey): { counts: ProbeOutcomeCounts; comparability: ProbeComparability } | undefined {
     try {

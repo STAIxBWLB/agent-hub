@@ -141,7 +141,7 @@ export interface ProbePublicReceipt extends ProbeReceipt { experimentId: string;
 export interface ProbePublicStatus extends ProbePublicReceipt { counters: ProbeCounters; cancelRequested: boolean; notNeeded: number; comparable: boolean; authoring: "admitted_fixture" | "uncontrolled" | "unknown" }
 export type GuidanceProbeCommand = { op: "register"; file: string; json: boolean }
   | { op: "start"; id: string; revision: number; variantId?: string; json: boolean }
-  | { op: "show"; id: string; json: boolean } | { op: "cancel"; id: string; revision: number; json: boolean };
+  | { op: "show"; id: string; json: boolean } | { op: "receipts"; id: string; json: boolean } | { op: "cancel"; id: string; revision: number; json: boolean };
 
 export class GuidanceProbeError extends Error {
   constructor(readonly reason: "invalid" | "changed" | "budget" | "held" | "runner" | "storage") {
@@ -320,8 +320,8 @@ export function parseGuidanceProbeRegistration(value: unknown): ProbeRegistratio
 }
 
 export function parseGuidanceProbeCommand(args: readonly string[]): GuidanceProbeCommand | undefined {
-  const op = args[0]; if (!["register", "start", "show", "cancel"].includes(op ?? "")) return undefined;
-  const fields = new Map<string, string>(), allowed = op === "register" ? ["--file"] : op === "show" ? ["--id"] : op === "start" ? ["--id", "--revision", "--variant"] : ["--id", "--revision"];
+  const op = args[0]; if (!["register", "start", "show", "receipts", "cancel"].includes(op ?? "")) return undefined;
+  const fields = new Map<string, string>(), allowed = op === "register" ? ["--file"] : op === "show" || op === "receipts" ? ["--id"] : op === "start" ? ["--id", "--revision", "--variant"] : ["--id", "--revision"];
   let json = false;
   for (let index = 1; index < args.length; index++) {
     const key = args[index]!; if (key === "--json" && !json) { json = true; continue; }
@@ -329,7 +329,7 @@ export function parseGuidanceProbeCommand(args: readonly string[]): GuidanceProb
   }
   if (op === "register") return fields.has("--file") ? { op, file: fields.get("--file")!, json } : undefined;
   const id = fields.get("--id"); if (!probeSha256(id)) return undefined;
-  if (op === "show") return { op, id, json };
+  if (op === "show" || op === "receipts") return { op, id, json };
   const raw = fields.get("--revision"), revision = raw && /^(?:0|[1-9][0-9]*)$/.test(raw) ? Number(raw) : NaN;
   if (!probeInteger(revision)) return undefined;
   if (op === "cancel") return { op, id, revision, json };
@@ -614,3 +614,79 @@ export interface ProbePrunePlan {
   slots: readonly { slotId: string; expiresAt: number; remove: readonly { relative: string; bytes: number }[]; keep: readonly { relative: string; reason: ProbePruneKeepReason }[] }[];
 }
 export interface ProbePruneResult { pruned: readonly string[]; kept: readonly { slotId: string; relative: string; reason: ProbePruneKeepReason }[]; planDigest: string }
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// T4 (#1226): the producer receipt reader and export. Contract: docs/design/guidance-probes.md "T4 producer status and receipt export".
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** Where a slot's retained output stands. It never names a path: a physical location is private to the host. */
+export type ProbeRetentionState = "none" | "retained" | "pruned";
+export interface ProbeExportSlot {
+  slotId: string; stage: ProbeStage; role: ProbeSlot["role"]; arm: ProbeSlot["arm"];
+  /** The session's own state, so a slot that never started (`planned`, `not_needed`) is visible beside the ones that did. */
+  state: ProbeSessionState;
+  /** The verbatim sealed receipt, digest-checked on every read. `null` when the slot has none, or when a name in it did not pass the privacy screen. */
+  receipt: ProbeReceiptV1 | null;
+  /** The receipt's own digest, kept when the receipt is withheld so the consumer can still cite it. `null` only when the slot has no receipt. */
+  receiptDigest: string | null;
+  withheld: boolean;
+  retention: ProbeRetentionState;
+}
+/**
+ * What a producer or a receipt consumer reads about one experiment. Everything in it is host-observed or host-computed from sealed receipts; a fixture
+ * run is `evidence: "fixture"`, and nothing here claims a live trial, sampling control, provider behaviour or model quality. Unknown stays unknown: a
+ * usage gap is `usage_unknown`, an unobserved served model is `served_model_unobserved`, and a slot with no receipt is `unknown` in the denominator.
+ */
+export interface ProbeReceiptExport {
+  v: 1;
+  status: ProbePublicStatus;
+  /** The stricter of the older public expression and the sealed-receipt verdict, as in `show`. */
+  comparable: boolean;
+  /** Why the sealed receipts alone are not comparable. Empty when they are. */
+  reasons: readonly ProbeIncomparableReason[];
+  /** The full outcome denominator: every reserved slot counts, failed, cancelled, timed out and unavailable included. */
+  counts: ProbeOutcomeCounts;
+  slots: readonly ProbeExportSlot[];
+}
+/** The largest valid export: every slot with the largest valid receipt, plus the status and the counters. Derived, never chosen. */
+export const PROBE_EXPORT_BYTES = GUIDANCE_PROBE_LIMITS.slots * (PROBE_OUTPUT_LIMITS.receiptBytes + 1024) + 4096;
+const STAGES: readonly ProbeStage[] = ["baseline", "proposal1", "candidate1", "proposal2", "candidate2", "compose", "successor", "select", "reflect"];
+const SLOT_ROLES: readonly ProbeSlot["role"][] = ["worker", "proposal", "compose", "select", "reflect"];
+const SLOT_ARMS: readonly ProbeSlot["arm"][] = ["baseline", "candidate1", "candidate2", "successor", "none"];
+const SESSION_STATES: readonly ProbeSessionState[] = ["planned", "reserved", "running", "failed_known", "closed_fixture", "not_needed", "unknown_held"];
+const INCOMPARABLE_REASONS: readonly ProbeIncomparableReason[] = ["served_model_mismatch", "served_model_unobserved", "input_drift", "usage_unknown", "incomplete_coverage",
+  "teardown_unverified", "authoring_uncontrolled", "missing_receipt"];
+const COUNT_KEYS: readonly (keyof ProbeOutcomeCounts)[] = ["succeeded", "failed", "cancelled", "timed_out", "unavailable", "unknown", "planned", "not_needed"];
+/** Closed, inert, bounded parse of a receipt export. Every embedded receipt is re-verified by `parseProbeReceipt`, so a tampered receipt never parses. */
+export function parseGuidanceProbeReceiptExport(value: unknown): ProbeReceiptExport | undefined {
+  try {
+    const f = object(inert(value, PROBE_EXPORT_BYTES), ["v", "status", "comparable", "reasons", "counts", "slots"]);
+    required(f.v === 1);
+    const status = parseGuidanceProbePublicStatus(f.status); required(status);
+    required(typeof f.comparable === "boolean" && Array.isArray(f.reasons) && f.reasons.length <= INCOMPARABLE_REASONS.length && new Set(f.reasons).size === f.reasons.length
+      && f.reasons.every(item => INCOMPARABLE_REASONS.includes(item as ProbeIncomparableReason)));
+    // The flag can only be stricter than the sealed verdict: a comparable export never lists a reason, and never outranks the public status.
+    required(!(f.comparable && ((f.reasons as unknown[]).length > 0 || !status!.comparable)));
+    const counts = object(f.counts, COUNT_KEYS);
+    required(COUNT_KEYS.every(key => probeInteger(counts[key])));
+    const slots = f.slots; required(Array.isArray(slots) && slots.length <= GUIDANCE_PROBE_LIMITS.slots);
+    const seen = new Set<string>(); let withReceipt = 0;
+    for (const item of slots as unknown[]) {
+      const s = object(item, ["slotId", "stage", "role", "arm", "state", "receipt", "receiptDigest", "withheld", "retention"]);
+      required(identity(s.slotId) && !seen.has(s.slotId as string) && STAGES.includes(s.stage as ProbeStage) && SLOT_ROLES.includes(s.role as ProbeSlot["role"])
+        && SLOT_ARMS.includes(s.arm as ProbeSlot["arm"]) && SESSION_STATES.includes(s.state as ProbeSessionState) && typeof s.withheld === "boolean"
+        && ["none", "retained", "pruned"].includes(s.retention as string));
+      seen.add(s.slotId as string);
+      if (s.receipt === null) {
+        // A withheld receipt still names its digest; a slot with no receipt has neither, and is never marked withheld.
+        required(s.withheld ? probeSha256(s.receiptDigest) : s.receiptDigest === null);
+      } else {
+        const receipt = parseProbeReceipt(s.receipt); required(receipt && !s.withheld && receipt.slotId === s.slotId && s.receiptDigest === receipt.digest);
+        withReceipt++;
+      }
+    }
+    const total = COUNT_KEYS.reduce((sum, key) => sum + (counts[key] as number), 0);
+    required(total === (slots as unknown[]).length && withReceipt <= total);
+    return f as unknown as ProbeReceiptExport;
+  } catch { return undefined; }
+}
