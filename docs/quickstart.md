@@ -18,7 +18,7 @@ Or use the matching GitHub release:
 
 <!-- facts:install-tag -->
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.37.0
+bun add -g github:STAIxBWLB/agent-hub#v0.38.0
 ahub setup
 ```
 <!-- /facts:install-tag -->
@@ -47,6 +47,12 @@ move a running project to a newer release later, run `ahub upgrade` in a
 terminal in that project: it reviews the plan with you, applies it and follows
 it; other projects keep their version. It then names the `bun add -g` and
 `ahub setup` step when your global CLI or plugin is older than the new daemon.
+
+## Upgrading to 0.38.0
+
+After the upgrade, a command the hub prints for you (a held delivery in `ahub status`, `ahub queue show`, the hold notice) runs as printed, with the project directory, revision, action and reason filled in. `ahub doctor` shows a `hub instructions` warning when the project's AGENTS.md block is older than this release: run `ahub init --dry-run` to preview and `ahub init --yes` to refresh it, then commit AGENTS.md. Guidance probe receipts (`ahub guidance probe receipts`) change nothing until you use them.
+
+`ahub upgrade` does not update the global CLI or the shared Claude plugin: run `bun add -g @staix/agent-hub@0.38.0` and then `ahub setup` yourself, and `ahub doctor` warns while either is older than a running daemon.
 
 ## Upgrading to 0.37.0
 
