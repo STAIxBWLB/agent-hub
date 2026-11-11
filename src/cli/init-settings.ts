@@ -15,13 +15,6 @@ export const SDLC_MODES = ["off", "advise", "enforce"] as const;
 export const COORDINATION_MODES = ["advisory", "turn-free"] as const;
 export const AUTONOMY_CHOICES = ["inherit", "off"] as const;
 export const SPEC_REVIEW_MODES = ["off", "report", "require"] as const;
-/** #1399: the same range as `dot admit`'s `admission.slots.heavy_per_repo`, so a machine's own limit can be carried over unchanged. */
-export const HEAVY_JOBS_MIN = 1, HEAVY_JOBS_MAX = 8, HEAVY_JOBS_DEFAULT = 1;
-export function parseHeavyJobs(text: string, name: string): number {
-  const value = /^\d+$/.test(text.trim()) ? Number(text.trim()) : NaN;
-  if (!Number.isSafeInteger(value) || value < HEAVY_JOBS_MIN || value > HEAVY_JOBS_MAX) throw new Error(`${name}: "${text.slice(0, 48)}" is not a whole number from ${HEAVY_JOBS_MIN} to ${HEAVY_JOBS_MAX}; nothing was written`);
-  return value;
-}
 
 /** One changed key, as `ahub init --dry-run --json` shows it. `from` is `undefined` (absent in JSON) when the key was not set before. */
 export interface InitSettingRow { key: string; file: InitSettingFile; from: unknown; to: unknown }
@@ -61,8 +54,6 @@ export const INIT_SETTINGS: readonly InitSettingDef[] = [
     return names;
   } },
   { id: "coordination", flags: [{ flag: "--coordination" }], file: "config.json", path: ["coordination"], allowed: COORDINATION_MODES.join("|"), describe: "coordination mode", parse: choice("coordination", "--coordination", COORDINATION_MODES) },
-  // #1399: how many heavy jobs (a build, the full test suite) agents may run at once in this repository. The AGENTS block states the number, so it is a shared key.
-  { id: "heavy_jobs", flags: [{ flag: "--heavy-jobs" }], file: "config.json", path: ["heavy_jobs"], allowed: `${HEAVY_JOBS_MIN} to ${HEAVY_JOBS_MAX}`, describe: "heavy jobs at once per repository", parse: text => parseHeavyJobs(text, "--heavy-jobs") },
   { id: "memory.enabled", flags: [{ flag: "--memory", value: true }, { flag: "--no-memory", value: false }], file: "config.json", path: ["memory", "enabled"], allowed: "on|off", describe: "shared memory", parse: () => { throw new Error("unreachable"); } },
   { id: "research.enabled", flags: [{ flag: "--research", value: true }, { flag: "--no-research", value: false }], file: "config.local.json", path: ["research", "enabled"], allowed: "on|off", describe: "research records", parse: () => { throw new Error("unreachable"); } },
   { id: "snapshots.enabled", flags: [{ flag: "--snapshots", value: true }, { flag: "--no-snapshots", value: false }], file: "config.json", path: ["snapshots", "enabled"], allowed: "on|off", describe: "per-turn snapshots", parse: () => { throw new Error("unreachable"); } },
@@ -85,7 +76,7 @@ export interface InitSettingsRequest {
 }
 
 /** The usage line `ahub init` prints for a bad argument; help.ts shows the same flags. */
-export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--required-checks <a,b,...>] [--coordination advisory|turn-free] [--heavy-jobs <1-8>] [--memory|--no-memory] [--research|--no-research] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
+export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--required-checks <a,b,...>] [--coordination advisory|turn-free] [--memory|--no-memory] [--research|--no-research] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
 
 /** Every flag the table and the two non-key choices own, for the caller's own argument loop and for help. */
 export const INIT_SETTING_FLAGS: readonly string[] = [...INIT_SETTINGS.flatMap(row => row.flags.map(flag => flag.flag)), "--autonomy"];

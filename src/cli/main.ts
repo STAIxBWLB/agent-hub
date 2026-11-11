@@ -606,24 +606,6 @@ function turnRecords<T>(read: (turns: Turns) => T, none: T): T {
 }
 
 /** `--flag value` pairs pulled out of an argument list; the rest keeps its order. */
-/**
- * #1399: this machine's own heavy-job limit, as the default the init prompt shows. Read from `dot admit status` when that tool is installed
- * (`slots.heavy_per_repo`, 1 to 8); anything else, a failure or a timeout included, is `undefined` and the prompt shows 1. Only a default: the person's answer decides.
- * ponytail: scrapes the text report because `dot admit status --json` carries no limits; switch to the JSON field when it gains one.
- */
-let machineHeavyJobsRead: { value: number | undefined } | undefined;
-function machineHeavyJobs(): number | undefined {
-  if (machineHeavyJobsRead) return machineHeavyJobsRead.value;
-  let value: number | undefined;
-  try {
-    const run = Bun.spawnSync(["dot", "admit", "status"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 3000 });
-    const found = run.exitCode === 0 ? /slots\.heavy_per_repo:\s+(\d+)\b/.exec(run.stdout.toString()) : null;
-    const n = found ? Number(found[1]) : NaN;
-    if (Number.isSafeInteger(n) && n >= 1 && n <= 8) value = n;
-  } catch { /* not installed */ }
-  machineHeavyJobsRead = { value };
-  return value;
-}
 function takeFlags(argv: string[], single: string[], repeated: string[]) {
   const one: Record<string, string> = {};
   const many: Record<string, string[]> = {};
@@ -1166,7 +1148,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       let result: Awaited<ReturnType<typeof runInitPrompt>>;
       try {
         result = await runInitPrompt({ ask, print: line => console.log(terminalText(line)) },
-          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), machineResearch: initResearchDefault(cwd, initMachine?.researchEnabled), ...(machineHeavyJobs() !== undefined ? { machineHeavyJobs: machineHeavyJobs()! } : {}), packs: [...loadPacks(cwd).packs.keys()], discoverChecks: async () => (await discoverInitChecks(cwd)).names, shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
+          { ...(machine.startAgents ? { machineAgents: machine.startAgents } : {}), machineResearch: initResearchDefault(cwd, initMachine?.researchEnabled), packs: [...loadPacks(cwd).packs.keys()], discoverChecks: async () => (await discoverInitChecks(cwd)).names, shadowAvailable: shadowOffered(repoOf(cwd)) }, preview);
       } finally { rl.close(); }
       if (!result.ok) { console.error(`ahub init: ${result.reason === "refused" ? result.message : result.reason === "interrupted" ? `interrupted; ${result.message}` : result.message}`); process.exitCode = result.reason === "refused" ? 1 : 0; return; }
       requestedProfile = result.answers.profile; request = result.answers.request; asked = Object.keys(request.values).length > 0; shadow = result.answers.shadow; releaseGuard = result.answers.releaseGuard;

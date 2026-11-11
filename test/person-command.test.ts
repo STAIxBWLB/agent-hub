@@ -99,26 +99,3 @@ test("#1399 an older project's block is reported as stale by the plan doctor rea
     expect(planInit(dir).some(change => change.path === agents)).toBe(false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
-
-test("#1399 ahub init renders the project's heavy-job limit into the block: the flag writes the key, the default leaves the template sentence, and a refresh keeps the number", async () => {
-  const { mkdtempSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { init, planInit, renderHeavyJobs } = await import("../src/cli/init.ts");
-  const { parseHeavyJobs } = await import("../src/cli/init-settings.ts");
-  const one = "Run at most one heavy job (a build or the full test suite) per repository at a time.";
-  const dir = mkdtempSync(join(tmpdir(), "ahub-1399-heavy-"));
-  try {
-    init(dir);
-    expect(readFileSync(join(dir, "AGENTS.md"), "utf8")).toContain(one);
-    init(dir, undefined, false, false, { values: { heavy_jobs: 3 } });
-    const agents = readFileSync(join(dir, "AGENTS.md"), "utf8");
-    expect(agents).toContain("Run at most 3 heavy jobs (builds or full test suites) per repository at a time."); expect(agents).not.toContain(one);
-    expect(JSON.parse(readFileSync(join(dir, ".agenthub/config.json"), "utf8")).heavy_jobs).toBe(3);
-    expect(planInit(dir)).toEqual([]);                     // a plain refresh reads the saved number: nothing to change, so doctor stays quiet
-    init(dir, undefined, false, false, { values: { heavy_jobs: 1 } });
-    expect(readFileSync(join(dir, "AGENTS.md"), "utf8")).toContain(one);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-  for (const bad of ["0", "9", "two", "1.5", "-1", ""]) expect(() => parseHeavyJobs(bad, "--heavy-jobs"), bad).toThrow("whole number from 1 to 8");
-  expect(parseHeavyJobs(" 8 ", "--heavy-jobs")).toBe(8);
-  expect(() => renderHeavyJobs("no such sentence", 2)).toThrow("heavy-job sentence");
-});

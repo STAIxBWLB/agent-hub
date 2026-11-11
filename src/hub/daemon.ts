@@ -364,8 +364,6 @@ export interface HubConfig {
    * them work without messages while the hub derives what they need to know. Anything else is advisory.
    */
   coordination: "advisory" | "turn-free";
-  /** #1399: heavy jobs agents may run at once in this repository; `ahub init` writes it and renders it into the AGENTS block. Advice to agents, not enforced by the hub. */
-  heavy_jobs: number;
   /** Switches for controlled ablations only (issue #110): `stale_notices: "deliver"` turns #106's dropping off. */
   experiments?: { stale_notices?: "drop" | "deliver" };
   /** Console-local terminal presentation (#280, #483); grants no authority. */
@@ -428,7 +426,6 @@ export const DEFAULT_CONFIG: HubConfig = {
   recovery: { auto_resume_after_crash: false, reconnect_wait_s: RECOVERY_RECONNECT_WAIT_SETTING.defaultValue, unmanaged_reconnect_wait_s: RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING.defaultValue, control_timeout_s: RECOVERY_CONTROL_TIMEOUT_SETTING.defaultValue, shutdown_wait_s: RECOVERY_SHUTDOWN_WAIT_SETTING.defaultValue, terminal_idle_wait_s: RECOVERY_TERMINAL_IDLE_WAIT_SETTING.defaultValue },
   capabilities: {},
   coordination: "advisory",
-  heavy_jobs: 1,
 };
 
 export { stateDirFor };

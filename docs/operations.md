@@ -1086,16 +1086,7 @@ Run it after an upgrade when those blocks need refreshing: `ahub doctor` has a
 `hub instructions` row that warns when the block in `AGENTS.md` differs from the
 one this version writes, and prints the preview (`ahub init --dry-run`) and
 apply (`ahub init --yes`) commands with the project path. Init replaces only the
-text between the markers; commit `AGENTS.md` afterwards (#1399).
-
-`ahub init --heavy-jobs <1-8>` sets `heavy_jobs` in `.agenthub/config.json`: how
-many heavy jobs (a build, the full test suite) agents may run at once in this
-repository. The managed block states that number, so changing it is one command
-and a commit: `ahub init --heavy-jobs 2`. The guided prompt asks for it and shows
-this machine's `dot admit` limit (`admission.slots.heavy_per_repo`) as the
-default when that tool is installed, otherwise 1. The key is shared with the
-team because the block is; the hub enforces nothing, and a machine that admits
-fewer jobs still defers through its own admission tool. For a new repository
+text between the markers; commit `AGENTS.md` afterwards (#1399). For a new repository
 using advise or enforce, follow the [SDLC quickstart sequence](quickstart.md#a-new-project-with-sdlc-advise-or-enforce).
 
 After a successful init, the short next-steps block says to review and commit
