@@ -39,7 +39,7 @@ interface DirectoryIdentity { file: string; dev: number; ino: number }
 interface WorkspaceState { parent: string; temporaryRoot: string; current(): void; reserveStorage(bytes: number): void | Promise<void>; maximum: number; charged: number; directories: readonly DirectoryIdentity[]; identities: readonly { file: string; dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }[] }
 const workspaces = new WeakMap<ProbeWorkspace, WorkspaceState>();
 const digest = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
-const refused = (): never => { throw new Error("probe workspace source, role, path or resource proof is unavailable"); };
+function refused(): never { throw new Error("probe workspace source, role, path or resource proof is unavailable"); }
 const integer = (value: number): boolean => Number.isSafeInteger(value) && value >= 0;
 const sha = (value: string): boolean => /^[a-f0-9]{64}$/.test(value);
 const roleNames: readonly ProbeSlot["role"][] = ["worker", "proposal", "compose", "select", "reflect"];

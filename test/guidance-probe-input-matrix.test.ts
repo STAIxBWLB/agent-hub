@@ -92,7 +92,7 @@ test("proposal and compose improver context requires their frozen policy flag", 
 
 test("source callback and storage await cannot mutate the checked file or policy into a different input", async () => {
   const original = file("copy"), options = input("worker", [original]);
-  options.verifySource = async () => { original.bytes.fill(0); options.policy.allowedWrites = [{ root: "output", relative: "changed" }]; return "task_source"; };
+  options.verifySource = async () => { original.bytes.fill(0); options.policy.allowedWrites = [{ root: "output", relative: "changed" }]; return "task_source" as const; };
   const created = await workspace(options);
   expect(readFileSync(join(created.root, "copy.txt"), "utf8")).toBe("copy: owned role fixture");
   expect(created.allowedWrites).toContain(join(created.output, "answer.txt"));
