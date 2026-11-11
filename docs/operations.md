@@ -461,8 +461,9 @@ the time); `dispatching` and `accepted` deliveries stay refused, and `retry` kee
 generic sentence (#713). A failed row that a resolution already settled (for
 example the parent of a retry, whose redelivery is a separate row) is refused as
 `already resolved`, never `stale revision`. `ahub queue show` on a failed row says
-that nothing is left to do, or, if the row is unsettled, prints the `ahub queue
-resolve <id> --action discard|completed` command (#1098).
+that nothing is left to do, or, if the row is unsettled, prints the full `ahub queue
+resolve` command with the project directory, revision, `--action discard` and a
+prefilled reason, and names `completed` as the other choice (#1098, #1399).
 
 `ahub queue discard --peer <id> --reason <text> [--state queued|needs_review|failed] [--yes] [--json]` clears one peer's backlog and is for the person or the configured conductor (any other agent identity is
 refused, and a remote `peer@label` queue is the person's only). Without `--yes` it only says how many deliveries it would discard; with `--yes` it discards each delivery of that peer through the
@@ -6459,7 +6460,7 @@ The selected project's configured conductor may run the commands below through i
 | research backfill / bench run / source add / goal link | Existing bounded CLI or daemon paths, with fixed audit labels |
 | start Jcode | Launcher-only peer the conductor is configured to start |
 | task unassign <id> [--role owner\|reviewer] [--revision N] | The actual conductor is recorded; no replacement is routed and no native work is stopped |
-| guidance probe register/start/show/cancel | Bounded private probe declaration and fake-only lifecycle through Tasks (#1226); `--live-test` is refused and production has no probe runner |
+| guidance probe register/start/show/receipts/cancel | Bounded private probe declaration, fake-only lifecycle and the read-only sealed-receipt export through Tasks (#1226); `--live-test` is refused and production has no probe runner |
 | restart --yes | Only with a source-issued continuation proof for this project's own operation |
 | upgrade --yes --to <exact-version> | Only with proof for this project's supported exact-version upgrade; newer coordinator handoff is person-only |
 | recovery resume\|abort [<op-id>] | Only the initiating conductor's own restart/authorized-upgrade operation; the person keeps the normal recovery path |

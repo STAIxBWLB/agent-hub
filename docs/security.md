@@ -1420,7 +1420,7 @@ variant grants no activation, permission, role or probe.
 
 ## Guidance probes (#1226)
 
-`ahub guidance probe register|start|show|cancel` is the person's or the one
+`ahub guidance probe register|start|show|receipts|cancel` is the person's or the one
 configured conductor's, through the existing operational-authority admission; an
 ordinary peer, a console delegation and a `--live-test` run are refused. Every
 write goes through Tasks, which rechecks actor, session, task epoch and flow,
@@ -1436,7 +1436,11 @@ memory capture, observer or ordinary history) offers only `read`, `write` and
 `output/` paths, refuses non-regular and hardlinked targets and files over
 1 MiB, and runs any proof command under a narrowed seatbelt profile with network
 denied (the model-free proof's own control listener aside). It is fixture-proven
-only and grants no real model or worker run ([design](design/guidance-probes.md)).
+only and grants no real model or worker run ([design](design/guidance-probes.md)). `receipts`
+is read-only under the same fences: it returns the host-sealed receipts, each
+re-verified against its own digest (a tampered row refuses the whole read), the
+outcome denominator and each slot's retention state, never a path; a
+model-written output name that fails the public screen is replaced by its digest.
 
 ## Execution lineage (#1220)
 
