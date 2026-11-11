@@ -306,12 +306,16 @@ async function probeCommand(argv: string[], opts: { cwd: string; profile: string
       let quiescent = false;
       try { await stop(); quiescent = true; } catch { /* keep the child and directory in the returned owned stop handle */ }
       const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}\n(output truncated)` : output;
-      resolve({ code, output: cancelled ? `${clipped}\n(probe command cancelled)` : clipped, quiescent, ...(quiescent ? {} : { stop }) });
+      const observed = child.signalCode ? `${clipped}\n(probe command signal: ${child.signalCode})` : clipped;
+      resolve({ code, output: cancelled ? `${observed}\n(probe command cancelled)` : observed, quiescent, ...(quiescent ? {} : { stop }) });
     };
     const abort = () => { cancelled = true; void finish(null); };
     const timer = setTimeout(abort, opts.timeoutMs ?? 5000);
     opts.signal?.addEventListener("abort", abort, { once: true });
-    child.once("error", () => { void finish(null); });
+    child.once("error", error => {
+      output = `error: probe command spawn failed (${(error as NodeJS.ErrnoException).code ?? "unknown"})`;
+      void finish(null);
+    });
     child.once("close", code => { void finish(code); });
     // A leader exit is not proof that descendants released pipes. The owned stop proves or retains uncertainty.
     child.once("exit", code => { pipeTimer = setTimeout(() => { void finish(code); }, 500); });
