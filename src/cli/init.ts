@@ -16,7 +16,7 @@ import { requiredChecksFor } from "../hub/sdlc-merge.ts";
 import { githubOriginRepository } from "../hub/task-repository.ts";
 import { loadSdlc, sdlcConfig } from "../hub/sdlc.ts";
 import { VERSION } from "../version.ts";
-import { planInitSettings, type InitSettingFile, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
+import { planInitSettings, HEAVY_JOBS_DEFAULT, HEAVY_JOBS_MAX, HEAVY_JOBS_MIN, type InitSettingFile, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
 
 const TEMPLATES = join(import.meta.dir, "..", "..", "templates");
 const BEGIN = "<!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->";
@@ -84,6 +84,22 @@ export function specsBlock(existing: string, enabled: boolean): string {
   return `${existing.trimEnd()}${existing.trim() ? "\n\n" : ""}${block}\n`;
 }
 /** Whether the specs feature is on for what init is about to leave behind: the flag when given, else the project's own layers (config.local.json over config.json), else the shipped default (on). */
+const HEAVY_JOBS_SENTENCE = "Run at most one heavy job (a build or the full test suite) per repository at a time.";
+/** #1399: the number the block states. The request wins, then the project's config layers, then 1; a value outside the range reads as 1 (config validation names it elsewhere). */
+function heavyJobs(cwd: string, settings: InitSettingsRequest | undefined): number {
+  let value: unknown = settings?.values["heavy_jobs"];
+  if (value === undefined) for (const name of ["config.json", "config.local.json"]) {
+    const path = join(cwd, ".agenthub", name);
+    if (!existsSync(path)) continue;
+    try { const read = (JSON.parse(readFileSync(path, "utf8")) as { heavy_jobs?: unknown }).heavy_jobs; if (read !== undefined) value = read; } catch { /* an unreadable layer is refused elsewhere */ }
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= HEAVY_JOBS_MIN && value <= HEAVY_JOBS_MAX ? value : HEAVY_JOBS_DEFAULT;
+}
+/** The template states the default; any other number replaces that one sentence. A template without the sentence is a build error, never a silent default. */
+export function renderHeavyJobs(block: string, count: number): string {
+  if (!block.includes(HEAVY_JOBS_SENTENCE)) throw new Error("the AGENTS block template lost its heavy-job sentence; restore it in templates/AGENTS.block.md");
+  return count === HEAVY_JOBS_DEFAULT ? block : block.replace(HEAVY_JOBS_SENTENCE, `Run at most ${count} heavy jobs (builds or full test suites) per repository at a time.`);
+}
 function specsEnabled(cwd: string, settings: InitSettingsRequest | undefined): boolean {
   const asked = settings?.values["specs.enabled"];
   if (typeof asked === "boolean") return asked;
@@ -213,7 +229,7 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
   const agents = join(cwd, "AGENTS.md");
   const existing = existsSync(agents) ? readFileSync(agents, "utf8") : "";
   // #1399: one source for the block. A shipped profile's `agents` is only its addition, appended to the template; a project's own `profile_overrides.agents` still replaces the whole block.
-  const template = readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8");
+  const template = renderHeavyJobs(readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8"), heavyJobs(cwd, settings));
   const hubBlock = upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents ? `${template.trim()}\n\n${profile.agents}` : template);
   const instructions = specsBlock(hubBlock, specsEnabled(cwd, settings)); // #1064 T3: a project that turned specs off keeps no block
   write(agents, guarded ? releaseBlock(instructions) : instructions, "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");

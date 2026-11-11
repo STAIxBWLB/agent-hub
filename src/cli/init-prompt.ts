@@ -10,7 +10,7 @@
  * Who is offered it is decided by `promptGate`: a person at a terminal, on a new project, with no setting flag and no `--yes`. A delegated peer, a live test and any run without a
  * terminal never reach `runInitPrompt` and get defaults plus their flags (AC5).
  */
-import { INIT_SETTINGS, SDLC_MODES, SPEC_REVIEW_MODES, COORDINATION_MODES, AUTONOMY_CHOICES, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
+import { INIT_SETTINGS, HEAVY_JOBS_DEFAULT, HEAVY_JOBS_MAX, HEAVY_JOBS_MIN, parseHeavyJobs, SDLC_MODES, SPEC_REVIEW_MODES, COORDINATION_MODES, AUTONOMY_CHOICES, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PROFILE_NAMES } from "../hub/profiles.ts";
@@ -62,6 +62,7 @@ export function shownDefault(id: string): string {
   const fromTemplate = row.file === "config.json" ? at(TEMPLATE, path) : undefined;
   const value = fromTemplate !== undefined ? fromTemplate
     : id === "coordination" ? DEFAULT_CONFIG.coordination
+    : id === "heavy_jobs" ? String(DEFAULT_CONFIG.heavy_jobs)
     : id === "specs.enabled" ? DEFAULT_SPECS_CONFIG.enabled
     : id === "specs.review" ? DEFAULT_SPECS_CONFIG.review
     : id === "sdlc.required_checks" ? "none"
@@ -87,6 +88,8 @@ export interface InitQuestionContext {
   machineAgents?: readonly string[];
   /** Effective research default for this new project, read from the trusted setup choice (else off). */
   machineResearch?: boolean;
+  /** #1399: this machine's own heavy-job limit when its admission tool reports one (`dot admit`), shown as the default; `undefined` shows 1. */
+  machineHeavyJobs?: number;
   /** Project packs a profile answer may name besides the shipped profiles. */
   packs?: readonly string[];
   discoverChecks?: () => Promise<readonly string[]>;
@@ -118,6 +121,8 @@ export function initQuestions(context: InitQuestionContext = {}): InitQuestion[]
     oneOf("sdlc.mode", "SDLC mode", SDLC_MODES, shownDefault("sdlc.mode")),
     { id: "sdlc.required_checks", label: "Required CI checks", choices: "comma-separated names", shown: "none", read: text => INIT_SETTINGS.find(row => row.id === "sdlc.required_checks")!.parse(text) },
     oneOf("coordination", "Coordination", COORDINATION_MODES, shownDefault("coordination")),
+    { id: "heavy_jobs", label: "Heavy jobs at once per repository (builds, full test runs)", choices: `${HEAVY_JOBS_MIN}-${HEAVY_JOBS_MAX}`, shown: String(context.machineHeavyJobs ?? HEAVY_JOBS_DEFAULT),
+      read: text => { try { return parseHeavyJobs(text, "answer"); } catch { throw new Error(`answer a whole number from ${HEAVY_JOBS_MIN} to ${HEAVY_JOBS_MAX}`); } } },
     onOff("memory.enabled", "Shared memory", shownDefault("memory.enabled") as "on" | "off"),
     onOff("research.enabled", "Research records", context.machineResearch === true ? "on" : "off"),
     onOff("snapshots.enabled", "Per-turn snapshots", shownDefault("snapshots.enabled") as "on" | "off"),
