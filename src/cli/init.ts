@@ -87,6 +87,31 @@ function rolesTracked(cwd: string, existing: string, settings: InitSettingsReque
   return !ignoreRule(cwd, ".agenthub/config.json");
 }
 
+/**
+ * #1411 T2: doctor's `shared config` row. Whether `.agenthub/config.json` is committed agrees with the managed block's role sentence: `ok` true for both deliberate
+ * states, `undefined` (a warning) for a mismatch or a git state it cannot read, with the command that fixes it; `null` when there is no block sentence or no config to compare.
+ */
+export function sharedConfigRow(cwd: string): { ok: true | undefined; detail: string } | null {
+  const agents = join(cwd, "AGENTS.md"), file = ".agenthub/config.json";
+  if (!existsSync(agents) || !existsSync(join(cwd, file))) return null;
+  const block = readFileSync(agents, "utf8");
+  const saysTracked = block.includes(ROLES_TRACKED), saysUntracked = block.includes(ROLES_UNTRACKED);
+  if (saysTracked === saysUntracked) return null; // no managed sentence (an older block): the hub instructions row says to refresh it
+  const listed = hubGitSync(["ls-files", "--error-unmatch", "--", file], { cwd, encoding: "utf8", timeout: 3000 }).status;
+  const rule = ignoreRule(cwd, file);
+  if (listed !== 0 && listed !== 1 || rule === undefined) return { ok: undefined, detail: `git could not say whether ${file} is committed; check with: cd ${cwd} && git ls-files ${file}` };
+  const committed = listed === 0, toUntracked = `cd ${cwd} && ahub init --no-track-config --yes`;
+  if (saysUntracked) return committed
+    ? { ok: undefined, detail: `the AGENTS block says roles are per checkout, but ${file} is committed; share it: cd ${cwd} && ahub init --track-config --yes; or stop tracking it: cd ${cwd} && git rm --cached ${file}, then commit` }
+    : { ok: true, detail: "untracked (by choice): each checkout holds its own roles; ahub roles prints them" };
+  if (!committed) return { ok: undefined, detail: rule
+    ? `the AGENTS block points at ${file}, which ${rule} ignores; keep it per checkout: ${toUntracked}; or remove that rule and commit the file`
+    : `the AGENTS block points at ${file}, which is not committed; commit it: cd ${cwd} && git add ${file} && git commit; or keep it per checkout: ${toUntracked}` };
+  return rule
+    ? { ok: undefined, detail: `${file} is committed but ${rule} ignores it, so a re-added copy is skipped; remove that rule, or stop tracking it: ${toUntracked} && git rm --cached ${file}` }
+    : { ok: true, detail: `tracked: ${file} is committed and the AGENTS block points at it` };
+}
+
 export interface InitChange {
   action: "create" | "modify" | "delete";
   path: string;
