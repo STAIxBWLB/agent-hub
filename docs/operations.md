@@ -1100,6 +1100,29 @@ merge (`ahub sdlc merge <task>`) after the owner calls `hub_task_done` on an ope
 PR, reviewer approval and green exact-head CI. Preview, declined prompt and
 refusal paths print no success next steps.
 
+Whether the repository commits its shared hub config is a choice made at init
+(#1411). `--track-config` keeps `.agenthub/config.json`, `routing.toml` and
+`sdlc.toml` visible to git and lists them to commit; a rule that ignores one of
+them (in `.gitignore`, `.git/info/exclude` or the person's global ignore file) is
+named as `git check-ignore -v` reports it, and init writes nothing until that line
+changes. A `routing.toml` whose `hub_routes` set `adec_endpoint` stays ignored and
+is reported, because that endpoint is this machine's and `routing.local.toml` can
+hold only class keys. Machine-local values in `config.json` are listed with the
+move to `config.local.json` before the first commit. `--no-track-config` ignores
+the three files, and each checkout holds its own roles. The AGENTS.md block's role
+sentence follows the choice: tracked, it points at `.agenthub/config.json`
+`roles`; untracked, it says the checkout's hub holds the roles. A new project is
+asked at the prompt; with neither flag an existing project keeps its ignore state
+and its block sentence. Every `.gitignore` line init adds is checked with
+`git check-ignore` first, so init adds no line for a path a broader rule already
+ignores.
+
+`config.local.json` wins over `config.json` key by key, so each person keeps their
+own settings in a tracked project; `roles` merges per peer. The exceptions are
+deliberate: `release` is read only from the committed `config.json`;
+`action_policy`, `rooms` and `research.runners` only from `config.local.json`; and
+the machine-local fields below are ignored in a committed `config.json`.
+
 `ahub up` waits for authenticated readiness. After 12 seconds, a verified live
 child that is still pending produces a `still starting, pid N` message on stderr;
 the CLI keeps waiting and confirms the retained runtime when it becomes ready.
