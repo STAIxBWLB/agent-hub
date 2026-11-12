@@ -3650,6 +3650,49 @@ var init_acp_model_policy = __esm(() => {
   init_model_token();
 });
 
+// src/omniroute/usage.ts
+function safeModelLabel(value) {
+  if (typeof value !== "string")
+    return;
+  const label = value.trim();
+  return label.length > 0 && label.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._:/+@-]*$/.test(label) ? label : undefined;
+}
+
+// src/adapters/acp-session-model.ts
+function label(value, policy) {
+  const id = policy?.idCodec ? acpLogicalModelId(policy, value) : safeModelLabel(value);
+  const safe = safeModelLabel(id);
+  return safe !== undefined && safe.toLowerCase() !== "unknown" ? safe : undefined;
+}
+function sessionModelId(session, policy) {
+  const holder = record2(session);
+  if (!holder)
+    return;
+  const fromModels = label(record2(holder.models)?.currentModelId, policy);
+  if (fromModels !== undefined)
+    return fromModels;
+  return configModelId(holder.configOptions, policy);
+}
+function configModelId(options, policy) {
+  if (!Array.isArray(options) || options.length > ACP_MODEL_OPTIONS_MAX)
+    return;
+  const models = options.filter((option) => record2(option)?.id === "model");
+  if (models.length !== 1)
+    return;
+  const option = record2(models[0]);
+  return option.type === "select" ? label(option.currentValue, policy) : undefined;
+}
+function updatedModelId(update, policy) {
+  const value = record2(update);
+  if (!value)
+    return;
+  return value.configOptions !== undefined ? configModelId(value.configOptions, policy) : label(value.currentModelId, policy);
+}
+var record2 = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+var init_acp_session_model = __esm(() => {
+  init_acp_model_policy();
+});
+
 // src/adapters/acp.ts
 import { spawn as spawn5 } from "child_process";
 import { createInterface } from "readline";
@@ -3715,6 +3758,7 @@ var init_acp = __esm(() => {
   init_compat();
   init_acp_model_policy();
   init_model_token();
+  init_acp_session_model();
   init_native_capabilities();
   TOOL_CEILING_MS = 30 * 60000;
   managedLaunches = new WeakMap;
@@ -3734,6 +3778,8 @@ var init_acp = __esm(() => {
     modelBaseline;
     modelSelected;
     modelObservation = {};
+    sessionModel;
+    turnModel;
     modelBinding;
     modelTurn;
     kimiAgent = false;
@@ -3931,6 +3977,8 @@ var init_acp = __esm(() => {
           throw new Error("Configured ACP did not provide a valid native session identity");
         }
         this.sessionId = session.sessionId;
+        this.sessionModel = sessionModelId(session, this.modelPolicy);
+        this.turnModel = undefined;
         const modelPolicy = this.modelPolicy;
         if (modelPolicy && this.modelAdmitted()) {
           const advertisement = acpModelAdvertisement(modelPolicy, session);
@@ -4030,6 +4078,11 @@ var init_acp = __esm(() => {
     }
     acceptsModelOverride(model) {
       return this.modelOverrideState.available && isNativeModelToken(model) && this.modelAdvertisement.available.includes(model);
+    }
+    observedModel() {
+      const model = this.turnModel;
+      this.turnModel = undefined;
+      return model ? { model, evidence: "session" } : undefined;
     }
     observeModelId(model) {
       this.modelObservation = {};
@@ -4258,6 +4311,7 @@ var init_acp = __esm(() => {
           this.modelTurn.sent = true;
       }
       const fixedPreamble = this.turnRecordPrompt(this.primed ? "" : this.opts.preamble ?? "");
+      this.turnModel = this.sessionModel;
       const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: fixedPreamble ? `${fixedPreamble}
 
 ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
@@ -4479,6 +4533,8 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
         this.lastSignAt = Date.now();
         this.touch();
       }
+      if (msg.method === "qwen/notify/session/model-update" && msg.params?.v === 1 && msg.params.sessionId === this.sessionId)
+        this.sessionModel = updatedModelId(msg.params, this.modelPolicy) ?? this.sessionModel;
       if (this.modelPolicy && msg.method === "qwen/notify/session/model-update") {
         if (this.modelPolicy.modelUpdate === "qwen/notify/session/model-update" && msg.params?.v === 1 && msg.params.sessionId === this.sessionId)
           this.observeModelId(msg.params.currentModelId);
@@ -4499,6 +4555,8 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
         if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId)
           return;
         const u = msg.params?.update;
+        if (u?.sessionUpdate === "current_model_update" || u?.sessionUpdate === "config_option_update")
+          this.sessionModel = updatedModelId(u, this.modelPolicy) ?? this.sessionModel;
         if (u?.sessionUpdate === "usage_update" && this.state !== "offline") {
           const observation = normalizeACPUsage(u, "usage_update");
           if (observation.shape === "context-used") {
@@ -14208,7 +14266,7 @@ function isAdecRouteEndpoint(value) {
   const match = /^http:\/\/(127\.0\.0\.1|\[::1\])(?::([1-9][0-9]{0,4}))?\/v1\/route$/.exec(value);
   return !!match && (match[2] === undefined || Number(match[2]) <= 65535);
 }
-function record2(value, keys) {
+function record3(value, keys) {
   if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
     return;
   const own = Reflect.ownKeys(value);
@@ -14238,7 +14296,7 @@ function list(value, max) {
   return result;
 }
 function pair(value) {
-  const p = record2(value, ["alias", "effort"]);
+  const p = record3(value, ["alias", "effort"]);
   return p && token(p.alias, ALIAS) && token(p.effort, EFFORT) ? { alias: p.alias, effort: p.effort } : undefined;
 }
 function prepare2(value, allowed) {
@@ -14252,10 +14310,10 @@ function prepare2(value, allowed) {
       return;
     pairs.push(p);
   }
-  const r = record2(value, ["policyId", "turnId", "evidence", "constraints", "candidates"]);
+  const r = record3(value, ["policyId", "turnId", "evidence", "constraints", "candidates"]);
   if (!r || !token(r.policyId, POLICY) || !token(r.turnId, TURN) || typeof r.evidence !== "string" || r.evidence.length > BODY_BYTES)
     return;
-  const c = record2(r.constraints, ["contextTokens", "pii", "private", "explicit", "current"]);
+  const c = record3(r.constraints, ["contextTokens", "pii", "private", "explicit", "current"]);
   if (!c || typeof c.contextTokens !== "number" || !Number.isSafeInteger(c.contextTokens) || c.contextTokens < 0 || typeof c.pii !== "boolean" || typeof c.private !== "boolean")
     return;
   const constraints = { contextTokens: c.contextTokens, pii: c.pii, private: c.private };
@@ -14285,7 +14343,7 @@ function prepare2(value, allowed) {
   return Buffer.byteLength(body) <= BODY_BYTES ? { request, pairs, body } : undefined;
 }
 function decision(value, request, pairs) {
-  const d = record2(value, ["id", "policyId", "alias", "effort", "margin", "abstain", "reason", "fallbackApplied", "pinned", "rules", "estimatedCost", "decider", "error"]);
+  const d = record3(value, ["id", "policyId", "alias", "effort", "margin", "abstain", "reason", "fallbackApplied", "pinned", "rules", "estimatedCost", "decider", "error"]);
   if (!d || !token(d.id, /^[a-f0-9]{32}$/) || d.policyId !== request.policyId || !finite(d.margin) || d.margin > 1 || typeof d.abstain !== "boolean" || typeof d.fallbackApplied !== "boolean" || typeof d.pinned !== "boolean" || !REASONS.includes(d.reason) || d.error !== undefined && typeof d.error !== "string")
     return failure("malformed");
   const reason = d.reason, rules = list(d.rules, RULES.length);
@@ -14306,7 +14364,7 @@ function decision(value, request, pairs) {
   }
   let decider = null;
   if (d.decider !== null) {
-    const model = record2(d.decider, ["provider", "kind", "model", "version", "latencyMs"]);
+    const model = record3(d.decider, ["provider", "kind", "model", "version", "latencyMs"]);
     if (!model || !token(model.provider, PROVIDER) || !token(model.model, MODEL) || !finite(model.latencyMs) || model.kind !== undefined && model.kind !== "systemone" && model.kind !== "logits" || model.version !== undefined && (!token(model.version, MODEL) || /(^|-)latest$/i.test(model.version)))
       return failure("malformed");
     decider = {
@@ -15789,7 +15847,7 @@ function captureJudgeConversation(source) {
     let assistantTurns = 0, resultCount = 0;
     for (let index = 0;index < source.length; index++) {
       const raw = own2(source, String(index));
-      if (!record3(raw))
+      if (!record4(raw))
         throw unavailable;
       const role = own2(raw, "role"), content = own2(raw, "content");
       if (role !== "system" && role !== "developer" && role !== "user" && role !== "assistant" && role !== "tool")
@@ -15814,10 +15872,10 @@ function captureJudgeConversation(source) {
         message.tool_calls = [];
         for (let at = 0;at < calls.length; at++) {
           const call = own2(calls, String(at));
-          if (!record3(call))
+          if (!record4(call))
             throw unavailable;
           const fn = own2(call, "function");
-          if (!record3(fn))
+          if (!record4(fn))
             throw unavailable;
           charge(32);
           const copied = {
@@ -15857,7 +15915,7 @@ function captureJudgeConversation(source) {
     return;
   }
 }
-function record3(value) {
+function record4(value) {
   if (!value || typeof value !== "object" || types4.isProxy(value) || Array.isArray(value))
     return false;
   const prototype = Object.getPrototypeOf(value);
@@ -15879,7 +15937,7 @@ function own2(value, key) {
 }
 function captureRouteView(source) {
   try {
-    const messages = array(source) ? source : record3(source) ? own2(source, "messages") : undefined;
+    const messages = array(source) ? source : record4(source) ? own2(source, "messages") : undefined;
     if (!array(messages))
       return;
     let calls = 0, parts = 0, turnSeen = false;
@@ -15891,7 +15949,7 @@ function captureRouteView(source) {
         throw unavailable;
       for (let index = 0;index < value.length && parts < PARTS; index++, parts++) {
         const part = own2(value, String(index));
-        if (!record3(part))
+        if (!record4(part))
           throw unavailable;
         own2(part, "type");
         own2(part, "text");
@@ -15899,7 +15957,7 @@ function captureRouteView(source) {
     };
     for (let index = messages.length - 1;index >= Math.max(0, messages.length - MESSAGES); index--) {
       const message = own2(messages, String(index));
-      if (!record3(message))
+      if (!record4(message))
         throw unavailable;
       const role = own2(message, "role");
       if (role === "system" || role === "developer")
@@ -15918,12 +15976,12 @@ function captureRouteView(source) {
         if (array(entries))
           for (let at = entries.length - 1;at >= 0 && calls < CALLS; at--, calls++) {
             const call = own2(entries, String(at));
-            if (!record3(call))
+            if (!record4(call))
               throw unavailable;
             own2(call, "id");
             const fn = own2(call, "function");
             if (fn !== undefined && fn !== null) {
-              if (!record3(fn))
+              if (!record4(fn))
                 throw unavailable;
               own2(fn, "name");
             }
@@ -18788,12 +18846,12 @@ import { homedir as homedir5 } from "os";
 import { isAbsolute as isAbsolute7, join as join20, relative as relative5 } from "path";
 import { createHash as createHash11 } from "crypto";
 function decodeAgyHook(event, value) {
-  if (!EVENTS2.includes(event) || !record4(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute7(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute7(path)))
+  if (!EVENTS2.includes(event) || !record5(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute7(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute7(path)))
     return;
   if (event === "Stop" && typeof value.fullyIdle !== "boolean")
     return;
-  const call = record4(value.toolCall) ? value.toolCall : undefined;
-  if ((event === "PreToolUse" || event === "PostToolUse") && (!call || typeof call.name !== "string" || call.name.length > 128 || !record4(call.args)))
+  const call = record5(value.toolCall) ? value.toolCall : undefined;
+  if ((event === "PreToolUse" || event === "PostToolUse") && (!call || typeof call.name !== "string" || call.name.length > 128 || !record5(call.args)))
     return;
   const native = call?.args;
   const readPath = call?.name === "view_file" ? native?.AbsolutePath : call?.name === "read_file" ? native?.Path : undefined;
@@ -18898,7 +18956,7 @@ function readAgyTranscript(session, transcript, options) {
         } catch {
           continue;
         }
-        if (!record4(row) || row.status !== "DONE")
+        if (!record5(row) || row.status !== "DONE")
           continue;
         if (row.source === "SYSTEM_SDK" && (row.type === "EPHEMERAL_MESSAGE" || row.type === "SYSTEM_MESSAGE") && typeof row.content === "string") {
           for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g))
@@ -18926,7 +18984,7 @@ function readAgyTranscript(session, transcript, options) {
       closeSync9(fd);
   }
 }
-var EVENTS2, UUID2, record4 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
+var EVENTS2, UUID2, record5 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
 var init_hooks2 = __esm(() => {
   EVENTS2 = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"];
   UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -20563,7 +20621,7 @@ import { createHash as createHash12 } from "crypto";
 import { basename as basename6, dirname as dirname15, isAbsolute as isAbsolute10, join as join31, relative as relative6 } from "path";
 import { homedir as homedir9 } from "os";
 function decodeKimiTuiHook(event, value) {
-  if (!EVENTS4.includes(event) || !record5(value) || value.hook_event_name !== event || value.client_type !== "kimi_code_cli" || typeof value.session_id !== "string" || !SESSION.test(value.session_id) || typeof value.cwd !== "string" || !isAbsolute10(value.cwd) || value.cwd.length > 4096)
+  if (!EVENTS4.includes(event) || !record6(value) || value.hook_event_name !== event || value.client_type !== "kimi_code_cli" || typeof value.session_id !== "string" || !SESSION.test(value.session_id) || typeof value.cwd !== "string" || !isAbsolute10(value.cwd) || value.cwd.length > 4096)
     return;
   if ((event === "TurnStarted" || event === "Interrupt") && !integer2(value.turn_id))
     return;
@@ -20615,7 +20673,7 @@ function sessionDirectory(index, session) {
     } catch {
       continue;
     }
-    if (record5(row) && row.sessionId === session && typeof row.sessionDir === "string") {
+    if (record6(row) && row.sessionId === session && typeof row.sessionDir === "string") {
       if (listed)
         throw new Error("duplicate session");
       listed = row.sessionDir;
@@ -20651,7 +20709,7 @@ function taskInventory(agents) {
       if (!TASK.test(name.slice(0, -5)))
         throw new Error("invalid task name");
       const row = JSON.parse(readBytes(join31(tasks, name), TASK_CAP).toString("utf8"));
-      if (!record5(row) || row.taskId !== name.slice(0, -5) || typeof row.status !== "string")
+      if (!record6(row) || row.taskId !== name.slice(0, -5) || typeof row.status !== "string")
         throw new Error("invalid task");
       if (row.status === "running" && row.endedAt === null) {
         active++;
@@ -20693,9 +20751,9 @@ function readKimiTuiTranscript(session, index) {
       } catch {
         return empty();
       }
-      if (!record5(row))
+      if (!record6(row))
         return empty();
-      if (row.type === "turn.prompt" && integer2(row.turnId) && record5(row.origin) && typeof row.origin.kind === "string") {
+      if (row.type === "turn.prompt" && integer2(row.turnId) && record6(row.origin) && typeof row.origin.kind === "string") {
         const turn = row.turnId, id = typeof row.promptId === "string" ? row.promptId : typeof row.origin.notificationId === "string" ? row.origin.notificationId : `turn-${turn}`;
         const prompt = { turn, id, origin: row.origin.kind };
         prompts.set(turn, prompt);
@@ -20735,7 +20793,7 @@ function readKimiTuiTranscript(session, index) {
     return empty();
   }
 }
-var EVENTS4, SESSION, AGENT, TASK, INDEX_CAP, WIRE_CAP, TASK_CAP, MAX_AGENTS = 256, MAX_TASKS = 256, record5 = (value) => !!value && typeof value === "object" && !Array.isArray(value), integer2 = (value) => Number.isSafeInteger(value) && value >= 0, inside2 = (root, path) => {
+var EVENTS4, SESSION, AGENT, TASK, INDEX_CAP, WIRE_CAP, TASK_CAP, MAX_AGENTS = 256, MAX_TASKS = 256, record6 = (value) => !!value && typeof value === "object" && !Array.isArray(value), integer2 = (value) => Number.isSafeInteger(value) && value >= 0, inside2 = (root, path) => {
   const rel = relative6(root, path);
   return rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute10(rel);
 }, empty = () => ({ factIds: [] }), KIMI_TUI_FACTS_HOOK;

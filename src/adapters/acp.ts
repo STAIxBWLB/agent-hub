@@ -16,6 +16,8 @@ import type { StartForm, ModelOverrideSelection } from "./registry-types.ts";
 import { assessVersion, readTrust } from "./compat.ts";
 import { acpLogicalModelId, acpModelAdvertisement, type AcpModelAdvertisement, type AcpModelPolicy } from "./acp-model-policy.ts";
 import { isNativeModelToken } from "./model-token.ts";
+import { sessionModelId, updatedModelId } from "./acp-session-model.ts";
+import type { ModelObservation } from "../hub/events.ts";
 import type { CapabilityManifest } from "../hub/capabilities.ts";
 import { acpManifest } from "./native-capabilities.ts";
 
@@ -254,6 +256,9 @@ export class AcpPeer extends BasePeer {
   private modelBaseline: string | undefined;
   private modelSelected: string | undefined;
   private modelObservation: object = {};
+  /** #1402: the model id the session reports now, kept whatever the override policy; `turnModel` is its value when the turn's prompt was sent. Neither is ever invented. */
+  private sessionModel: string | undefined;
+  private turnModel: string | undefined;
   private modelBinding: { proc: ChildProcessWithoutNullStreams; session: string; proof: AcpOwnedGroup } | undefined;
   private modelTurn: { turn: number; selection: ModelOverrideSelection; target: string; sent: boolean; acknowledged: boolean } | undefined;
   private kimiAgent = false;
@@ -421,6 +426,7 @@ export class AcpPeer extends BasePeer {
         throw new Error("Configured ACP did not provide a valid native session identity");
       }
       this.sessionId = session.sessionId;
+      this.sessionModel = sessionModelId(session, this.modelPolicy); this.turnModel = undefined;
       const modelPolicy = this.modelPolicy;
       if (modelPolicy && this.modelAdmitted()) {
         const advertisement = acpModelAdvertisement(modelPolicy, session);
@@ -503,6 +509,11 @@ export class AcpPeer extends BasePeer {
   }
   acceptsModelOverride(model: string): boolean {
     return this.modelOverrideState.available && isNativeModelToken(model) && this.modelAdvertisement!.available.includes(model);
+  }
+  /** #1402: the model the session was on when the turn that just ended started, read once at its `turn_end` (`session`: the agent's own current model id, not a per-response one). Absent records nothing. */
+  observedModel(): ModelObservation | undefined {
+    const model = this.turnModel; this.turnModel = undefined;
+    return model ? { model, evidence: "session" } : undefined;
   }
   private observeModelId(model: unknown): void {
     this.modelObservation = {};
@@ -698,6 +709,7 @@ export class AcpPeer extends BasePeer {
       if (this.modelTurn?.turn === turn) this.modelTurn.sent = true;
     }
     const fixedPreamble = this.turnRecordPrompt(this.primed ? "" : this.opts.preamble ?? "");
+    this.turnModel = this.sessionModel; // the session's model at the turn start
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
     const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: fixedPreamble ? `${fixedPreamble}\n\n${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed) }] });
     const reported = () => { if (this.cancelWait?.turn === turn) this.cancelWait.reported = true; };
@@ -881,6 +893,7 @@ export class AcpPeer extends BasePeer {
     }
     if (this.state === "busy" && !this.cancelWait) { this.lastSignAt = Date.now(); this.touch(); }
 
+    if (msg.method === "qwen/notify/session/model-update" && msg.params?.v === 1 && msg.params.sessionId === this.sessionId) this.sessionModel = updatedModelId(msg.params, this.modelPolicy) ?? this.sessionModel;
     if (this.modelPolicy && msg.method === "qwen/notify/session/model-update") {
       if (this.modelPolicy.modelUpdate === "qwen/notify/session/model-update" && msg.params?.v === 1 && msg.params.sessionId === this.sessionId) this.observeModelId(msg.params.currentModelId);
       return; // A setter/control notification is never prompt admission.
@@ -899,6 +912,7 @@ export class AcpPeer extends BasePeer {
       }
       if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId) return;
       const u = msg.params?.update;
+      if (u?.sessionUpdate === "current_model_update" || u?.sessionUpdate === "config_option_update") this.sessionModel = updatedModelId(u, this.modelPolicy) ?? this.sessionModel;
       // Occupancy is the session's, not the turn's: 2.1.1's source text emits usage_update after the prompt
       // resolves, when the peer may already be idle (read from the source, not observed live; #285). So a
       // context-used update is accepted while idle too, but then it must name the current session; in a turn the
