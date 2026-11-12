@@ -227,7 +227,7 @@ test("actual model fallback repeatedly reads cached scalar metadata and never in
   const owner = { recoveryMetadata() { reads++; throw Error("model fallback invoked a recovery hook"); } }, external = { recoveryMetadata() { reads++; throw Error("external recovery hook invoked"); } };
   const cache = new WeakMap<object, string>([[owner, "launch-model"]]);
   const context = { declarations: { declared: { model: "instance-model" } }, isNativeModelToken,
-    bus: { peers: new Map([["codex", owner], ["external", external], ["declared", owner]]) }, modelLaunchModels: cache, modelAcpOwners: new WeakMap(),
+    bus: { peers: new Map([["codex", owner], ["external", external], ["declared", owner]]) }, modelLaunchModels: cache, modelAcpOwners: new WeakMap(), observedModels: new Map(),
     fallback: undefined as unknown as (peer: string) => { model?: string; source: string } };
   const script = new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.fallback = modelFallback;");
   runInNewContext(script, context);
@@ -320,7 +320,7 @@ test("actual fallback exposes only privately captured baseline after override cl
   const source = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
   const start = source.indexOf("  const modelFallback ="), end = source.indexOf("  const registerModelOwner =", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
-  const context = { declarations: {}, isNativeModelToken, bus: { peers: new Map([["fixture", owner]]) }, modelLaunchModels: new WeakMap(),
+  const context = { declarations: {}, isNativeModelToken, bus: { peers: new Map([["fixture", owner]]) }, modelLaunchModels: new WeakMap(), observedModels: new Map(),
     modelAcpOwners: new WeakMap([[owner, { get modelOverrideState() { return state; } }]]),
     fallback: undefined as unknown as (peer: string) => { model?: string; source: "native default" } };
   runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.fallback = modelFallback;"), context);
