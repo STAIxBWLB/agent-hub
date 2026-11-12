@@ -44,6 +44,7 @@ import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, H
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { evalAdvice, evalGapBlockers, evalRequiredChecks, readEvalFor } from "./eval-gate.ts";
+import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequestLine, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
 import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, CostScopeError, type CostPlan, type ReviewCost } from "./cost-governance.ts";
@@ -6456,7 +6457,7 @@ export class Tasks {
 
   /** The board as the merge queue and the guarded merge read it (#786): ids, dependencies, privacy, receipts, findings and plans. */
   private deliveryLinks(config: SdlcConfig): DeliveryTask[] {
-    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), latestHead: this.reviewHead(t), approval: approvalBinding(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
+    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), latestHead: this.reviewHead(t), approval: approvalBinding(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), ...(config.mode === "off" || !config.security || this.isPii(t) ? {} : { securityPass: t.history.findLast(entry => entry.securityPass && !entry.withheld && (entry.event === "approved" || entry.event === "changes_requested"))?.securityPass }), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
   }
 
   /**
@@ -6785,6 +6786,16 @@ export class Tasks {
     return latest > invalidated && task.history[latest]!.planDeparture!.generation === this.departureGeneration
       && task.history[latest]!.planDeparture!.scope === this.planScopeIdentity(task) ? [task.history[latest]!.planDeparture!] : [];
   }
+  /**
+   * #1403 A2: whether this PR needs a recorded security pass, from the same complete file inventory plan conformance reads. The record is the latest one on a verdict of this task, bound to the head it
+   * reviewed; `proposed` is the pass on the verdict being written (not on the board yet). A PII task and an off lifecycle compute nothing.
+   */
+  private securityView(task: Task, evidence: PrEvidence | undefined, proposed?: SecurityPassRecord): SecurityPassView | undefined {
+    const config = this.d.sdlc?.config();
+    if (!config || config.mode === "off" || !config.security || this.isPii(task)) return undefined;
+    const recorded = proposed ?? task.history.findLast(entry => entry.securityPass && !entry.withheld && (entry.event === "approved" || entry.event === "changes_requested"))?.securityPass;
+    return securityPassView(config.security, evidence, recorded);
+  }
   private planReport(task: Task, evidence?: PrEvidence) {
     const rawReport = planConformance(this.isPii(task) ? undefined : this.planPaths(task), this.isPii(task) ? undefined : evidence);
     const safe = [...rawReport.outside, ...rawReport.untouched].every(path => this.publicMetadataText(path));
@@ -6862,7 +6873,7 @@ export class Tasks {
     if (this.planIdentity(current) !== this.planIdentity(task) || current.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed during lifecycle readback");
     this.capturePlanRead(current, evidence);
     return sdlcStatus(config, current.sdlc, evidence, this.workflowView(current), edit, this.isPii(current) ? [] : this.reviewFindingSets(current), current.refs.commit,
-      config.mode !== "off" ? this.planReport(this.d.board.get(current.id)!, evidence) : undefined, integrity, evalResult);
+      config.mode !== "off" ? this.planReport(this.d.board.get(current.id)!, evidence) : undefined, integrity, evalResult, this.securityView(current, evidence));
   }
 
   /** #481 S1: only build work starts from an accepted spec. */
@@ -7058,7 +7069,7 @@ export class Tasks {
 
   /** The eval record the last approval-time lifecycle read produced for a task; consumed by the verdict that follows it. */
   private readonly evalRecords = new Map<number, string>();
-  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string, findings?: readonly ReviewFindingSet[], refileHead?: RefileHeadGuard): Promise<PrEvidence | undefined> {
+  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string, findings?: readonly ReviewFindingSet[], refileHead?: RefileHeadGuard, securityPass?: SecurityPassRecord): Promise<PrEvidence | undefined> {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off") return;
     const receipt = task.sdlc && { ...task.sdlc, ...(reviewedHead ? { reviewedHead } : {}) };
@@ -7096,7 +7107,7 @@ export class Tasks {
     if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state || this.isPii(current) !== this.isPii(task)) return;
     this.capturePlanRead(current, evidence);
     const planReport = this.planReport(current, evidence);
-    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit, planReport, integrity, evalResult);
+    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit, planReport, integrity, evalResult, this.securityView(current, evidence, transition === "approval" ? securityPass : undefined));
     // #481 S5: review entry keeps the eval gate's own blockers (its check, and in enforce its evidence gaps), like the premature-review rule does for the ordinary required checks.
     const evalNames = evalRequiredChecks(config, evidence).filter(name => !config.requiredChecks.includes(name));
     const evalBlocker = (blocker: string) => evalNames.some(name => blocker.startsWith(`required check ${name}:`)) || evalGapBlockers(status.evalGate).includes(blocker);
@@ -7106,7 +7117,7 @@ export class Tasks {
     const gate = status.evalGate;
     if (transition === "approval" && gate?.state === "passed" && gate.passRate !== undefined && gate.suite !== undefined && !this.isPii(task)) this.evalRecords.set(task.id, `Eval gate: ${gate.check} passed at ${evidence!.head.slice(0, 12)}, pass rate ${gate.passRate}, suite ${gate.suite}`);
     else this.evalRecords.delete(task.id);
-    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport), ...testIntegrityBlockers(integrity), ...evalAdvice(status.evalGate)])];
+    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport), ...testIntegrityBlockers(integrity), ...evalAdvice(status.evalGate), ...securityPassBlockers(status.securityPass)])];
     if (config.mode === "advise" && advice.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : advice.join("; ")}`);
     return evidence;
   }
@@ -8121,6 +8132,9 @@ export class Tasks {
     const cachedPlanRead = this.planReads.get(task.id);
     const planRead = this.planReport(task, cachedPlanRead?.identity === this.planReadIdentity(task) && cachedPlanRead.evidence.head === this.findingHead(task) ? cachedPlanRead.evidence : undefined);
     const conformanceText = mode !== "off" ? this.screen(task, `Plan conformance: ${JSON.stringify(planRead)}`, "plan conformance", reviewer) + "\n" : "";
+    // #1403 A2: from the same cached PR read as plan conformance. No cached read is `unknown`, never "not required", so a missing readback still points the reviewer at the checklist.
+    const securityLine = mode !== "off" ? securityRequestLine(this.securityView(task, cachedPlanRead?.identity === this.planReadIdentity(task) && cachedPlanRead.evidence.head === this.findingHead(task) ? cachedPlanRead.evidence : undefined)) : undefined;
+    const securityText = securityLine ? this.screen(task, securityLine, "security pass", reviewer) + "\n" : "";
     const profile = (task.profile ?? "dev") === (this.d.profile ?? "dev") ? profileData(this.d.profileData ?? task.profile ?? "dev") : profileData(task.profile);
     const target = plan ? `the plan (${plan})` : task.detail ? "the task detail above" : "the task title";
     const noCheckWording = profile.name === "research" || profile.name === "writing"
@@ -8190,7 +8204,7 @@ export class Tasks {
     const brief = this.briefText(task);
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
     const checkout = mainCheckoutWarning(this.d.cwd, this.publicMetadataText);
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${rulingsBlock}${verified}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${securityText}${rulingsBlock}${verified}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
     const comments = this.d.board.reviewCommentCounts(task.id, task.created);
     const quoteMaterial = task.history.some(entry => entry.reviewFindings?.items.some(item => item.anchor !== undefined))
       || comments.sent + comments.resolved + comments.dismissed > 0;
@@ -8376,7 +8390,7 @@ export class Tasks {
     } catch { return prefix("Review brief unavailable: it could not be built."); }
   }
 
-  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
+  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown, securityPass?: unknown): Promise<Task> {
     if (by !== USER && hasReviewAnchorInput(findings)) {
       try { this.d.onReviewObserverInput?.(by); }
       catch { throw new PreEffectToolRefusal("the anchored review input could not be privately scoped; retry after ordinary new input"); }
@@ -8423,6 +8437,13 @@ export class Tasks {
     let parsed: ReviewFinding[];
     try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS, contract: mode === "off" ? "off" : "required" }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
+    // #1403 A2: the field exists only under an enabled lifecycle (off neither advertises nor accepts it), and only on a verdict that can carry it. Validated before any board effect.
+    let securityRecord: SecurityPassRecord | undefined;
+    if (securityPass !== undefined) {
+      if (mode === "off") throw new PreEffectToolRefusal("security_pass is not available: the lifecycle is off (set sdlc.mode to advise or enforce in .agenthub/sdlc.toml)");
+      try { securityRecord = parseSecurityPass(securityPass); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid security_pass"); }
+    }
     const anchorPrivacy = new Map(parsed.flatMap(item => item.anchor ? [[item.anchor.path, this.reviewPathPrivate(item.anchor.path)] as const] : []));
     try { parsed = parsed.map(item => item.anchor && anchorPrivacy.get(item.anchor.path) ? { ...item, anchor: privateReviewAnchor(item.anchor) } : item); }
     catch { throw new PreEffectToolRefusal("private finding path needs an existing lineRange or structural selector; remove quoted selectors and retry"); }
@@ -8519,7 +8540,7 @@ export class Tasks {
     }
     if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") {
       this.evalRecords.delete(task.id);
-      await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task)); task = valid();
+      await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task), undefined, securityRecord && { ...securityRecord, head: reviewedHead ?? findingHead }); task = valid();
       const record = this.evalRecords.get(task.id); this.evalRecords.delete(task.id);
       if (record) note = `${note ?? ""}\n${record}`.trim();
     } else if (verdict === "approved" && this.d.sdlc?.config().mode === "off" && this.d.sdlc?.gh && task.sdlc?.repo && task.sdlc.pr
@@ -8550,7 +8571,7 @@ export class Tasks {
     // #507b: unmet items that start with a recorded criterion id name that criterion. The ids come from the checklist on the board as it is at this
     // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
-    const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const flag = { ...(findingHead ? { reviewedHead: findingHead } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(securityRecord && !pii ? { securityPass: { ...securityRecord, ...((reviewedHead ?? findingHead) ? { head: (reviewedHead ?? findingHead)! } : {}) } } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const capacity = this.capacityBefore(task);
       this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);

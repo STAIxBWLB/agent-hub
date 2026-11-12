@@ -12296,6 +12296,13 @@ var init_eval_gate = __esm(() => {
   init_plan_conformance();
 });
 
+// src/hub/security-pass.ts
+var init_security_pass = __esm(() => {
+  init_envelope();
+  init_eval_gate();
+  init_plan_conformance();
+});
+
 // src/hub/security-baseline.ts
 var init_security_baseline = () => {};
 
@@ -12312,6 +12319,7 @@ var init_sdlc = __esm(() => {
   init_control_write_trace();
   init_review_findings();
   init_sdlc_metrics();
+  init_security_pass();
   init_eval_gate();
   init_security_baseline();
   init_workflow();
@@ -14279,6 +14287,7 @@ var init_board = __esm(() => {
   init_planning();
   init_envelope();
   init_review_findings();
+  init_security_pass();
   init_deliverables();
   init_research_campaign();
   GUIDANCE_VARIANT_SELECT = `SELECT CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB))<=${GUIDANCE_HASH_HEX_LENGTH} THEN id END AS id,CASE WHEN typeof(body)='text' AND length(CAST(body AS BLOB))<=? THEN body END AS body,
@@ -16870,8 +16879,10 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
       const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list2(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "registered src:<16 hex> source ids; list available ids with ahub source list" : "short claim ids to verify")])) } };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
     }
-    if (criteria && tool.name === "hub_review")
+    if (criteria && tool.name === "hub_review") {
       properties.findings = securityReviewFindings;
+      properties.security_pass = securityPassSchema;
+    }
     if (criteria && properties.plan && tool.name !== "hub_experiment_record") {
       const current = properties.plan;
       properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties } };
@@ -16893,7 +16904,7 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
     return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
-var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id2, toolWriteRequestId, visualSideSchema, visualTitle, visualCaption, visualInputSchema, refs, list2 = (description) => ({ type: "array", items: str2, description }), specAck, deliverablesSchema, reviewAnchor, reviewFindings, boundaryField, securityReviewFindings, costPlanProperties, evidencePlanProperties, plan, acceptPlan, tool2 = (name, description, properties, required = []) => ({
+var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id2, toolWriteRequestId, visualSideSchema, visualTitle, visualCaption, visualInputSchema, refs, list2 = (description) => ({ type: "array", items: str2, description }), specAck, deliverablesSchema, reviewAnchor, reviewFindings, boundaryField, securityReviewFindings, securityPassSchema, costPlanProperties, evidencePlanProperties, plan, acceptPlan, tool2 = (name, description, properties, required = []) => ({
   name,
   description,
   inputSchema: { type: "object", properties: name === "hub_review" || name === "hub_task_propose" ? { ...properties, request_id: toolWriteRequestId } : properties, required, additionalProperties: false }
@@ -17008,6 +17019,15 @@ var init_hub_tools = __esm(() => {
       blocker: boundaryField,
       origin: { type: "string", enum: ["introduced", "pre_existing"] }
     } }
+  };
+  securityPassSchema = {
+    type: "object",
+    additionalProperties: false,
+    description: "The security pass behind this verdict. Required on an approval when the review request says a security pass is required (the PR changes a path listed under [security] in .agenthub/sdlc.toml): advice in advise, refused in enforce. covered: the units you read (for example a companion area, a surface or a file group); not_covered: the units you did not read, so a partial pass says so. Name at least one unit. It binds to the reviewed head.",
+    properties: {
+      covered: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 120 }, description: "units the pass read" },
+      not_covered: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 120 }, description: "units the pass did not read" }
+    }
   };
   costPlanProperties = {
     review: { type: "object", properties: { scope: { type: "string", enum: ["none", "delta", "full"] }, reviewers: { type: "integer", minimum: 0, maximum: 8 } }, required: ["scope", "reviewers"], additionalProperties: false },

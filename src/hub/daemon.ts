@@ -5895,7 +5895,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_sdlc_record":
         return line(await tasks.recordSdlc(by, a.id, a.receipt));
       case "hub_review": {
-        const reviewed = await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings);
+        const reviewed = await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings, a.security_pass);
         // #1279: a verdict note that names a brief entry is a citation. The same exclusions as a done summary apply (a PII or review-observer turn, withheld text), and the key binds it to this verdict.
         const verdict = reviewed.history.findLast(h => h.by === by && (h.event === "approved" || h.event === "changes_requested"));
         if (!piiTurn && !reviewTurn && !tasks.isPii(reviewed) && verdict && !verdict.withheld && typeof a.note === "string" && a.note && verdict.note?.startsWith(a.note)) {
@@ -9251,7 +9251,7 @@ export async function startDaemon(opts: DaemonOptions) {
       rows: report.rows.map(row => row.private || privatePrs.has(row.pr) ? { private: true, ready: false, tasks: [], after: [], blockers: ["private lifecycle evidence unavailable"] }
         : mixed ? { pr: row.pr, tasks: row.tasks.filter(id => !privateIds.has(id)), ready: false, after: [], blockers: ["private dependency evidence unavailable"] }
         : { pr: row.pr, tasks: row.tasks, head: row.head, ready: row.ready, blockers: row.blockers, after: row.after,
-          ...(row.findings ? { findings: row.findings } : {}), ...(row.planConformance ? { planConformance: row.planConformance } : {}), ...(row.testIntegrity ? { testIntegrity: row.testIntegrity } : {}), ...(row.evalGate ? { evalGate: row.evalGate } : {}) }),
+          ...(row.findings ? { findings: row.findings } : {}), ...(row.planConformance ? { planConformance: row.planConformance } : {}), ...(row.testIntegrity ? { testIntegrity: row.testIntegrity } : {}), ...(row.evalGate ? { evalGate: row.evalGate } : {}), ...(row.securityPass ? { securityPass: row.securityPass } : {}) }),
       order: mixed ? [] : report.order, ...(report.unordered ? { unordered: mixed ? [] : report.unordered } : {}), conflicts: mixed ? [] : report.conflicts });
   }
   /** A public read may use host GitHub authentication only for this project's current public scope. */
@@ -12091,7 +12091,7 @@ export async function startDaemon(opts: DaemonOptions) {
               if (tasks.isPii(now)) return { id: now.id, title: tasks.publicTitle(now), private: true };
               if (task.history.length !== now.history.length || !statuses.has(task.id)) throw new Error("task changed");
               const status = statuses.get(task.id)!;
-              const safeStatus = Object.fromEntries(["mode", "stage", "blockers", "ready", "actor", "next", "spec", "playbook", "criteria", "definition", "entry", "exit", "planConformance", "testIntegrity", "evalGate", "findings"].filter(key => key in status).map(key => [key, publicReadValue(status[key as keyof typeof status])]));
+              const safeStatus = Object.fromEntries(["mode", "stage", "blockers", "ready", "actor", "next", "spec", "playbook", "criteria", "definition", "entry", "exit", "planConformance", "testIntegrity", "evalGate", "securityPass", "findings"].filter(key => key in status).map(key => [key, publicReadValue(status[key as keyof typeof status])]));
               return { id: now.id, title: tasks.publicTitle(now), receipt: publicReadValue(tasks.publicView(now).sdlc), ...safeStatus };
             });
             current(); reply({ ok: true, public: true, mode: lifecycleConfig.mode, rows, truncated: selected.length > 100 });

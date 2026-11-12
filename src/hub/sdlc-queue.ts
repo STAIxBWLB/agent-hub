@@ -2,6 +2,7 @@ import { publicTestIntegrity, parseIssueLabels, readTestIntegrity, testIntegrity
 import { planConformance, planConformanceBlockers } from "./plan-conformance.ts";
 import { evalGapBlockers, evalGateView, readEvalFor, type EvalGate } from "./eval-gate.ts";
 import { findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
+import { securityPassBlockers, securityPassView, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
 import type { CriteriaView } from "./workflow.ts";
 import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
 export interface DeliveryTask {
@@ -11,8 +12,13 @@ export interface DeliveryTask {
   approval?: { head?: string; latestHead?: string; mismatch: boolean; current: boolean };
   plan?: { paths?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] };
   findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView;
+  /** #1403 A2: the latest security pass an approving or rejecting verdict recorded, bound to the head it reviewed. */
+  securityPass?: SecurityPassRecord;
 }
-export interface MergeQueueRow { evalGate?: EvalGate; testIntegrity?: (TestIntegrity & { task?: number })[]; planConformance?: { task?: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
+export interface MergeQueueRow { /** #1403 A2: required | recorded | not_required | unknown for this PR across its holders; the worst one wins. */ securityPass?: SecurityPassView; evalGate?: EvalGate; testIntegrity?: (TestIntegrity & { task?: number })[]; planConformance?: { task?: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
+const SECURITY_ORDER: Record<SecurityPassView["state"], number> = { not_required: 0, recorded: 1, unknown: 2, required: 3 };
+/** The stricter of two views of the same PR: a holder that left a required pass unrecorded decides the row. */
+function worseSecurity(held: SecurityPassView | undefined, next: SecurityPassView): SecurityPassView { return held && SECURITY_ORDER[held.state] >= SECURITY_ORDER[next.state] ? held : next; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
 const validRepo = (value: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -112,8 +118,12 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
         if (gate) { row.evalGate = gate; if (config.mode === "enforce") row.blockers.push(...evalGapBlockers(gate)); }
       }
       if (config.mode === "enforce") row.blockers.push(...planConformanceBlockers(conformance), ...testIntegrityBlockers(integrity));
+      // #1403 A2: readable from the same complete inventory; a PR with several holders shows the strictest state. `unknown` is never softened to `not_required`.
+      const security = config.mode !== "off" ? securityPassView(config.security, read, holder?.securityPass) : undefined;
+      if (security) row.securityPass = worseSecurity(row.securityPass, security);
     }
   }
+  if (config.mode === "enforce") for (const row of result.rows) row.blockers.push(...securityPassBlockers(row.securityPass));
   const dependencyEvidence = new Map<number, PrEvidence | undefined>(); let dependencyReads = 0;
   for (const row of result.rows) {
     if (row.private) continue;
