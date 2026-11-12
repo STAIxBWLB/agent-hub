@@ -99,6 +99,15 @@ const securityReviewFindings = {
     origin: { type: "string", enum: ["introduced", "pre_existing"] },
   } },
 } as const;
+/** #1403 A2: advertised only when the lifecycle is enabled (the `criteria` flag), exactly like the security finding fields; off keeps `hub_review` byte for byte. */
+const securityPassSchema = {
+  type: "object", additionalProperties: false,
+  description: "The security pass behind this verdict. Required on an approval when the review request says a security pass is required (the PR changes a path listed under [security] in .agenthub/sdlc.toml): advice in advise, refused in enforce. covered: the units you read (for example a companion area, a surface or a file group); not_covered: the units you did not read, so a partial pass says so. Name at least one unit. It binds to the reviewed head.",
+  properties: {
+    covered: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 120 }, description: "units the pass read" },
+    not_covered: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 120 }, description: "units the pass did not read" },
+  },
+} as const;
 const costPlanProperties = {
   review: { type: "object", properties: { scope: { type: "string", enum: ["none", "delta", "full"] }, reviewers: { type: "integer", minimum: 0, maximum: 8 } }, required: ["scope", "reviewers"], additionalProperties: false },
   ci: { type: "string", enum: ["focused", "full", "reuse"] },
@@ -391,7 +400,7 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
       const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "registered src:<16 hex> source ids; list available ids with ahub source list" : "short claim ids to verify")])) } };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
     }
-    if (criteria && tool.name === "hub_review") properties.findings = securityReviewFindings;
+    if (criteria && tool.name === "hub_review") { properties.findings = securityReviewFindings; properties.security_pass = securityPassSchema; }
     if (criteria && properties.plan && tool.name !== "hub_experiment_record") {
       const current = properties.plan as { properties: Record<string, unknown> };
       properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties } };

@@ -115,6 +115,13 @@ function taskBlock(row: any, columns: number | undefined, detail: boolean): Line
     out.push(...pair("tests", `${t.applicability === "bug" ? "bug fix" : t.applicability === "not_bug" ? "not a bug fix" : "bug status unknown"}, red-first ${String(t.redFirst).replace("_", " ")}, files ${t.fileState}`, columns, 11, undefined, "  "));
     out.push(...bullets("modified tests", list(t.modifiedTests), columns, undefined, "    "), ...bullets("test blockers", list(t.blockers), columns, "attention", "    "));
   }
+  const sp = row.securityPass;
+  if (sp) {
+    const shown = sp.state === "required" ? `required (${sp.matched} sensitive path${sp.matched === 1 ? "" : "s"} changed), none recorded at this head`
+      : sp.state === "recorded" ? `recorded at this head (${sp.recorded?.covered ?? 0} covered, ${sp.recorded?.notCovered ?? 0} not covered)`
+      : sp.state === "unknown" ? "unknown (PR file inventory incomplete or unreadable)" : "not required";
+    out.push(...pair("security pass", `${shown}${list(sp.companions).length ? `; companions ${list(sp.companions).join(", ")}` : ""}`, columns, 11, sp.state === "required" || sp.state === "unknown" ? "attention" : undefined, "  "));
+  }
   const e = row.evalGate;
   if (e) {
     const shown = e.state === "not_configured" ? "eval check not configured (suite choice pending the person)" : e.state === "coverage_unknown" ? "PR file coverage unknown" : `${e.check} ${String(e.state)}${e.passRate !== undefined ? `, pass rate ${e.passRate}` : ""}${e.suite !== undefined ? `, suite ${e.suite}` : ""}`;

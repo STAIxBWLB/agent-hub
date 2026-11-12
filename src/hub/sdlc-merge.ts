@@ -57,7 +57,7 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
  * threads, draft). Its other blockers (identity, local gate, GitHub approval) are the lifecycle's, not this merge's, and are not repeated here.
  */
 const QUEUE_BLOCKERS = [/^touching PRs require a person order$/, /^dependency /, /^artifact dependency cycle/, /^open PR /, /^PR file coverage is incomplete/,
-  /^required check .*: not successful on current head$/, /^review requests pending or unknown$/, /^review threads unresolved or unknown$/, /^PR is draft or draft status is unknown$/];
+  /^required check .*: not successful on current head$/, /^review requests pending or unknown$/, /^review threads unresolved or unknown$/, /^PR is draft or draft status is unknown$/, /^security pass (required|applicability unknown)/];
 
 /** The mode that applies to one repository: its own table first, then the top-level key, default off. */
 export function mergeModeFor(config: SdlcConfig, repo: string | undefined): AutoMergeMode {

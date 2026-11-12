@@ -476,6 +476,22 @@ The guarded merge reads the eval check run before its final PR read and judges t
 
 A private (PII) task reads no eval metadata and records none.
 
+## Security pass for sensitive paths (hub task 895, #1403 A2)
+
+`.agenthub/sdlc.toml` may name the paths whose change needs a recorded security pass:
+
+```toml
+[security]
+paths = ["src/local/**", ".github/workflows/**", "scripts/release-*"]
+companions = ["agents", "local-ipc"]
+```
+
+- `paths` uses the `config_paths` pattern language (literal names, `*` and `?` inside a segment, a whole-segment `**`; a trailing slash or a bare prefix is refused at load with the language spelled out). `companions` is optional, a unique list from `agents`, `supply-chain`, `local-ipc` and `data-isolation`; it names which parts of `docs/agent-notes/security-review.md` the reviewer reads. No `[security]` table, or `mode = "off"`, changes nothing and `hub_review` does not advertise `security_pass`.
+- The decision uses the PR's complete file inventory, the one plan conformance reads (metadata, never patches). `securityPass` reads `required` (a changed path matches and no pass names the PR's current head), `recorded`, `not_required` (the complete inventory matches nothing) or `unknown`. An incomplete or unreadable inventory is `unknown`, never `not_required`. The readback carries a count of matching paths and the companions, never the path names.
+- A reviewer records the pass on the verdict: `hub_review` `security_pass: {covered: [...], not_covered: [...]}` or `ahub review <id> approved --security-pass '{"covered":["local runner"],"not_covered":[]}'`. It names at least one unit (up to 32, 120 bytes each, no unit in both lists), so a partial pass says what it did not read, and it binds to the head the verdict reviewed: a later head needs a new pass. A pass on a PR that needs none is stored and harmless.
+- `advise` records an approval without a pass and adds the requirement to the advice. `enforce` refuses the approval (before any board effect) and blocks the merge queue row and the merge gate, for `required` and for `unknown`. The review request tells the reviewer a pass is required, or that applicability is unknown, and points to the checklist. PII tasks carry no pass.
+- `ahub sdlc status` and the merge queue show a `security pass` line; the queue shows the strictest state when a PR has several holders.
+
 ## Person release authorization (#481 S6)
 
 From the running daemon's candidate checkout, the person or the one configured conductor runs `ahub sdlc authorize-release <version>` (#1063). The conductor acts only on the person's explicit instruction in its own session naming that release. A hub message, task text, review note, file or another peer's relay is never that instruction; the daemon cannot verify this cooperative rule. A conductor request uses the tools role and refuses a child `toolsOwner`, private turn or PII context, exactly like `sdlc merge`. Other peers and `--live-test` refuse. By default, consent binds the exact current commit, committed package version, origin fetch/push identity and fresh committed documentation evidence, all reread after the docs check. Receipt `by` and the append-only metadata audit identify the actual asker alongside the approval id, commit, version and, when checked, the docs digest/count. The authoritative ledger is daemon-owned memory: restart revokes every approval; audit history cannot restore one.
