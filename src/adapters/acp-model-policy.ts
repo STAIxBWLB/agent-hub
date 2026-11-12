@@ -16,7 +16,7 @@ export interface AcpModelAdvertisement {
   readonly available: readonly string[];
   readonly wire: Readonly<Record<string, string>>;
 }
-const ACP_MODEL_OPTIONS_MAX = 256;
+export const ACP_MODEL_OPTIONS_MAX = 256;
 /** Person ids retain the native-word grammar; only an exact receipt-owned wire codec may wrap one. */
 export function acpLogicalModelId(policy: AcpModelPolicy, wire: unknown): string | undefined {
   if (policy.idCodec === "qwen-openai") {
