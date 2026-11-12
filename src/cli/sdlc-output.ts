@@ -104,7 +104,7 @@ function taskBlock(row: any, columns: number | undefined, detail: boolean): Line
   if (row.definition?.name || row.definition?.id) out.push(...pair("stage", row.definition.name ?? row.definition.id, columns, 11, undefined, "  "));
   out.push(...bullets("entry", list(row.entry), columns, undefined, "  "), ...bullets("exit", list(row.exit), columns, undefined, "  "));
   const f = row.findings;
-  if (f) out.push(...pair("findings", `${plural(f.important ?? 0, "important")} (${f.openImportant ?? 0} open), ${plural(f.nit ?? 0, "nit")} (${f.openNit ?? 0} open), ${f.fixed ?? 0} fixed, ${f.falsePositive ?? 0} false positive, ${f.accepted ?? 0} accepted`, columns, 11, f.openImportant ? "attention" : undefined, "  "));
+  if (f) out.push(...pair("findings", `${plural(f.important ?? 0, "important")} (${f.openImportant ?? 0} open), ${plural(f.nit ?? 0, "nit")} (${f.openNit ?? 0} open), ${f.fixed ?? 0} fixed, ${f.falsePositive ?? 0} false positive, ${f.accepted ?? 0} accepted${f.needsValidation ? `, ${f.needsValidation} needs validation (not blocking)` : ""}${f.preExisting ? `, ${f.preExisting} pre-existing (not blocking)` : ""}`, columns, 11, f.openImportant ? "attention" : undefined, "  "));
   const p = row.planConformance;
   if (p) {
     out.push(...pair("plan files", `${p.state}${p.accepted ? ", departure accepted" : ""}, ${list(p.outside).length} outside the plan, ${list(p.untouched).length} planned and untouched`, columns, 11, p.state === "departure" && !p.accepted ? "attention" : undefined, "  "));

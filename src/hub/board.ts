@@ -2269,7 +2269,7 @@ export class Board {
       if (!["approved", "changes_requested"].includes(event) || patch.state !== event) throw new Error("finding metadata requires a saved review verdict");
       const head = extra.reviewFindings.head;
       if (head !== undefined && !/^[a-f0-9]{40}$/.test(head)) throw new Error("finding metadata requires a full reviewed head");
-      reviewFindings = { ...(head ? { head } : {}), items: parseReviewFindings(extra.reviewFindings.items, { person: by === "user", maxNits: 64 }) };
+      reviewFindings = { ...(head ? { head } : {}), items: parseReviewFindings(extra.reviewFindings.items, { person: by === "user", maxNits: 64, contract: "stored" }) };
     }
     let deliverables: DeliverableRecord[] | undefined;
     if (extra.deliverables !== undefined) {
