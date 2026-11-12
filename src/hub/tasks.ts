@@ -63,7 +63,7 @@ import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue
 import { adoptMergeGates, guardedMerge, mergeModeFor, mergeView, readAdoptMergeEvidence, requiredChecksFor, type MergeView } from "./sdlc-merge.ts";
 import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
 import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-scope.ts";
-import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
+import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, findingFollowUps, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness, type ReleaseReportPolicy } from "./sdlc-release.ts";
 import { loadRoleCatalog, roleIdentity, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy, matchesPolicyLexically, policyRealPath, insideRoot } from "./path-policy.ts";
@@ -1223,6 +1223,37 @@ export class Tasks {
       this.incomingBacklog.add(proposal.id); keys.add(key); created.push(proposal.id);
     }
     for (const id of created) this.releaseNotice(`task #${id}: recurring review finding amendment proposed in the backlog`);
+  }
+
+  /**
+   * #1403 A1, B4: on approval, one backlog card per open Important finding that did not block it. A `needs_validation` security finding gets one read-only `triage` card that names its blocker
+   * (the missing fact); a `pre_existing` one gets one `plan` card. Marker-deduplicated like the recurring-finding cards and held to the same privacy gates. The card carries the task id, the
+   * finding id and pass, and for a hypothesis its blocker: never the boundary fields or the path, which stay on the task's own review history (the repository is public, and the hub opens no issue).
+   */
+  private proposeFindingFollowUps(task: Task, by: PeerId, withheld: boolean): void {
+    if (withheld || this.isPii(task) || this.d.privateTurn?.(by)) return;
+    const { validation, preExisting } = findingFollowUps(this.reviewFindingSets(task));
+    if (!validation.length && !preExisting.length) return;
+    const visible = (item: ReviewFinding) => !task.history.some(entry => entry.withheld && entry.reviewFindings?.items.some(value => value.id === item.id)) && this.findingTextAllowed(task, [item]);
+    const keys = new Set(this.d.board.list().filter(row => (row.class === "plan" || row.class === "triage") && row.history[0]?.by === HUB)
+      .flatMap(row => row.detail?.split("\n").filter(line => line.startsWith("Finding follow-up key: ")) ?? []));
+    const created: number[] = [];
+    // No await separates the durable dedupe read from creation; a repeated approval sees the first card.
+    for (const [kind, items] of [["validation", validation], ["pre-existing", preExisting]] as const) for (const item of items.filter(visible)) {
+      const key = `Finding follow-up key: ${task.id}:${item.pass}:${item.id}:${kind}`;
+      if (keys.has(key)) continue;
+      const ref = `${item.pass}:${item.id}`;
+      const title = kind === "validation" ? `Validate security finding ${ref} from task #${task.id}: read-only triage` : `Pre-existing finding ${ref} from task #${task.id}: plan a fix`;
+      const detail = kind === "validation"
+        ? `${key}\nTask #${task.id} was approved with the important security finding ${ref} still a hypothesis. Blocker, the fact that settles it: ${item.blocker ?? "not recorded"}\nRead-only triage: settle that fact from source or a sandboxed check and report whether the finding is confirmed or false. Do not edit files, branches or the board, and open no issue: the person decides where a security finding is published. Details are in ahub task show ${task.id}.`
+        : `${key}\nTask #${task.id} was approved with the important finding ${ref} marked pre_existing: that change did not introduce it, so it did not block the approval. Backlog card for the planner: decide whether and how to plan a fix. Details are in ahub task show ${task.id}.`;
+      const draft = { title, detail, refs: {} };
+      const signals = this.signalsFor(draft);
+      if (this.isPii({ signals }) || !this.candidateTextAllowed(`${title}\n${detail}`)) continue;
+      const proposal = this.d.board.propose(HUB, { ...draft, class: kind === "validation" ? "triage" : "plan", backlog: true, signals });
+      this.incomingBacklog.add(proposal.id); keys.add(key); created.push(proposal.id);
+    }
+    for (const id of created) this.releaseNotice(`task #${id}: finding follow-up proposed in the backlog`);
   }
 
   private publicClaimBindings(task: Task): ReturnType<typeof taskClaimIdentity>[] | undefined {
@@ -8390,7 +8421,7 @@ export class Tasks {
     if (withdrawing) withdrawalRevision = initial.history.length;
     if (withdrawing) { await this.unmergedForReopen(initial, valid); valid(); }
     let parsed: ReviewFinding[];
-    try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS }); }
+    try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS, contract: mode === "off" ? "off" : "required" }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
     const anchorPrivacy = new Map(parsed.flatMap(item => item.anchor ? [[item.anchor.path, this.reviewPathPrivate(item.anchor.path)] as const] : []));
     try { parsed = parsed.map(item => item.anchor && anchorPrivacy.get(item.anchor.path) ? { ...item, anchor: privateReviewAnchor(item.anchor) } : item); }
@@ -8541,6 +8572,7 @@ export class Tasks {
       this.autoMerge(next, this.mirrorVerdict(next, by, "approved", reviewedHead ?? next.sdlc?.reviewedHead, note, withheld || observerExcluded));
       // A proposal storage failure cannot roll back the saved verdict; another matching verdict retries it.
       this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
+      this.releaseNotice(`task #${next.id}: review saved but finding follow-up proposal unavailable`, () => this.proposeFindingFollowUps(next, by, withheld));
       this.releaseNotice(`task #${next.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(next, by, withheld));
       return next;
     }

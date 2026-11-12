@@ -128,7 +128,7 @@ before and after each awaited GitHub read and immediately before the write.
 Recovery, shutdown and storage holds refuse adoption.
 
 Eligible task states are exactly `in_progress`, `in_review` and
-`changes_requested`, with all Important findings dispositioned. `proposed` and
+`changes_requested`, with all Important findings dispositioned (an open Important marked `needs_validation` or `pre_existing` under an enabled lifecycle, #1403, is a recorded non-blocker: it is counted apart, does not carry as an obligation, and on approval yields one marker-deduplicated backlog card through `Tasks`; with the lifecycle off these fields are refused). `proposed` and
 `backlog` tasks must be assigned and accepted first. `approved` and `cancelled`
 are already closed. Each refusal names the state and the next step. The Board
 transition is host-only and requires the current flow revision; the generic

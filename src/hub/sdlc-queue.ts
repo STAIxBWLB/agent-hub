@@ -83,7 +83,7 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
       if (!items.length) continue;
       const tally = findingTally(items);
       row.findings ??= findingTally([]);
-      for (const key of Object.keys(tally) as (keyof ReviewFindingTally)[]) row.findings[key] += tally[key];
+      for (const key of Object.keys(tally) as (keyof ReviewFindingTally)[]) row.findings[key] = (row.findings[key] ?? 0) + (tally[key] ?? 0);
     }
     if (!read.pathsComplete) row.blockers.push("PR file coverage is incomplete or unknown");
     if (read.draft !== false) row.blockers.push("PR is draft or draft status is unknown");

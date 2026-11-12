@@ -11,6 +11,8 @@ import { sdlcConfig, type SdlcMode } from "../src/hub/sdlc.ts";
 
 const A = "a".repeat(40), B = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+// #1403 A1: an enabled lifecycle requires an important security finding to carry state and boundary; the two enforce-mode tests below use this shape and keep every assertion.
+const proven = { state: "confirmed", boundary: { principal: "a web page", control: "Origin refusal", resource: "the control socket", result: "a request was accepted" } };
 const finding = (id = "missing-origin-check", extra: Record<string, unknown> = {}) => ({ id, pass: "security" as const, severity: "important" as const, disposition: "open" as const, path: "src/server.ts", ...extra });
 function rig(mode: SdlcMode = "off", options: Partial<TasksDeps> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-structured-review-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
@@ -189,7 +191,7 @@ test("S3 tool schema advertises optional bounded findings without changing legac
 test("S3 R1 invalid owner commit skips to the full local head and cannot evade enforce", async () => {
   const r = rig("enforce"), row = r.create();
   r.board.update(row.id, "user", "refs", { refs: { commit: "aaaaaaa" } });
-  await r.tasks.review("claude", row.id, "changes_requested", undefined, undefined, undefined, undefined, [finding()]);
+  await r.tasks.review("claude", row.id, "changes_requested", undefined, undefined, undefined, undefined, [finding(undefined, proven)]);
   expect(r.board.get(row.id)?.history.findLast(entry => entry.reviewFindings)?.reviewFindings?.head).toBe(A);
   r.reopen(row.id);
   await expect(submit(r.tasks, row.id, undefined, "approved", "user")).rejects.toThrow(/important/i);
@@ -198,7 +200,7 @@ test("S3 R1 invalid owner commit skips to the full local head and cannot evade e
 test("S3 R1 enforce refuses a finding report with no resolvable head", async () => {
   const r = rig("enforce"), row = r.create();
   r.board.update(row.id, "user", "refs", { refs: { commit: "short" }, sdlc: { stage: "review" } });
-  await expect(r.tasks.review("claude", row.id, "changes_requested", undefined, undefined, undefined, undefined, [finding()])).rejects.toThrow(/head/i);
+  await expect(r.tasks.review("claude", row.id, "changes_requested", undefined, undefined, undefined, undefined, [finding(undefined, proven)])).rejects.toThrow(/head/i);
   expect(r.board.get(row.id)?.state).toBe("in_review");
 });
 
