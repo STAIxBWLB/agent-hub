@@ -3650,14 +3650,6 @@ var init_acp_model_policy = __esm(() => {
   init_model_token();
 });
 
-// src/omniroute/usage.ts
-function safeModelLabel(value) {
-  if (typeof value !== "string")
-    return;
-  const label = value.trim();
-  return label.length > 0 && label.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._:/+@-]*$/.test(label) ? label : undefined;
-}
-
 // src/adapters/acp-session-model.ts
 function label(value, policy) {
   const id = policy?.idCodec ? acpLogicalModelId(policy, value) : safeModelLabel(value);
