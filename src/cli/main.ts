@@ -133,7 +133,7 @@ import { installedVersions } from "./console-versions.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
-import { renderHelp, configuredAcpHelp } from "./help.ts";
+import { renderHelp, configuredAcpHelp, guidanceProbeUsage } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
 import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
@@ -1255,7 +1255,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       parseGuidanceProbePublicReceipt, parseGuidanceProbePublicStatus, parseGuidanceProbeReceiptExport } = await import("../hub/guidance-probes.ts");
     const { guidanceProbeStatusLines } = await import("../ui/guidance-view.ts");
     let probeCommand;
-    try { probeCommand = parseGuidanceProbeSubcommand(args); } catch { return fail("invalid guidance probe command; use probe register, start, show, receipts or cancel with the documented bounded arguments"); }
+    try { probeCommand = parseGuidanceProbeSubcommand(args); } catch { return fail(guidanceProbeUsage(args)); }
     if (probeCommand) {
       if (liveTest) return fail("live-test cannot perform guidance probe operations as the person; use a current person or configured conductor session");
       let registration: ReturnType<typeof parseGuidanceProbeRegistration> | undefined;

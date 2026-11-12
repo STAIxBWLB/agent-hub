@@ -5,6 +5,22 @@ import { paint, wrap, type Span } from "./console-state.ts";
 /** One usage form of `ahub help`: the usage starts with `ahub <command>`, alternatives joined by `|`. */
 export interface HelpEntry { section: string; usage: string; description: string }
 
+/** #1405: one source for the probe usage, read by `ahub help` and by the refusal of a malformed probe command. */
+export const GUIDANCE_PROBE_USAGE = {
+  register: "register --file JSON [--json]",
+  start: "start --id HASH --revision N [--variant G1-HASH] [--json]",
+  show: "show --id HASH [--json]",
+  receipts: "receipts --id HASH [--json]",
+  cancel: "cancel --id HASH --revision N [--json]",
+} as const;
+/** What to print when `ahub guidance probe ...` did not parse: the typed subcommand's own usage, or all five for an unknown one. */
+export function guidanceProbeUsage(args: readonly string[]): string {
+  const typed = args[1], known = typed !== undefined && Object.hasOwn(GUIDANCE_PROBE_USAGE, typed);
+  const forms = known ? [GUIDANCE_PROBE_USAGE[typed as keyof typeof GUIDANCE_PROBE_USAGE]] : Object.values(GUIDANCE_PROBE_USAGE);
+  const id = known && typed === "register" ? "" : " HASH is the 64-character probe id that ahub guidance probe register printed; no command lists probes.";
+  return `${known ? `ahub guidance probe ${typed} has a missing or malformed argument` : "unknown guidance probe command"}; usage: ${forms.map(form => `ahub guidance probe ${form}`).join(" | ")}.${id}`;
+}
+
 const SECTIONS: [string, [usage: string, description: string][]][] = [
   ["Projects", [
     ["ahub specs list [--json] | check [--require-fresh] [--base <ref>] [--json] | covers <file...> | stamp <id-or-document...> [--yes]", "read design specs, validate their graph and source freshness, or find covering specs; runs without a daemon; check exits 1 on errors and, with --require-fresh, stale documents; stamp is person only (a terminal, never an agent): it shows old -> new, asks (--yes skips the question but still needs a terminal), and then changes only the verified-against line (or the stamps-file entry) to the full HEAD SHA, refused while the covered paths have uncommitted changes"],
@@ -139,7 +155,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub budget execution configure <config.json> | disable <id> [--json] [--color=auto|always|never]", "opt-in limits on model calls, tool calls, time and tokens for pi and local"],
   ]],
   ["History and reports", [
-    ["ahub guidance probe register --file JSON [--json] | start --id HASH --revision N [--variant G1-HASH] [--json] | show --id HASH [--json] | receipts --id HASH [--json] | cancel --id HASH --revision N [--json]", "person or configured conductor only: bounded T1 declaration and fake-only probe lifecycle; receipts reads the sealed receipts, the outcome denominator and the comparability reasons, read-only; production execution is unavailable"],
+    [`ahub guidance probe ${Object.values(GUIDANCE_PROBE_USAGE).join(" | ")}`, "person or configured conductor only: bounded T1 declaration and fake-only probe lifecycle; receipts reads the sealed receipts, the outcome denominator and the comparability reasons, read-only; production execution is unavailable"],
     ["ahub guidance create --file JSON [--json]", "record a bounded immutable advisory proposal through current task authority; no activation or probe"],
     ["ahub guidance list --task N --task-created MS [--cursor TOKEN] [--json]", "bounded guidance metadata pages; withdrawn history and withheld fields remain explicit"],
     ["ahub guidance show --task N --task-created MS --id HASH [--json]", "screened editable-section diff selected by existing variant id, never a displayed experiment label"],

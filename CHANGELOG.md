@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A refused `ahub guidance probe` command names the subcommand typed, prints that subcommand's exact usage and says where the probe id comes from, in place of one generic line (#1405). The usage text has one source shared with `ahub help`; no accepted form changes.
+
 ## 0.38.0
 
 - Commands the hub hands a person run as printed (#1399). The needs_review hold notice, `ahub status` held rows and `ahub queue show` give `cd <project> && ahub queue resolve <id> --revision N --action <suggested> --reason "<kind> from <sender> to <peer>"` plus the other actions with one clause each, in place of `--action completed|retry|discard --reason <text>`. Agents are told, in the managed AGENTS block and in their session instructions, to pass such a command on unshortened.
