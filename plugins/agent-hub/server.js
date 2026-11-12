@@ -9042,6 +9042,15 @@ var init_question_detach = __esm(() => {
   };
 });
 
+// src/adapters/pi-state-model.ts
+function stateModelId(state) {
+  const data = state && typeof state === "object" && !Array.isArray(state) ? state : undefined;
+  const model = data?.model && typeof data.model === "object" && !Array.isArray(data.model) ? data.model : undefined;
+  const id = safeModelLabel(model?.id);
+  return id !== undefined && id.toLowerCase() !== "unknown" ? id : undefined;
+}
+var init_pi_state_model = () => {};
+
 // src/adapters/pi.ts
 import { randomUUID as randomUUID5 } from "crypto";
 import { existsSync as existsSync8, mkdirSync as mkdirSync10 } from "fs";
@@ -9117,6 +9126,7 @@ var init_pi = __esm(() => {
   init_session();
   init_tools();
   init_question_detach();
+  init_pi_state_model();
   PiToolSettlementFailure = class PiToolSettlementFailure extends Error {
   };
   PiPromptNotStarted = class PiPromptNotStarted extends Error {
@@ -9273,6 +9283,7 @@ var init_pi = __esm(() => {
     owner = randomUUID5();
     _tuiLaunch;
     requestedModel = "";
+    turnModel;
     baselineRequestedModel = "";
     runtimeModelSelected = false;
     starting;
@@ -9996,6 +10007,9 @@ var init_pi = __esm(() => {
         }
         if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
           throw new Error("Pi is off roster or stopped");
+        await this.captureTurnModel(requested);
+        if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools)
+          throw new Error("Pi is off roster or stopped");
         this.noteActivity();
         attempted = true;
         if (deliveryId)
@@ -10098,6 +10112,26 @@ var init_pi = __esm(() => {
           return;
         await this.terminateFailedTurn(error instanceof Error ? error : new Error(String(error)));
       }
+    }
+    async captureTurnModel(requested) {
+      this.turnModel = undefined;
+      if (this.opts.mode !== "tui") {
+        try {
+          const state = await this.waitRpc("get_state", 5000);
+          const id = state.success === true ? stateModelId(state.data) : undefined;
+          if (id) {
+            this.turnModel = { model: id, evidence: "session" };
+            return;
+          }
+        } catch {}
+      }
+      if (requested)
+        this.turnModel = { model: requested, evidence: "configured" };
+    }
+    observedModel() {
+      const model = this.turnModel;
+      this.turnModel = undefined;
+      return model;
     }
     getRequestedModel() {
       return this.requestedModel;
@@ -18836,6 +18870,10 @@ import { closeSync as closeSync9, constants as constants8, fstatSync as fstatSyn
 import { homedir as homedir5 } from "os";
 import { isAbsolute as isAbsolute7, join as join20, relative as relative5 } from "path";
 import { createHash as createHash11 } from "crypto";
+function agyModel(value) {
+  const model = safeModelLabel(value);
+  return model !== undefined && model.toLowerCase() !== "unknown" ? model : undefined;
+}
 function decodeAgyHook(event, value) {
   if (!EVENTS2.includes(event) || !record5(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute7(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute7(path)))
     return;
@@ -18871,6 +18909,7 @@ function decodeAgyHook(event, value) {
     input,
     ...Number.isSafeInteger(value.stepIdx) && value.stepIdx >= 0 ? { toolUseId: `${value.conversationId}:${value.stepIdx}` } : {},
     ...Number.isSafeInteger(value.invocationNum) && value.invocationNum >= 0 ? { invocation: value.invocationNum } : {},
+    ...agyModel(value.modelName) ? { model: agyModel(value.modelName) } : {},
     ...event === "Stop" ? { fullyIdle: value.fullyIdle, terminationReason: typeof value.terminationReason === "string" ? value.terminationReason : "" } : {}
   };
 }
