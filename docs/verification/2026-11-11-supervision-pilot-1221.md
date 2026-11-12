@@ -168,6 +168,7 @@ read and present in a `task`-narrowed one.
 | 6 | role-scoped (task 866), hub 0.38.0 | 2026-11-13 01:30 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 2 since the daemon start (unknown which bound, task or rule; unknown before it) | 3 |
 | 7 | role-scoped (task 866), hub 0.38.0, pid 92515; its start (2026-11-12 11:09:48 KST) puts readings 5, 6 and 7 in one daemon lifetime | 2026-11-13 04:05 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 4 since that daemon start, 2 of them after reading 6 (unknown which bound, task or rule) | 3 |
 | 8 | role-scoped (task 866), hub 0.38.0, pid 92515 (start 2026-11-12 11:09:48 KST), same lifetime as readings 5, 6 and 7 | 2026-11-13 06:14 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 5 since that daemon start, 1 of them after reading 7 (unknown which bound, task or rule) | 3 |
+| 9 | role-scoped (task 866), hub 0.38.0, pid 92515, same lifetime as readings 5 to 8 | 2026-11-13 08:15 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 6 since that daemon start, 1 of them after reading 8 (unknown which bound, task or rule) | 3 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -261,6 +262,29 @@ them, to `c6347fe19` (`supervision-rules.ts`, `supervision-proposals.ts` and `se
 print nothing under `git diff --stat`), so the frozen case set still describes the code under
 measurement.
 
+Reading 9 extends the same series and separately confirms a shift this receipt predicted before it
+happened. At 2026-11-13 08:15 KST, on the same build and the same process (agent-hub 0.38.0, pid
+92515, `etime` 21 h 05 m 39 s against the unchanged start 2026-11-12 11:09:48 KST), the `task: 866`
+read returned the same three expired rows at revision `8:3` and `refused` moved from 5 to 6: one
+more refusal in the 2 h 01 min since reading 8, and six in 21 hours of one daemon lifetime. The
+series over that lifetime now reads 0, 2, 4, 5, 6, so readings 8 and 9 each added exactly one after
+reading 7 added two. That is a rate a role-scoped read can state and cannot explain; the attribution
+stays in the list below.
+
+Provenance at this reading: board head `f89a0f646`, where #1429 merged (`[security] paths require a
+recorded security pass`, hub task 895, #1403 T2). It inserts its `Security pass for sensitive paths
+(#1403 T2)` row at 104 as `@@ -103,0 +104 @@`, which moves the `Supervision rules and proposals
+(#1221 T1, T2)` row from 130 to 131. That is the shift this receipt predicted twice before the fact:
+from #895's plan-level notice while it had no PR, and again from PR #1429's rebased head, both times
+as 131 for the anchor and 132 for the row this task inserts after it. The row is now found at 131 by
+its text, so the wave close still does not depend on the number. Neither anchor file was in the
+merge (`git diff --stat` from `4fd1cc561` to `f89a0f646` on this receipt and on
+`docs/design/supervision.md` prints nothing), and the design doc still ends at `## Deliberately
+outside this contract` (119) with no `Observed limits` heading. The evaluator and the queue are
+byte-identical from `0af9fb5a1`, where reading 5 pinned them, to `f89a0f646`
+(`supervision-rules.ts`, `supervision-proposals.ts` and `settled-roles.ts` all print nothing under
+`git diff --stat`), so the frozen case set still describes the code under measurement.
+
 ## Proposal ledger
 
 | proposal | rule | task | revision | trigger | action | outcome | evidence |
@@ -311,11 +335,12 @@ and is not part of this wave.
   to rows on tasks I cannot decide, and the `task`-narrowed read returned all three. The size of
   the queue past one page is therefore unknown from a role-scoped read, and a wave total that adds
   up role-scoped reads without narrowing by task is an undercount;
-- the five refusals readings 6, 7 and 8 reported. `refused` is a bare counter: it names no task,
-  rule, revision or bound, and only the conductor's queue read could say which. Readings 7 and 8
+- the six refusals readings 6, 7, 8 and 9 reported. `refused` is a bare counter: it names no task,
+  rule, revision or bound, and only the conductor's queue read could say which. Readings 7, 8 and 9
   narrowed its window rather than its cause: the daemon's own start time (2026-11-12 11:09:48 KST)
-  puts readings 5, 6, 7 and 8 in one lifetime, so the five are real additions and not a reset
-  artefact, and reading 8's single refusal arrived inside a 2 h 09 min window. What stays unknown is
-  the attribution, and the earlier readings predate that window, so the wave's refusal total
-  remains a lower bound built from per-read samples;
+  puts readings 5 through 9 in one lifetime, so the six are real additions and not a reset
+  artefact, and every increase after reading 6 arrived inside a window the receipt could pin (2 h
+  35 min, then 2 h 09 min, then 2 h 01 min). What stays unknown is the attribution, and the earlier
+  readings predate that window, so the wave's refusal total remains a lower bound built from
+  per-read samples;
 - every threshold that needs a live sample larger than this pilot can produce.
