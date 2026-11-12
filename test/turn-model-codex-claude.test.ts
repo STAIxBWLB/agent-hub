@@ -142,3 +142,25 @@ test("Claude implementer: the result row's modelUsage is the served model of the
   expect(peer.observedModel()).toBeUndefined();
   expect((await run(undefined)).observedModel()).toBeUndefined();
 });
+
+test("Codex: a reroute for a retired turn, after a fenced cancellation, or left unread never becomes a later turn's served model", async () => {
+  const { bus, peer, said, tui } = await codex();
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  const internal = peer as unknown as { link: unknown; threadId: string; retiredTurns: Set<string>; unidentifiedCancellation: boolean; onNotification(link: unknown, method: string, params: unknown): void };
+  const reroute = (turnId: string, toModel: string) => internal.onNotification(internal.link, "model/rerouted", { threadId: internal.threadId, turnId, fromModel: "fake", toModel, reason: "x" });
+  // A turn the watchdog retired.
+  internal.retiredTurns.add("old-turn");
+  reroute("old-turn", "leaked-retired");
+  expect(peer.observedModel()).toEqual({ model: "fake", evidence: "session" });
+  // An unidentified cancellation fences hub attribution altogether.
+  internal.unidentifiedCancellation = true;
+  reroute("turn-x", "leaked-fenced");
+  expect(peer.observedModel()).toEqual({ model: "fake", evidence: "session" });
+  internal.unidentifiedCancellation = false;
+  // A live reroute whose turn end was never read is dropped when the next turn starts.
+  reroute("turn-y", "unread-reroute");
+  bus.publish(newEnvelope(HUB, "plain", { to: ["codex"] }));
+  await until(() => said.length === 1);
+  expect(peer.observedModel()).toEqual({ model: "fake", evidence: "session" });
+});

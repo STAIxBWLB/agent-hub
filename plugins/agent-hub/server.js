@@ -5605,11 +5605,6 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
       }
       if (link !== this.link || params.threadId !== this.threadId)
         return;
-      if (method === "model/rerouted") {
-        if (typeof params.toModel === "string" && params.toModel)
-          this.reroutedModel = params.toModel;
-        return;
-      }
       if (method === "thread/name/updated")
         return void this.onDoing?.("title", params.threadName);
       if (method === "turn/plan/updated")
@@ -5622,6 +5617,11 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
       }
       if (this.unidentifiedCancellation)
         return;
+      if (method === "model/rerouted") {
+        if (typeof params.toModel === "string" && params.toModel)
+          this.reroutedModel = params.toModel;
+        return;
+      }
       const unknownTurn = () => [...this.activeTurns].some((id) => id.startsWith("unknown:"));
       if (method === "thread/tokenUsage/updated") {
         const reader = this.opts.contextReader;
@@ -5653,6 +5653,7 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
         return;
       }
       if (method === "turn/started") {
+        this.reroutedModel = undefined;
         link.rejectedModelSelection = undefined;
         for (const start of link.modelStarts.values())
           if (start && start.thread === this.threadId)

@@ -942,7 +942,6 @@ export class CodexPeer extends BasePeer {
       this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
     }
     if (link !== this.link || params.threadId !== this.threadId) return;
-    if (method === "model/rerouted") { if (typeof params.toModel === "string" && params.toModel) this.reroutedModel = params.toModel; return; }
     // #878: the bound thread's name and its plan's in-progress step, for the hub's DOING column only.
     if (method === "thread/name/updated") return void this.onDoing?.("title", params.threadName);
     if (method === "turn/plan/updated") return void this.onDoing?.("todo", Array.isArray(params.plan) ? params.plan.find((s: any) => s?.status === "inProgress")?.step : undefined);
@@ -952,6 +951,8 @@ export class CodexPeer extends BasePeer {
       return;
     }
     if (this.unidentifiedCancellation) return; // native traffic is still forwarded to its TUI; hub attribution is fenced
+    // #1402: a reroute is the model of the turn it names, so it passes both fences above (a retired turn or a fenced cancellation never becomes a later turn's served model).
+    if (method === "model/rerouted") { if (typeof params.toModel === "string" && params.toModel) this.reroutedModel = params.toModel; return; }
     const unknownTurn = () => [...this.activeTurns].some(id => id.startsWith("unknown:"));
     if (method === "thread/tokenUsage/updated") {
       const reader = this.opts.contextReader;
@@ -971,6 +972,7 @@ export class CodexPeer extends BasePeer {
       return;
     }
     if (method === "turn/started") {
+      this.reroutedModel = undefined; // a reroute whose turn end was never read cannot carry into another turn
       link.rejectedModelSelection = undefined;
       // The notification has no request id. Conservatively protect every outstanding capture on
       // this bound thread rather than retiring a possibly accepted selection on a later RPC error.
