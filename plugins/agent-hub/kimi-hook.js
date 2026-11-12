@@ -439,6 +439,25 @@ function bundleInStatus(status) {
   return typeof value === "string" && value.startsWith("/") && /[\\/]plugins[\\/]agent-hub[\\/]server\.js$/.test(value) ? value : undefined;
 }
 
+// src/adapters/same-directory.ts
+function sameDirectory(named, directory) {
+  if (typeof named !== "string" || !named || named.length > 4096 || /[\u0000-\u001f\u007f]/.test(named))
+    return false;
+  if (named === directory)
+    return true;
+  try {
+    return realPath(named) === realPath(directory);
+  } catch {
+    return false;
+  }
+}
+function shownValue(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/.test(value) ? value : undefined;
+}
+var init_same_directory = __esm(() => {
+  init_project();
+});
+
 // src/cli/agy-mcp.ts
 import { randomUUID } from "crypto";
 import { closeSync as closeSync2, fstatSync as fstatSync2, lstatSync as lstatSync3, mkdirSync as mkdirSync2, openSync as openSync2, readFileSync as readFileSync2, renameSync as renameSync2, rmdirSync, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "fs";
@@ -561,7 +580,7 @@ function parseManagedHookCommand(command, phase, options, peer) {
     return;
   const prefix = `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='`;
   const middle = `' AGENTHUB_LAUNCH_ID='`;
-  const suffix = `' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote(peer)} AGENTHUB_STATE_DIR=${shellQuote(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote(resolve3(options.projectRoot))} bun `;
+  const suffix = new RegExp(`' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote(peer).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} AGENTHUB_STATE_DIR=('(?:[^']|'\\\\'')*') AGENTHUB_PROJECT_DIR=('(?:[^']|'\\\\'')*') bun `);
   if (!command.startsWith(prefix))
     return;
   const rest = command.slice(prefix.length);
@@ -570,11 +589,14 @@ function parseManagedHookCommand(command, phase, options, peer) {
     return;
   const instanceId = rest.slice(0, launchSplit);
   const afterInstance = rest.slice(launchSplit + middle.length);
-  const pathSplit = afterInstance.indexOf(suffix);
-  if (pathSplit < 1)
+  const found = suffix.exec(afterInstance);
+  if (!found || found.index < 1)
     return;
+  const pathSplit = found.index;
   const launchId = afterInstance.slice(0, pathSplit);
-  const hookScript = shellUnquote(afterInstance.slice(pathSplit + suffix.length));
+  if (!sameDirectory(shellUnquote(found[1]), options.stateDir) || !sameDirectory(shellUnquote(found[2]), resolve3(options.projectRoot)))
+    return;
+  const hookScript = shellUnquote(afterInstance.slice(pathSplit + found[0].length));
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(instanceId) || !/^[A-Za-z0-9._:-]{1,128}$/.test(launchId) || !hookScript || !isAbsolute2(hookScript) || !hookScript.endsWith("/src/cli/facts-hook.ts"))
     return;
   return { instanceId, launchId };
@@ -661,9 +683,9 @@ function internalPlan(options) {
     if (Object.hasOwn(mcp, "mcpServers") && !object(mcp.mcpServers))
       throw new Error(`${MCP_FILE} mcpServers must be an object`);
     const entry = mcp.mcpServers?.[PLUGIN_KEY];
-    if (entry !== undefined && (!object(entry) || Object.keys(entry).sort().join(",") !== "args,command,env" || entry.command !== "bun" || !Array.isArray(entry.args) || entry.args.length !== 2 || entry.args[0] !== "run" || typeof entry.args[1] !== "string" || !isAbsolute2(entry.args[1]) || !object(entry.env) || Object.keys(entry.env).sort().join(",") !== "AGENTHUB_PEER_ID,AGENTHUB_PROJECT_DIR,AGENTHUB_STATE_DIR" || entry.env.AGENTHUB_PEER_ID !== peer || entry.env.AGENTHUB_PROJECT_DIR !== root || entry.env.AGENTHUB_STATE_DIR !== options.stateDir)) {
-      throw new Error(`${MCP_FILE} agent-hub is a foreign MCP entry; it was not changed`);
-    }
+    const why = entry === undefined ? undefined : !object(entry) ? "the entry is not an object" : Object.keys(entry).sort().join(",") !== "args,command,env" || entry.command !== "bun" || !Array.isArray(entry.args) || entry.args.length !== 2 || entry.args[0] !== "run" || typeof entry.args[1] !== "string" || !isAbsolute2(entry.args[1]) ? "command or args differ from the managed entry" : !object(entry.env) || Object.keys(entry.env).sort().join(",") !== "AGENTHUB_PEER_ID,AGENTHUB_PROJECT_DIR,AGENTHUB_STATE_DIR" ? "env differs from the managed entry" : entry.env.AGENTHUB_PEER_ID !== peer ? "AGENTHUB_PEER_ID names another peer" : !sameDirectory(entry.env.AGENTHUB_PROJECT_DIR, root) ? `AGENTHUB_PROJECT_DIR ${shownValue(entry.env.AGENTHUB_PROJECT_DIR) ?? ""} is not this project (${root})`.replace("  ", " ") : !sameDirectory(entry.env.AGENTHUB_STATE_DIR, options.stateDir) ? `AGENTHUB_STATE_DIR ${shownValue(entry.env.AGENTHUB_STATE_DIR) ?? ""} is not this hub's state directory (${options.stateDir})`.replace("  ", " ") : undefined;
+    if (why !== undefined)
+      throw new Error(`${MCP_FILE} agent-hub is a foreign MCP entry (${why}); it was not changed. If it is the hub's own entry from before the project moved, remove the agent-hub key from ${MCP_FILE} and run ahub agy again.`);
   }
   const hooks = current[HOOKS_FILE];
   const oldLaunch = hooks ? managedHookLaunch(hooks, options, peer) : undefined;
@@ -831,6 +853,7 @@ var init_agy_mcp = __esm(() => {
   init_definition();
   init_git();
   init_project();
+  init_same_directory();
   MANIFEST_FILE = `${PLUGIN_DIR}/plugin.json`;
   MCP_FILE = `${PLUGIN_DIR}/mcp_config.json`;
   HOOKS_FILE = `${PLUGIN_DIR}/hooks.json`;

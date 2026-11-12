@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { hubGitSync } from "../hub/git.ts";
 import { realPath } from "../hub/project.ts";
+import { sameDirectory, shownValue } from "../adapters/same-directory.ts";
 
 export interface AgyMcpOptions {
   projectRoot: string;
@@ -130,17 +131,20 @@ function parseManagedHookCommand(command: unknown, phase: typeof EVENTS[number],
   if (typeof command !== "string") return undefined;
   const prefix = `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='`;
   const middle = `' AGENTHUB_LAUNCH_ID='`;
-  const suffix = `' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote(peer)} AGENTHUB_STATE_DIR=${shellQuote(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote(resolve(options.projectRoot))} bun `;
+  // #1423: the state and project directories are compared by real path, so the hub's own hook from before a project move (old path left as a symlink) is still its own.
+  const suffix = new RegExp(`' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote(peer).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} AGENTHUB_STATE_DIR=('(?:[^']|'\\\\'')*') AGENTHUB_PROJECT_DIR=('(?:[^']|'\\\\'')*') bun `);
   if (!command.startsWith(prefix)) return undefined;
   const rest = command.slice(prefix.length);
   const launchSplit = rest.indexOf(middle);
   if (launchSplit < 1) return undefined;
   const instanceId = rest.slice(0, launchSplit);
   const afterInstance = rest.slice(launchSplit + middle.length);
-  const pathSplit = afterInstance.indexOf(suffix);
-  if (pathSplit < 1) return undefined;
+  const found = suffix.exec(afterInstance);
+  if (!found || found.index < 1) return undefined;
+  const pathSplit = found.index;
   const launchId = afterInstance.slice(0, pathSplit);
-  const hookScript = shellUnquote(afterInstance.slice(pathSplit + suffix.length));
+  if (!sameDirectory(shellUnquote(found[1]!), options.stateDir) || !sameDirectory(shellUnquote(found[2]!), resolve(options.projectRoot))) return undefined;
+  const hookScript = shellUnquote(afterInstance.slice(pathSplit + found[0].length));
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(instanceId) || !/^[A-Za-z0-9._:-]{1,128}$/.test(launchId) || !hookScript || !isAbsolute(hookScript) || !hookScript.endsWith("/src/cli/facts-hook.ts")) return undefined;
   return { instanceId, launchId };
 }
@@ -214,9 +218,16 @@ function internalPlan(options: AgyMcpOptions): Plan {
   if (mcp) {
     if (Object.hasOwn(mcp, "mcpServers") && !object(mcp.mcpServers)) throw new Error(`${MCP_FILE} mcpServers must be an object`);
     const entry = mcp.mcpServers?.[PLUGIN_KEY];
-    if (entry !== undefined && (!object(entry) || Object.keys(entry).sort().join(",") !== "args,command,env" || entry.command !== "bun" || !Array.isArray(entry.args) || entry.args.length !== 2 || entry.args[0] !== "run" || typeof entry.args[1] !== "string" || !isAbsolute(entry.args[1]) || !object(entry.env) || Object.keys(entry.env).sort().join(",") !== "AGENTHUB_PEER_ID,AGENTHUB_PROJECT_DIR,AGENTHUB_STATE_DIR" || entry.env.AGENTHUB_PEER_ID !== peer || entry.env.AGENTHUB_PROJECT_DIR !== root || entry.env.AGENTHUB_STATE_DIR !== options.stateDir)) {
-      throw new Error(`${MCP_FILE} agent-hub is a foreign MCP entry; it was not changed`);
-    }
+    // #1423: the project and state directories are compared by real path (a project directory renamed with the old path left as a symlink is still this project), and the refusal names the field.
+    const why = entry === undefined ? undefined
+      : !object(entry) ? "the entry is not an object"
+      : Object.keys(entry).sort().join(",") !== "args,command,env" || entry.command !== "bun" || !Array.isArray(entry.args) || entry.args.length !== 2 || entry.args[0] !== "run" || typeof entry.args[1] !== "string" || !isAbsolute(entry.args[1]) ? "command or args differ from the managed entry"
+      : !object(entry.env) || Object.keys(entry.env).sort().join(",") !== "AGENTHUB_PEER_ID,AGENTHUB_PROJECT_DIR,AGENTHUB_STATE_DIR" ? "env differs from the managed entry"
+      : entry.env.AGENTHUB_PEER_ID !== peer ? "AGENTHUB_PEER_ID names another peer"
+      : !sameDirectory(entry.env.AGENTHUB_PROJECT_DIR, root) ? `AGENTHUB_PROJECT_DIR ${shownValue(entry.env.AGENTHUB_PROJECT_DIR) ?? ""} is not this project (${root})`.replace("  ", " ")
+      : !sameDirectory(entry.env.AGENTHUB_STATE_DIR, options.stateDir) ? `AGENTHUB_STATE_DIR ${shownValue(entry.env.AGENTHUB_STATE_DIR) ?? ""} is not this hub's state directory (${options.stateDir})`.replace("  ", " ")
+      : undefined;
+    if (why !== undefined) throw new Error(`${MCP_FILE} agent-hub is a foreign MCP entry (${why}); it was not changed. If it is the hub's own entry from before the project moved, remove the agent-hub key from ${MCP_FILE} and run ahub agy again.`);
   }
   const hooks = current[HOOKS_FILE];
   const oldLaunch = hooks ? managedHookLaunch(hooks, options, peer) : undefined;
