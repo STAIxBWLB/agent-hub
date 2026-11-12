@@ -19,6 +19,16 @@ reports 0.37.0). The measured sources are byte-identical between the seal commit
 src/hub/settled-roles.ts` prints nothing, so the frozen case set, the stopping rule and the
 thresholds below still describe the code under measurement.
 
+Added after reading 5, with the frame above unchanged. The 0.38.0 release merge `e886c15b0`
+(2026-11-12) and its follow-ups to main `0af9fb5a1` landed after reading 4, so reading 5 is the
+first on hub 0.38.0. One measured source moved: `src/hub/supervision.ts` changed at `649715ef8`
+(#1401), and only in the `SupervisionFeed.needsReview` notice text, where the conductor is told
+to hand the person a queue command rather than a bare verb. The evaluator and the proposals
+queue are byte-identical between the seal commit and `0af9fb5a1`
+(`git diff --stat 16b8251657a2..0af9fb5a1 -- src/hub/supervision-rules.ts
+src/hub/supervision-proposals.ts src/hub/settled-roles.ts` prints nothing), so the frozen case
+set, the stopping rule and the thresholds below still describe the code under measurement.
+
 ## Frozen case set
 
 The rules under measurement are the merged T1 rules, at version 1 of each family. The set is
@@ -132,7 +142,10 @@ the ledger holds only what a rule produced.
 
 Scope is part of a reading: a conductor-scope count covers the queue, while a role-scoped tool
 read covers only the tasks I hold a role on and is a lower bound. A per-family cell counts the
-rows a reading returned, so `0 on my tasks` is not a claim about the queue.
+rows a reading returned, so `0 on my tasks` is not a claim about the queue. Reading 5 added a
+second reason a role-scoped read undercounts: the page bound (`MAX_PROPOSAL_READ`, 50) is applied
+across all tasks before the role filter, so a row on my own task can be absent from an unfiltered
+read and present in a `task`-narrowed one.
 
 | reading | scope | at | distinct revisions read | `repeated_failure` | `deliverable_invalidated_check` | `declared_overlap_without_integration` | stored | refused | expired |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -141,6 +154,7 @@ rows a reading returned, so `0 on my tasks` is not a claim about the queue.
 | 2 | role-scoped (task 866) | 2026-11-11 08:36 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 3 |
 | 3 | role-scoped (task 866) | 2026-11-11 17:19 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 3 |
 | 4 | role-scoped (task 866) | 2026-11-12 00:37 KST, hub 0.37.0 | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 since the daemon start at 20:51 (unknown before it) | 3 |
+| 5 | role-scoped (task 866), hub 0.38.0; unfiltered read 2, `task: 866` read 3 (page, below) | 2026-11-12 15:55 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 since the daemon start (unknown before it) | 3 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -156,6 +170,20 @@ same revision (`8:3`) under `mode shadow`, so the ledger and its receipts surviv
 restart and the version change, and no new proposal was stored on this task in the seven hours
 since reading 3. Its `refused 0` covers that window only: the counter resets at a daemon start,
 so refusals before 20:51 stay unknown, as listed at the end.
+
+Reading 5 is the first on 0.38.0 and the first after a second daemon restart (the upgrade). It
+returned the same three expired rows, the same revision (`8:3`) and `refused 0`, again with no new
+proposal on this task, so the rows and their receipts survived a second version change and a
+second restart. It also measured a bound the earlier readings could not: the unfiltered read
+answered two rows, and the `task: 866` read answered three. `ProposalStore.list` applies its read
+page (`MAX_PROPOSAL_READ`, 50) in SQL, ordered pending first and then `created_at DESC` across
+every task, before the caller's role filter runs, so a project whose queue exceeds one page can
+return fewer rows than the caller's own tasks hold, and the oldest terminal row drops off first.
+The `task` argument narrows the SQL, which is how the third row was recovered; `refused 0` is
+unaffected, because that counter records rows a storage bound refused, not rows a page left out.
+The two reads together are also the first evidence that the project's queue passed one page:
+at least 48 rows outside my roles sit ahead of `sup-067f72d97dd1` in the read order, and none of
+them is visible to a role-scoped caller.
 
 ## Proposal ledger
 
@@ -202,4 +230,9 @@ and is not part of this wave.
   row named any of the three merges, though the third had merged before reading 3 returned its
   expired row. Measured four times on 2026-11-11; it is a limit of the reading window, not a
   defect of any task;
+- every row the read page left out. Reading 5 measured the page bound for the first time: the
+  unfiltered read returned two of my three rows because the other 48 slots of the 50-row page went
+  to rows on tasks I cannot decide, and the `task`-narrowed read returned all three. The size of
+  the queue past one page is therefore unknown from a role-scoped read, and a wave total that adds
+  up role-scoped reads without narrowing by task is an undercount;
 - every threshold that needs a live sample larger than this pilot can produce.
