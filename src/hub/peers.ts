@@ -115,6 +115,8 @@ export interface PeerAdapter {
   detachForRoster?(resetMode: PermissionMode): void | Promise<void>;
   /** Return to the roster after detachForRoster. */
   resumeFromRoster?(): Promise<void>;
+  /** #1402: the model the native surface reported for the turn that just ended, read once at its `turn_end`. Absent or undefined records nothing: unknown stays unknown. */
+  observedModel?(): import("./events.ts").ModelObservation | undefined;
   /** A peer the hub drives itself (Pi, the local worker). It cannot be trusted to rate its own urgency: the bus caps it. */
   readonly hubNative?: boolean;
   /** Never handed a delivery: its queue waits for `Bus.pull` (a Claude session that cannot show channel pushes, issue #205). */

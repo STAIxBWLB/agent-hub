@@ -1,5 +1,7 @@
 import { isReviewObserverExcluded } from "./memory-policy.ts";
 import { sanitize } from "./envelope.ts";
+import { MODEL_EVIDENCE } from "./events.ts";
+import { safeModelLabel } from "../omniroute/usage.ts";
 import type { BusEvent } from "./bus.ts";
 import { CLASSES, type Task } from "./board.ts";
 
@@ -16,7 +18,7 @@ const EVENT_FIELDS: Record<string,readonly string[]>={
   task:["id","event","by","state","owner","reviewer","class","profile","profileClass","role","pii","reason","release","priority","plannedStart","due"],
   tokens:["peer","n","task","attribution","pii"],
   usage:["peer","source","id","task","attribution","pii","reasoningTokens","measuredAt","inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens"],
-  turn_end:["peer","turn","ms","tokens","files","snapshotMs","task","attribution","pii"],
+  turn_end:["peer","turn","ms","tokens","files","snapshotMs","task","attribution","pii","model","modelEvidence"],
   conduct:["peer","action","task","target"],agent_cli:["peer","command","refused","delegated"],
   pii_screen:["task","item","label","source","category","miss","ms"],
   overflow:["id","from","peer"],undeliverable:["id","from","peer"],stale:["id","from","peer","task"],quiet:["id","from","peers"],
@@ -64,6 +66,8 @@ function metadataValue(type:string,key:string,value:unknown):boolean {
   if(key==="event")return type==="task"?typeof value==="string"&&TASK_EVENTS.has(value):type==="cohort"?oneOf(value,["formed","joined","lifted"]):oneOf(value,["requested","answered","expired","cancelled"]);
   if(key==="attribution")return oneOf(value,["delivery","single_open","unattributed"]);
   if(key==="label")return oneOf(value,["pii","clear"]);
+  if(key==="model")return safeModelLabel(value)!==undefined;
+  if(key==="modelEvidence")return oneOf(value,MODEL_EVIDENCE);
   if(key==="item")return oneOf(value,["task","summary","review note","handoff","note"]);
   if(key==="category")return oneOf(value,["name","student_id","phone","address","grade","health","other"]);
   if(key==="miss")return oneOf(value,["too long","off campus","timeout","unreadable","failed"]);

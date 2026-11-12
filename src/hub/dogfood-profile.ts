@@ -4,7 +4,8 @@ import { PII_CATEGORIES, type ScreenItem, type ScreenMiss, type ScreenRecord } f
 import type { Attribution } from "./attribution.ts";
 import { PROFILE_NAMES, projectProfile, type ProfileName } from "./profiles.ts";
 import { summarizeByTask } from "./report.ts";
-import type { StampedEvent } from "./events.ts";
+import { isModelEvidence, type StampedEvent } from "./events.ts";
+import { safeModelLabel } from "../omniroute/usage.ts";
 
 export interface ProfileHistory {
   at: number; event: string; criteria?: string[]; criteriaPrivate?: true; deliverables?: string[];
@@ -71,7 +72,7 @@ export function profileEventValid(value: unknown): boolean {
       || !optional("attribution",v=>member(v,attributions))) return false;
     if ((e.attribution==="delivery" || e.attribution==="single_open") && !positive(e.task)) return false;
     if (e.type==="tokens") return number(e.n);
-    if (e.type==="turn_end") return number(e.ms) && optional("turn",text) && optional("snapshotMs",number) && optional("tokens",number) && optional("files",number);
+    if (e.type==="turn_end") return number(e.ms) && optional("turn",text) && optional("snapshotMs",number) && optional("tokens",number) && optional("files",number) && optional("model",v=>safeModelLabel(v)!==undefined) && optional("modelEvidence",v=>isModelEvidence(v));
     return text(e.id) && member(e.source,usageSources)
       && ["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens","reasoningTokens"].every(key=>optional(key,number))
       && optional("measuredAt",v=>typeof v==="string" && Number.isFinite(Date.parse(v)));

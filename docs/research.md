@@ -69,6 +69,7 @@ Schema v2 is additive: a v1 file still loads (a v1 row reads as `outcome: "appro
 | `usage` | provider usage per peer: `input`, `output`, `cacheRead`, `total` (null when never reported) |
 | `usageByModel` | provider-reported total tokens per served (else requested) model |
 | `models` | model routes and served models of the attributed requests; a judge model-choice observation (a `route` event with `decisionTarget: "judge"`, #1389) is skipped before any accumulation, so it adds no route, peer or attribution |
+| `ownerModels` | #1402: `[{ model, evidence }]`, the models of the turns attributed to the task's owners: the owner's own `turn_end` `model`, then the `servedModel` (`served`) or `requestedModel` (`configured`) of its `usage` events, with the strongest grade seen per model (`served`, `session`, `configured`). A reviewer's model is never in it. `[]` when nothing was observed, and a record written before #1402 has no field: both read as `unknown` |
 | `writer` | the release and `live` or `backfill` |
 | `tooling` | #248: for each peer that worked on the task (owner, reviewer, a peer with attributed turns or tokens), the add-ons from the `tooling` event of the attachment it last worked in (an attachment runs from a `state` event that brings the peer online to the next `offline`; detection may settle after the work started): `{ name, version }` from the closed list `claude-mem`, `ponytail`, `ripwire`, `open-code-review`, `codex-plugin`, `dot-admit`; version null when unknown. A peer missing here is unknown; records built from events written before #248 have no field |
 | `briefs` | #258: task briefs handed over for the task (`delivered`) and how many carried a hub-memory fail note (`withFail`), from `memory_brief` events; absent when none was recorded |
@@ -150,12 +151,13 @@ names the agent (empty for the person).
 - tokens and wall time per approved task, median and p90 (linear interpolation between ranks);
 - by memory brief (#258): the same measures for tasks whose brief carried a hub-memory fail note, a brief without one,
   and no brief recorded (shown once any record has a brief).
+- by model (#1402): grouped on `ownerModels`, so a Codex task reviewed by Claude counts under the Codex model only, and a task whose owner used two models counts under each. A row is labelled with the weakest grade behind it when that is not `served` (`gpt-5.5 (session)`); tasks with no owner model are the `unknown` row, and the report prints one line saying how many and why they cannot be filled in (events written before #1402 carry no model, and a native surface that reports none stays unknown). `models` stays the union over every peer, for compatibility.
 
 They are computed each time from the records; nothing derived is stored. `ahub research export [--format jsonl|csv]
 [--since] [--all]` writes the records for outside analysis (`--dataset <dir>` writes the per-project dataset below); the CSV columns are, in order: project, task, class, pii,
 outcome, createdAt, startedAt, approvedAt, wallMs, activeMs, owners, reviewer, reviewRounds, changesRequested, checkPassed,
 checkFailed, dones, reassignments, firstPass, stuck, overlaps, conflicts, testsPass, testsFail, tokens, turns,
-filesChanged, models, label, labelBy, writerVersion, writerSource. The CSV is a flat subset; JSONL carries every field.
+filesChanged, models, label, labelBy, writerVersion, writerSource, ownerModels (`model:evidence`, space separated; added last, #1402). The CSV is a flat subset; JSONL carries every field.
 Another project's measures: `ahub --project <dir> research`.
 
 ## Add-ons (#248)

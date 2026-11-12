@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { RoleIdentity, StampedEvent } from "./events.ts";
+import { isModelEvidence, MODEL_EVIDENCE, type ModelEvidence, type RoleIdentity, type StampedEvent } from "./events.ts";
+import { safeModelLabel } from "../omniroute/usage.ts";
 import { hubHome } from "./project.ts";
 import { ADDONS, addonState, type Addon, type AddonName } from "./tooling.ts";
 import { MIN_ATTEMPTS, mulberry32 } from "./bench.ts";
@@ -25,6 +26,7 @@ export type Label = (typeof LABELS)[number];
 /** A person's later verdict that turns an approved task into a failure. */
 const FAILED: ReadonlySet<string> = new Set(["regressed", "reverted", "incomplete", "wrong", "abandoned"]);
 
+export interface OwnerModel { model: string; evidence: ModelEvidence }
 export interface PeerUsage { input: number | null; output: number | null; cacheRead: number | null; total: number | null }
 export interface TaskRecord {
   schema: ResearchSchema; kind: "task"; project: string; task: number;
@@ -64,6 +66,11 @@ export interface TaskRecord {
   turns: number; filesChanged: number;
   /** Model routes and served models seen for the task's attributed requests. */
   models: string[];
+  /**
+   * #1402: the models of the turns attributed to the task's owners (the owner's own `turn_end` model, then the `servedModel` / `requestedModel` of its `usage` events), each with its
+   * strongest evidence grade for this task. A reviewer's model is never in it. Absent on a record written before #1402, which reads as unknown; `[]` when nothing was observed.
+   */
+  ownerModels?: OwnerModel[];
   writer: { version: string; source: "live" | "backfill" };
   /** #248: the add-ons each peer that worked on the task had at its latest attach; a peer missing here is unknown. */
   tooling?: Record<string, Addon[]>;
@@ -86,6 +93,9 @@ const mergeKnown = (r: TaskRecord): boolean => !!r.merge && (r.merge.ciRuns !== 
 /** True when `next` has merge figures the held record of the same task lacks. */
 export const fillsMerge = (held: TaskRecord, next: TaskRecord): boolean => next.schema === RESEARCH_SCHEMA && !mergeKnown(held) && mergeKnown(next);
 
+/** #1402: a held v2 row written before `ownerModels` existed has no such field; a rebuilt row that can prove an owner model from the surviving events replaces it (a held row that has the field is final). */
+export const fillsOwnerModels = (held: TaskRecord, next: TaskRecord): boolean => next.schema === RESEARCH_SCHEMA && held.ownerModels === undefined && (next.ownerModels?.length ?? 0) > 0;
+
 /** The latest record of each task (a later row of the same task replaces an earlier one), in order of first appearance. */
 export function latestTaskRecords(records: readonly ResearchRecord[]): TaskRecord[] {
   const latest = new Map<string, TaskRecord>();
@@ -107,8 +117,10 @@ export const recordKey = (r: { project: string; task: number; createdAt: string 
 export const closedAtOf = (r: TaskRecord): string | null => r.closedAt ?? r.approvedAt;
 
 type V2Fields = "closedAt" | "cancelCause" | "declines" | "escalations" | "review" | "delivery" | "merge" | "specs" | "memory" | "person" | "stalls" | "handoffs" | "cohort";
-type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers" | "briefs" | "person" | V2Fields> & {
-  models: Set<string>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Map<string, number>; briefs: { delivered: number; withFail: number };
+type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models" | "tooling" | "peers" | "briefs" | "person" | "ownerModels" | V2Fields> & {
+  models: Set<string>;
+  /** #1402: peer -> model -> strongest grade, every peer that worked on the task; the owners are picked at the end. */
+  observed: Map<string, Map<string, ModelEvidence>>; approvedAt: string | null; lastState: string | null; tooling: Record<string, Addon[]>; peers: Map<string, number>; briefs: { delivered: number; withFail: number };
   /** #1278: the counts of the four attributed person events; joined with whether the log covers the task at the end. */
   person: PersonCounts;
   /** #1277: what the events alone say; the board and journal evidence is joined at the end. */
@@ -119,10 +131,22 @@ type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wall
 const keyed = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 const blank = (task: number): Acc => ({ task, class: null, pii: false, createdAt: null, startedAt: null, activeMs: 0, owners: [], reviewer: null,
   reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: keyed(), stuck: 0, overlaps: 0, conflicts: 0,
-  tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(),
+  tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(), observed: new Map(),
   approvedAt: null, lastState: null, tooling: keyed(), peers: new Map(), briefs: { delivered: 0, withFail: 0 }, person: emptyPersonCounts(),
   cancelledAt: null, declines: 0, escalations: 0, lastDoneMs: null, envelopes: 0, dropped: { fyi: 0, hop: 0 }, briefNotes: 0, briefFails: 0, cohort: null });
 const add = (current: number | null, value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? (current ?? 0) + value : current;
+/** Strongest grade first: `served`, `session`, `configured`. */
+const gradeRank = (grade: ModelEvidence): number => MODEL_EVIDENCE.indexOf(grade);
+/** Keep the strongest grade seen for a peer's model. A label `safeModelLabel` refuses or an unknown grade is ignored, never repaired. */
+function observeModel(a: { observed: Map<string, Map<string, ModelEvidence>> }, peer: string, model: unknown, grade: unknown): void {
+  const label = safeModelLabel(model);
+  // "unknown" is the placeholder some adapters write when a request named no model, not a model: it stays an unobserved turn, so it can never merge with the no-model row.
+  if (label === undefined || label.toLowerCase() === "unknown" || !isModelEvidence(grade)) return;
+  const models = a.observed.get(peer) ?? new Map<string, ModelEvidence>();
+  const held = models.get(label);
+  if (held === undefined || gradeRank(grade) < gradeRank(held)) models.set(label, grade);
+  a.observed.set(peer, models);
+}
 const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[key] = (counts[key] ?? 0) + n; };
 
 /**
@@ -222,6 +246,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     if (e.type === "tokens") { a.tokens.total += e.n; bump(a.tokens.byPeer, e.peer, e.n); bump(a.tokens.byAttribution, e.attribution ?? "unknown", e.n); }
     else if (e.type === "turn_end") {
       a.turns++; a.activeMs += e.ms; a.filesChanged += e.files ?? 0;
+      if (e.model !== undefined) observeModel(a, e.peer, e.model, e.modelEvidence);
       if (e.preparedRoles !== undefined) (a.sessionRoles ??= []).push({ peer: e.peer, turn: e.turn, roles: e.preparedRoles?.map(role => ({ id: role.id, layer: role.layer, hash: role.hash })) ?? null });
     }
     else if (e.type === "usage") {
@@ -231,6 +256,8 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       const u = a.usage[e.peer] ??= { input: null, output: null, cacheRead: null, total: null };
       u.input = add(u.input, e.inputTokens); u.output = add(u.output, e.outputTokens); u.cacheRead = add(u.cacheRead, e.cacheReadTokens); u.total = add(u.total, e.totalTokens);
       const model = e.servedModel ?? e.requestedModel;
+      // The provider named the served model for these responses; the requested one is only what the hub asked for.
+      if (e.servedModel) observeModel(a, e.peer, e.servedModel, "served"); else observeModel(a, e.peer, e.requestedModel, "configured");
       if (model) a.models.add(String(model));
       if (typeof e.totalTokens === "number" && Number.isFinite(e.totalTokens)) bump(a.usageByModel, String(model ?? "unknown"), e.totalTokens);
     }
@@ -246,7 +273,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     // Approved wins over a later reopening (the record the live writer stored at the approval); otherwise the task must end cancelled.
     const outcome: "approved" | "cancelled" | undefined = a.approvedAt ? "approved" : a.lastState === "cancelled" && a.cancelledAt ? "cancelled" : undefined;
     if (!outcome) continue;
-    const { person, approvedAt, lastState: _state, models, tooling: fingerprints, peers, briefs, cancelledAt, declines, escalations, lastDoneMs, envelopes, dropped, briefNotes, briefFails, cohort, ...rest } = a;
+    const { person, approvedAt, lastState: _state, models, observed, tooling: fingerprints, peers, briefs, cancelledAt, declines, escalations, lastDoneMs, envelopes, dropped, briefNotes, briefFails, cohort, ...rest } = a;
     const closedAt = (outcome === "approved" ? approvedAt : cancelledAt)!;
     const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(closedAt);
     const task = evidence.tasks.get(a.task), board = evidence.board;
@@ -260,7 +287,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     // The events say whether the task went to review at all; a board that cannot say leaves the round count unknown.
     out.push({ schema: RESEARCH_SCHEMA, kind: "task", project: projectKey(projectId), ...rest, outcome, approvedAt: approvedAt ?? null, closedAt,
       wallMs: Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null,
-      firstPass: outcome === "approved" && a.changesRequested === 0 && a.checkFailed === 0 && a.reviewRounds <= 1, models: [...models].sort(), writer,
+      firstPass: outcome === "approved" && a.changesRequested === 0 && a.checkFailed === 0 && a.reviewRounds <= 1, models: [...models].sort(), ownerModels: ownerModelsOf(observed, a.owners), writer,
       ...(Object.keys(fingerprints).length ? { tooling: fingerprints, peers: [...peers.keys()].sort() } : {}), ...(briefs.delivered ? { briefs } : {}),
       ...(outcome === "cancelled" ? { cancelCause: task?.history.findLast(entry => entry.event === "cancelled")?.cause ?? "unknown" } : {}),
       declines, escalations, review,
@@ -275,6 +302,16 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
       cohort: cohort ?? "none" });
   }
   return out.sort((x, y) => closedAtOf(x)!.localeCompare(closedAtOf(y)!) || x.task - y.task);
+}
+
+/** The observations of the peers that held the task, one entry per model with its strongest grade, sorted by model. A peer that only reviewed contributes nothing. */
+function ownerModelsOf(observed: Map<string, Map<string, ModelEvidence>>, owners: readonly string[]): OwnerModel[] {
+  const out = new Map<string, ModelEvidence>();
+  for (const owner of new Set(owners)) for (const [model, grade] of observed.get(owner) ?? []) {
+    const held = out.get(model);
+    if (held === undefined || gradeRank(grade) < gradeRank(held)) out.set(model, grade);
+  }
+  return [...out].map(([model, evidence]) => ({ model, evidence })).sort((x, y) => x.model < y.model ? -1 : x.model > y.model ? 1 : 0);
 }
 
 /** Every record in one store file; a line that does not parse is skipped. */
@@ -304,9 +341,9 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
   mkdirSync(researchDir(home), { recursive: true, mode: 0o700 });
   chmodSync(researchDir(home), 0o700); // mkdir's mode applies only when it creates the directory
   // A v2 row replaces a held v1 row of the same task (readers keep the latest per task). A held v2 row is final, as a held row always was, with one exception: the live writer
-  // records a task at its approval and the guarded merge writes its receipt later, so a later pass may append the same task with the merge figures it could not know then.
+  // records a task at its approval and the guarded merge writes its receipt later, so a later pass may append the same task with the merge figures it could not know then. #1402: likewise a row with no `ownerModels` field, which `ahub research backfill` fills from the events that still carry a model.
   const held = new Map(readStore(file).flatMap((r) => r.kind === "task" && r.schema === RESEARCH_SCHEMA ? [[recordKey(r), r] as const] : []));
-  const added = records.filter((r) => r.kind === "label" || r.schema !== RESEARCH_SCHEMA || !held.has(recordKey(r)) || fillsMerge(held.get(recordKey(r))!, r));
+  const added = records.filter((r) => r.kind === "label" || r.schema !== RESEARCH_SCHEMA || !held.has(recordKey(r)) || fillsMerge(held.get(recordKey(r))!, r) || fillsOwnerModels(held.get(recordKey(r))!, r));
   if (!added.length) return 0;
   appendFileSync(file, added.map((r) => JSON.stringify(r)).join("\n") + "\n", { mode: 0o600 });
   chmodSync(file, 0o600);
@@ -364,6 +401,10 @@ function measures(records: TaskRecord[], labels: Map<string, Label>): Measures {
     wallMsPerTask: { median: quantile(records.flatMap((r) => r.wallMs ?? []), 0.5), p90: quantile(records.flatMap((r) => r.wallMs ?? []), 0.9) } };
 }
 export interface ResearchReport { overall: Measures; byClass: Record<string, Measures>; byOwner: Record<string, Measures>; byProject: Record<string, Measures>; byModel: Record<string, Measures>;
+  /** #1402: the weakest evidence grade behind each `byModel` key (the key stays the model id); the no-model `unknown` row has none. `formatResearch` shows it when it is not `served`. */
+  modelEvidence: Record<string, ModelEvidence>;
+  /** #1402: tasks with an owner model, and without one (the `unknown` row). */
+  modelCoverage: { tasks: number; withModel: number; unknown: number };
   /** #258 AC11: tasks whose brief carried a hub-memory fail note, a brief without one, or no brief recorded. */
   byMemoryBrief: Record<string, Measures> }
 /**
@@ -378,8 +419,29 @@ export function researchReport(records: ResearchRecord[], since = 0): ResearchRe
     for (const r of all) for (const k of keys(r)) out.set(k, [...(out.get(k) ?? []), r]);
     return Object.fromEntries([...out].sort(([a], [b]) => a.localeCompare(b)).map(([k, rs]) => [k, measures(rs, labels)]));
   };
-  return { overall: measures(all, labels), byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
-    byProject: group((r) => [r.project]), byModel: group((r) => r.models.length ? r.models : ["unknown"]),
+  // Owner models only: a reviewer's model is not the implementer's. A record without `ownerModels` predates #1402 and reads as unknown.
+  const byModel = new Map<string, { records: TaskRecord[]; weakest: ModelEvidence }>();
+  const noModel = { records: [] as TaskRecord[] };
+  let withModel = 0;
+  for (const r of all) {
+    const owned = r.ownerModels ?? [];
+    // A stored "unknown" id is the placeholder, never a model (see `observeModel`): it reads as no model, so it cannot merge with a real one.
+    const real = owned.filter(m => m.model.toLowerCase() !== "unknown");
+    if (!real.length) { const row = noModel; row.records.push(r); continue; }
+    withModel++;
+    for (const { model, evidence } of real) {
+      const row = byModel.get(model) ?? { records: [], weakest: evidence };
+      row.records.push(r);
+      if (gradeRank(evidence) > gradeRank(row.weakest)) row.weakest = evidence;
+      byModel.set(model, row);
+    }
+  }
+  const modelRows = [...byModel].map(([model, row]) => [model, measures(row.records, labels)] as const);
+  if (noModel.records.length) modelRows.push(["unknown", measures(noModel.records, labels)] as const);
+  const byModelRows = Object.fromEntries(modelRows.sort(([a], [b]) => a.localeCompare(b)));
+  const modelEvidence = Object.fromEntries([...byModel].map(([model, row]) => [model, row.weakest] as const));
+  return { overall: measures(all, labels), modelEvidence, modelCoverage: { tasks: all.length, withModel, unknown: all.length - withModel }, byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
+    byProject: group((r) => [r.project]), byModel: byModelRows,
     byMemoryBrief: group((r) => [!r.briefs ? "no brief recorded" : r.briefs.withFail ? "a fail note in its brief" : "brief without a fail note"]) };
 }
 
@@ -389,7 +451,7 @@ export function formatResearch(r: ResearchReport): string[] {
   const row = (name: string, m: Measures) => `${name.padEnd(24)} ${String(m.tasks).padStart(5)}  ${fmtPct(m.successRate).padStart(7)}  ${fmtPct(m.firstPassRate).padStart(10)}  ${(m.reworkRate === null ? "-" : m.reworkRate.toFixed(2)).padStart(6)}  ${fmtPct(m.checkFailureRate).padStart(11)}  ${fmtNum(m.tokensPerTask.median).padStart(10)}  ${fmtNum(m.tokensPerTask.p90).padStart(10)}  ${(m.wallMsPerTask.median === null ? "-" : `${Math.round(m.wallMsPerTask.median / 60_000)}m`).padStart(8)}`;
   const head = `${"".padEnd(24)} ${"tasks".padStart(5)}  ${"success".padStart(7)}  ${"first pass".padStart(10)}  ${"rework".padStart(6)}  ${"check fails".padStart(11)}  ${"tokens p50".padStart(10)}  ${"tokens p90".padStart(10)}  ${"wall p50".padStart(8)}`;
   const section = (title: string, groups: Record<string, Measures>) => Object.keys(groups).length ? [``, title, head, ...Object.entries(groups).map(([k, m]) => row(k, m))] : [];
-  return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", r.byModel), ...section("by project", r.byProject), ...(Object.keys(r.byMemoryBrief).some((k) => k !== "no brief recorded") ? section("by memory brief", r.byMemoryBrief) : [])];
+  return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", Object.fromEntries(Object.entries(r.byModel).map(([model, m]) => [r.modelEvidence[model] && r.modelEvidence[model] !== "served" ? `${model} (${r.modelEvidence[model]})` : model, m]))), ...(r.modelCoverage.unknown ? [`${r.modelCoverage.unknown} of ${r.modelCoverage.tasks} tasks have no owner model: records written before #1402 carry none (run ahub research backfill to fill the tasks whose events still carry a model), and an agent whose native surface reports no model cannot be filled in; unknown stays unknown`] : []), ...section("by project", r.byProject), ...(Object.keys(r.byMemoryBrief).some((k) => k !== "no brief recorded") ? section("by memory brief", r.byMemoryBrief) : [])];
 }
 
 /**
@@ -475,7 +537,7 @@ export function formatAddons(rows: AddonComparison[]): string[] {
 
 export const CSV_COLUMNS = ["project", "task", "class", "pii", "outcome", "createdAt", "startedAt", "approvedAt", "wallMs", "activeMs", "owners",
   "reviewer", "reviewRounds", "changesRequested", "checkPassed", "checkFailed", "dones", "reassignments", "firstPass", "stuck", "overlaps", "conflicts",
-  "testsPass", "testsFail", "tokens", "turns", "filesChanged", "models", "label", "labelBy", "writerVersion", "writerSource"] as const;
+  "testsPass", "testsFail", "tokens", "turns", "filesChanged", "models", "label", "labelBy", "writerVersion", "writerSource", "ownerModels"] as const;
 /** Task records as CSV with a header row, one row per record, each with its effective label and who gave it (empty: the person); JSONL has every field. */
 export function toCsv(records: ResearchRecord[]): string {
   const labels = effectiveLabels(records);
@@ -483,6 +545,6 @@ export function toCsv(records: ResearchRecord[]): string {
   const rows = records.filter((r): r is TaskRecord => r.kind === "task").map((r) => [r.project, r.task, r.class, r.pii, r.outcome, r.createdAt, r.startedAt,
     r.approvedAt, r.wallMs, r.activeMs, r.owners.join(" "), r.reviewer, r.reviewRounds, r.changesRequested, r.checkPassed, r.checkFailed, r.dones,
     r.reassignments, r.firstPass, r.stuck, r.overlaps, r.conflicts, r.tests.pass, r.tests.fail, r.tokens.total, r.turns, r.filesChanged, r.models.join(" "),
-    labels.get(recordKey(r))?.label ?? "", labels.get(recordKey(r))?.by ?? "", r.writer.version, r.writer.source].map(cell).join(","));
+    labels.get(recordKey(r))?.label ?? "", labels.get(recordKey(r))?.by ?? "", r.writer.version, r.writer.source, (r.ownerModels ?? []).map((m) => `${m.model}:${m.evidence}`).join(" ")].map(cell).join(","));
   return [CSV_COLUMNS.join(","), ...rows].join("\n") + "\n";
 }

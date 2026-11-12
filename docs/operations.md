@@ -2051,6 +2051,7 @@ ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex
   `git gc` prunes them after `gc.pruneExpire` (two weeks by default); undoing an
   older turn says so.
 - Each `turn_end` event carries `files` and `snapshotMs` (`ahub export`).
+- Each `turn_end` event may carry `model` and `modelEvidence` (#1402): the model id exactly as the peer's native surface reported it (passed through `safeModelLabel`; a label it refuses is dropped whole, an alias is never expanded) and how it was learned, `served` (named for this turn's responses), `session` (the native session's current model) or `configured` (only the hub's own override). A turn with no observation records neither field. `ahub research` reads them into `ownerModels` and groups by model on the owner's turns.
 
 ## Edit conflicts
 
