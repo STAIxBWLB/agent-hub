@@ -576,6 +576,29 @@
         "src/cli/configured-acp-entry.ts",
         "src/adapters/configured-acp.ts"
       ]
+    },
+    "docs/agent-notes/security-review.md": {
+      "verifiedAgainst": "f3cf2d51b787b5436cc1020781aa8f9e08a90561",
+      "paths": [
+        "src/hub/envelope.ts",
+        "src/hub/conductor.ts",
+        "src/hub/tool-refusal.ts",
+        "src/hub/memory-policy.ts",
+        "src/hub/operational-view.ts",
+        "src/hub/ui.ts",
+        "src/hub/sources.ts",
+        "src/hub/project.ts",
+        "src/hub/check-runner.ts",
+        "src/local/tools.ts",
+        "src/omniroute/client.ts",
+        "src/omniroute/usage.ts",
+        "src/adapters/reviewer-mcp.ts",
+        "src/adapters/pi.ts",
+        "REVIEW.md",
+        "src/hub/daemon.ts",
+        "src/hub/tasks.ts",
+        "src/adapters/claude-channel.ts"
+      ]
     }
   }
 }
