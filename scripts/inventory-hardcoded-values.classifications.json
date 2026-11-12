@@ -566,6 +566,8 @@
   "src/adapters/reviewer-mcp.ts:RESULT_CAP:constant:RESULT_CAP=4 * 1024 * 1024#0": "safety floor",
   "src/adapters/reviewer-mcp.ts:message:inline:sanitize(failure.message).slice=4000#0": "safety floor",
   "src/adapters/reviewer-policy-watch.ts:POLICY_POLL_MS:constant:POLICY_POLL_MS=100#0": "operational",
+  "src/adapters/same-directory.ts:sameDirectory:inline:named.length > 4096=4096#0": "safety floor",
+  "src/adapters/same-directory.ts:shownValue:inline:value.length <= 200=200#0": "operational",
   "src/broker/server.ts:idleTimeout:inline:idleTimeout=60#0": "operational",
   "src/broker/server.ts:maxRequestBodySize:inline:maxRequestBodySize=8192#0": "safety floor",
   "src/broker/server.ts:timer:inline:setInterval=1000#0": "operational",

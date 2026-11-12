@@ -2,6 +2,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { hubGitSync } from "../../hub/git.ts";
+import { sameDirectory, shownValue } from "../same-directory.ts";
 
 export const JCODE_MCP_FILE = ".jcode/mcp.json", JCODE_MCP_NAME = "agent-hub-jcode";
 type Document = Record<string, unknown>;
@@ -24,8 +25,21 @@ const map = (doc: Document): Document => (doc.mcpServers ?? doc.servers ?? {}) a
  * hub tools act as the base peer. Each owned launch path supplies its own id instead (peerChildEnv for serve and ACP, the TUI launch env).
  * An entry written before this still hardcodes the id: `jcodeMcpReady` is false for it, and the launcher rewrites it.
  */
-const owned = (entry: unknown, cwd: string): entry is Document => object(entry) && object(entry.env) && entry.env.AGENTHUB_MODE === "tools"
-  && (entry.env.AGENTHUB_PEER_ID === undefined || entry.env.AGENTHUB_PEER_ID === "jcode") && entry.env.AGENTHUB_PROJECT_DIR === cwd;
+/**
+ * The first field that makes an existing entry not the hub's, or undefined when it is. The project dir is compared by real path (#1423): a project directory that was renamed, with the old
+ * path left as a symlink, still names this directory, so the hub's own entry from before the move is rewritten rather than refused as foreign.
+ */
+function foreignField(entry: unknown, cwd: string): string | undefined {
+  if (!object(entry)) return "the entry is not an object";
+  if (!object(entry.env)) return "env is missing";
+  if (entry.env.AGENTHUB_MODE !== "tools") return "AGENTHUB_MODE is not tools";
+  if (entry.env.AGENTHUB_PEER_ID !== undefined && entry.env.AGENTHUB_PEER_ID !== "jcode") return "AGENTHUB_PEER_ID names another peer";
+  if (!sameDirectory(entry.env.AGENTHUB_PROJECT_DIR, cwd)) {
+    const named = shownValue(entry.env.AGENTHUB_PROJECT_DIR);
+    return `AGENTHUB_PROJECT_DIR ${named ? `${named} ` : ""}is not this project (${cwd})`;
+  }
+  return undefined;
+}
 
 export function jcodeMcpEntry(cwd: string, stateDir: string, bundle: string) {
   return { command: "bun", args: ["run", bundle], shared: false, env: { AGENTHUB_MODE: "tools", AGENTHUB_DELIVERY_ONLY: "true", AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } };
@@ -48,7 +62,8 @@ export function jcodeMcpReady(cwd: string, stateDir: string, bundle: string): bo
 /** Only the console launcher calls this; daemon starts use jcodeMcpReady read-only. */
 export function configureJcodeMcp(cwd: string, stateDir: string, bundle: string, remove = false): { changed: boolean; tracked: boolean } {
   const current = inspect(cwd), servers = { ...map(current) }, existing = servers[JCODE_MCP_NAME];
-  if (existing !== undefined && !owned(existing, cwd)) throw new Error("agent-hub-jcode is a foreign MCP entry; it was not changed");
+  const why = existing === undefined ? undefined : foreignField(existing, cwd);
+  if (why !== undefined) throw new Error(`agent-hub-jcode is a foreign MCP entry (${why}); it was not changed. If it is the hub's own entry from before the project moved, remove the ${JCODE_MCP_NAME} key from ${JCODE_MCP_FILE} and run ahub jcode again.`);
   if (remove) delete servers[JCODE_MCP_NAME]; else servers[JCODE_MCP_NAME] = jcodeMcpEntry(cwd, stateDir, bundle);
   const key = current.servers !== undefined ? "servers" : "mcpServers";
   const next = { ...current, ...(current[key] !== undefined || !remove ? { [key]: servers } : {}) };
