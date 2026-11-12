@@ -17,6 +17,8 @@ import { piToolStepCeiling, type PiToolStepCeiling } from "../pi/ceiling.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
 import { QuestionWaitDetached } from "../hub/question-detach.ts";
 import type { StartForm } from "./registry-types.ts";
+import { stateModelId } from "./pi-state-model.ts";
+import type { ModelObservation } from "../hub/events.ts";
 
 export interface PiModelDescriptor { id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean; }
 export interface PiToolSchema { name: string; description?: string; parameters: Record<string, unknown>; }
@@ -209,6 +211,8 @@ export class PiPeer extends BasePeer {
   private owner = randomUUID();
   private _tuiLaunch?: PiTuiLaunch;
   private requestedModel = "";
+  /** #1402: what the turn that is running, or just ended, was on: the `get_state` model (`session`), else the model the hub set (`configured`). Read once at the turn end; never invented. */
+  private turnModel: ModelObservation | undefined;
   private baselineRequestedModel = "";
   private runtimeModelSelected = false;
   private starting?: Promise<void>;
@@ -772,6 +776,8 @@ export class PiPeer extends BasePeer {
         this.runtimeModelSelected = selection?.model !== undefined;
       }
       if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
+      await this.captureTurnModel(requested);
+      if (rosterEpoch !== this.rosterEpoch || !this.acceptingTools) throw new Error("Pi is off roster or stopped");
       this.noteActivity();
       attempted = true;
       if (deliveryId) this.activeDeliveryIds.add(deliveryId);
@@ -847,6 +853,22 @@ export class PiPeer extends BasePeer {
     }
   }
 
+  /**
+   * #1402 T4: a headless Pi reports its current model in `get_state`; that is `session` evidence. The TUI snapshot (`get_session_state`) carries no model, and a failed or placeholder read leaves the model the hub
+   * itself set through `set_model` (Pi acknowledged it), which is only `configured`. A read that fails never fails the delivery.
+   */
+  private async captureTurnModel(requested: string | undefined): Promise<void> {
+    this.turnModel = undefined;
+    if (this.opts.mode !== "tui") {
+      try {
+        const state = await this.waitRpc("get_state", 5_000);
+        const id = state.success === true ? stateModelId(state.data) : undefined;
+        if (id) { this.turnModel = { model: id, evidence: "session" }; return; }
+      } catch { /* optional metadata: the turn goes on without it */ }
+    }
+    if (requested) this.turnModel = { model: requested, evidence: "configured" };
+  }
+  observedModel(): ModelObservation | undefined { const model = this.turnModel; this.turnModel = undefined; return model; }
   getRequestedModel(): string { return this.requestedModel; }
   getBaselineRequestedModel(): string { return this.baselineRequestedModel; }
   async setRequestedModel(model: string): Promise<void> {

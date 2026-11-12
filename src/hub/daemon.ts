@@ -3476,6 +3476,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // same peer cannot undo a settlement.
   const turnEnded = new Map<PeerId, number>();
   const nativeCompletedAt = new Map<PeerId, number>();
+  /** #1402: the model the latest accepted native hook payload named, per peer (Antigravity's `modelName`); `session` evidence, read once at the turn end and dropped when the peer goes offline. */
+  const hookModels = new Map<PeerId, string>();
   startupTimings.mark("task_runtime");
   const startupSeeds = readStartupEventSeeds(join(opts.stateDir, "events.jsonl"));
   try { opts.startupSeedObserved?.({ readPasses: startupSeeds.readPasses, readBytes: startupSeeds.readBytes }); } catch { /* Diagnostic observers cannot change replay or readiness. */ }
@@ -4158,7 +4160,13 @@ export async function startDaemon(opts: DaemonOptions) {
     return snapshotBudget;
   };
   /** #1402: the `turn_end` model fields for a peer, read through its adapter. An adapter that throws or reports nothing records neither field; a label `safeModelLabel` refuses is dropped whole. */
-  const observedTurnModel = (peer: string) => { try { return turnModelFields(bus.peers.get(peer)?.observedModel?.()); } catch { return {}; } };
+  const observedTurnModel = (peer: string) => {
+    try {
+      // The adapter's own observation first; a native-hook peer (Antigravity) has none, so the model its hook payloads named is the session's current model. Read once, like the adapter's.
+      const hooked = hookModels.get(peer); hookModels.delete(peer);
+      return turnModelFields(bus.peers.get(peer)?.observedModel?.() ?? (hooked ? { model: hooked, evidence: "session" } : undefined));
+    } catch { return {}; }
+  };
   const snapshotFailure = (what: string, error: unknown) => {
     if (error instanceof SnapshotBudgetExceeded) {
       if (!snapshotBudgetNoticed) log(`snapshot unavailable: ${error.message}`);
@@ -7503,7 +7511,7 @@ export async function startDaemon(opts: DaemonOptions) {
     uiEvents.push({ seq: ++uiSequence, event: e });
     if (uiEvents.length > 200) uiEvents.shift();
     if (e.t === "state") {
-      if (e.state === "offline") { modelBoundaries.delete(e.peer); modelLatches.forget(e.peer); }
+      if (e.state === "offline") { modelBoundaries.delete(e.peer); modelLatches.forget(e.peer); hookModels.delete(e.peer); }
       roomCommands.changed();
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
@@ -11609,6 +11617,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (launch.generation && launch.generation !== owner.sessionGeneration) return void reply({ ok: false });
         launch.generation = owner.sessionGeneration;
         launch.transcript = native.transcriptPath;
+        if (native.model) hookModels.set(peer, native.model);
         const callStarted = performance.now();
         const tally = () => tallyHook(peer, callStarted, msg.startedMs);
         const current = () => !stopping && nativeHookLaunches.get(peer, msg.nativeLaunchId) === launch && bus.peers.get(peer) === owner && owner.sessionGeneration === launch.generation && owner.state !== "offline";

@@ -145,6 +145,8 @@ export interface NativeFactsInput {
   invocation?: number;
   fullyIdle?: boolean;
   terminationReason?: string;
+  /** #1402: the hook payload's `modelName` when it is a safe model id; the session's current model, never a per-response one. */
+  model?: string;
 }
 export interface NativeFactsReadOptions {
   completion?: boolean;

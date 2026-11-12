@@ -2,12 +2,18 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "
 import { homedir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { createHash } from "node:crypto";
+import { safeModelLabel } from "../../omniroute/usage.ts";
 import type { NativeFactsInput, NativeFactsPort, NativeFactsReadOptions, NativeFactsTranscript } from "../registry-types.ts";
 
 const EVENTS = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"] as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 
+/** #1402: Antigravity names the session's model in every hook payload (`modelName`, verified for 1.4.3 to 1.5.3). A value `safeModelLabel` refuses or the placeholder `unknown` names none; an alias is kept as reported. */
+function agyModel(value: unknown): string | undefined {
+  const model = safeModelLabel(value);
+  return model !== undefined && model.toLowerCase() !== "unknown" ? model : undefined;
+}
 /** The pinned 1.4.2 envelope has no event name: the managed command supplies it separately. */
 export function decodeAgyHook(event: string, value: unknown): NativeFactsInput | undefined {
   if (!(EVENTS as readonly string[]).includes(event) || !record(value) || typeof value.conversationId !== "string" || !UUID.test(value.conversationId)
@@ -54,6 +60,7 @@ export function decodeAgyHook(event: string, value: unknown): NativeFactsInput |
     workspacePaths: value.workspacePaths as string[], tool, input,
     ...(Number.isSafeInteger(value.stepIdx) && (value.stepIdx as number) >= 0 ? { toolUseId: `${value.conversationId}:${value.stepIdx}` } : {}),
     ...(Number.isSafeInteger(value.invocationNum) && (value.invocationNum as number) >= 0 ? { invocation: value.invocationNum as number } : {}),
+    ...(agyModel(value.modelName) ? { model: agyModel(value.modelName)! } : {}),
     ...(event === "Stop" ? { fullyIdle: value.fullyIdle as boolean, terminationReason: typeof value.terminationReason === "string" ? value.terminationReason : "" } : {}) };
 }
 

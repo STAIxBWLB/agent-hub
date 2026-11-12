@@ -551,6 +551,7 @@
   "src/adapters/pi.ts:snapshot:inline:this.waitRpc=15_000#0": "operational",
   "src/adapters/pi.ts:startOwnerMonitor:inline:setInterval=500#0": "operational",
   "src/adapters/pi.ts:state:inline:this.waitRpc=15_000#0": "operational",
+  "src/adapters/pi.ts:state:inline:this.waitRpc=5_000#0": "operational",
   "src/adapters/pi.ts:stop:inline:Bun.sleep=50#0": "operational",
   "src/adapters/pi.ts:stopSurvivingOwner:inline:Bun.sleep=50#0": "operational",
   "src/adapters/pi.ts:stopSurvivingOwner:inline:Bun.sleep=50#1": "operational",
