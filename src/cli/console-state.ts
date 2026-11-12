@@ -1003,7 +1003,9 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
     const paused = b?.paused ? `budget ${relative(b.paused.resetsAt, now)}` : row.paused && typeof row.paused === "object"
       ? `${row.paused.by ?? "paused"}${typeof row.paused.at === "number" ? ` ${duration(now - row.paused.at)}` : ""}`
       : row.paused === "manual" ? "user" : row.paused ? String(row.paused).split(":")[0] : "-";
-    return [id(row.planner ? `${row.id} (planner)` : row.id, row.state === "offline" ? undefined : "info"), span(`${row.rostered === false ? `${row.state} off roster` : row.state}${Array.isArray(row.standbySessions) && row.standbySessions.length ? ` +standby:${row.standbySessions.length}` : ""}`, stateTone(row.state)),
+    // #1414: the conductor from the hub's settled flow roles, first so a narrow PEER column still shows it; an older hub without flowRoles keeps the planner-only label.
+    const tags = [Array.isArray(row.flowRoles) && row.flowRoles.includes("conductor") && "conductor", row.planner && "planner"].filter(Boolean);
+    return [id(tags.length ? `${row.id} (${tags.join(", ")})` : row.id, row.state === "offline" ? undefined : "info"), span(`${row.rostered === false ? `${row.state} off roster` : row.state}${Array.isArray(row.standbySessions) && row.standbySessions.length ? ` +standby:${row.standbySessions.length}` : ""}`, stateTone(row.state)),
       ...(showPermissionModes(s) ? [span(row.permissionMode && row.permissionMode !== "ask" ? row.permissionMode : "-", row.permissionMode === "never-ask" ? "attention" : undefined)] : []),
       span(row.pullOnly && definitionOf(row.id)?.attach?.pullOnlyForms?.includes("tui") ? "pull-only" : row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
       ((hub) => span(hub.cell, hub.differs ? "attention" : hub.cell === "-" || hub.unknown ? "muted" : undefined))(peerHubVersion(row, s.versions?.daemon)),

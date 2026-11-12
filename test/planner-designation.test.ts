@@ -84,6 +84,14 @@ test("with the roles planner off the roster the hub assigns one automatically an
   expect(renderStatus({ peers: {}, planner: { peers: ["codex"], source: "automatic" } }, 120).flat().map(s => s.text).join("")).toContain("pin it with ahub settings set planner <peer>");
 });
 
+test("console names the conductor beside the planner from the settled flow roles (#1414)", () => {
+  const s = initialConsoleState(true); s.panel = 1;
+  s.peers = { claude: { state: "idle", flowRoles: ["planner", "reviewer", "conductor"], planner: "roles" }, codex: { state: "idle", flowRoles: ["conductor"] }, pi: { state: "idle", flowRoles: ["implementer"] }, kimi: { state: "idle" } };
+  const out = renderConsole(s, 160, 24, 0).join("\n");
+  expect(out).toContain("claude (conductor, planner)"); expect(out).toContain("codex (conductor)");
+  expect(out).not.toContain("pi ("); expect(out).not.toContain("kimi (");
+});
+
 test("console marks the planner and l then y runs the setting as a terminal command (#455)", () => {
   const s = initialConsoleState(true); s.panel = 1;
   s.peers = { claude: { state: "idle", flowRoles: ["planner", "reviewer"], planner: "roles" }, codex: { state: "idle", flowRoles: ["implementer"] }, pi: { state: "idle" } };
