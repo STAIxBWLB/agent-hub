@@ -14,6 +14,12 @@ import { currentRouting } from "../src/hub/routing.ts";
 const dirs: string[] = [];
 const stores: MemoryStore[] = [];
 afterEach(() => { for (const s of stores.splice(0)) s.close(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+// The curated index file is versioned by the package (0.25.0 names `index-v4.db`; 0.24.0 kept `index.db`) and `indexFileName` is not a root export. Read the name from what a fresh store creates, so a pin bump cannot turn the lock tests into locks on a file the store never opens.
+function indexFileOf(home: string): string {
+  const found = readdirSync(join(home, "memory")).filter((n) => /^index(-v\d+)?\.db$/.test(n));
+  if (found.length !== 1) throw new Error(`expected one curated index file in the store directory, found ${JSON.stringify(found)}`);
+  return found[0]!;
+}
 const temp = (name: string) => { const d = realpathSync(mkdtempSync(join(tmpdir(), `ahub-mem-${name}-`))); dirs.push(d); return d; };
 const DAY = 24 * 3600_000;
 function store(home: string, clock: { t: number }, screen: PromotionScreen = () => "promote") { const s = new MemoryStore({ home, now: () => clock.t, screen }); stores.push(s); return s; }
@@ -95,7 +101,7 @@ test("an incremental index equals a rebuild from the logs, in any order, and bad
   s.rebuild();
   expect(s.dump()).toBe(incremental);
   // A fresh index (another process, a deleted index.db) reads to the same rows.
-  for (const f of readdirSync(join(home, "memory")).filter((n) => n.startsWith("index.db"))) rmSync(join(home, "memory", f));
+  for (const f of readdirSync(join(home, "memory")).filter((n) => n.startsWith("index"))) rmSync(join(home, "memory", f));
   const fresh = store(home, clock);
   expect(fresh.dump()).toBe(incremental);
 });
@@ -608,7 +614,7 @@ test("review of #352: a note on a task never approved leaves after the fixed bac
 test("review of #352: a note written while the index is locked shows on the next read", () => {
   const home = temp("busy"), clock = { t: Date.parse("2026-10-01T00:00:00Z") };
   const s = store(home, clock);
-  const other = new Database(join(home, "memory", "index.db"));
+  const other = new Database(join(home, "memory", indexFileOf(home)));
   other.run("BEGIN IMMEDIATE");
   s.note(note({ tier: "long", kind: "decision", text: "written while locked" })); // the line is saved; the index waits
   other.run("COMMIT");
@@ -621,7 +627,7 @@ test("review of #352: a long-lived store reads what another process wrote, with 
   const daemon = store(home, clock), cli = store(home, clock);
   expect(daemon.list()).toEqual([]);
   // The CLI writes while the index is locked, so its own refresh fails, and then it exits.
-  const lock = new Database(join(home, "memory", "index.db"));
+  const lock = new Database(join(home, "memory", indexFileOf(home)));
   lock.run("BEGIN IMMEDIATE");
   const id = cli.note(note({ tier: "long", kind: "decision", text: "from the cli" }));
   lock.run("COMMIT"); lock.close();
@@ -641,7 +647,7 @@ for (const anotherReader of [false, true]) {
       let suggestion = change === "suggestion verdict" ? writer.suggest(a, b, "same_topic")! : "";
       const reader = anotherReader ? store(home, clock) : writer;
       const task = "work/app#3@1";
-      const lock = new Database(join(home, "memory", "index.db"));
+      const lock = new Database(join(home, "memory", indexFileOf(home)));
       lock.run("BEGIN IMMEDIATE");
       try {
         // The public mutation succeeds because its log line persists, but the index update times out.

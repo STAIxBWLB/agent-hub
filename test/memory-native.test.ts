@@ -90,7 +90,7 @@ test("notes on an open task are short-term; approval promotes decisions, contrac
 
   // No PII marker anywhere in the logs or the index.
   const files = ["log", "local"].flatMap((d) => readdirSync(join(home, "memory", d)).map((f) => join(home, "memory", d, f)));
-  for (const file of [...files, join(home, "memory", "index.db")]) for (const m of MARKERS) expect(readFileSync(file, "latin1")).not.toContain(m);
+  for (const file of [...files, ...readdirSync(join(home, "memory")).filter((name) => /^index(-v\d+)?\.db$/.test(name)).map((name) => join(home, "memory", name))]) for (const m of MARKERS) expect(readFileSync(file, "latin1")).not.toContain(m);
 
   // The dashboard's Memory section: one tier, filtered, with the neighbourhood and detail of the selected node.
   const snap = await h.console.request({ t: "ui_snapshot", after: 0, memory: { tier: "long", kind: "fail", node: `mem:${long.find((v) => v.kind === "fail")!.id}`, hops: 2 } });

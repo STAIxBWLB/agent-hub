@@ -116,7 +116,7 @@ import { runSpecs, runSpecsStamp } from "./specs.ts";
 import { confirmTidy, planTidy, realTidyGit, rowsFromReply, type TidyGit } from "./worktree-tidy.ts";
 import { renderTidyPreview, renderTidyResult, renderWorktrees } from "./worktrees-output.ts";
 import { formatMemoryStaleAnchors } from "../hub/memory-stale-anchors.ts";
-import { AGENT_MEM_VERSION, assertAgentMemVersion, selectedMemoryProfile } from "../hub/memory-profile.ts";
+import { AGENT_MEM_VERSION, assertAgentMemVersion, memoryIndexExists, selectedMemoryProfile } from "../hub/memory-profile.ts";
 import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
 import { addonReport, appendRecords, closedAtOf, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
@@ -2628,7 +2628,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
       if (status.needs) { const pet = loadPetConfig(cwd); if (pet.enabled) console.log(renderPet(petView(status), false, pet.character)); }
       // #258: open long-term tasks and who holds them, as of this machine's last memory sync.
-      if (status.memoryProfile ? status.memoryProfile.state === "ready" : existsSync(join(hubHome(), "memory", "index.db"))) {
+      if (status.memoryProfile ? status.memoryProfile.state === "ready" : memoryIndexExists(join(hubHome(), "memory"))) {
         try { const lines = await goalCommand(["list"], cwd); if (!lines.startsWith("no open")) console.log(`\nlong-term tasks\n${lines}`); } catch { /* memory unreadable: status goes on */ }
       }
     } finally { hub.close(); }

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CandidateStore, MemoryStore, realPath, memoryHome, memoryProjectKey, openShardStore, readShardedSelection, resolveAlias, resolveProfile, resolveShardProfile,
@@ -7,6 +7,14 @@ import {
 import packageJson from "../../package.json";
 
 const EXPECTED_AGENT_MEM_VERSION = packageJson.dependencies["@staix/agent-mem"];
+
+/**
+ * Whether a curated store directory holds a derived index. agent-mem names the file per index version (`index.db` through 0.24.0, `index-v4.db` from 0.25.0, a later release its own), and
+ * `indexFileName` is not a root export, so any `index.db` or `index-v<N>.db` counts. Read-only; an unreadable directory has none. Never create or probe by opening the file.
+ */
+export function memoryIndexExists(memoryDir: string): boolean {
+  try { return readdirSync(memoryDir).some(name => /^index(-v\d+)?\.db$/.test(name)); } catch { return false; }
+}
 
 /** Validate metadata located through the actual imported entry, never the hub pin alone. */
 export function assertAgentMemVersion(metadata: unknown, expectedVersion = EXPECTED_AGENT_MEM_VERSION): string {
