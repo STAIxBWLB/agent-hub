@@ -98,10 +98,28 @@ test("binding an injected store uses its direct canonical home and rejects misma
 
 
 test("loaded core attestation rejects mismatched, unknown, or foreign package metadata", () => {
-  expect(AGENT_MEM_VERSION).toBe("0.24.0");
-  expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: "0.24.0" })).toBe("0.24.0");
+  expect(AGENT_MEM_VERSION).toBe("0.25.0");
+  expect(assertAgentMemVersion({ name: "@staix/agent-mem", version: "0.25.0" })).toBe("0.25.0");
   for (const metadata of [undefined, {}, { name: "@staix/agent-mem", version: "0.2.0" }, { name: "@staix/agent-mem", version: "0.3.0" }, { name: "@staix/agent-mem", version: "0.3.1" },
     { name: "foreign-package", version: "0.7.0" }, { name: "@staix/agent-mem", version: "unknown" }]) {
     expect(() => assertAgentMemVersion(metadata)).toThrow();
   }
+});
+
+test("memoryIndexExists accepts the package's versioned index file names and nothing else (agent-mem 0.25.0 renamed index.db to index-v4.db)", async () => {
+  const { memoryIndexExists } = await import("../src/hub/memory-profile.ts");
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "ahub-index-name-"));
+  try {
+    expect(memoryIndexExists(dir)).toBe(false);
+    expect(memoryIndexExists(join(dir, "missing"))).toBe(false);
+    for (const unrelated of ["search.db", "mutation-lock.db", "index.db-wal", "index-v4.db-shm", "index-v2.db.bak", "xindex.db"]) writeFileSync(join(dir, unrelated), "");
+    expect(memoryIndexExists(dir)).toBe(false);
+    for (const name of ["index.db", "index-v4.db", "index-v12.db"]) {
+      const sub = mkdtempSync(join(tmpdir(), "ahub-index-name-"));
+      try { writeFileSync(join(sub, name), ""); expect(memoryIndexExists(sub)).toBe(true); } finally { rmSync(sub, { recursive: true, force: true }); }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

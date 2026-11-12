@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +34,7 @@ test("test preload discards inherited AMEM_HOME without opening the person's sto
   });
   expect(child.exitCode).toBe(0);
   expect(child.stdout.toString().trim()).toBe(join(canonicalPath(hub), "memory"));
-  expect(existsSync(join(hub, "memory", "index.db"))).toBe(true);
+  expect(readdirSync(join(hub, "memory")).some((name) => /^index(-v\d+)?\.db$/.test(name))).toBe(true); // the package versions its index file: index-v4.db since 0.25.0
   expect(existsSync(sentinel)).toBe(false);
 });
 
