@@ -29,6 +29,16 @@ queue are byte-identical between the seal commit and `0af9fb5a1`
 src/hub/supervision-proposals.ts src/hub/settled-roles.ts` prints nothing), so the frozen case
 set, the stopping rule and the thresholds below still describe the code under measurement.
 
+Added after reading 6, with the frame above unchanged. Main advanced twice more while the wave ran:
+`01ae0922c` (#1415, task #906) and `14831c93d` (#1416, task #891), each inserting one row into
+`docs/dogfood.md` above this task's anchor, so the `Supervision rules and proposals (#1221 T1, T2)`
+row now reads 130 on main instead of 128 and the pilot's own row is re-found by that text at the
+wave close. Neither PR touched `docs/design/supervision.md` or this receipt, and no measured source
+moved between `0af9fb5a1` and `14831c93d`
+(`git diff --stat 0af9fb5a1..14831c93d -- src/hub/supervision-rules.ts
+src/hub/supervision-proposals.ts src/hub/settled-roles.ts` prints nothing), so readings 5 and 6
+measure the same evaluator and queue.
+
 ## Frozen case set
 
 The rules under measurement are the merged T1 rules, at version 1 of each family. The set is
@@ -155,6 +165,7 @@ read and present in a `task`-narrowed one.
 | 3 | role-scoped (task 866) | 2026-11-11 17:19 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 (current queue) | 3 |
 | 4 | role-scoped (task 866) | 2026-11-12 00:37 KST, hub 0.37.0 | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 since the daemon start at 20:51 (unknown before it) | 3 |
 | 5 | role-scoped (task 866), hub 0.38.0; unfiltered read 2, `task: 866` read 3 (page, below) | 2026-11-12 15:55 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 since the daemon start (unknown before it) | 3 |
+| 6 | role-scoped (task 866), hub 0.38.0 | 2026-11-13 01:30 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 2 since the daemon start (unknown which bound, task or rule; unknown before it) | 3 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -184,6 +195,23 @@ unaffected, because that counter records rows a storage bound refused, not rows 
 The two reads together are also the first evidence that the project's queue passed one page:
 at least 48 rows outside my roles sit ahead of `sup-067f72d97dd1` in the read order, and none of
 them is visible to a role-scoped caller.
+
+Reading 6 is the first with a nonzero refusal. Nine hours after reading 5 on the same build, the
+`task: 866` read returned the same three expired rows at revision `8:3`, and `refused` had moved
+from 0 to 2. That counter is queue-wide and per daemon lifetime: `observe()` increments it at store
+time when either storage bound refuses one observation, the 100-pending queue or the
+3-per-task-revision budget, after the duplicate-key check and with no role filter anywhere in the
+path. Which bound refused the two, on which task and by which rule, is unknown from a role-scoped
+read and is listed at the end.
+
+The per-revision bound makes one possibility concrete rather than theoretical: revision `8:3`
+already holds exactly three rows, which is the whole per-revision budget, so a fourth distinct
+observation on this task would be refused at store time and would appear in neither the read nor
+the ledger. The two refusals may therefore include my own task, and if they do, then a rule that
+fired on `866` at `8:3` produced nothing this reading can see. That is a measured gap in coverage,
+never evidence that no condition held. A restart between readings 5 and 6 also cannot be excluded,
+because a role-scoped read carries no daemon start time, so the delta reads as "2 refusals in the
+current daemon lifetime", not "2 in the last nine hours".
 
 ## Proposal ledger
 
@@ -235,4 +263,8 @@ and is not part of this wave.
   to rows on tasks I cannot decide, and the `task`-narrowed read returned all three. The size of
   the queue past one page is therefore unknown from a role-scoped read, and a wave total that adds
   up role-scoped reads without narrowing by task is an undercount;
+- the two refusals reading 6 reported. `refused` is a bare counter: it names no task, rule,
+  revision or bound, and only the conductor's queue read could say which. Its own scope makes it
+  narrower than it looks, since it resets at every daemon start and the earlier readings predate
+  the counter's window, so the wave's refusal total is a lower bound built from per-read samples;
 - every threshold that needs a live sample larger than this pilot can produce.
