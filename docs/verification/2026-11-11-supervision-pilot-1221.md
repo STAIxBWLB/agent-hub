@@ -167,6 +167,7 @@ read and present in a `task`-narrowed one.
 | 5 | role-scoped (task 866), hub 0.38.0; unfiltered read 2, `task: 866` read 3 (page, below) | 2026-11-12 15:55 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 since the daemon start (unknown before it) | 3 |
 | 6 | role-scoped (task 866), hub 0.38.0 | 2026-11-13 01:30 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 2 since the daemon start (unknown which bound, task or rule; unknown before it) | 3 |
 | 7 | role-scoped (task 866), hub 0.38.0, pid 92515; its start (2026-11-12 11:09:48 KST) puts readings 5, 6 and 7 in one daemon lifetime | 2026-11-13 04:05 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 4 since that daemon start, 2 of them after reading 6 (unknown which bound, task or rule) | 3 |
+| 8 | role-scoped (task 866), hub 0.38.0, pid 92515 (start 2026-11-12 11:09:48 KST), same lifetime as readings 5, 6 and 7 | 2026-11-13 06:14 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 5 since that daemon start, 1 of them after reading 7 (unknown which bound, task or rule) | 3 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -231,8 +232,34 @@ list below. Provenance at this reading: board head `08d4b893b`, the single merge
 which changes no file either anchor depends on, so `docs/dogfood.md` still carries the
 `Supervision rules and proposals (#1221 T1, T2)` row at 130; and the evaluator and the queue are
 byte-identical from the seal `16b8251657a2` to `08d4b893b` (`supervision-rules.ts`,
-`supervision-proposals.ts`, `settled-roles.ts` and `supervision.ts` all print nothing under
-`git diff --stat`), so the frozen case set still describes the code that measured it.
+`supervision-proposals.ts` and `settled-roles.ts` print nothing under `git diff --stat`), so the
+frozen case set still describes the code that measured it. Reading 8 corrects this sentence, which
+had also named `supervision.ts` among the unchanged files: that file moved by 3 insertions and 2
+deletions at `649715ef8` (#1401), the notice-text change recorded after reading 5, so the narrower
+claim above is the true one.
+
+Reading 8 is the fifth read of a single daemon lifetime: nothing in the ledger moved, and the
+refusal counter did. At 2026-11-13 06:14 KST, on the same build (`ahub status` reports agent-hub
+0.38.0, pid 92515, mode `shadow`), the `task: 866` read returned the same three expired rows at
+revision `8:3`, and `refused` had moved from 4 to 5. The daemon's own record is unchanged:
+`ps -o lstart= -p 92515` still reports a start of 2026-11-12 11:09:48 KST, cross-checked against
+the same process's `etime` of 19 h 03 m 57 s at 06:13:45 KST, so readings 5, 6, 7 and 8 all ran
+under one process. The single refusal therefore arrived in the 2 h 09 min since reading 7, and the
+series over that lifetime now reads 0, 2, 4, 5: the queue refused five observations in 19 hours
+while every role-scoped read in that time returned the same three rows at one revision. A steady
+trickle rather than one burst is what a queue sitting at its storage bounds looks like from outside,
+and it stays unattributable from here, so that stays in the list below.
+
+Provenance at this reading: board head `c6347fe19`, two merges since reading 7, #1421 (#1402 T5)
+and #1417 (#1411 T2). Both insert into `docs/dogfood.md` below this task's anchor, one the `ahub
+roles` and doctor shared-config row at 188 and one the observed-model row at 207, so the
+`Supervision rules and proposals (#1221 T1, T2)` row still reads 130 when found by that text.
+`docs/design/supervision.md` moved in neither merge (`git diff --stat` prints nothing) and still
+ends at `## Deliberately outside this contract` (119), so the subsection this task appends last is
+still new. The evaluator and the queue are byte-identical from `0af9fb5a1`, where reading 5 pinned
+them, to `c6347fe19` (`supervision-rules.ts`, `supervision-proposals.ts` and `settled-roles.ts` all
+print nothing under `git diff --stat`), so the frozen case set still describes the code under
+measurement.
 
 ## Proposal ledger
 
@@ -284,10 +311,11 @@ and is not part of this wave.
   to rows on tasks I cannot decide, and the `task`-narrowed read returned all three. The size of
   the queue past one page is therefore unknown from a role-scoped read, and a wave total that adds
   up role-scoped reads without narrowing by task is an undercount;
-- the four refusals readings 6 and 7 reported. `refused` is a bare counter: it names no task, rule,
-  revision or bound, and only the conductor's queue read could say which. Reading 7 narrowed its
-  window rather than its cause: the daemon's own start time (2026-11-12 11:09:48 KST) puts readings
-  5, 6 and 7 in one lifetime, so the four are real additions and not a reset artefact. What stays
-  unknown is the attribution, and the earlier readings predate that window, so the wave's refusal
-  total remains a lower bound built from per-read samples;
+- the five refusals readings 6, 7 and 8 reported. `refused` is a bare counter: it names no task,
+  rule, revision or bound, and only the conductor's queue read could say which. Readings 7 and 8
+  narrowed its window rather than its cause: the daemon's own start time (2026-11-12 11:09:48 KST)
+  puts readings 5, 6, 7 and 8 in one lifetime, so the five are real additions and not a reset
+  artefact, and reading 8's single refusal arrived inside a 2 h 09 min window. What stays unknown is
+  the attribution, and the earlier readings predate that window, so the wave's refusal total
+  remains a lower bound built from per-read samples;
 - every threshold that needs a live sample larger than this pilot can produce.
