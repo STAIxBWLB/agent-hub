@@ -3,8 +3,26 @@ import type { TaskAttribution } from "./attribution.ts";
 import type { PeerId } from "./envelope.ts";
 import type { StageSwitchTrace as SwitchTrace } from "../models/route/stage-fallback.ts";
 import type { ScreenRecord } from "./inference.ts";
+import { safeModelLabel } from "../omniroute/usage.ts";
 
 export interface RoleIdentity { id: string; layer: "shipped" | "project"; hash: string }
+
+/**
+ * #1402: how a turn's model was learned, strongest first. `served`: the provider or the native transcript named it for this turn's responses. `session`: the native session's current model id.
+ * `configured`: only the hub's own override or launch flag is known. An alias is recorded as the native surface reported it, never expanded.
+ */
+export const MODEL_EVIDENCE = ["served", "session", "configured"] as const;
+export type ModelEvidence = (typeof MODEL_EVIDENCE)[number];
+export const isModelEvidence = (value: unknown): value is ModelEvidence => typeof value === "string" && (MODEL_EVIDENCE as readonly string[]).includes(value);
+/** What a peer adapter observed for the turn that just ended. */
+export interface ModelObservation { model: string; evidence: ModelEvidence }
+/** The `turn_end` fields for an observation: both or neither. A label that fails `safeModelLabel` is dropped whole (never truncated into another valid-looking id) and nothing but the id is kept. */
+export function turnModelFields(observed: unknown): { model: string; modelEvidence: ModelEvidence } | Record<string, never> {
+  if (!observed || typeof observed !== "object") return {};
+  const { model, evidence } = observed as { model?: unknown; evidence?: unknown };
+  const label = safeModelLabel(model);
+  return label !== undefined && isModelEvidence(evidence) ? { model: label, modelEvidence: evidence } : {};
+}
 
 /** Bumped whenever a field changes meaning or goes away; new fields and new types do not bump it. */
 export const EVENTS_SCHEMA = 1;
@@ -54,7 +72,7 @@ export type HubEvent =
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "native_thread"; peer: string; thread: string; fresh: boolean }
-  | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null } & Partial<TaskAttribution>)
+  | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number; preparedRoles?: RoleIdentity[] | null; model?: string; modelEvidence?: ModelEvidence } & Partial<TaskAttribution>)
   | { type: "native_turn_end"; peer: string; id?: string; reason?: "user_canceled" | "error" | "max_invocations" | "max_forced_invocations" | "max_token_budget_exceeded" | "terminal_step_type" | "terminal_custom_hook" }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
   | ({ type: "agent_cli"; peer: string; command: string; refused: boolean; delegated?: true } & Partial<TaskAttribution>)

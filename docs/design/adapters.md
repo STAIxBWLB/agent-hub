@@ -230,6 +230,10 @@ The PII screen is distinct from ordinary optional inference. It may use an on-de
 
 Runtime memory capture and recall use the in-process `@staix/agent-mem` package, screened and invoked by host integration. claude-mem is off by default and import-only; there is no worker HTTP or model-summary path in the runtime. This avoids a parallel capture route with different privacy checks ([#752](https://github.com/STAIxBWLB/agent-hub/issues/752), [agent-mem#13](https://github.com/STAIxBWLB/agent-mem/issues/13)).
 
+## Observed turn model (#1402)
+
+An adapter may implement `PeerAdapter.observedModel()`: the model its native surface reported for the turn that just ended, as `{ model, evidence }`. The daemon reads it once, when it writes the peer's `turn_end`, and passes it through `turnModelFields`: the event carries `model` (the id exactly as reported, through `safeModelLabel`) and `modelEvidence` (`served`, `session` or `configured`, strongest first) or neither. A label `safeModelLabel` refuses is dropped whole, never truncated, and an alias (`opus`, `default`) is never expanded. An adapter that reports nothing, or throws, records nothing: unknown stays unknown. The per-adapter sources (Codex, Claude print, ACP peers, Pi, Antigravity) are wired by the later tasks of #1402; research builds `ownerModels` from the owner's turns only (`docs/research.md`).
+
 ## Person-owned live model selection (#1317)
 
 A person may store a per-peer model override in `hub.db` with `ahub model set`,

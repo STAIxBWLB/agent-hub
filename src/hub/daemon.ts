@@ -130,7 +130,7 @@ import { planFingerprint, registeredProjects, type UpgradePlan } from "../cli/up
 import { conductorRecoveryBinding } from "../cli/conductor-recovery.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
-import { eventLog, readEvents, type HubEvent, type RoleIdentity } from "./events.ts";
+import { eventLog, readEvents, turnModelFields, type HubEvent, type RoleIdentity } from "./events.ts";
 import { SpecTaskInspector } from "./specs-task.ts";
 import { KimiUsage, kimiSeedRows, type KimiRowAttribution, type KimiUsageScheduler } from "./kimi-usage.ts";
 import { KimiEventWriter } from "./kimi-events.ts";
@@ -4157,6 +4157,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return snapshotBudget;
   };
+  /** #1402: the `turn_end` model fields for a peer, read through its adapter. An adapter that throws or reports nothing records neither field; a label `safeModelLabel` refuses is dropped whole. */
+  const observedTurnModel = (peer: string) => { try { return turnModelFields(bus.peers.get(peer)?.observedModel?.()); } catch { return {}; } };
   const snapshotFailure = (what: string, error: unknown) => {
     if (error instanceof SnapshotBudgetExceeded) {
       if (!snapshotBudgetNoticed) log(`snapshot unavailable: ${error.message}`);
@@ -7660,7 +7662,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn. A launcher-bound pull-only native turn follows the same rule.
         const nativeFactsTurn = nativeHookLaunches.current(e.peer) !== undefined && bus.peers.get(e.peer)?.pullOnly === true;
-        if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
+        if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}), ...observedTurnModel(e.peer) });
         if (!nativeFactsTurn && definitionOf(e.peer)?.turnEnd !== "native-hook") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());
