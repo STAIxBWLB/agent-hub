@@ -59,6 +59,41 @@ export function renderRuntimeModels(models: readonly RuntimeModelStatus[], colum
 export function renderRoster(data: RosterRow[], columns?: number): Span[][] {
   return rows(["PEER", "ROSTER", "START", "STATE", "Q", "TASKS"], data.map(row => [span(row.peer, "info", true), span(row.on ? "on" : "off", row.on ? "success" : "muted", true), span(row.startMode, undefined, true), span(row.state, stateTone(row.state), true), span(row.queued, undefined, true), span(row.tasks, undefined, true)]), columns);
 }
+/** #1411 T2: who holds which flow role as the running hub settled them, from its status reply. */
+export interface RolesView {
+  peers: { peer: string; roles: string[] }[];
+  planner: { peers: string[]; source: string } | null;
+  reviewFallback: { required: boolean; sameFamily: string } | null;
+}
+export function rolesView(status: any): RolesView {
+  const off = new Set((Array.isArray(status?.roster) ? status.roster : []).filter((row: any) => row?.on === false).map((row: any) => row.peer));
+  const info = status?.roleInfo && typeof status.roleInfo === "object" ? status.roleInfo : {};
+  const peers = Object.keys(info).filter(peer => !off.has(peer)).sort()
+    .map(peer => ({ peer, roles: Array.isArray(info[peer]?.flowRoles) ? info[peer].flowRoles.map(String) : [] }));
+  const planner = Array.isArray(status?.planner?.peers) ? { peers: status.planner.peers.map(String), source: String(status.planner.source ?? "unknown") } : null;
+  const fallback = status?.reviewFallback;
+  const reviewFallback = fallback && typeof fallback.required === "boolean" ? { required: fallback.required, sameFamily: String(fallback.sameFamily ?? "fallback") } : null;
+  return { peers, planner, reviewFallback };
+}
+/** Who reviews when no pool reviewer can run, as routing decides it (src/hub/routing.ts assign()); an older hub sends no settings, so unknown. */
+function reviewFallbackLine(view: RolesView): string {
+  const fallback = view.reviewFallback;
+  if (!fallback || !view.planner) return "unknown: this hub does not report it; upgrade the running hub";
+  if (fallback.required && fallback.sameFamily !== "never") return "the person (review.pool is set)";
+  const planners = view.planner.peers.join(", ");
+  if (!planners) return "the person (no planner)";
+  return fallback.sameFamily === "never"
+    ? `a planner of another family than the task's owner (${planners}), else the person`
+    : `a planner other than the task's owner (${planners}), another family first, else the person`;
+}
+export function renderRoles(view: RolesView, columns?: number): Span[][] {
+  return [
+    ...rows(["PEER", "ROLES"], view.peers.map(row => [span(row.peer, peerTone(row.peer), true), span(row.roles.length ? row.roles.join(", ") : "-", row.roles.length ? undefined : "muted")]), columns),
+    [],
+    ...lines(`planner: ${view.planner ? `${view.planner.peers.join(", ") || "nobody"} (${view.planner.source})` : "unknown"}`, columns),
+    ...lines(`when no reviewer can run: ${reviewFallbackLine(view)}`, columns),
+  ];
+}
 export function outputWidth(env: { isTTY: boolean; columns?: number; COLUMNS?: string }): number | undefined {
   if (env.isTTY) return Math.max(80, Number.isFinite(env.columns) ? env.columns! : 80);
   return env.COLUMNS && /^[1-9][0-9]*$/.test(env.COLUMNS) && Number.isSafeInteger(Number(env.COLUMNS)) ? Number(env.COLUMNS) : undefined;

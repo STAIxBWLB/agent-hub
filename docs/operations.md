@@ -1117,6 +1117,20 @@ and its block sentence. Every `.gitignore` line init adds is checked with
 `git check-ignore` first, so init adds no line for a path a broader rule already
 ignores.
 
+`ahub roles [--json]` prints each rostered peer's flow roles as the running hub
+settled them (defaults, overrides and ceilings applied), the planner with how it
+was chosen, and who reviews when no reviewer can run: the person when
+`review.pool` is set, otherwise a planner other than the task's owner (another
+family first, or only another family under `review.same_family = "never"`), else
+the person. A task worktree has no `.agenthub` of its own and no hub; this
+read-only command then reads the main worktree's hub, so an agent in a worktree
+gets the same answer as the project root (#1411 T2). `ahub doctor`'s
+`shared config` row compares whether `.agenthub/config.json` is committed with the
+block's role sentence: `tracked` and `untracked (by choice)` pass; a block that
+points at an uncommitted or ignored file, a committed file the block calls per
+checkout, or a committed file an ignore rule matches is a warning that names the
+rule and the command that fixes it.
+
 `config.local.json` wins over `config.json` key by key, so each person keeps their
 own settings in a tracked project; `roles` merges per peer. The exceptions are
 deliberate: `release` is read only from the committed `config.json`;

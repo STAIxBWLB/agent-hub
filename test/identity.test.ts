@@ -175,6 +175,9 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["roster", ["--color=always"], "allowed"],
   ["roster", ["add", "kimi"], "conductor"],
   ["roster", ["remove", "kimi", "--yes", "--now"], "conductor"],
+  ["roles", [], "allowed"], // #1411 T2
+  ["roles", ["--json", "--color=never"], "allowed"],
+  ["roles", ["claude"], "console"],
   ["projects", [], "allowed"],
   ["projects", ["--json"], "allowed"],
   ["projects", ["remove", "p1"], "console"],

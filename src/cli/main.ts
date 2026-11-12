@@ -77,7 +77,7 @@ import { inspectProject, startProject, stopProject, runProjectDaemon } from "../
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
-import { autonomyInheritanceChange, init, initNextSteps, initResearchDefault, withInitResearch, initSettingRows, planInit } from "./init.ts";
+import { autonomyInheritanceChange, init, initNextSteps, initResearchDefault, withInitResearch, initSettingRows, planInit, sharedConfigRow } from "./init.ts";
 import { discoverInitChecks, withInitChecks } from "./init-required-checks.ts";
 import { INIT_USAGE, parseInitSettings } from "./init-settings.ts";
 import { promptGate, runInitPrompt, settingLines, shadowOffered, type InitAnswers } from "./init-prompt.ts";
@@ -132,7 +132,7 @@ import { runConsole } from "./console.ts";
 import { installedVersions } from "./console-versions.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { queueResolveArgsValid } from "../hub/person-command.ts";
-import { outputWidth, renderRuntimeModels, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
+import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp, guidanceProbeUsage } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
 import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
@@ -2596,6 +2596,27 @@ const commands: Record<string, () => Promise<void> | void> = {
     process.stdout.write(short ? text : text + "\n");
   },
 
+  // #1411 T2: the flow roles the running hub settled (defaults, overrides, ceilings), resolved from a worktree like every command.
+  roles: async () => {
+    const options = outputOptions();
+    if (outputArguments().length) fail("usage: ahub roles [--json]");
+    // A task worktree has no .agenthub of its own, and projectContext deliberately never joins it to the main checkout's hub (#604). This read changes nothing,
+    // so a linked worktree with no hub of its own reads the main worktree's hub, under the same identity.
+    let target = { root: cwd, stateDir };
+    if (!existsSync(join(cwd, ".agenthub"))) {
+      const common = hubGitSync(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, encoding: "utf8", timeout: 3000 });
+      const main = common.status === 0 ? dirname(common.stdout.trim()) : undefined;
+      if (main && realPath(main) !== cwd && existsSync(join(main, ".agenthub"))) target = projectContext(main);
+    }
+    const hub = target.root === cwd ? await connect() : await ControlClient.connect(target.stateDir, identity.role === "tools"
+      ? { role: "tools", peer: identity.peer, projectRoot: target.root } : { role: "console", projectRoot: target.root }, 3000);
+    try {
+      const { status } = await hub.request({ t: "status" });
+      const view = rolesView(status);
+      if (options.json) return console.log(JSON.stringify(view, null, 2));
+      printOutput(renderRoles(view, options.columns), options.color);
+    } finally { hub.close(); }
+  },
   status: async () => {
     const options = outputOptions();
     if (args.includes("--all")) return printProjects(options);
@@ -3110,6 +3131,9 @@ const commands: Record<string, () => Promise<void> | void> = {
         row(stale ? undefined : true, "hub instructions", // a warning, never a failure: doctor's exit code stays what it was for a project that has not refreshed yet
            stale ? `the managed block in AGENTS.md differs from this ahub version; preview with: cd ${cwd} && ahub init --dry-run; apply with: cd ${cwd} && ahub init --yes (text outside the markers is kept), then commit AGENTS.md` : "AGENTS.md managed block matches this ahub version");
       } catch (error) { row(false, "hub instructions", `AGENTS.md could not be checked: ${error instanceof Error ? error.message : "unknown error"}; run ahub init --dry-run to see why`); }
+      // #1411 T2: a warning, never a failure, like the row above.
+      try { const shared = sharedConfigRow(cwd); if (shared) row(shared.ok, "shared config", shared.detail); }
+      catch (error) { row(undefined, "shared config", `could not be checked: ${error instanceof Error ? error.message : "unknown error"}`); }
       const catalog = loadRoleCatalog(cwd);
       for (const error of catalog.errors) row(false, "catalog role", `${error.id}: ${error.reason}`);
       try {

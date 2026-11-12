@@ -7134,6 +7134,8 @@ export async function startDaemon(opts: DaemonOptions) {
     actionPolicyInfo: Object.fromEntries(peerIds.map(id => { const e = actionEnforcement(id); return [id, actionBudgets.status(id, e.enforced, e.reason)]; })),
     roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id), ...roleVisibility(id), ...(config.roles[id]?.includes("planner") ? { planner: plannerSource } : {}) }])),
     planner: { peers: plannerPeers(), source: plannerSource },
+    // #1411 T2: the review settings routing reads when no reviewer can run (assign() decides; `ahub roles` only reports them).
+    reviewFallback: { required: config.review.pool !== undefined, sameFamily: config.review.same_family ?? "fallback" },
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
     isolatedChecks: { pending: checkPending.size, orphans: orphanChecks, unknownReceipts: checkRunner.unknownReceipts ?? [], maintenanceUnavailable: checkRunner.maintenanceUnavailable === true },

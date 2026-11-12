@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
-import { ROLES_TRACKED, ROLES_UNTRACKED, ignoreRule } from "../src/cli/init.ts";
+import { ROLES_TRACKED, ROLES_UNTRACKED, ignoreRule, sharedConfigRow } from "../src/cli/init.ts";
 import { DEFAULT_CONFIG, loadConfig } from "../src/hub/daemon.ts";
 import { ALL_MACHINE_LOCAL } from "../src/hub/config-trust.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -148,4 +148,32 @@ test("--no-track-config on a project that already committed its config names the
   expect(off.code, off.out).toBe(0);
   expect(off.out).toContain(".agenthub/config.json, .agenthub/routing.toml are still committed: run git rm --cached .agenthub/config.json .agenthub/routing.toml and commit");
   expect(p.text("AGENTS.md")).toContain(ROLES_UNTRACKED);
+});
+
+test("doctor's shared config row: quiet for both deliberate states, a warning with the fixing command for each mismatch (#1411 T2, AC5)", () => {
+  const global = process.env.GIT_CONFIG_GLOBAL; process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+  try {
+    const commit = (f: ReturnType<typeof fixture>) => expect(f.git(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "c"]).status).toBe(0);
+    // tracked by choice, then committed: quiet; before the commit it says to commit
+    const tracked = fixture(); expect(tracked.run(["--track-config"]).code).toBe(0);
+    expect(sharedConfigRow(tracked.cwd)).toMatchObject({ ok: undefined, detail: expect.stringContaining(`git add .agenthub/config.json`) });
+    expect(tracked.git(["add", "AGENTS.md", ".agenthub/config.json"]).status).toBe(0); commit(tracked);
+    expect(sharedConfigRow(tracked.cwd)).toEqual({ ok: true, detail: expect.stringContaining("tracked:") });
+    // then a rule ignores it: git keeps the copy, doctor names the rule
+    writeFileSync(join(tracked.cwd, ".gitignore"), "/.agenthub/\n");
+    expect(sharedConfigRow(tracked.cwd)).toMatchObject({ ok: undefined, detail: expect.stringContaining(".gitignore:1:/.agenthub/") });
+    // untracked by choice: quiet; committed anyway: a warning naming both ways out
+    const untracked = fixture(); expect(untracked.run(["--no-track-config"]).code).toBe(0);
+    expect(sharedConfigRow(untracked.cwd)).toEqual({ ok: true, detail: expect.stringContaining("untracked (by choice)") });
+    expect(untracked.git(["add", "-f", ".agenthub/config.json"]).status).toBe(0); commit(untracked);
+    const both = sharedConfigRow(untracked.cwd)!;
+    expect(both.ok).toBeUndefined(); expect(both.detail).toContain("ahub init --track-config --yes"); expect(both.detail).toContain("git rm --cached .agenthub/config.json");
+    // the block points at a config a rule ignores and git never had: keep it per checkout or remove the rule
+    const mismatch = fixture(); expect(mismatch.run(["--track-config"]).code).toBe(0);
+    writeFileSync(join(mismatch.cwd, ".gitignore"), "/.agenthub/\n");
+    const row = sharedConfigRow(mismatch.cwd)!;
+    expect(row.ok).toBeUndefined(); expect(row.detail).toContain(".gitignore:1:/.agenthub/"); expect(row.detail).toContain("ahub init --no-track-config --yes");
+    // no managed sentence, or no config: nothing to compare
+    writeFileSync(join(mismatch.cwd, "AGENTS.md"), "# notes\n"); expect(sharedConfigRow(mismatch.cwd)).toBeNull();
+  } finally { if (global === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = global; }
 });
