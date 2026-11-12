@@ -10,7 +10,7 @@
  * Who is offered it is decided by `promptGate`: a person at a terminal, on a new project, with no setting flag and no `--yes`. A delegated peer, a live test and any run without a
  * terminal never reach `runInitPrompt` and get defaults plus their flags (AC5).
  */
-import { INIT_SETTINGS, SDLC_MODES, SPEC_REVIEW_MODES, COORDINATION_MODES, AUTONOMY_CHOICES, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
+import { INIT_SETTINGS, TRACK_CONFIG, SDLC_MODES, SPEC_REVIEW_MODES, COORDINATION_MODES, AUTONOMY_CHOICES, type InitSettingRow, type InitSettingsRequest } from "./init-settings.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PROFILE_NAMES } from "../hub/profiles.ts";
@@ -31,7 +31,7 @@ export interface InitAnswers { request: InitSettingsRequest; profile?: string; s
 export type InitPromptResult = { ok: true; answers: InitAnswers } | { ok: false; reason: "declined" | "interrupted" | "refused"; message: string };
 
 /** The four questions that are choices of `ahub init` but not rows of the settings table. */
-const NOT_ROWS: ReadonlySet<string> = new Set(["profile", "autonomy", "release-guard", "shadow"]);
+const NOT_ROWS: ReadonlySet<string> = new Set(["profile", TRACK_CONFIG, "autonomy", "release-guard", "shadow"]);
 const MAX_TRIES = 3;
 const NOTHING = "nothing was written";
 const yes = (text: string) => /^(y|yes)$/i.test(text.trim());
@@ -113,6 +113,8 @@ export function initQuestions(context: InitQuestionContext = {}): InitQuestion[]
   const all: InitQuestion[] = [
     profile,
     agents,
+    // #1411: Enter leaves the choice out, so .gitignore stays as git has it today and the block follows that.
+    { ...onOff(TRACK_CONFIG, "Commit the shared hub config (config.json, routing.toml, sdlc.toml) to git", "off"), shown: "as .gitignore has it" },
     onOff("specs.enabled", "Design specs and their freshness checks", shownDefault("specs.enabled") as "on" | "off"),
     oneOf("specs.review", "Spec review mode", SPEC_REVIEW_MODES, shownDefault("specs.review")),
     oneOf("sdlc.mode", "SDLC mode", SDLC_MODES, shownDefault("sdlc.mode")),

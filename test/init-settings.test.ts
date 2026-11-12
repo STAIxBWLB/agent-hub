@@ -53,7 +53,7 @@ test("every flag of the table writes a different key in the right file, and --me
   expect(p.json(cwd, "config.local.json").start.agents).toEqual([]);
   expect(p.text(cwd, "sdlc.toml")).toBe('mode = "advise"\n');
   // The table lists exactly the flags the CLI owns, so a row added later is reachable and tested through the same path.
-  expect(INIT_SETTING_FLAGS.slice().sort()).toEqual(["--required-checks", "--research", "--no-research", "--agents", "--autonomy", "--coordination", "--memory", "--no-memory", "--no-pi", "--no-snapshots", "--no-specs", "--pi", "--sdlc", "--snapshots", "--spec-review", "--specs"].sort());
+  expect(INIT_SETTING_FLAGS.slice().sort()).toEqual(["--required-checks", "--research", "--no-research", "--agents", "--autonomy", "--coordination", "--memory", "--no-memory", "--no-pi", "--no-snapshots", "--no-specs", "--pi", "--sdlc", "--snapshots", "--spec-review", "--specs", "--track-config", "--no-track-config"].sort());
   expect(new Set(INIT_SETTINGS.map(row => row.id)).size).toBe(INIT_SETTINGS.length);
 });
 

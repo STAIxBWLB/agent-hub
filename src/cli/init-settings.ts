@@ -76,10 +76,12 @@ export interface InitSettingsRequest {
 }
 
 /** The usage line `ahub init` prints for a bad argument; help.ts shows the same flags. */
-export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--required-checks <a,b,...>] [--coordination advisory|turn-free] [--memory|--no-memory] [--research|--no-research] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
+export const INIT_USAGE = "usage: ahub init [--profile dev|research|writing|general|<pack>] [--agents <a,b,...|none>] [--sdlc off|advise|enforce] [--required-checks <a,b,...>] [--coordination advisory|turn-free] [--memory|--no-memory] [--research|--no-research] [--snapshots|--no-snapshots] [--pi|--no-pi] [--specs|--no-specs] [--spec-review off|report|require] [--track-config|--no-track-config] [--autonomy inherit|off] [--shadow] [--release-guard] [--yes] [--dry-run --json]";
 
 /** Every flag the table and the two non-key choices own, for the caller's own argument loop and for help. */
-export const INIT_SETTING_FLAGS: readonly string[] = [...INIT_SETTINGS.flatMap(row => row.flags.map(flag => flag.flag)), "--autonomy"];
+export const INIT_SETTING_FLAGS: readonly string[] = [...INIT_SETTINGS.flatMap(row => row.flags.map(flag => flag.flag)), "--track-config", "--no-track-config", "--autonomy"];
+/** #1411: the request key of `--track-config` / `--no-track-config` (true / false); absent keeps what git says today. */
+export const TRACK_CONFIG = "track-config";
 
 /**
  * Separates the setting flags from the rest of an `ahub init` argv. A value flag takes the next word; a switch takes none. A flag given twice with different
@@ -102,6 +104,9 @@ export function parseInitSettings(args: readonly string[]): { request: InitSetti
       request.autonomy = text as typeof AUTONOMY_CHOICES[number];
       continue;
     }
+    // #1411: whether the repository commits its hub config. Not a config key (init.ts reads it for .gitignore and the block's role sentence), but it rides in `values` so every
+    // caller that asks "was a setting given" sees it.
+    if (arg === "--track-config" || arg === "--no-track-config") { set(TRACK_CONFIG, arg, arg === "--track-config"); continue; }
     const row = INIT_SETTINGS.find(def => def.flags.some(flag => flag.flag === arg));
     if (!row) { rest.push(arg); continue; }
     const flag = row.flags.find(entry => entry.flag === arg)!;
