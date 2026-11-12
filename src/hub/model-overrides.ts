@@ -4,7 +4,8 @@ import { isNativeModelToken } from "../adapters/model-token.ts";
 import type { ModelOverrideSelection } from "../adapters/registry-types.ts";
 
 export interface ModelOverrideRow { peer: string; model: string; setAt: number; by: "person" }
-export type ModelSource = "override" | "instance" | "launch" | "native default" | "native thread default (was override)";
+/** `observed (served|session)` (#1402 T5): the model the last finished turn reported, with its evidence grade; shown only when no override, instance, launch or native baseline model is known. */
+export type ModelSource = "override" | "instance" | "launch" | "native default" | "native thread default (was override)" | "observed (served)" | "observed (session)";
 export interface RuntimeModelStatus {
   peer: string;
   effectiveModel: string | null;

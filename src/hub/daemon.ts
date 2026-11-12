@@ -6835,13 +6835,26 @@ export async function startDaemon(opts: DaemonOptions) {
     const owner = bus.peers.get(peer);
     return !!owner && modelAcpOwners.get(owner)?.acceptsModelOverride(model) === true;
   };
+  /**
+   * #1402 T5: the last model each peer's finished turn reported, for `ahub status` / `ahub model list` when nothing configured names one. Only a served or session grade counts (a configured one is already
+   * the instance or launch model), and only a model the status projection can show (a native model token; a longer label would make the CLI drop the whole row). Dropped when the peer goes offline.
+   */
+  const observedModels = new Map<PeerId, { model: string; source: "observed (served)" | "observed (session)"; owner: PeerAdapter | undefined }>();
+  const noteObservedModel = <T extends { model?: string; modelEvidence?: string }>(peer: PeerId, fields: T): T => {
+    if (fields.model !== undefined && isNativeModelToken(fields.model) && (fields.modelEvidence === "served" || fields.modelEvidence === "session"))
+      observedModels.set(peer, { model: fields.model, source: `observed (${fields.modelEvidence})`, owner: bus.peers.get(peer) });
+    return fields;
+  };
   const modelFallback = (peer: string): { model?: string; source: Exclude<ModelSource, "override"> } => {
     const declared = declarations[peer]?.model;
     if (isNativeModelToken(declared)) return { model: declared, source: "instance" };
     const owner = bus.peers.get(peer), model = owner ? modelLaunchModels.get(owner) : undefined;
     if (model !== undefined) return { model, source: "launch" };
     const baseline = owner ? modelAcpOwners.get(owner)?.modelOverrideState.baseline : undefined;
-    return { ...(baseline ? { model: baseline } : {}), source: "native default" };
+    if (baseline) return { model: baseline, source: "native default" };
+    const seen = observedModels.get(peer);
+    if (seen && seen.owner === owner) return { model: seen.model, source: seen.source };
+    return { source: "native default" };
   };
   const registerModelOwner = (owner: PeerAdapter): void => {
     const definition = definitionOf(owner.id);
@@ -7511,7 +7524,7 @@ export async function startDaemon(opts: DaemonOptions) {
     uiEvents.push({ seq: ++uiSequence, event: e });
     if (uiEvents.length > 200) uiEvents.shift();
     if (e.t === "state") {
-      if (e.state === "offline") { modelBoundaries.delete(e.peer); modelLatches.forget(e.peer); hookModels.delete(e.peer); }
+      if (e.state === "offline") { modelBoundaries.delete(e.peer); modelLatches.forget(e.peer); hookModels.delete(e.peer); observedModels.delete(e.peer); }
       roomCommands.changed();
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
@@ -7670,7 +7683,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn. A launcher-bound pull-only native turn follows the same rule.
         const nativeFactsTurn = nativeHookLaunches.current(e.peer) !== undefined && bus.peers.get(e.peer)?.pullOnly === true;
-        if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}), ...observedTurnModel(e.peer) });
+        if (nativeFactsTurn ? (nativeCompletedAt.get(e.peer) ?? -1) >= open.start : definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, preparedRoles: open.preparedRoles, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}), ...noteObservedModel(e.peer, observedTurnModel(e.peer)) });
         if (!nativeFactsTurn && definitionOf(e.peer)?.turnEnd !== "native-hook") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());

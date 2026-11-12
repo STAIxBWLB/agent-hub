@@ -53,7 +53,7 @@ test("ownerModels come from the owner's turns, never the reviewer's; a Codex tas
   const report = researchReport([record!]);
   expect(Object.keys(report.byModel)).toEqual(["gpt-5.5"]);
   expect(report.modelEvidence).toEqual({ "gpt-5.5": "session" });
-  expect(report.modelCoverage).toEqual({ tasks: 1, withModel: 1, unknown: 0 });
+  expect(report.modelCoverage).toEqual({ tasks: 1, withModel: 1, grounded: 1, unknown: 0 });
 });
 
 test("a usage event's served model grades served, a requested one only configured, and the strongest grade per model wins", () => {
@@ -81,7 +81,7 @@ test("old events without a model still group as unknown, and the report says how
   expect(record!.ownerModels).toEqual([]);
   const report = researchReport([record!]);
   expect(Object.keys(report.byModel)).toEqual(["unknown"]);
-  expect(report.modelCoverage).toEqual({ tasks: 1, withModel: 0, unknown: 1 });
+  expect(report.modelCoverage).toEqual({ tasks: 1, withModel: 0, grounded: 0, unknown: 1 });
   expect(formatResearch(report).join("\n")).toContain("1 of 1 tasks have no owner model");
   // A record stored before #1402 has no field at all, and loads as unknown.
   const { ownerModels: _drop, ...old } = record!;
@@ -154,7 +154,7 @@ test("by model keeps the model id as the key and carries the grade as data; an o
   expect(placeholder[0]!.ownerModels).toEqual([]);
   const stored = { ...graded[0]!, task: 9, ownerModels: [{ model: "Unknown", evidence: "served" as const }] };
   expect(Object.keys(researchReport([stored]).byModel)).toEqual(["unknown"]);
-  expect(researchReport([stored]).modelCoverage).toEqual({ tasks: 1, withModel: 0, unknown: 1 });
+  expect(researchReport([stored]).modelCoverage).toEqual({ tasks: 1, withModel: 0, grounded: 0, unknown: 1 });
 });
 
 test("a held pre-#1402 row is filled by a backfill that can prove an owner model, so the stored task groups under it; a held row with the field stays final", () => {

@@ -404,7 +404,8 @@ export interface ResearchReport { overall: Measures; byClass: Record<string, Mea
   /** #1402: the weakest evidence grade behind each `byModel` key (the key stays the model id); the no-model `unknown` row has none. `formatResearch` shows it when it is not `served`. */
   modelEvidence: Record<string, ModelEvidence>;
   /** #1402: tasks with an owner model, and without one (the `unknown` row). */
-  modelCoverage: { tasks: number; withModel: number; unknown: number };
+  /** `grounded` (#1402 T5, AC6): tasks with a `served` or `session` owner model, the share `docs/dogfood.md` measures; a `configured` one is only what the hub asked for. */
+  modelCoverage: { tasks: number; withModel: number; grounded: number; unknown: number };
   /** #258 AC11: tasks whose brief carried a hub-memory fail note, a brief without one, or no brief recorded. */
   byMemoryBrief: Record<string, Measures> }
 /**
@@ -422,13 +423,14 @@ export function researchReport(records: ResearchRecord[], since = 0): ResearchRe
   // Owner models only: a reviewer's model is not the implementer's. A record without `ownerModels` predates #1402 and reads as unknown.
   const byModel = new Map<string, { records: TaskRecord[]; weakest: ModelEvidence }>();
   const noModel = { records: [] as TaskRecord[] };
-  let withModel = 0;
+  let withModel = 0, grounded = 0;
   for (const r of all) {
     const owned = r.ownerModels ?? [];
     // A stored "unknown" id is the placeholder, never a model (see `observeModel`): it reads as no model, so it cannot merge with a real one.
     const real = owned.filter(m => m.model.toLowerCase() !== "unknown");
     if (!real.length) { const row = noModel; row.records.push(r); continue; }
     withModel++;
+    if (real.some(m => m.evidence !== "configured")) grounded++;
     for (const { model, evidence } of real) {
       const row = byModel.get(model) ?? { records: [], weakest: evidence };
       row.records.push(r);
@@ -440,7 +442,7 @@ export function researchReport(records: ResearchRecord[], since = 0): ResearchRe
   if (noModel.records.length) modelRows.push(["unknown", measures(noModel.records, labels)] as const);
   const byModelRows = Object.fromEntries(modelRows.sort(([a], [b]) => a.localeCompare(b)));
   const modelEvidence = Object.fromEntries([...byModel].map(([model, row]) => [model, row.weakest] as const));
-  return { overall: measures(all, labels), modelEvidence, modelCoverage: { tasks: all.length, withModel, unknown: all.length - withModel }, byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
+  return { overall: measures(all, labels), modelEvidence, modelCoverage: { tasks: all.length, withModel, grounded, unknown: all.length - withModel }, byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
     byProject: group((r) => [r.project]), byModel: byModelRows,
     byMemoryBrief: group((r) => [!r.briefs ? "no brief recorded" : r.briefs.withFail ? "a fail note in its brief" : "brief without a fail note"]) };
 }
@@ -451,7 +453,7 @@ export function formatResearch(r: ResearchReport): string[] {
   const row = (name: string, m: Measures) => `${name.padEnd(24)} ${String(m.tasks).padStart(5)}  ${fmtPct(m.successRate).padStart(7)}  ${fmtPct(m.firstPassRate).padStart(10)}  ${(m.reworkRate === null ? "-" : m.reworkRate.toFixed(2)).padStart(6)}  ${fmtPct(m.checkFailureRate).padStart(11)}  ${fmtNum(m.tokensPerTask.median).padStart(10)}  ${fmtNum(m.tokensPerTask.p90).padStart(10)}  ${(m.wallMsPerTask.median === null ? "-" : `${Math.round(m.wallMsPerTask.median / 60_000)}m`).padStart(8)}`;
   const head = `${"".padEnd(24)} ${"tasks".padStart(5)}  ${"success".padStart(7)}  ${"first pass".padStart(10)}  ${"rework".padStart(6)}  ${"check fails".padStart(11)}  ${"tokens p50".padStart(10)}  ${"tokens p90".padStart(10)}  ${"wall p50".padStart(8)}`;
   const section = (title: string, groups: Record<string, Measures>) => Object.keys(groups).length ? [``, title, head, ...Object.entries(groups).map(([k, m]) => row(k, m))] : [];
-  return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", Object.fromEntries(Object.entries(r.byModel).map(([model, m]) => [r.modelEvidence[model] && r.modelEvidence[model] !== "served" ? `${model} (${r.modelEvidence[model]})` : model, m]))), ...(r.modelCoverage.unknown ? [`${r.modelCoverage.unknown} of ${r.modelCoverage.tasks} tasks have no owner model: records written before #1402 carry none (run ahub research backfill to fill the tasks whose events still carry a model), and an agent whose native surface reports no model cannot be filled in; unknown stays unknown`] : []), ...section("by project", r.byProject), ...(Object.keys(r.byMemoryBrief).some((k) => k !== "no brief recorded") ? section("by memory brief", r.byMemoryBrief) : [])];
+  return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", Object.fromEntries(Object.entries(r.byModel).map(([model, m]) => [r.modelEvidence[model] && r.modelEvidence[model] !== "served" ? `${model} (${r.modelEvidence[model]})` : model, m]))), ...(r.modelCoverage.tasks ? [`owner model known (served or session): ${r.modelCoverage.grounded} of ${r.modelCoverage.tasks} tasks (${Math.round(100 * r.modelCoverage.grounded / r.modelCoverage.tasks)}%)`] : []), ...(r.modelCoverage.unknown ? [`${r.modelCoverage.unknown} of ${r.modelCoverage.tasks} tasks have no owner model: records written before #1402 carry none (run ahub research backfill to fill the tasks whose events still carry a model), and an agent whose native surface reports no model cannot be filled in; unknown stays unknown`] : []), ...section("by project", r.byProject), ...(Object.keys(r.byMemoryBrief).some((k) => k !== "no brief recorded") ? section("by memory brief", r.byMemoryBrief) : [])];
 }
 
 /**
