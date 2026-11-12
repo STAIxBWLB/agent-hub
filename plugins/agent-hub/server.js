@@ -1257,6 +1257,42 @@ var init_review_brief = __esm(() => {
   LOCKFILES = new Set(["bun.lock", "bun.lockb", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock", "go.sum", "composer.lock", "Gemfile.lock"]);
 });
 
+// src/omniroute/usage.ts
+function safeModelLabel(value) {
+  if (typeof value !== "string")
+    return;
+  const label = value.trim();
+  return label.length > 0 && label.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._:/+@-]*$/.test(label) ? label : undefined;
+}
+
+// src/adapters/print-result-model.ts
+function resultModel(row) {
+  if (!row || typeof row !== "object")
+    return;
+  const usage = row.modelUsage;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage))
+    return;
+  const seen = [];
+  for (const key of Object.keys(usage)) {
+    const model = safeModelLabel(key);
+    if (model === undefined || model.toLowerCase() === "unknown")
+      continue;
+    const value = usage[key];
+    let weight = 0;
+    if (value && typeof value === "object") {
+      for (const [name, count] of Object.entries(value))
+        if (/^(input|output|cacheRead|cacheCreation)[A-Za-z]*tokens$/i.test(name) && typeof count === "number" && Number.isFinite(count) && count > 0)
+          weight += count;
+    }
+    seen.push({ model, weight });
+  }
+  if (seen.length === 1)
+    return seen[0].model;
+  const ranked = seen.sort((a, b) => b.weight - a.weight);
+  return ranked.length > 1 && ranked[0].weight > ranked[1].weight ? ranked[0].model : undefined;
+}
+var init_print_result_model = () => {};
+
 // src/adapters/model-token.ts
 function isNativeModelToken(value) {
   return typeof value === "string" && NATIVE_WORD.test(value);
@@ -1610,6 +1646,12 @@ var init_reviewer_print = __esm(() => {
   };
   ReviewerPrintPeer = class ReviewerPrintPeer extends BasePeer {
     opts;
+    servedModel;
+    observedModel() {
+      const model = this.servedModel;
+      this.servedModel = undefined;
+      return model ? { model, evidence: "served" } : undefined;
+    }
     hubNative = true;
     hubOwned = true;
     generation = 0;
@@ -2053,6 +2095,11 @@ ${facts}` : ""}`;
             const usage = this.opts.backend.usage?.(event);
             if (usage)
               this.opts.onUsage?.(usage, task);
+            try {
+              const model = this.opts.backend.model?.(event);
+              if (model)
+                this.servedModel = model;
+            } catch {}
             if (this.opts.backend.failure?.(event) === "quota")
               quota = true;
           },
@@ -2188,6 +2235,7 @@ var init_claude_print = __esm(() => {
   init_child_process();
   init_git();
   init_review_brief();
+  init_print_result_model();
   init_reviewer_print();
   claudeReviewerBackend = {
     id: "claude",
@@ -2208,7 +2256,8 @@ var init_claude_print = __esm(() => {
     usage: (event) => {
       const row = event;
       return row?.type === "result" ? row.usage : undefined;
-    }
+    },
+    model: (event) => event?.type === "result" ? resultModel(event) : undefined
   };
   ClaudePrintPeer = class ClaudePrintPeer extends ReviewerPrintPeer {
     constructor(id, options) {
@@ -4648,6 +4697,8 @@ var init_codex_appserver = __esm(() => {
     nativeApprovalPolicies = new Map;
     overriddenApprovals = new Set;
     nativeModels = new Map;
+    threadModels = new Map;
+    reroutedModel;
     modelStartSequence = 0;
     restoringApprovals = new Map;
     proc;
@@ -4719,6 +4770,8 @@ var init_codex_appserver = __esm(() => {
     }
     async start() {
       this.nativeModels.clear();
+      this.threadModels.clear();
+      this.reroutedModel = undefined;
       this.modelStartSequence = 0;
       const upstream = this.opts.upstreamUrl ?? await this.spawnAppServer();
       try {
@@ -5195,9 +5248,26 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
         return;
       const actual = model ?? (inherit ? this.nativeModelHint(start.thread) : undefined);
       this.nativeModels.set(start.thread, { sequence: start.sequence, ...actual === undefined ? {} : { model: actual } });
+      this.rememberThreadModel(start.thread, actual);
       if (this.nativeModels.size > 128)
         this.nativeModels.delete(this.nativeModels.keys().next().value);
       return actual === undefined ? {} : { model: actual };
+    }
+    rememberThreadModel(thread, model) {
+      if (typeof model !== "string" || !model)
+        return;
+      this.threadModels.delete(thread);
+      this.threadModels.set(thread, model);
+      if (this.threadModels.size > 128)
+        this.threadModels.delete(this.threadModels.keys().next().value);
+    }
+    observedModel() {
+      const served = this.reroutedModel;
+      this.reroutedModel = undefined;
+      if (served)
+        return { model: served, evidence: "served" };
+      const session = this.threadModels.get(this.threadId);
+      return session ? { model: session, evidence: "session" } : undefined;
     }
     retireRejectedModelSelection(link) {
       const candidate = link.rejectedModelSelection;
@@ -5336,6 +5406,7 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
           if (!this.overriddenApprovals.has(thread) && msg.result.approvalPolicy != null)
             this.nativeApprovalPolicies.set(thread, msg.result.approvalPolicy);
           this.adopt(link, msg.result.thread.id, tracked === "thread/start");
+          this.rememberThreadModel(msg.result.thread.id, msg.result.model);
         }
       } else if (msg.method)
         this.onNotification(link, msg.method, msg.params ?? {});
@@ -5534,6 +5605,11 @@ ${renderDigest(envs, this.primed)}` : renderDigest(envs, this.primed);
       }
       if (link !== this.link || params.threadId !== this.threadId)
         return;
+      if (method === "model/rerouted") {
+        if (typeof params.toModel === "string" && params.toModel)
+          this.reroutedModel = params.toModel;
+        return;
+      }
       if (method === "thread/name/updated")
         return void this.onDoing?.("title", params.threadName);
       if (method === "turn/plan/updated")
@@ -16979,14 +17055,6 @@ var init_hub_tools = __esm(() => {
   DEFAULT_ROLES = defaultPeerRoles(true);
 });
 
-// src/omniroute/usage.ts
-function safeModelLabel(value) {
-  if (typeof value !== "string")
-    return;
-  const label = value.trim();
-  return label.length > 0 && label.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._:/+@-]*$/.test(label) ? label : undefined;
-}
-
 // src/local/probe-types.ts
 async function probeLocalEffect(scope, unit, descriptor, charges, reservedTokens, effect) {
   scope.current();
@@ -18174,9 +18242,16 @@ var init_claude_implementer = __esm(() => {
   init_compat();
   init_claude_print_child();
   init_claude_task_sessions();
+  init_print_result_model();
   provenVersions = new WeakMap;
   ClaudeImplementerPeer = class ClaudeImplementerPeer extends BasePeer {
     options;
+    servedModel;
+    observedModel() {
+      const model = this.servedModel;
+      this.servedModel = undefined;
+      return model ? { model, evidence: "served" } : undefined;
+    }
     hubNative = true;
     hubOwned = true;
     generation = 0;
@@ -18456,6 +18531,11 @@ var init_claude_implementer = __esm(() => {
               failed = row.is_error === true || row.subtype !== "success";
               if (row.usage)
                 this.options.onUsage?.(row.usage, group.task);
+              {
+                const model = resultModel(row);
+                if (model)
+                  this.servedModel = model;
+              }
             }
           });
           this.owned = child;

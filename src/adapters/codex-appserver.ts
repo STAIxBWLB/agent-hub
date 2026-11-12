@@ -6,6 +6,7 @@ import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } 
 import type { PermissionMode } from "../hub/permission-mode.ts";
 import type { DeliveryFailureCause } from "../hub/delivery-failure.ts";
 import { BasePeer, type FrontendProxyPort } from "../hub/peers.ts";
+import type { ModelObservation } from "../hub/events.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import type { ContextReader } from "./registry-types.ts";
@@ -119,6 +120,9 @@ export class CodexPeer extends BasePeer {
   private readonly nativeApprovalPolicies = new Map<string, unknown>();
   private readonly overriddenApprovals = new Set<string>();
   private readonly nativeModels = new Map<string, { sequence: number; model?: string }>();
+  /** #1402: the model each thread reported (`thread/start`, `thread/resume`) or was started with (an accepted `turn/start`), and the model Codex rerouted the running turn to. Never invented. */
+  private readonly threadModels = new Map<string, string>();
+  private reroutedModel: string | undefined;
   private modelStartSequence = 0;
   private readonly restoringApprovals = new Map<string | number, string>();
   private proc: ChildProcess | undefined;
@@ -203,7 +207,7 @@ export class CodexPeer extends BasePeer {
   }
 
   async start(): Promise<void> {
-    this.nativeModels.clear(); this.modelStartSequence = 0;
+    this.nativeModels.clear(); this.threadModels.clear(); this.reroutedModel = undefined; this.modelStartSequence = 0;
     const upstream = this.opts.upstreamUrl ?? (await this.spawnAppServer());
     try {
       this.server = Bun.serve<Link>({
@@ -634,9 +638,28 @@ export class CodexPeer extends BasePeer {
     if ((this.nativeModels.get(start.thread)?.sequence ?? 0) >= start.sequence) return undefined;
     const actual = model ?? (inherit ? this.nativeModelHint(start.thread) : undefined);
     this.nativeModels.set(start.thread, { sequence: start.sequence, ...(actual === undefined ? {} : { model: actual }) });
+    this.rememberThreadModel(start.thread, actual);
     // ponytail: keep at most 128 thread receipts; older defaults are unknown until native model readback is added.
     if (this.nativeModels.size > 128) this.nativeModels.delete(this.nativeModels.keys().next().value!);
     return actual === undefined ? {} : { model: actual };
+  }
+
+  private rememberThreadModel(thread: string, model: unknown): void {
+    if (typeof model !== "string" || !model) return;
+    this.threadModels.delete(thread); this.threadModels.set(thread, model);
+    if (this.threadModels.size > 128) this.threadModels.delete(this.threadModels.keys().next().value!);
+  }
+
+  /**
+   * #1402: what the native surface reported for the turn that just ended, read once at its `turn_end`. A `model/rerouted` notification names the model Codex served for the turn (`served`);
+   * otherwise the thread's reported or accepted model (`session`). Codex's `thread/start`, `thread/resume` and `turn/start` replies carry no per-response model, so nothing here is `served` unless
+   * Codex said so; an absent field records nothing. Verified against the app-server schema of codex-cli 0.167.2.
+   */
+  observedModel(): ModelObservation | undefined {
+    const served = this.reroutedModel; this.reroutedModel = undefined;
+    if (served) return { model: served, evidence: "served" };
+    const session = this.threadModels.get(this.threadId);
+    return session ? { model: session, evidence: "session" } : undefined;
   }
 
   private retireRejectedModelSelection(link: Link): void {
@@ -751,6 +774,7 @@ export class CodexPeer extends BasePeer {
         const thread = msg.result.thread.id;
         if (!this.overriddenApprovals.has(thread) && msg.result.approvalPolicy != null) this.nativeApprovalPolicies.set(thread, msg.result.approvalPolicy);
         this.adopt(link, msg.result.thread.id, tracked === "thread/start");
+        this.rememberThreadModel(msg.result.thread.id, msg.result.model);
       }
     }
     else if (msg.method) this.onNotification(link, msg.method, msg.params ?? {});
@@ -918,6 +942,7 @@ export class CodexPeer extends BasePeer {
       this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
     }
     if (link !== this.link || params.threadId !== this.threadId) return;
+    if (method === "model/rerouted") { if (typeof params.toModel === "string" && params.toModel) this.reroutedModel = params.toModel; return; }
     // #878: the bound thread's name and its plan's in-progress step, for the hub's DOING column only.
     if (method === "thread/name/updated") return void this.onDoing?.("title", params.threadName);
     if (method === "turn/plan/updated") return void this.onDoing?.("todo", Array.isArray(params.plan) ? params.plan.find((s: any) => s?.status === "inProgress")?.step : undefined);

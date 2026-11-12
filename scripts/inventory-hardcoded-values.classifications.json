@@ -433,6 +433,7 @@
   "src/adapters/claude-print.ts:timeout:inline:timeout=15_000#0": "operational",
   "src/adapters/codex-appserver.ts:<anonymous>:inline:this.opts.steerTimeoutMs ?? 10_000=10_000#0": "operational",
   "src/adapters/codex-appserver.ts:acceptModelStart:inline:this.nativeModels.size > 128=128#0": "operational",
+  "src/adapters/codex-appserver.ts:rememberThreadModel:inline:this.threadModels.size > 128=128#0": "operational",
   "src/adapters/codex-appserver.ts:adopt:inline:this.opts.usagePollMs ?? 600_000=600_000#0": "operational",
   "src/adapters/codex-appserver.ts:alive:inline:Math.max=10#0": "operational",
   "src/adapters/codex-appserver.ts:alive:inline:Math.min=30_000#0": "operational",

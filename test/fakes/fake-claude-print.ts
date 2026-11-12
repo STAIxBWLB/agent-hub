@@ -18,4 +18,5 @@ if (action === "approve") {
   if (log) appendFileSync(log, JSON.stringify({ show, review: res }) + "\n");
   hub.close();
 }
-console.log(JSON.stringify({ type: "result", subtype: "success", result: "done", usage: { input_tokens: 10, output_tokens: 5 } }));
+const modelUsage = process.env.FAKE_CLAUDE_MODEL_USAGE ? JSON.parse(process.env.FAKE_CLAUDE_MODEL_USAGE) : undefined;
+console.log(JSON.stringify({ type: "result", subtype: "success", result: "done", usage: { input_tokens: 10, output_tokens: 5 }, ...(modelUsage ? { modelUsage } : {}) }));
