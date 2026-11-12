@@ -1,0 +1,47 @@
+{
+  "watchdog_ms": 300000,
+  "batch_max": 3,
+  "batch_ms": 15000,
+  "queue_cap": 200,
+  "memory": {
+    "enabled": true,
+    "inject_tokens": 2000
+  },
+  "local": {
+    "deny": [],
+    "bash_network": false,
+    "max_steps": 30,
+    "read_allow": []
+  },
+  "pi": {
+    "enabled": true,
+    "auto_start": true,
+    "backend": "auto",
+    "dgx_coding": "coding",
+    "dgx_fast": "fast",
+    "max_steps": 30
+  },
+  "roles": {
+    "pi": [
+      "implementer",
+      "verifier"
+    ],
+    "claude": [
+      "planner",
+      "reviewer",
+      "conductor"
+    ]
+  },
+  "task_sweep": {
+    "enabled": true,
+    "interval_s": 300,
+    "unaccepted_min": 60,
+    "idle_min": 120,
+    "review_min": 120,
+    "ladder_min": 30,
+    "auto_reassign": false
+  },
+  "research": {
+    "enabled": true
+  }
+}
