@@ -111,12 +111,18 @@ export const blocksApproval = (item: ReviewFinding): boolean =>
   item.severity === "important" && item.disposition === "open" && item.state !== "needs_validation" && item.origin !== "pre_existing";
 /** What carries across heads: Important, except debt the reviewed change did not introduce. */
 const carries = (item: ReviewFinding): boolean => item.severity === "important" && item.origin !== "pre_existing";
-/** A later report of an id, over its earlier one. A report that still says open cannot lower an approval-blocking finding: its severity, origin and state stay; only an explicit disposition settles it. */
+const SECURITY_KEYS = ["state", "boundary", "blocker", "origin"] as const;
+/**
+ * A later report of an id, over its earlier one. The #1403 fields belong to the report that states them: a later report that omits `state`, `boundary`, `blocker` or `origin` has none of them
+ * (an omitted origin means introduced), so a reclassification (a hypothesis re-reported as a bug, a pre_existing one re-reported as introduced) blocks as reported. The one exception: a report
+ * that still says open cannot lower a finding that blocks approval, so that finding keeps its severity and its own four fields; only an explicit disposition settles it.
+ */
 function merged(prior: ReviewFinding | undefined, item: ReviewFinding): ReviewFinding {
   const next: ReviewFinding = { ...prior, ...item };
-  if (prior && blocksApproval(prior) && item.disposition === "open") {
+  for (const key of SECURITY_KEYS) if (item[key] === undefined) delete next[key];
+  if (prior && blocksApproval(prior) && item.disposition === "open" && !blocksApproval(item)) {
     next.severity = "important";
-    for (const key of ["origin", "state"] as const) { if (prior[key] === undefined) delete next[key]; else Object.assign(next, { [key]: prior[key] }); }
+    for (const key of SECURITY_KEYS) { if (prior[key] === undefined) delete next[key]; else Object.assign(next, { [key]: prior[key] }); }
   }
   return next;
 }

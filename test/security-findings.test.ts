@@ -204,3 +204,28 @@ test("stored reports read back without re-requiring the contract, and the 64-fin
   expect(() => parseReviewFindings(Array.from({ length: 65 }, (_, i) => finding("f" + i, { disposition: "fixed" })), required)).toThrow();
   expect(parseReviewFindings(Array.from({ length: 64 }, (_, i) => proven("f" + i)), { ...required, maxNits: 64 }).length).toBe(64);
 });
+
+test("a later report replaces the #1403 fields instead of inheriting them: a hypothesis re-reported as a bug blocks, and pre_existing re-reported as introduced is not a pre-existing card", () => {
+  const bug = { id: "f1", pass: "bugs" as const, severity: "important" as const, disposition: "open" as const };
+  const hypo = { ...bug, pass: "security" as const, state: "needs_validation" as const, blocker: "a fact", boundary };
+  const sets = [{ head: "A", items: [hypo] }, { head: "B", items: [bug] }];
+  const [reclassified] = findingsForHead(sets, "B");
+  expect(reclassified).toMatchObject({ pass: "bugs", severity: "important" });
+  for (const key of ["state", "boundary", "blocker", "origin"]) expect(reclassified).not.toHaveProperty(key);
+  expect(blocksApproval(reclassified!)).toBe(true);
+  expect(findingTally(findingsForHead(sets, "B")).openImportant).toBe(1);
+  expect(findingFollowUps(sets).validation).toEqual([]);
+  // Same head: first pre_existing, then re-reported with origin omitted (introduced).
+  const old = { ...bug, id: "f2", origin: "pre_existing" as const };
+  const again = [{ head: "A", items: [old] }, { head: "A", items: [{ ...bug, id: "f2" }] }];
+  expect(findingFollowUps(again).preExisting).toEqual([]);
+  expect(findingTally(findingsForHead(again, "A")).openImportant).toBe(1);
+  // The protection stays: an open re-report cannot lower a blocking finding and keeps its own fields.
+  const lowered = [{ head: "A", items: [{ ...hypo, state: "confirmed" as const, blocker: undefined }].map(({ blocker: _b, ...rest }) => rest) }, { head: "B", items: [{ ...hypo }] }];
+  const [kept] = findingsForHead(lowered, "B");
+  expect(kept).toMatchObject({ state: "confirmed" });
+  expect(blocksApproval(kept!)).toBe(true);
+  const downgraded = [{ head: "A", items: [bug] }, { head: "B", items: [{ ...bug, origin: "pre_existing" as const }] }];
+  expect(findingTally(findingsForHead(downgraded, "B")).openImportant).toBe(1);
+  expect(findingFollowUps(downgraded).preExisting).toEqual([]);
+});
