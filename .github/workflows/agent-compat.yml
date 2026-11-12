@@ -30,7 +30,7 @@ jobs:
       has_runners: ${{ steps.watch.outputs.has_runners }}
       watch_artifact: ${{ steps.watch_files.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
@@ -41,7 +41,7 @@ jobs:
       - name: Compare published versions and emit structured candidates
         id: watch
         run: bun scripts/agent-compat-watch.ts --json --report report.md --output watch.json --github-output "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: watch_files
         with:
           name: compat-watch-${{ github.run_id }}-${{ github.run_attempt }}
@@ -63,11 +63,11 @@ jobs:
       max-parallel: 2
       matrix: ${{ fromJSON(needs.watch.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -88,7 +88,7 @@ jobs:
           esac
       - name: Retain the receipt even when a required leg failed or was not run
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: compat-receipt-${{ matrix.id }}-${{ matrix.version }}
           path: |
@@ -107,22 +107,22 @@ jobs:
     outputs:
       prepared_artifact: ${{ steps.prepared_files.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           artifact-ids: ${{ needs.watch.outputs.watch_artifact }}
           path: watch-input
       - run: mkdir -p receipt-input
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         continue-on-error: true
         with:
           pattern: compat-receipt-*
@@ -139,7 +139,7 @@ jobs:
           args=(--watch watch-input/watch.json --summaries receipt-input --out prepared --source-base "$SOURCE_BASE_SHA" --date "$(date -u +%F)")
           if [ "$COMPAT_DRY" = true ]; then args+=(--dry-run); fi
           node --experimental-strip-types scripts/compat-prepare.ts "${args[@]}"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: prepared_files
         with:
           name: compat-prepared-${{ github.run_id }}-${{ github.run_attempt }}
@@ -159,16 +159,16 @@ jobs:
       # The person selected GITHUB_TOKEN plus an explicit check.yml dispatch.
       actions: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       # Download exactly the trusted preparer's immutable artifact id, not a
       # candidate-selected bundle name. No install/build/package code runs here.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           artifact-ids: ${{ needs.prepare.outputs.prepared_artifact }}
           path: prepared

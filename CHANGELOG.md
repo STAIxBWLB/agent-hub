@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Workflow actions are pinned by commit SHA with the version in a comment (#1403 A6): `actions/checkout`, `actions/setup-node`, `actions/upload-artifact` and `actions/download-artifact` join `oven-sh/setup-bun`, and `test/workflow-pins.test.ts` refuses a tag-pinned action. `SECURITY.md` points reports at GitHub private vulnerability reporting.
+
 - A refused `ahub guidance probe` command names the subcommand typed, prints that subcommand's exact usage and says where the probe id comes from, in place of one generic line (#1405). The usage text has one source shared with `ahub help`; no accepted form changes.
 
 ## 0.38.0
