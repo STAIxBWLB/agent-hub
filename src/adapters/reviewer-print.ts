@@ -91,6 +91,8 @@ export interface ReviewerBackend {
   nativePolicy?: true;
   prepare(context: ReviewerPrepareContext): Promise<ReviewerLaunch | { unavailable: string; causeClass?: ReviewerCauseClass; detail?: string }>;
   usage?(event: unknown): ReviewerPrintUsage | undefined;
+  /** #1402: the model a result frame says was served, by the backend's own native shape; absent when the frame names none. */
+  model?(event: unknown): string | undefined;
   failure?(event: unknown): "quota" | undefined;
   /** Structured native MCP events only, never model messages or tool arguments. */
   toolTrace?(event: unknown): ReviewerToolTrace | undefined;
@@ -177,6 +179,12 @@ const reviewTask = (env: Envelope): number | undefined => {
 };
 
 export class ReviewerPrintPeer extends BasePeer {
+  /** #1402: the model the last result frame named; read once at the turn end. */
+  private servedModel: string | undefined;
+  observedModel(): import("../hub/events.ts").ModelObservation | undefined {
+    const model = this.servedModel; this.servedModel = undefined;
+    return model ? { model, evidence: "served" } : undefined;
+  }
   readonly hubNative = true;
   readonly hubOwned: boolean = true;
   private generation = 0;
@@ -500,6 +508,7 @@ export class ReviewerPrintPeer extends BasePeer {
         } catch { /* Optional trace metadata never changes review execution. */ }
         const usage = this.opts.backend.usage?.(event);
         if (usage) this.opts.onUsage?.(usage, task);
+        try { const model = this.opts.backend.model?.(event); if (model) this.servedModel = model; } catch { /* optional metadata never changes review execution */ }
         if (this.opts.backend.failure?.(event) === "quota") quota = true;
       },
       onActivity: () => this.touch(),

@@ -73,6 +73,9 @@ export function startFakeAppServer(
         }
         reply({ turn });
         note("turn/started", { threadId, turn });
+        // `REROUTE:<model>` is Codex moving the running turn to another model (schema `model/rerouted`).
+        const rerouted = /REROUTE:(\S+)/.exec(text)?.[1];
+        if (rerouted) note("model/rerouted", { threadId, turnId: turn.id, fromModel: "fake", toModel: rerouted, reason: "highRiskCyberActivity" });
         await Bun.sleep(delayMs);
         const slow = /SLOW:(\d+)/.exec(text); // a turn that keeps running for this many ms
         if (slow) await Bun.sleep(Number(slow[1]));

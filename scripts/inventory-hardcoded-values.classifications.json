@@ -440,6 +440,7 @@
   "src/adapters/codex-appserver.ts:fromTui:inline:link.modelStarts.size < 64=64#0": "safety floor",
   "src/adapters/codex-appserver.ts:interceptActionApproval:inline:link.approvalIds.size >= 1024=1024#0": "safety floor",
   "src/adapters/codex-appserver.ts:readUsage:inline:setTimeout=30_000#0": "operational",
+  "src/adapters/codex-appserver.ts:rememberThreadModel:inline:this.threadModels.size > 128=128#0": "operational",
   "src/adapters/codex-appserver.ts:spawnAppServer:inline:Bun.sleep=100#0": "operational",
   "src/adapters/codex-appserver.ts:timer:inline:setTimeout=10_000#0": "operational",
   "src/adapters/codex-appserver.ts:timer:inline:setTimeout=30_000#0": "operational",

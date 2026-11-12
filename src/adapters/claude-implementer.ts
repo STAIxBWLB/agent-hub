@@ -17,6 +17,7 @@ import { ClaudeTaskSessions } from "./claude-task-sessions.ts";
 import { formatClaudeFailure, type ClaudeFailureTrace } from "../hub/claude-failure-stage.ts";
 import type { PermissionMode } from "../hub/permission-mode.ts";
 import type { ReviewerPrintUsage } from "./reviewer-print.ts";
+import { resultModel } from "./print-result-model.ts";
 
 const provenVersions = new WeakMap<() => boolean, string>();
 function provenVersion(binding: () => boolean): string | undefined { return provenVersions.get(binding); }
@@ -99,6 +100,12 @@ export async function proveClaudeImplementer(peer: string, command: readonly str
 
 /** One owned print child at a time. Idle holds no native process; task continuity is ids-only on disk. */
 export class ClaudeImplementerPeer extends BasePeer {
+  /** #1402: the model the last `result` row's modelUsage named; read once at the turn end. */
+  private servedModel: string | undefined;
+  observedModel(): import("../hub/events.ts").ModelObservation | undefined {
+    const model = this.servedModel; this.servedModel = undefined;
+    return model ? { model, evidence: "served" } : undefined;
+  }
   readonly hubNative = true;
   readonly hubOwned: boolean = true;
   private generation = 0;
@@ -273,6 +280,7 @@ export class ClaudeImplementerPeer extends BasePeer {
             if (row?.type !== "result" || result) return;
             result = true; failed = row.is_error === true || row.subtype !== "success";
             if (row.usage) this.options.onUsage?.(row.usage, group.task);
+            { const model = resultModel(row); if (model) this.servedModel = model; }
           } });
         this.owned = child;
         let code: number | null;
