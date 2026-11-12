@@ -23,7 +23,8 @@ function fixture() {
   const run = (args: string[]) => { const r = Bun.spawnSync([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "init", ...args], { cwd, env, stdin: "ignore" }); return { code: r.exitCode, out: `${r.stdout.toString()}${r.stderr.toString()}` }; };
   const ignored = (path: string) => hubGitSync(["check-ignore", "-q", "--no-index", "--", path], { cwd, env, encoding: "utf8", timeout: 3000 }).status === 0;
   const text = (path: string) => existsSync(join(cwd, path)) ? readFileSync(join(cwd, path), "utf8") : "";
-  return { cwd, run, ignored, text };
+  const git = (args: string[]) => hubGitSync(args, { cwd, env, encoding: "utf8", timeout: 3000 });
+  return { cwd, run, ignored, text, git };
 }
 const SHARED = [".agenthub/config.json", ".agenthub/routing.toml", ".agenthub/sdlc.toml"];
 
@@ -91,6 +92,10 @@ test("init adds no .gitignore line for a path git already ignores (AC6)", () => 
   const done = p.run([]);
   expect(done.code, done.out).toBe(0);
   expect(p.text(".gitignore")).toBe(".agenthub/\n");
+  // with neither flag the block follows what git says, and the next steps say the same as the block
+  expect(p.text("AGENTS.md")).toContain(ROLES_UNTRACKED);
+  expect(done.out).toContain("stay untracked: each checkout and each machine holds its own roles");
+  expect(done.out).not.toContain("commit AGENTS.md, .agenthub/config.json");
   const fresh = fixture();
   expect(fresh.run([]).code).toBe(0);
   expect(fresh.text(".gitignore")).toBe(".agenthub/state/\n.agenthub/config.local.json\n.agenthub/routing.local.toml\n");
@@ -132,4 +137,15 @@ test("config.local.json wins over config.json key by key, for a key of every top
   for (const [block, key, mine] of expected) expect({ [`${block}.${key}`]: config[block]![key] }).toEqual({ [`${block}.${key}`]: mine });
   expect(config.roles!.claude).toEqual(["reviewer"]);
   expect(config.roles!.codex).toEqual(["implementer"]);
+});
+
+test("--no-track-config on a project that already committed its config names the command that stops tracking it", () => {
+  const p = fixture();
+  expect(p.run(["--track-config"]).code).toBe(0);
+  expect(p.git(["add", "AGENTS.md", ".gitignore", ".agenthub/config.json", ".agenthub/routing.toml"]).status).toBe(0);
+  expect(p.git(["-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm", "init"]).status).toBe(0);
+  const off = p.run(["--no-track-config"]);
+  expect(off.code, off.out).toBe(0);
+  expect(off.out).toContain(".agenthub/config.json, .agenthub/routing.toml are still committed: run git rm --cached .agenthub/config.json .agenthub/routing.toml and commit");
+  expect(p.text("AGENTS.md")).toContain(ROLES_UNTRACKED);
 });

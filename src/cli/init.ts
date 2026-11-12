@@ -385,13 +385,20 @@ export function initNextSteps(cwd: string, settings?: InitSettingsRequest): stri
   const track = settings?.values[TRACK_CONFIG];
   const mode = settings?.values["sdlc.mode"] ?? loadSdlc(cwd, VERSION).mode;
   const lines = ["Next steps:"];
-  if (track === false) lines.push("- Review and commit AGENTS.md. .agenthub/config.json, routing.toml and sdlc.toml stay untracked: each checkout and each machine holds its own roles.");
-  else if (track === true) {
+  // An ignore line does not untrack a file git already has: name the command that does.
+  const committed = (names: readonly string[]) => names.map(name => `.agenthub/${name}`).filter(path => hubGitSync(["ls-files", "--error-unmatch", "--", path], { cwd, encoding: "utf8", timeout: 3000 }).status === 0);
+  const untrack = (paths: string[]) => { if (paths.length) lines.push(`- ${paths.join(", ")} ${paths.length === 1 ? "is" : "are"} still committed: run git rm --cached ${paths.join(" ")} and commit, or git keeps tracking ${paths.length === 1 ? "it" : "them"}.`); };
+  const agentsPath = join(cwd, "AGENTS.md");
+  // The words follow the block's role sentence, so the next steps never contradict it (a project with neither flag whose config git ignores gets the untracked sentence).
+  if (track === false || track === undefined && !rolesTracked(cwd, existsSync(agentsPath) ? readFileSync(agentsPath, "utf8") : "", settings)) {
+    lines.push("- Review and commit AGENTS.md. .agenthub/config.json, routing.toml and sdlc.toml stay untracked: each checkout and each machine holds its own roles.");
+    untrack(committed(SHARED_CONFIG));
+  } else if (track === true) {
     // #1411: the files to commit, and what must not go in with them.
     const endpoints = routingMachineKeys(cwd);
     const files = SHARED_CONFIG.filter(name => !(name === "routing.toml" && endpoints.length) && (name !== "sdlc.toml" || existsSync(join(cwd, ".agenthub", name)) || mode !== "off"));
     lines.push(`- Review and commit AGENTS.md and ${files.map(name => `.agenthub/${name}`).join(", ")}; keep config.local.json untracked.`);
-    if (endpoints.length) lines.push(`- .agenthub/routing.toml stays untracked: ${endpoints.join(", ")} names this machine's endpoint, and routing.local.toml cannot hold it yet.`);
+    if (endpoints.length) { lines.push(`- .agenthub/routing.toml stays untracked: ${endpoints.join(", ")} names this machine's endpoint, and routing.local.toml cannot hold it yet.`); untrack(committed(["routing.toml"])); }
     const personal = personalValues(cwd);
     if (personal.length) lines.push(`- Before the first commit, move ${personal.join(", ")} from .agenthub/config.json to .agenthub/config.local.json: they are this machine's values, and the hub ignores them in a committed config.json.`);
   } else lines.push("- Review and commit AGENTS.md, .agenthub/config.json and other shared init changes; keep config.local.json untracked.");
