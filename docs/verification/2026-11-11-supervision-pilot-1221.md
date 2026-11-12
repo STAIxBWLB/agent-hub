@@ -166,6 +166,7 @@ read and present in a `task`-narrowed one.
 | 4 | role-scoped (task 866) | 2026-11-12 00:37 KST, hub 0.37.0 | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 since the daemon start at 20:51 (unknown before it) | 3 |
 | 5 | role-scoped (task 866), hub 0.38.0; unfiltered read 2, `task: 866` read 3 (page, below) | 2026-11-12 15:55 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 0 since the daemon start (unknown before it) | 3 |
 | 6 | role-scoped (task 866), hub 0.38.0 | 2026-11-13 01:30 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 2 since the daemon start (unknown which bound, task or rule; unknown before it) | 3 |
+| 7 | role-scoped (task 866), hub 0.38.0, pid 92515; its start (2026-11-12 11:09:48 KST) puts readings 5, 6 and 7 in one daemon lifetime | 2026-11-13 04:05 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 4 since that daemon start, 2 of them after reading 6 (unknown which bound, task or rule) | 3 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -212,6 +213,26 @@ fired on `866` at `8:3` produced nothing this reading can see. That is a measure
 never evidence that no condition held. A restart between readings 5 and 6 also cannot be excluded,
 because a role-scoped read carries no daemon start time, so the delta reads as "2 refusals in the
 current daemon lifetime", not "2 in the last nine hours".
+
+Reading 7 bounds that window instead of leaving it unknown, and the bound is what the counter was
+missing. At 2026-11-13 04:05 KST, on the same build (`ahub status` reports agent-hub 0.38.0,
+pid 92515, mode `shadow`), the `task: 866` read returned the same three expired rows at revision
+`8:3` and `refused` had moved from 2 to 4. `ps -o lstart= -p 92515` puts that process's start at
+2026-11-12 11:09:48 KST, cross-checked against its own `etime` of 16 h 55 m 48 s at 04:05:36 KST,
+so readings 5 (15:55), 6 (01:30) and 7 (04:05) all ran under one daemon. The series 0, 2, 4 is
+therefore a single lifetime, and the two refusals after reading 6 accumulated in 2 h 35 min. That
+closes the question reading 6 had to leave open, since it carried no start time and could not
+exclude a restart, and it changes what the number means: a refusal is not a startup artefact. The
+storage bounds refused four observations in about seventeen hours while the role-scoped read kept
+returning an unchanged three-row ledger at one revision, so the refusals sit in a part of the
+queue this caller cannot see and, as reading 6 noted, may include this task. Which bound refused
+them, on which task and by which rule, is still unknown from a role-scoped read and stays in the
+list below. Provenance at this reading: board head `08d4b893b`, the single merge #1420 (#1402 T4),
+which changes no file either anchor depends on, so `docs/dogfood.md` still carries the
+`Supervision rules and proposals (#1221 T1, T2)` row at 130; and the evaluator and the queue are
+byte-identical from the seal `16b8251657a2` to `08d4b893b` (`supervision-rules.ts`,
+`supervision-proposals.ts`, `settled-roles.ts` and `supervision.ts` all print nothing under
+`git diff --stat`), so the frozen case set still describes the code that measured it.
 
 ## Proposal ledger
 
@@ -263,8 +284,10 @@ and is not part of this wave.
   to rows on tasks I cannot decide, and the `task`-narrowed read returned all three. The size of
   the queue past one page is therefore unknown from a role-scoped read, and a wave total that adds
   up role-scoped reads without narrowing by task is an undercount;
-- the two refusals reading 6 reported. `refused` is a bare counter: it names no task, rule,
-  revision or bound, and only the conductor's queue read could say which. Its own scope makes it
-  narrower than it looks, since it resets at every daemon start and the earlier readings predate
-  the counter's window, so the wave's refusal total is a lower bound built from per-read samples;
+- the four refusals readings 6 and 7 reported. `refused` is a bare counter: it names no task, rule,
+  revision or bound, and only the conductor's queue read could say which. Reading 7 narrowed its
+  window rather than its cause: the daemon's own start time (2026-11-12 11:09:48 KST) puts readings
+  5, 6 and 7 in one lifetime, so the four are real additions and not a reset artefact. What stays
+  unknown is the attribution, and the earlier readings predate that window, so the wave's refusal
+  total remains a lower bound built from per-read samples;
 - every threshold that needs a live sample larger than this pilot can produce.
