@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, memoryProjectKey, migrate } from "@staix/agent-mem";
@@ -61,7 +61,7 @@ test("invalid selected profile refuses before a default CLI open can create lega
   try {
     await expect(memoryCommand(["list"], cwd)).rejects.toThrow();
     expect(existsSync(join(memoryDir, "machine.json"))).toBe(false);
-    expect(existsSync(join(memoryDir, "index.db"))).toBe(false);
+    expect(readdirSync(memoryDir).filter((f) => /^index[\w-]*\.db$/.test(f))).toEqual([]); // no index of any amem index version
     expect(readFileSync(join(memoryDir, "profile.json"))).toEqual(before);
   } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
 });

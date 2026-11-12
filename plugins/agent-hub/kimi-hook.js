@@ -12172,7 +12172,7 @@ var init_package = __esm(() => {
       bun: ">=1.4.2"
     },
     dependencies: {
-      "@staix/agent-mem": "0.24.0"
+      "@staix/agent-mem": "0.25.0"
     },
     devDependencies: {
       "@modelcontextprotocol/sdk": "^1.27.1",
@@ -12419,7 +12419,6 @@ var init_brief_capture = __esm(() => {
   init_policy();
   init_brief_cache();
 });
-
 // node_modules/@staix/agent-mem/src/brief-curated.ts
 var MAX_AGE;
 var init_brief_curated = __esm(() => {
@@ -12614,7 +12613,7 @@ var init_ops_contract = __esm(() => {
       project: { type: "string", maxLength: 400 },
       scope: { type: "string", values: ["project", "shared"] },
       tier: { type: "string", values: ["short", "long"] },
-      kind: { type: "string", values: ["decision", "finding", "contract", "fail"] },
+      kind: { type: "string", values: ["decision", "finding", "contract", "fail", "preference"] },
       peer: { type: "string", maxLength: 64 },
       title: text,
       text,
@@ -13235,7 +13234,7 @@ var init_mcp = __esm(() => {
     tool("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Review and accept or reject through the CLI under current policy; this tool never writes curated notes.", object7({
       text: string(3000),
       title: string(200),
-      kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] },
+      kind: { type: "string", enum: ["decision", "finding", "contract", "fail", "preference"] },
       approach: string(4000),
       symptom: string(4000),
       cause: string(4000),
@@ -13438,6 +13437,11 @@ var init_hooks = __esm(() => {
   hookStartedAt = performance.now();
 });
 
+// node_modules/@staix/agent-mem/src/ingest-records.ts
+var init_ingest_records = __esm(() => {
+  init_hook_record();
+});
+
 // node_modules/@staix/agent-mem/src/ingest.ts
 var MAX_BYTES7, DEFAULT_BYTES, MAX_CURSOR_BYTES, utf8, MAX_RECORD;
 var init_ingest = __esm(() => {
@@ -13446,6 +13450,10 @@ var init_ingest = __esm(() => {
   init_platform();
   init_policy();
   init_config();
+  init_capture_input();
+  init_hook_spool();
+  init_hook_record();
+  init_ingest_records();
   init_project2();
   init_shard();
   MAX_BYTES7 = 16 * 1024 * 1024;
@@ -13517,6 +13525,13 @@ var init_consolidation_model = __esm(() => {
   init_platform();
 });
 
+// node_modules/@staix/agent-mem/src/memory/record-candidates.ts
+var init_record_candidates = __esm(() => {
+  init_hook_record();
+  init_capture();
+  init_shard();
+});
+
 // node_modules/@staix/agent-mem/src/memory/consolidate.ts
 var init_consolidate = __esm(() => {
   init_candidates();
@@ -13524,6 +13539,7 @@ var init_consolidate = __esm(() => {
   init_policy();
   init_platform();
   init_consolidation_model();
+  init_record_candidates();
 });
 
 // node_modules/@staix/agent-mem/src/memory/sync-policy-inspection.ts
@@ -14168,6 +14184,7 @@ var init_src = __esm(() => {
   init_intent_brief();
   init_plan_guard();
   init_consolidate();
+  init_record_candidates();
   init_consolidation_clusters();
   init_consolidation_model();
   init_evidence();

@@ -62,7 +62,7 @@ import { parseSettingText, settingDef, settingText, undoableDef, type SettingRow
 import { startModeOf } from "../hub/start-mode.ts";
 import { currentRouting, OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -147,6 +147,8 @@ const since = (): number => {
   if (t === undefined) fail("--since takes 7d, 24h, 90m or an ISO date");
   return t;
 };
+// #907: amem names its curated index per index version (`index.db` through 0.24, `index-v4.db` from 0.25), so any of them means the legacy hub-home store was built.
+const memoryIndexed = (): boolean => { try { return readdirSync(join(hubHome(), "memory")).some(name => /^index[\w-]*\.db$/.test(name)); } catch { return false; } };
 
 const argv = process.argv.slice(2);
 let selector: string | undefined;
@@ -2607,7 +2609,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
       if (status.needs) { const pet = loadPetConfig(cwd); if (pet.enabled) console.log(renderPet(petView(status), false, pet.character)); }
       // #258: open long-term tasks and who holds them, as of this machine's last memory sync.
-      if (status.memoryProfile ? status.memoryProfile.state === "ready" : existsSync(join(hubHome(), "memory", "index.db"))) {
+      if (status.memoryProfile ? status.memoryProfile.state === "ready" : memoryIndexed()) {
         try { const lines = await goalCommand(["list"], cwd); if (!lines.startsWith("no open")) console.log(`\nlong-term tasks\n${lines}`); } catch { /* memory unreadable: status goes on */ }
       }
     } finally { hub.close(); }
