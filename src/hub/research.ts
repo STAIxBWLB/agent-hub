@@ -93,6 +93,9 @@ const mergeKnown = (r: TaskRecord): boolean => !!r.merge && (r.merge.ciRuns !== 
 /** True when `next` has merge figures the held record of the same task lacks. */
 export const fillsMerge = (held: TaskRecord, next: TaskRecord): boolean => next.schema === RESEARCH_SCHEMA && !mergeKnown(held) && mergeKnown(next);
 
+/** #1402: a held v2 row written before `ownerModels` existed has no such field; a rebuilt row that can prove an owner model from the surviving events replaces it (a held row that has the field is final). */
+export const fillsOwnerModels = (held: TaskRecord, next: TaskRecord): boolean => next.schema === RESEARCH_SCHEMA && held.ownerModels === undefined && (next.ownerModels?.length ?? 0) > 0;
+
 /** The latest record of each task (a later row of the same task replaces an earlier one), in order of first appearance. */
 export function latestTaskRecords(records: readonly ResearchRecord[]): TaskRecord[] {
   const latest = new Map<string, TaskRecord>();
@@ -137,7 +140,8 @@ const gradeRank = (grade: ModelEvidence): number => MODEL_EVIDENCE.indexOf(grade
 /** Keep the strongest grade seen for a peer's model. A label `safeModelLabel` refuses or an unknown grade is ignored, never repaired. */
 function observeModel(a: { observed: Map<string, Map<string, ModelEvidence>> }, peer: string, model: unknown, grade: unknown): void {
   const label = safeModelLabel(model);
-  if (label === undefined || !isModelEvidence(grade)) return;
+  // "unknown" is the placeholder some adapters write when a request named no model, not a model: it stays an unobserved turn, so it can never merge with the no-model row.
+  if (label === undefined || label.toLowerCase() === "unknown" || !isModelEvidence(grade)) return;
   const models = a.observed.get(peer) ?? new Map<string, ModelEvidence>();
   const held = models.get(label);
   if (held === undefined || gradeRank(grade) < gradeRank(held)) models.set(label, grade);
@@ -337,9 +341,9 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
   mkdirSync(researchDir(home), { recursive: true, mode: 0o700 });
   chmodSync(researchDir(home), 0o700); // mkdir's mode applies only when it creates the directory
   // A v2 row replaces a held v1 row of the same task (readers keep the latest per task). A held v2 row is final, as a held row always was, with one exception: the live writer
-  // records a task at its approval and the guarded merge writes its receipt later, so a later pass may append the same task with the merge figures it could not know then.
+  // records a task at its approval and the guarded merge writes its receipt later, so a later pass may append the same task with the merge figures it could not know then. #1402: likewise a row with no `ownerModels` field, which `ahub research backfill` fills from the events that still carry a model.
   const held = new Map(readStore(file).flatMap((r) => r.kind === "task" && r.schema === RESEARCH_SCHEMA ? [[recordKey(r), r] as const] : []));
-  const added = records.filter((r) => r.kind === "label" || r.schema !== RESEARCH_SCHEMA || !held.has(recordKey(r)) || fillsMerge(held.get(recordKey(r))!, r));
+  const added = records.filter((r) => r.kind === "label" || r.schema !== RESEARCH_SCHEMA || !held.has(recordKey(r)) || fillsMerge(held.get(recordKey(r))!, r) || fillsOwnerModels(held.get(recordKey(r))!, r));
   if (!added.length) return 0;
   appendFileSync(file, added.map((r) => JSON.stringify(r)).join("\n") + "\n", { mode: 0o600 });
   chmodSync(file, 0o600);
@@ -397,7 +401,9 @@ function measures(records: TaskRecord[], labels: Map<string, Label>): Measures {
     wallMsPerTask: { median: quantile(records.flatMap((r) => r.wallMs ?? []), 0.5), p90: quantile(records.flatMap((r) => r.wallMs ?? []), 0.9) } };
 }
 export interface ResearchReport { overall: Measures; byClass: Record<string, Measures>; byOwner: Record<string, Measures>; byProject: Record<string, Measures>; byModel: Record<string, Measures>;
-  /** #1402: tasks with an owner model, and without one (`unknown`). A row of `byModel` is labelled with its weakest grade when that is not `served`. */
+  /** #1402: the weakest evidence grade behind each `byModel` key (the key stays the model id); the no-model `unknown` row has none. `formatResearch` shows it when it is not `served`. */
+  modelEvidence: Record<string, ModelEvidence>;
+  /** #1402: tasks with an owner model, and without one (the `unknown` row). */
   modelCoverage: { tasks: number; withModel: number; unknown: number };
   /** #258 AC11: tasks whose brief carried a hub-memory fail note, a brief without one, or no brief recorded. */
   byMemoryBrief: Record<string, Measures> }
@@ -415,20 +421,27 @@ export function researchReport(records: ResearchRecord[], since = 0): ResearchRe
   };
   // Owner models only: a reviewer's model is not the implementer's. A record without `ownerModels` predates #1402 and reads as unknown.
   const byModel = new Map<string, { records: TaskRecord[]; weakest: ModelEvidence }>();
+  const noModel = { records: [] as TaskRecord[] };
   let withModel = 0;
   for (const r of all) {
     const owned = r.ownerModels ?? [];
-    if (owned.length) withModel++;
-    for (const { model, evidence } of owned.length ? owned : [{ model: "unknown", evidence: "served" as ModelEvidence }]) {
+    // A stored "unknown" id is the placeholder, never a model (see `observeModel`): it reads as no model, so it cannot merge with a real one.
+    const real = owned.filter(m => m.model.toLowerCase() !== "unknown");
+    if (!real.length) { const row = noModel; row.records.push(r); continue; }
+    withModel++;
+    for (const { model, evidence } of real) {
       const row = byModel.get(model) ?? { records: [], weakest: evidence };
       row.records.push(r);
       if (gradeRank(evidence) > gradeRank(row.weakest)) row.weakest = evidence;
       byModel.set(model, row);
     }
   }
-  const byModelLabelled = Object.fromEntries([...byModel].map(([model, row]) => [row.weakest === "served" ? model : `${model} (${row.weakest})`, measures(row.records, labels)] as const).sort(([a], [b]) => a.localeCompare(b)));
-  return { overall: measures(all, labels), modelCoverage: { tasks: all.length, withModel, unknown: all.length - withModel }, byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
-    byProject: group((r) => [r.project]), byModel: byModelLabelled,
+  const modelRows = [...byModel].map(([model, row]) => [model, measures(row.records, labels)] as const);
+  if (noModel.records.length) modelRows.push(["unknown", measures(noModel.records, labels)] as const);
+  const byModelRows = Object.fromEntries(modelRows.sort(([a], [b]) => a.localeCompare(b)));
+  const modelEvidence = Object.fromEntries([...byModel].map(([model, row]) => [model, row.weakest] as const));
+  return { overall: measures(all, labels), modelEvidence, modelCoverage: { tasks: all.length, withModel, unknown: all.length - withModel }, byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
+    byProject: group((r) => [r.project]), byModel: byModelRows,
     byMemoryBrief: group((r) => [!r.briefs ? "no brief recorded" : r.briefs.withFail ? "a fail note in its brief" : "brief without a fail note"]) };
 }
 
@@ -438,7 +451,7 @@ export function formatResearch(r: ResearchReport): string[] {
   const row = (name: string, m: Measures) => `${name.padEnd(24)} ${String(m.tasks).padStart(5)}  ${fmtPct(m.successRate).padStart(7)}  ${fmtPct(m.firstPassRate).padStart(10)}  ${(m.reworkRate === null ? "-" : m.reworkRate.toFixed(2)).padStart(6)}  ${fmtPct(m.checkFailureRate).padStart(11)}  ${fmtNum(m.tokensPerTask.median).padStart(10)}  ${fmtNum(m.tokensPerTask.p90).padStart(10)}  ${(m.wallMsPerTask.median === null ? "-" : `${Math.round(m.wallMsPerTask.median / 60_000)}m`).padStart(8)}`;
   const head = `${"".padEnd(24)} ${"tasks".padStart(5)}  ${"success".padStart(7)}  ${"first pass".padStart(10)}  ${"rework".padStart(6)}  ${"check fails".padStart(11)}  ${"tokens p50".padStart(10)}  ${"tokens p90".padStart(10)}  ${"wall p50".padStart(8)}`;
   const section = (title: string, groups: Record<string, Measures>) => Object.keys(groups).length ? [``, title, head, ...Object.entries(groups).map(([k, m]) => row(k, m))] : [];
-  return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", r.byModel), ...(r.modelCoverage.unknown ? [`${r.modelCoverage.unknown} of ${r.modelCoverage.tasks} tasks have no owner model: events and records written before #1402 carry none, and an agent whose native surface reports no model cannot be filled in; unknown stays unknown`] : []), ...section("by project", r.byProject), ...(Object.keys(r.byMemoryBrief).some((k) => k !== "no brief recorded") ? section("by memory brief", r.byMemoryBrief) : [])];
+  return [head, row("all approved tasks", r.overall), ...section("by class", r.byClass), ...section("by owner", r.byOwner), ...section("by model", Object.fromEntries(Object.entries(r.byModel).map(([model, m]) => [r.modelEvidence[model] && r.modelEvidence[model] !== "served" ? `${model} (${r.modelEvidence[model]})` : model, m]))), ...(r.modelCoverage.unknown ? [`${r.modelCoverage.unknown} of ${r.modelCoverage.tasks} tasks have no owner model: records written before #1402 carry none (run ahub research backfill to fill the tasks whose events still carry a model), and an agent whose native surface reports no model cannot be filled in; unknown stays unknown`] : []), ...section("by project", r.byProject), ...(Object.keys(r.byMemoryBrief).some((k) => k !== "no brief recorded") ? section("by memory brief", r.byMemoryBrief) : [])];
 }
 
 /**

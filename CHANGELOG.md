@@ -4,8 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub research` records the model each owner used (#1402 T1). `turn_end` events gain optional `model` and `modelEvidence` (`served`, `session` or `configured`), written from a new optional `PeerAdapter.observedModel()` through `safeModelLabel` (a refused label is dropped whole; no observation writes neither field), and task records gain `ownerModels`, built from the owner's turns only. `by model` now groups on `ownerModels`, so a reviewer's model no longer counts for the owner, shows the weakest evidence grade when it is not `served`, and prints how many tasks have no owner model; `models` stays the union and the CSV gets a trailing `ownerModels` column. Records already in the store carry no `ownerModels` and read as `unknown`: run `ahub research backfill` to fill the tasks whose events still carry a model. The adapters report their models in T2 to T4 (#887 to #889), so until then only turns whose usage event names a model have one.
 - Workflow actions are pinned by commit SHA with the version in a comment (#1403 A6): `actions/checkout`, `actions/setup-node`, `actions/upload-artifact` and `actions/download-artifact` join `oven-sh/setup-bun`, and `test/workflow-pins.test.ts` refuses a tag-pinned action. `SECURITY.md` points reports at GitHub private vulnerability reporting.
-
 - A refused `ahub guidance probe` command names the subcommand typed, prints that subcommand's exact usage and says where the probe id comes from, in place of one generic line (#1405). The usage text has one source shared with `ahub help`; no accepted form changes.
 
 ## 0.38.0

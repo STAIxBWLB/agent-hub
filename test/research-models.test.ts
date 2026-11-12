@@ -1,18 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { newEnvelope, USER, type Envelope } from "../src/hub/envelope.ts";
 import { readEvents, turnModelFields, type ModelObservation, type StampedEvent } from "../src/hub/events.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { CSV_COLUMNS, formatResearch, researchReport, RESEARCH_SCHEMA, taskRecords, toCsv, type TaskRecord } from "../src/hub/research.ts";
+import { appendRecords, CSV_COLUMNS, formatResearch, readStores, researchReport, RESEARCH_SCHEMA, taskRecords, toCsv, type TaskRecord } from "../src/hub/research.ts";
 import { profileEventValid } from "../src/hub/dogfood-profile.ts";
 
 // #1402 T1: `turn_end` carries the model a native surface reported (with its evidence grade), research builds `ownerModels` from the owner's turns and groups by it.
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
+const temp = (name: string) => { const d = realpathSync(mkdtempSync(join(tmpdir(), `ahub-research-models-${name}-`))); cleanup.push(() => rmSync(d, { recursive: true, force: true })); return d; };
 let clock = Date.parse("2026-11-01T00:00:00Z");
 const at = () => new Date(clock += 60_000).toISOString();
 const task = (id: number, event: string, state: string, extra: { owner?: string; reviewer?: string; by?: string } = {}): StampedEvent =>
@@ -50,7 +51,8 @@ test("ownerModels come from the owner's turns, never the reviewer's; a Codex tas
   // `models` stays the union, for compatibility.
   expect(record!.models).toEqual(["claude-opus-5-5"]);
   const report = researchReport([record!]);
-  expect(Object.keys(report.byModel)).toEqual(["gpt-5.5 (session)"]);
+  expect(Object.keys(report.byModel)).toEqual(["gpt-5.5"]);
+  expect(report.modelEvidence).toEqual({ "gpt-5.5": "session" });
   expect(report.modelCoverage).toEqual({ tasks: 1, withModel: 1, unknown: 0 });
 });
 
@@ -68,8 +70,10 @@ test("a task whose owner used two models counts under each; the row label carrie
   const second = records(approved(2, "codex", "claude", [turn("codex", 2, { model: "gpt-5.5", modelEvidence: "configured" })]));
   const report = researchReport([...first, ...second]);
   expect(report.byModel["gpt-5.4"]!.tasks).toBe(1);
-  expect(report.byModel["gpt-5.5 (configured)"]!.tasks).toBe(2);
-  expect(Object.keys(report.byModel)).toEqual(["gpt-5.4", "gpt-5.5 (configured)"]);
+  expect(report.byModel["gpt-5.5"]!.tasks).toBe(2);
+  expect(Object.keys(report.byModel)).toEqual(["gpt-5.4", "gpt-5.5"]);
+  expect(report.modelEvidence).toEqual({ "gpt-5.4": "served", "gpt-5.5": "configured" });
+  expect(formatResearch(report).join("\n")).toContain("gpt-5.5 (configured)");
 });
 
 test("old events without a model still group as unknown, and the report says how many tasks have none", () => {
@@ -134,4 +138,39 @@ test("the daemon writes the observed model on turn_end, and neither field when t
   expect(await run({ model: "gpt-5.5", evidence: "session" })).toMatchObject({ model: "gpt-5.5", modelEvidence: "session" });
   const none = await run(undefined); expect("model" in none).toBe(false); expect("modelEvidence" in none).toBe(false);
   const bad = await run({ model: "/etc/passwd", evidence: "served" }); expect("model" in bad).toBe(false); expect("modelEvidence" in bad).toBe(false);
+});
+
+test("by model keeps the model id as the key and carries the grade as data; an owner model literally named unknown stays apart from the no-model row", () => {
+  const graded = records(approved(1, "codex", "claude", [turn("codex", 1, { model: "gpt-5.5", modelEvidence: "session" })]));
+  const none = records(approved(2, "codex", "claude", [turn("codex", 2)]));
+  const report = researchReport([...graded, ...none]);
+  expect(Object.keys(report.byModel)).toEqual(["gpt-5.5", "unknown"]);
+  expect(report.modelEvidence).toEqual({ "gpt-5.5": "session" });
+  const text = formatResearch(report).join("\n");
+  expect(text).toContain("gpt-5.5 (session)");
+  expect(text).toContain("run ahub research backfill");
+  // A placeholder id never becomes an observation, and a stored one reads as no model: it cannot merge with, or stand beside, the no-model row.
+  const placeholder = records(approved(3, "pi", "claude", [{ v: 1, at: at(), type: "usage", peer: "pi", source: "omniroute", id: "u", requestedModel: "unknown", totalTokens: 1, task: 3, attribution: "delivery" } as StampedEvent]));
+  expect(placeholder[0]!.ownerModels).toEqual([]);
+  const stored = { ...graded[0]!, task: 9, ownerModels: [{ model: "Unknown", evidence: "served" as const }] };
+  expect(Object.keys(researchReport([stored]).byModel)).toEqual(["unknown"]);
+  expect(researchReport([stored]).modelCoverage).toEqual({ tasks: 1, withModel: 0, unknown: 1 });
+});
+
+test("a held pre-#1402 row is filled by a backfill that can prove an owner model, so the stored task groups under it; a held row with the field stays final", () => {
+  const home = temp("backfill-models");
+  const events = approved(1, "codex", "claude", [
+    { v: 1, at: at(), type: "usage", peer: "codex", source: "omniroute", id: "u1", servedModel: "gpt-5.5", totalTokens: 9, task: 1, attribution: "delivery" } as StampedEvent,
+    turn("codex", 1)]);
+  const [rebuilt] = taskRecords(events, "p-1", writer);
+  const { ownerModels: _drop, ...old } = rebuilt!;
+  expect(appendRecords("p-1", [old as TaskRecord], home)).toBe(1);
+  expect(Object.keys(researchReport(readStores("p-1", home)).byModel)).toEqual(["unknown"]);
+  expect(appendRecords("p-1", [rebuilt!], home)).toBe(1);
+  expect(Object.keys(researchReport(readStores("p-1", home)).byModel)).toEqual(["gpt-5.5"]);
+  // Final once it has the field: a later rebuild with a different list does not replace it, and a rebuild with no model never replaces a held row.
+  expect(appendRecords("p-1", [{ ...rebuilt!, ownerModels: [{ model: "other", evidence: "served" }] }], home)).toBe(0);
+  const bare = temp("backfill-models-bare");
+  expect(appendRecords("p-1", [old as TaskRecord], bare)).toBe(1);
+  expect(appendRecords("p-1", [{ ...rebuilt!, ownerModels: [] }], bare)).toBe(0);
 });
