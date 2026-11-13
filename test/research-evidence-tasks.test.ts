@@ -490,3 +490,31 @@ test("#931 T2 development hosts refuse the hidden evidence reader before consult
   await refused(tasks.evidenceRead("codex", { id: saved.id }));
   expect(reads).toBe(0);
 });
+
+test("#931 follow-up an inventory that changed during the read leaves the origins unknown beside the resolved evidence, and a damaged store still fails loudly", async () => {
+  const f = await fixture();
+  const a = await f.tasks.evidenceRecord("codex", f.input());
+  // Two registered sources behind one shared origin: the grouping is known while the inventory holds still.
+  f.registry.add({ bytes: Buffer.from("source A α🙂 passage"), kind: "url", origin: "https://example.test/shared", private: false, text: "source A α🙂 passage" });
+  f.registry.add({ bytes: Buffer.from("source B counterevidence"), kind: "url", origin: "https://example.test/shared", private: false, text: "source B counterevidence" });
+  const b = await f.tasks.evidenceRecord("codex", f.input(f.board.get(f.task.id)!, f.second.id));
+  const original = f.board.evidenceLink.bind(f.board);
+  let vanished = false;
+  // The second link's revision disappears between the inventory list and its read: the list names it, evidenceLink no longer finds it.
+  f.board.evidenceLink = (project, id, revision) => vanished && id === b.id && revision !== undefined ? undefined : original(project, id, revision);
+  let change = true;
+  f.control.evidenceRead = async (_by, link) => { if (change) vanished = true; return resolvedRead(link); };
+  const read = await f.tasks.evidenceRead("codex", { id: a.id });
+  expect(read.status).toBe("resolved");
+  if (read.status !== "resolved") throw new Error("expected the selected link to resolve");
+  expect(read.excerpt).toBe("PASSAGE_CANARY");
+  expect(read.origins).toEqual({ state: "unknown" });
+  // the same inventory unchanged still groups, so the unknown above came from the change and not from the fixture
+  vanished = false; change = false;
+  const stable = await f.tasks.evidenceRead("codex", { id: a.id });
+  expect(stable.status).toBe("resolved");
+  if (stable.status === "resolved") expect(stable.origins.state).toBe("known");
+  // damaged storage is not an inventory change: it keeps its own error instead of reading as unknown origins
+  f.board.evidenceLink = (project, id, revision) => { if (id === b.id && revision !== undefined) throw new Error("evidence storage invalid; stop the hub and restore a trusted hub.db backup; then restart and retry"); return original(project, id, revision); };
+  await expect(f.tasks.evidenceRead("codex", { id: a.id })).rejects.toThrow(/evidence storage invalid; stop the hub and restore/);
+});
