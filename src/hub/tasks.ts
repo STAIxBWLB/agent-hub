@@ -7941,7 +7941,7 @@ export class Tasks {
     const note = this.doneNotes.get(id);
     this.doneNotes.delete(id);
     const task = this.d.board.get(id);
-    return [note, task ? this.planDriftText(task) : ""].filter(Boolean).join("\n") || undefined;
+    return [note, task ? this.planDriftText(task, "done") : ""].filter(Boolean).join("\n") || undefined;
   };
   /** #572 AC3: what the owner's `hub_task_done` result adds while the project root checkout is on a task branch. */
   checkoutNote = (): string | undefined => { const warning = mainCheckoutWarning(this.d.cwd, this.publicMetadataText); return warning ? `Note: ${warning}.` : undefined; };
@@ -8594,26 +8594,33 @@ export class Tasks {
   }
 
   /** #1403 B1: no checkout-HEAD fallback, foreign repository read or admission effect. */
-  private planDriftText(task: Task): string {
+  private planDriftText(task: Task, stage: "accept" | "done"): string {
     if ((this.d.sdlc?.config().mode ?? "off") === "off" || !task.plan?.base || this.isPii(task) || task.owner && this.d.privateTurn?.(task.owner)) return "";
     let report: import("./plan-conformance.ts").PlanDrift = { state: "unknown", paths: [] };
     try {
-      const source = this.d.auditSource, base = task.plan.base, head = this.reviewHead(task);
-      if (source && head && /^[a-f0-9]{40}$/.test(base) && /^[a-f0-9]{40}$/.test(head)
+      const source = this.d.auditSource, base = task.plan.base;
+      if (source?.defaultTip && source.mergeBase && /^[a-f0-9]{40}$/.test(base)
         && this.repositories.scope(task.refs).key === this.repositories.project.key
         && (!task.sdlc?.repo || this.repositories.scope({ repo: task.sdlc.repo, paths: task.refs.paths }).key === this.repositories.project.key)
-        && source.resolve(base) === base && source.resolve(head) === head) {
-        report = planDrift(task.plan.paths?.map(path => this.projectPath(path)), source.changed(base, head));
+        && source.resolve(base) === base) {
+        const tip = source.defaultTip(), head = stage === "done" ? this.reviewHead(task) : undefined;
+        const endpoint = tip && /^[a-f0-9]{40}$/.test(tip) && source.resolve(tip) === tip
+          ? stage === "accept" ? tip : head && /^[a-f0-9]{40}$/.test(head) && source.resolve(head) === head ? source.mergeBase(head, tip) : undefined
+          : undefined;
+        if (endpoint && /^[a-f0-9]{40}$/.test(endpoint) && source.resolve(endpoint) === endpoint && source.mergeBase(base, endpoint) === base) {
+          report = planDrift(task.plan.paths?.map(path => this.projectPath(path)), source.changed(base, endpoint));
+          if (source.defaultTip() !== tip) report = { state: "unknown", paths: [] };
+        }
       }
       if (report.paths.some(path => !this.publicMetadataText(path))) report = { state: "unknown", paths: [] };
     } catch { /* Optional local Git evidence is unknown, never a failed task transition. */ }
-    return `Plan drift (advice only): drift: ${report.state}${report.paths.length ? ` (${report.paths.join("; ")})` : ""}`;
+    return `Plan drift at ${stage} (upstream advice only): drift: ${report.state}${report.paths.length ? ` (${report.paths.join("; ")})` : ""}`;
   }
 
   /** Current plan advice for an accepted plan's tool result, which has no new assignment envelope. */
   planGuardText(task: Task): string {
     const items = this.planGuardItems(task);
-    return [this.planDriftText(task), items.length ? ["Live fail notes for this plan (advice, not a block):", ...items.map(item => item.line)].join("\n") : ""].filter(Boolean).join("\n");
+    return [this.planDriftText(task, "accept"), items.length ? ["Live fail notes for this plan (advice, not a block):", ...items.map(item => item.line)].join("\n") : ""].filter(Boolean).join("\n");
   }
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */

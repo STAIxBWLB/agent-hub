@@ -173,3 +173,5 @@ The same review found that a single append can write a prefix without throwing. 
 ## 2026-11-13: Codex paused quota visibility (#1440)
 
 The normal ten-minute native usage poll could delay observing an external reset while the hub held a budget pause. The #1440 contract kept resume in Budget.evaluate, added a one-minute paused observation cadence, and limited credit diagnostics to counts, times and flags. The Codex 0.167.2 generated schema defined availableCount separately from a possibly capped detail list, so incomplete detail coverage did not establish a global earliest expiry. Paid-credit availability supplied no pause/resume authority.
+
+Issue #1403 B1 follow-up separates upstream plan drift from a task's own implementation. Acceptance needs no recorded task head: it compares the plan base with the locally recorded remote-tracking default tip. Completion uses the shared integration point with that tip, so the task's own commits do not masquerade as upstream drift. Local refs may lag the server; this advice performs no fetch. Missing or ambiguous history remains unknown, and lifecycle off remains quiet.
