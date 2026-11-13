@@ -253,6 +253,38 @@ export function renderHelp(columns: number, color: boolean, command?: string, de
   return lines.map(line => paint(line, color)).join("\n");
 }
 
+/** Split a usage at its top-level " | " only: a pipe inside [...] or <...> belongs to one alternative (`[--class <c> | <class>]`). */
+function topLevelPieces(usage: string): string[] {
+  // Blank out each bracketed or angled group (same length), split the blanked text at " | ", and cut the real usage at the same widths.
+  const blanked = usage.replace(/\[[^\]]*\]|<[^>]*>|\([^)]*\)/g, group => " ".repeat(group.length));
+  const pieces: string[] = [];
+  let rest = usage;
+  for (const part of blanked.split(" | ")) { pieces.push(rest.slice(0, part.length).trim()); rest = rest.slice(part.length + " | ".length); }
+  return pieces;
+}
+
+/** The subcommand pieces a command documents, each with the words that name it: `ahub task show <id> | escalate <id>` has show and escalate. */
+function subcommandPieces(command: string): { subs: string[]; usage: string }[] {
+  return HELP.filter(entry => helpCommands(entry).includes(command)).flatMap(entry => {
+    const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
+    return topLevelPieces(entry.usage).map((piece, index) => {
+      const body = index === 0 ? piece.slice(prefix.length).trim() : piece;
+      const token = body.split(/\s/)[0]!.replace(/[\[\]]/g, "");
+      return { subs: token.split("|").filter(word => /^[a-z][a-z0-9-]*$/.test(word)), usage: `ahub ${command} ${body}` };
+    });
+  });
+}
+
+/** #1433: whether the help lists `ahub <command> <sub>`, so `ahub <command> <sub> --help` asks for help instead of running it. Free text is never a listed subcommand: `ahub say try ls -h` stays a message. */
+export function listsSubcommand(command: string, sub: string): boolean {
+  return subcommandPieces(command).some(piece => piece.subs.includes(sub));
+}
+
+/** The documented usage line of one subcommand, for a refusal that names it. */
+export function subcommandUsage(command: string, sub: string): string | undefined {
+  return subcommandPieces(command).find(piece => piece.subs.includes(sub))?.usage;
+}
+
 /** Body-free configured command guidance; no native argv or environment values enter help. */
 export function configuredAcpHelp(kind: string): string {
   return `ahub ${kind} [--mode headless] [--as <instance>] [--session-id <id>] [--print-command | --dry-run]\nConfigured ACP runs headless through the hub, with native permissions and NO hub sandbox.\nDeclare it in untracked .agenthub/config.local.json, restart the hub, then enable roster.${kind}.\nPreview withholds native argv and starts nothing. Native/model overrides and --unattended are refused.`;

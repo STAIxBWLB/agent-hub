@@ -23,7 +23,7 @@ export function parseHandoffArgs(operands: readonly string[]): HandoffCliRequest
       const value = operands[++i];
       if (value === undefined || value.startsWith("--")) return { usage: HANDOFF_USAGE };
       if (arg === "--path") paths.push(value); else { if (Object.hasOwn(one, arg)) return { usage: HANDOFF_USAGE }; one[arg] = value; }
-    } else if (arg.startsWith("--")) return { usage: HANDOFF_USAGE };
+    } else if (arg.startsWith("--") || arg === "-h") return { usage: `unknown option ${JSON.stringify(arg)}; nothing was filed\n${HANDOFF_USAGE}` };
     else rest.push(arg);
   }
   const project = one["--project"];

@@ -89,7 +89,7 @@ import { configureKimiMcp } from "./kimi-mcp.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
-import { freeText } from "./free-text.ts";
+import { freeText, unknownOption, unknownOptionRefusal, withoutSeparator } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { createInterface as lineReader } from "node:readline";
 import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, writeOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
@@ -134,7 +134,7 @@ import { installedVersions } from "./console-versions.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
-import { renderHelp, configuredAcpHelp, guidanceProbeUsage } from "./help.ts";
+import { renderHelp, configuredAcpHelp, guidanceProbeUsage, listsSubcommand, subcommandUsage } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
 import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
@@ -225,10 +225,11 @@ try {
   } else nativeSelection = instanceLaunchArguments(given, rest, declaredInstances);
 } catch (error) { fail(startupDiagnostic(error)); }
 const selectedInstance = nativeSelection.instance;
-// `ahub <command> -h` alone asks for that command's help instead of running it. Elsewhere `-h` may be message text
-// (`ahub say try ls -h`), and claude and codex pass their arguments on to the agent.
+// `ahub <command> -h` alone asks for that command's help instead of running it, and so does `ahub <command> <sub> -h` when the help lists that subcommand (#1433: `ahub task propose --help` once
+// filed a task titled --help). Elsewhere `-h` may be message text (`ahub say try ls -h`), and claude and codex pass their arguments on to the agent.
 const asksHelp = (a: string | undefined) => a === "--help" || a === "-h";
-const cmd = asksHelp(given) || (definitionOf(given)?.start.passthrough !== true && nativeSelection.args.length === 1 && asksHelp(nativeSelection.args[0])) ? "help" : given;
+const subcommandHelp = !!given && nativeSelection.args.length === 2 && asksHelp(nativeSelection.args[1]) && listsSubcommand(given, nativeSelection.args[0]!);
+const cmd = asksHelp(given) || (definitionOf(given)?.start.passthrough !== true && ((nativeSelection.args.length === 1 && asksHelp(nativeSelection.args[0])) || subcommandHelp)) ? "help" : given;
 const args = cmd === "help" && given !== "help" && !asksHelp(given) ? [given] : nativeSelection.args;
 
 /** Resolve a named peer only against this project's current trusted declarations. */
@@ -882,6 +883,8 @@ const LOCAL_OPERATION_ARGS: Record<string, () => void> = {
 
 // Outside the command bodies: test/lifecycle-starting-1232.test.ts runs the `up` body as a plain function, where import.meta does not parse.
 const consoleInstalled = () => installedVersions(join(import.meta.dir, "..", ".."));
+/** `ahub goal new` options: those that take a value, and all it knows. The words they leave are the title. */
+const GOAL_NEW_VALUE_FLAGS = ["--milestone", "--depends"], GOAL_NEW_FLAGS = [...GOAL_NEW_VALUE_FLAGS, "--shared", "--json"];
 const commands: Record<string, () => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
@@ -2176,8 +2179,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     const urgent = rest.includes("--urgent"), backlog = rest.includes("--backlog"), needsNetwork = rest.includes("--needs-network"), needsWorktree = rest.includes("--needs-worktree");
     const flags = takeFlags(rest.filter((a) => a !== "--urgent" && a !== "--backlog" && a !== "--needs-network" && a !== "--needs-worktree"), ["--owner", "--detail", "--class"], ["--path", "--after"]);
     const positional = !flags.one["--class"] && ((CLASSES as readonly string[]).includes(flags.rest[0] ?? "") || Object.hasOwn((() => { const config = projectConfig(); return resolveProfile(config.profile, config.profile_overrides); })().classes, flags.rest[0] ?? "")) && flags.rest.length > 1;
-    const cls = flags.one["--class"] ?? (positional ? flags.rest[0] : undefined);
-    const title = (positional ? flags.rest.slice(1) : flags.rest).join(" ");
+    // #1433: a title word that is an option the command does not know, or -h, is refused before anything is filed. A lone `--` ends the options, so a title that starts with dashes can still be typed.
+    const stray = unknownOption(flags.rest);
+    if (stray) fail(unknownOptionRefusal(stray, "ahub task propose", subcommandUsage("task", "propose")));
+    const textWords = withoutSeparator(flags.rest);
+    const cls = flags.one["--class"] ?? (positional ? textWords[0] : undefined);
+    const title = (positional ? textWords.slice(1) : textWords).join(" ");
     if (positional) console.error(`note: "${cls}" was taken as the class and left out of the title; use --class <c> when the title itself starts with that word`);
     console.log(await taskOp("hub_task_propose", { ...(cls ? { class: cls } : {}), title, owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}), ...(flags.many["--after"]?.length ? { after: flags.many["--after"].map(Number) } : {}), ...(urgent ? { urgent: true } : {}), ...(needsNetwork ? { needs_network: true } : {}), ...(needsWorktree ? { needs_worktree: true } : {}), ...(backlog ? { backlog: true } : {}) }));
   },
@@ -2765,6 +2772,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       try { const r = await hub.request({ t: "goal_link", goal, task: Number(task) }); if (!r.ok) throw new Error(String(r.error)); return String(r.text); }
       finally { hub.close(); }
     };
+    // #1433: `goal new` takes its title from the words the flags leave, so `--help` or a mistyped flag would become the goal's title: refuse it before anything is written.
+    if (args[0] === "new") {
+      const titleWords = args.slice(1).filter((word, index, all) => !GOAL_NEW_FLAGS.includes(word) && !GOAL_NEW_VALUE_FLAGS.includes(all[index - 1] ?? ""));
+      const stray = unknownOption(titleWords);
+      if (stray) return fail(unknownOptionRefusal(stray, "ahub goal new", subcommandUsage("goal", "new")));
+    }
     try { console.log(await goalCommand(args, cwd, { link, person: caller.role === "console" })); } catch (e) { fail((e as Error).message); }
   },
   research: () => {
