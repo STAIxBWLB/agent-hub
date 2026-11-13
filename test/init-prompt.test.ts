@@ -64,7 +64,7 @@ const ALL = initQuestions({ shadowAvailable: false }).filter(q => q.id !== "sdlc
 
 test("the questions follow the spec's table, one per setting with its default in brackets, and every settings row is asked (#1065 AC4)", () => {
   const questions = initQuestions({ packs: [], shadowAvailable: true });
-  expect(questions.map(q => q.id)).toEqual(["profile", "start.agents", "track-config", "specs.enabled", "specs.review", "sdlc.mode", "sdlc.required_checks", "coordination", "memory.enabled", "research.enabled", "snapshots.enabled", "pi.enabled", "autonomy", "release-guard", "shadow"]);
+  expect(questions.map(q => q.id)).toEqual(["profile", "start.agents", "roles.conductor", "roles.planner", "roles.reviewer", "track-config", "specs.enabled", "specs.review", "sdlc.mode", "sdlc.required_checks", "coordination", "memory.enabled", "research.enabled", "snapshots.enabled", "pi.enabled", "autonomy", "release-guard", "shadow"]);
   // every row of the settings table is a question, so a row added later cannot go unasked
   for (const row of INIT_SETTINGS) expect(questions.map(q => q.id), row.id).toContain(row.id);
   const line = (id: string) => questionLine(questions.find(q => q.id === id)!);
@@ -93,7 +93,7 @@ test("Enter keeps every default: the request is empty and the plan is shown befo
 });
 
 test("each answer becomes the value the equivalent flag sets, including a repeated default (an explicit choice, as a flag is) (#1065 AC4)", async () => {
-  const s = scripted(["research", "codex,claude", "on", "off", "require", "enforce", "unit", "turn-free", "off", "on", "off", "on", "off", "yes", "y"]);
+  const s = scripted(["research", "codex,claude", "", "", "", "on", "off", "require", "enforce", "unit", "turn-free", "off", "on", "off", "on", "off", "yes", "y"]);
   const result = await runInitPrompt(s.ports, { shadowAvailable: false, packs: [] }, () => []);
   expect(result.ok).toBe(true);
   if (!result.ok) return;
@@ -102,17 +102,17 @@ test("each answer becomes the value the equivalent flag sets, including a repeat
   expect(result.answers.request.autonomy).toBe("off");
   expect(result.answers.releaseGuard).toBe(true);
   // typing the default is an explicit choice: the key is written, exactly as `--coordination advisory` writes it
-  const again = await runInitPrompt(scripted(["", "", "", "", "", "", "advisory", ...blank(6), "y"]).ports, { shadowAvailable: false }, () => []);
+  const again = await runInitPrompt(scripted(["", "", "", "", "", "", "", "", "", "advisory", ...blank(6), "y"]).ports, { shadowAvailable: false }, () => []);
   expect(again.ok && again.answers.request.values).toEqual({ coordination: "advisory" });
 });
 
 test("unknown input asks again and never guesses; three bad answers refuse the prompt and write nothing (#1065 AC4)", async () => {
-  const s = scripted(["dev", "claude", "", "maybe", "on", ...blank(9), "y"]);
+  const s = scripted(["dev", "claude", "", "", "", "", "maybe", "on", ...blank(9), "y"]);
   const result = await runInitPrompt(s.ports, { shadowAvailable: false }, () => []);
   expect(result.ok).toBe(true);
   expect(s.printed.join("\n")).toContain("answer on or off; asking again");
   expect(s.asked.filter(q => q.startsWith("Design specs"))).toHaveLength(2); // the bad answer was asked again, not guessed
-  const refused = await runInitPrompt(scripted(["", "", "", "x", "maybe", "perhaps"]).ports, { shadowAvailable: false }, () => []);
+  const refused = await runInitPrompt(scripted(["", "", "", "", "", "", "x", "maybe", "perhaps"]).ports, { shadowAvailable: false }, () => []);
   expect(refused).toMatchObject({ ok: false, reason: "refused" });
   expect(refused.ok === false && refused.message).toContain('no valid answer for "Design specs and their freshness checks" after 3 tries, so nothing was written; run ahub init again, or pass the setting as a flag');
   // an unknown agent is refused with the allowed ones by the table's own parser, then the next answer is read
@@ -152,7 +152,7 @@ test("the real ahub init under a pty: Enter on every question produces the same 
 
 test("the real ahub init under a pty: answering each question writes the files the equivalent flags write (#1065 AC4)", async () => {
   const p = fixture(), guided = p.repo("guided"), flagged = p.repo("flagged");
-  const answers = ["", "claude", "", "off", "", "advise", "", "turn-free", "off", "on", "", "on", "off", "", "y"];
+  const answers = ["", "claude", "", "", "", "", "off", "", "advise", "", "turn-free", "off", "on", "", "on", "off", "", "y"];
   const done = await p.session(guided, ["init"], answers);
   expect(done.code, done.text).toBe(0);
   const flags = ["init", "--agents", "claude", "--no-specs", "--sdlc", "advise", "--coordination", "turn-free", "--no-memory", "--research", "--pi", "--autonomy", "off"];
