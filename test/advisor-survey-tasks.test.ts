@@ -396,3 +396,34 @@ test("security reconsideration keeps its reason and paths out of the reopened pu
   const card = JSON.stringify(f.board.get(result.createdIDs[0]!));
   expect(card).toContain(`hub task ${old}`); expect(card).not.toMatch(/SECURITY_RECONSIDERATION_CANARY|src\/parser.ts|IMPACT_CANARY|RISK_CANARY|FIX_CANARY/);
 });
+
+test("successful audit false-positive settlement records the stored actor/source once as a security stub; fixed does not", async () => {
+  const f = await fixture(); f.config.security = securityPolicy({ paths: ["src/**"] });
+  const started = await f.tasks.auditStart("user", {}), task = f.board.get(started.task)!;
+  if (!task.owner) throw new Error("expected an assigned synthetic auditor");
+  f.tasks.accept(task.owner, task.id);
+  const ids = ["audit-settled-false-positive", "audit-settled-fixed"];
+  await f.tasks.auditReport(task.owner, { id: task.id, findings: ids.map(id => ({ id, pass: "security", severity: "important", disposition: "open", path: "src/parser.ts:12",
+    rationale: "SETTLEMENT_FINDER_RATIONALE_CANARY", state: "confirmed", boundary: { principal: "fixture peer", control: "input guard", resource: "fixture state", result: "invalid input accepted" } })) });
+  await f.tasks.auditReport("user", { id: task.id, verify: ids.map(finding => ({ finding, verdict: "verified" })) });
+  expect(f.board.rejectedFindingsFor("repo:fixture/survey", "security", ids[0]!).rows).toEqual([]);
+  await f.tasks.auditReport("user", { id: task.id, settle: [{ finding: ids[0], disposition: "false_positive" }, { finding: ids[1], disposition: "fixed" }] });
+  const audit = f.board.auditOfTask(task.id, task.created)!;
+  expect(f.board.auditFindings(audit.id)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ settledBy: "user", settledAs: "false_positive", verifiedBy: "user", foundBy: task.owner }),
+    expect.objectContaining({ settledBy: "user", settledAs: "fixed", verifiedBy: "user", foundBy: task.owner }),
+  ]));
+  const entries = f.board.rejectedFindingsFor("repo:fixture/survey", "security", ids[0]!).rows;
+  expect(entries).toHaveLength(1);
+  const entry = entries[0]!.entry;
+  expect(entry).toMatchObject({ id: ids[0], pass: "security", ref: audit.ref, reason: "reason not recorded", withheld: true,
+    source: { task: task.id, created: task.created, kind: "audit" } });
+  expect(entry.reason).not.toContain("SETTLEMENT_FINDER_RATIONALE_CANARY");
+  expect(f.board.rejectedFindingsFor("repo:fixture/survey", "security", ids[1]!).rows).toEqual([]);
+  const publicDetails = f.tasks.consideredDetails(entry.repo, entry.id, entry.pass, audit.ref);
+  expect(publicDetails.items).toEqual([{ id: ids[0]!, change: "unchanged", withheld: true }]);
+  expect(JSON.stringify(publicDetails)).not.toMatch(/SETTLEMENT_FINDER_RATIONALE_CANARY|src\/parser|reason not recorded/);
+  await f.tasks.auditReport("user", { id: task.id, show: true });
+  await expect(f.tasks.auditReport("user", { id: task.id, settle: [{ finding: ids[0], disposition: "false_positive" }] })).rejects.toThrow(/already settled/);
+  expect(f.board.rejectedFindingsFor(entry.repo, entry.pass, entry.id).rows).toHaveLength(1);
+});

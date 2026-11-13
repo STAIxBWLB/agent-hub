@@ -433,8 +433,12 @@ investigation. Candidates do not produce cards. Dedupe lookup, generation/flow
 fences, ledger decisions and card creation share one Board transaction after
 privacy screens; no source I/O or await occurs inside it.
 
-False-positive review dispositions, rejected audit candidates and survey
-rejections retain immutable considered entries. Matching uses the same semantic
+False-positive review dispositions, rejected audit candidates, successfully
+settled false-positive audit findings and survey rejections retain immutable
+considered entries. Audit entries bind the stored rejection/settlement actor and
+pinned audit source; a missing verifier reason uses "reason not recorded", never
+the finder rationale. Fixed audit settlements do not enter this rejection ledger.
+Matching uses the same semantic
 id/positional exclusion convention as review recurrence. Repository identity,
 source commit and literal affected paths scope suppression. A complete diff
 clears only changed paths; unknown evidence never clears rejection. Explicit

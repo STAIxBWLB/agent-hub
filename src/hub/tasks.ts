@@ -7313,7 +7313,13 @@ export class Tasks {
     if (skipped === undefined) throw new PreEffectToolRefusal("a finding was decided meanwhile; read the audit again and retry");
     try {
       const rejected = new Set(decisions.filter(row => row.verdict === "rejected").map(row => row.finding));
-      this.recordConsideredAfter(nowTask, this.d.board.auditFindings(audit.id).filter(row => rejected.has(row.finding.id) && row.rejectedBy === by).map(row => row.finding), "audit", audit.ref);
+      const falsePositives = new Set(settlements.filter(row => row.disposition === "false_positive").map(row => row.finding));
+      const savedAudit = this.d.board.audit(audit.id);
+      if (savedAudit?.task === nowTask.id && savedAudit.taskCreated === nowTask.created) {
+        const saved = this.d.board.auditFindings(audit.id).filter(row => rejected.has(row.finding.id) && row.rejectedBy === by
+          || falsePositives.has(row.finding.id) && row.settledAs === "false_positive" && row.settledBy === by);
+        this.recordConsideredAfter(nowTask, saved.map(row => row.finding), "audit", savedAudit.ref);
+      }
     } catch { this.releaseNotice(`task #${task.id}: considered rejection ledger unavailable`); }
     const full = this.d.board.audit(audit.id)!;
     return { ...this.auditView(full, true), ...(skipped.length ? { notUpdated: skipped } : {}) };
