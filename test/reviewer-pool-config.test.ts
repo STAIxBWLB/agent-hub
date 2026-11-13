@@ -22,3 +22,18 @@ test("default reviewer pool includes receipt-checked Kimi and excludes the agy i
   expect(DEFAULT_REVIEW_POOL).toEqual(["claude", "codex", "kimi"]);
   expect(definitionOf("agy")?.reviewer).toMatchObject({ defaultPool: false, unavailable: "agy is an implementer peer (#485)" });
 });
+
+test("review quota opt-outs normalize explicit values and reject other literals with accepted values", () => {
+  const kinds = ["alpha"];
+  expect(reviewerPoolConfig({ gate: "off", unknown_quota: "pass" }, kinds, kinds)).toMatchObject({ gate: "off", unknownQuota: "pass" });
+  expect(reviewerPoolConfig({ gate: 0, unknown_quota: "skip" }, kinds, kinds)).toMatchObject({ gate: 0, unknownQuota: "skip" });
+  expect(reviewerPoolConfig({ gate: 1 }, kinds, kinds)).toMatchObject({ gate: 1 });
+  for (const gate of ["OFF", "0.8", "PRIVATE_GATE_CANARY", null, false, NaN, Infinity, -0.1, 1.1]) {
+    let error: unknown; try { reviewerPoolConfig({ gate }, kinds, kinds); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error); const message = (error as Error).message;
+    expect(message).toContain("review.gate"); expect(message).toContain('"off" or a finite number in 0..1'); expect(message).not.toContain("PRIVATE_GATE_CANARY");
+  }
+  for (const unknown_quota of ["PASS", "off", "PRIVATE_POLICY_CANARY", null, false, 1]) {
+    expect(() => reviewerPoolConfig({ unknown_quota }, kinds, kinds)).toThrow('review.unknown_quota must be "skip" or "pass"');
+  }
+});

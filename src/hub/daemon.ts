@@ -170,7 +170,7 @@ import { isReviewerPrintPeer, reviewerNoVerdictLine, reviewerUnavailableReason, 
 import type { OwnedInputContext } from "../adapters/claude-print-child.ts";
 import { createReviewerMcpSession, type ReviewerToolName } from "../adapters/reviewer-mcp.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
-import { DEFAULT_REVIEW_GATE, DEFAULT_REVIEW_MAX_MINUTES, reviewerAccountingIntegrity, reviewerAccountingRelevant } from "./review-budget.ts";
+import { DEFAULT_REVIEW_GATE, DEFAULT_REVIEW_MAX_MINUTES, DEFAULT_REVIEW_UNKNOWN_QUOTA, reviewBudgetPolicyDescription, type ReviewGate, type ReviewUnknownQuota, reviewerAccountingIntegrity, reviewerAccountingRelevant } from "./review-budget.ts";
 import { reviewDiff } from "../adapters/claude-print.ts";
 import { Capture } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
@@ -356,7 +356,7 @@ export interface HubConfig {
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
-  review: { adaptive: boolean; min_reviews: number; pool?: string[]; rerotate?: boolean; same_family?: "fallback" | "never"; gate?: number; max_minutes?: number };
+  review: { adaptive: boolean; min_reviews: number; pool?: string[]; rerotate?: boolean; same_family?: "fallback" | "never"; gate?: ReviewGate; unknown_quota?: ReviewUnknownQuota; max_minutes?: number };
   /** After an unplanned stop, start Kimi, Pi and the local worker again with their recorded sessions (issue #37). */
   /** #489 H4: the five waits the upgrade coordinator reads from this project's config at the start of each wait; the daemon itself only validates and carries them. */
   recovery: { auto_resume_after_crash: boolean; reconnect_wait_s?: number; unmanaged_reconnect_wait_s?: number; control_timeout_s?: number; shutdown_wait_s?: number; terminal_idle_wait_s?: number };
@@ -427,7 +427,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   terminal: { open: [] },
   start: { agents: [...START_AGENTS_DEFAULT] },
   limits: DEFAULT_LIMITS,
-  review: { adaptive: false, min_reviews: 5, gate: DEFAULT_REVIEW_GATE, max_minutes: DEFAULT_REVIEW_MAX_MINUTES },
+  review: { adaptive: false, min_reviews: 5, gate: DEFAULT_REVIEW_GATE, unknown_quota: DEFAULT_REVIEW_UNKNOWN_QUOTA, max_minutes: DEFAULT_REVIEW_MAX_MINUTES },
   recovery: { auto_resume_after_crash: false, reconnect_wait_s: RECOVERY_RECONNECT_WAIT_SETTING.defaultValue, unmanaged_reconnect_wait_s: RECOVERY_UNMANAGED_RECONNECT_WAIT_SETTING.defaultValue, control_timeout_s: RECOVERY_CONTROL_TIMEOUT_SETTING.defaultValue, shutdown_wait_s: RECOVERY_SHUTDOWN_WAIT_SETTING.defaultValue, terminal_idle_wait_s: RECOVERY_TERMINAL_IDLE_WAIT_SETTING.defaultValue },
   capabilities: {},
   coordination: "advisory",
@@ -4034,6 +4034,11 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   startupTimings.mark("usage_seed");
   /** Why a peer shows no number (no quota, nothing read yet): one line each, from the definition and the counters, never from a log's text. */
+  const reviewerBudgetView = () => {
+    if (config.review.gate === undefined) return undefined; // Legacy embedded hosts do not inject reviewer quota admission.
+    const policy = { gate: config.review.gate, unknownQuota: config.review.unknown_quota ?? DEFAULT_REVIEW_UNKNOWN_QUOTA };
+    return { gate: policy.gate, unknown_quota: policy.unknownQuota, rule: reviewBudgetPolicyDescription(policy) };
+  };
   const budgetPeerNotes = (): BudgetPeerNote[] => {
     const quota = budget.status();
     const peers = [...new Set([...bus.knownPeers().filter(peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline"), ...Object.keys(quota)])].filter(peer => peer !== USER && peer !== HUB);
@@ -10673,13 +10678,13 @@ export async function startDaemon(opts: DaemonOptions) {
     const incompatibleRecoveryTarget = () => {
       if (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_quota")) {
         const proof = reviewerQuotaIntegrity();
-        let explicit = config.review.gate !== undefined && config.review.gate !== DEFAULT_REVIEW_GATE || config.review.max_minutes !== undefined && config.review.max_minutes !== DEFAULT_REVIEW_MAX_MINUTES;
+        let explicit = config.review.gate !== undefined && config.review.gate !== DEFAULT_REVIEW_GATE || config.review.max_minutes !== undefined && config.review.max_minutes !== DEFAULT_REVIEW_MAX_MINUTES || config.review.unknown_quota !== undefined && config.review.unknown_quota !== DEFAULT_REVIEW_UNKNOWN_QUOTA;
         try {
           const texts = configSourceTexts(opts.cwd);
           explicit ||= CONFIG_FILES.some(name => {
             if (texts[name] === null) return false;
             const review = JSON.parse(texts[name]!).review;
-            return review && typeof review === "object" && (Object.hasOwn(review, "gate") || Object.hasOwn(review, "max_minutes"));
+            return review && typeof review === "object" && (Object.hasOwn(review, "gate") || Object.hasOwn(review, "max_minutes") || Object.hasOwn(review, "unknown_quota"));
           });
         } catch { return "reviewer quota compatibility is unknown; configuration could not be read"; }
         if (proof.rows || !proof.complete || proof.waits || explicit)
@@ -12887,7 +12892,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "budget":
         if (c.role !== "console") {
           if (msg.resume !== undefined || msg.set !== undefined) return void reply({ t: "budget", ok: false, error: "budget mutations are console commands" });
-          return void reply({ t: "budget", ok: true, budget: publicPeerBudget(budget.status(), text => tasks.nameable(text)), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate });
+          return void reply({ t: "budget", ok: true, budget: publicPeerBudget(budget.status(), text => tasks.nameable(text)), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate, review: reviewerBudgetView() });
         }
         if (recoveryActive()) return void reply({ t: "budget", ok: false, error: "recovery is holding mutations" });
         if (msg.resume) {
@@ -12898,7 +12903,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!(used >= 0 && used <= 1)) return void reply({ t: "budget", ok: false, error: "used must be between 0 and 1" });
           budget.report(String(msg.set.peer), [{ id: msg.set.window === "week" ? "week" : "5h", kind: "manual", used, ...(msg.set.resetsInMs ? { resetsAt: Date.now() + Number(msg.set.resetsInMs) } : {}), source: "ahub budget set" }]);
         }
-        return void reply({ t: "budget", ok: true, budget: budget.status(), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate });
+        return void reply({ t: "budget", ok: true, budget: budget.status(), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate, review: reviewerBudgetView() });
       case "usage": {
         // #683 U2: the console, the person and a configured planner read usage; every other agent is refused. Always answered (rid).
         const planner = c.role === "tools" && !!c.peer && !!config.roles[c.peer]?.includes("planner");

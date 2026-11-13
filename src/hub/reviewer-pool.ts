@@ -18,6 +18,7 @@ export interface ReviewerPoolSelection {
   reviewer: string | null;
   family?: string;
   reason?: ReviewerPoolReason;
+  admissionRule?: string;
   walk: readonly { id: string; kind: string; family: string; reason: string }[];
   blocked?: "no reviewer can run";
   quotaWait?: { resetsAt: number; candidates: readonly { id: string; state: "paused" | "floor"; resetsAt: number }[] };
@@ -34,7 +35,7 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
   const undeclared = kinds.filter(kind => !declaredKinds.includes(kind)).map(kind => ({ id: "", kind, family: "", reason: "no declared reviewer" }));
   const finish = (selection: Omit<ReviewerPoolSelection, "walk">): ReviewerPoolSelection => {
     let quotaWait: ReviewerPoolSelection["quotaWait"];
-    if (selection.reviewer === null && input.budget && input.waitForReset !== false) {
+    if (selection.reviewer === null && input.budget && input.budget.gate !== "off" && input.waitForReset !== false) {
       const candidates = input.candidates.filter(candidate => kinds.includes(candidate.kind)), failed = new Set(input.failed ?? []);
       const waiting = candidates.map(candidate => ({ candidate, reading: reviewBudgetAdmission(candidate.id, input.budget!) }));
       if (waiting.length && waiting.every(({ candidate, reading }) => !failed.has(candidate.id)
@@ -64,9 +65,15 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
   const unavailable = (candidate: ReviewerPoolCandidate) => {
     if (failed.has(candidate.id)) return "start failed for this review";
     const quota = input.budget ? reviewBudgetAdmission(candidate.id, input.budget) : undefined;
-    if (candidate.blocked !== undefined && !(candidate.blocked === "paused" && quota?.state === "paused")
+    const numericQuotaDisabled = candidate.blocked === "quota exhausted" && input.budget?.gate === "off" && quota?.state === "available";
+    if (candidate.blocked !== undefined && !numericQuotaDisabled && !(candidate.blocked === "paused" && quota?.state === "paused")
       && !(candidate.blocked === "quota exhausted" && (quota?.state === "paused" || quota?.state === "floor"))) return candidate.blocked;
-    return quota && quota.state !== "available" ? quota.reason : candidate.blocked;
+    return quota && quota.state !== "available" ? quota.reason : numericQuotaDisabled ? undefined : candidate.blocked;
+  };
+  const admissionRule = (candidate: ReviewerPoolCandidate) => input.budget ? reviewBudgetAdmission(candidate.id, input.budget).rule : undefined;
+  const selectedRule = (candidate: ReviewerPoolCandidate, prefix: string) => {
+    const rule = admissionRule(candidate);
+    return rule ? `${prefix}; admitted by ${rule}` : prefix;
   };
   const record = (candidate: ReviewerPoolCandidate, reason: string) => { walk.push({ id: candidate.id, kind: candidate.kind, family: candidate.family, reason }); };
   for (const candidate of ordered) {
@@ -87,8 +94,9 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
       continue;
     }
     const reason: ReviewerPoolReason = skippedUnavailable ? "unavailable skip" : skippedOwner ? "implementer skip" : "rotation";
-    record(candidate, `selected (${continuity && candidate.family === input.continuityFamily ? "continuity" : reason})`);
-    return finish({ reviewer: candidate.id, family: candidate.family, reason });
+    record(candidate, selectedRule(candidate, `selected (${continuity && candidate.family === input.continuityFamily ? "continuity" : reason})`));
+    const rule = admissionRule(candidate);
+    return finish({ reviewer: candidate.id, family: candidate.family, reason, ...(rule ? { admissionRule: rule } : {}) });
   }
   // The caller supplies separate fresh reviewer instances; this does not authorize an implementer's own session.
   if (input.sameFamily === "never") return finish({ reviewer: null, blocked: "no reviewer can run" });
@@ -96,8 +104,9 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
     if (!candidate.id || input.implementerFamily === undefined || candidate.family !== input.implementerFamily) continue;
     const blocked = unavailable(candidate);
     if (blocked !== undefined) { record(candidate, `unavailable skip: ${blocked}`); continue; }
-    record(candidate, "selected (same-family fallback)");
-    return finish({ reviewer: candidate.id, family: candidate.family, reason: "same-family fallback" });
+    record(candidate, selectedRule(candidate, "selected (same-family fallback)"));
+    const rule = admissionRule(candidate);
+    return finish({ reviewer: candidate.id, family: candidate.family, reason: "same-family fallback", ...(rule ? { admissionRule: rule } : {}) });
   }
   return finish({ reviewer: null, blocked: "no reviewer can run" });
 }
