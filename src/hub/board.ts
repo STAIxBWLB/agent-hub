@@ -167,7 +167,8 @@ export type TaskClass = (typeof CLASSES)[number];
 export interface StoredAudit { id: number; task: number; taskCreated: number; ref: string; since?: string; profile: AuditProfile; scoped: boolean; at: number; by: string; units: AuditUnit[] }
 export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "approved" | "changes_requested" | "cancelled";
 
-export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
+export const CLOSED_TASK_STATES: readonly TaskState[] = ["approved", "cancelled"];
+export const isClosedTaskState = (state: string): boolean => (CLOSED_TASK_STATES as readonly string[]).includes(state);
 export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number; pullOnly?: boolean }
 export interface TaskCancellation { reason: string; supersededBy?: string; flowRevision: number; withheld?: true }
 /** Metadata only: source task text, plans and growing histories never enter a carry lookup. */
@@ -2060,6 +2061,12 @@ export class Board {
 
   list(state?: TaskState): Task[] {
     const rows = state ? this.db.query(`${TASK_SELECT} WHERE state = ? ORDER BY id`).all(state) : this.db.query(`${TASK_SELECT} ORDER BY id`).all();
+    return (rows as Record<string, unknown>[]).map(parse);
+  }
+
+  /** The open rows only: a startup read must never hydrate and parse a settled tail (#1445). */
+  listOpen(): Task[] {
+    const rows = this.db.query(`${TASK_SELECT} WHERE state NOT IN (${CLOSED_TASK_STATES.map(state => `'${state}'`).join(", ")}) ORDER BY id`).all();
     return (rows as Record<string, unknown>[]).map(parse);
   }
 
