@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { inspectProject } from "../src/hub/lifecycle.ts";
 
@@ -21,6 +22,7 @@ async function hub(id: string) {
     controlPort: 0,
     codexAppPort: 0,
     codexProxyPort: 0,
+    sdlc: sdlcConfig(undefined), // #1411: the checkout's own lifecycle file is not this fixture's subject
     config: {
       ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false },

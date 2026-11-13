@@ -7,14 +7,17 @@ dist/
 .agenthub/state/
 .agenthub/*.db*
 .agenthub/checkpoint.md
-# The hub's shared config is tracked (#1411): config.json (roles, shared defaults). Machine-local values
-# (launch commands, gateway URLs, key files, permission modes) live in config.local.json, which wins key by key.
+# The hub's shared config is tracked (#1411): config.json (roles, shared defaults) and sdlc.toml (this
+# repository's lifecycle mode). Machine-local values (launch commands, gateway URLs, key files, permission
+# modes) live in config.local.json, which wins key by key.
 # routing.toml stays local for now: its hub_routes can name a machine's endpoints and the local overlay cannot hold them.
-# sdlc.toml stays local too: daemon test fixtures start the hub at this checkout and would run under its lifecycle mode.
+# sdlc.toml is tracked too: daemon fixtures that start the hub at this checkout supply their own lifecycle
+# config (DaemonOptions.sdlc) instead of reading it, so its mode no longer changes their output.
 # The first line re-includes the directory for a person whose global gitignore excludes .agenthub/ as a whole.
 !/.agenthub/
 /.agenthub/*
 !/.agenthub/config.json
+!/.agenthub/sdlc.toml
 .qwen/
 .pi-*/
 # Python bytecode written by the benchmark tests (scripts/benchmarks/__pycache__); check-docs reads untracked files as dirt

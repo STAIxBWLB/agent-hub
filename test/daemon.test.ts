@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, PROTOCOL, PROTOCOL_MIN } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
+import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Board } from "../src/hub/board.ts";
@@ -110,6 +111,7 @@ async function hub(extra: { kimiHome?: string; unattended?: boolean; memoryUrl?:
     controlPort: 0,
     codexAppPort: 0,
     codexProxyPort: 0,
+    sdlc: sdlcConfig(undefined), // #1411: this checkout's lifecycle file is not these fixtures' subject, so mode off
     config: {
       ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } },
       specs: { ...DEFAULT_CONFIG.specs, enabled: false }, // unrelated fixture behavior must not depend on this checkout's design specs
@@ -980,7 +982,7 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
   // a second hub on the same state dir sees the board
   const stateDir = first.stateDir;
   await first.daemon.stop();
-  const again = await startDaemon({ cwd: ROOT, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, specs: { ...DEFAULT_CONFIG.specs, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+  const again = await startDaemon({ cwd: ROOT, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, sdlc: sdlcConfig(undefined), config: { ...DEFAULT_CONFIG, specs: { ...DEFAULT_CONFIG.specs, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
   cleanup.push(() => again.stop());
   const c2 = await ControlClient.connect(stateDir, { role: "console" });
   expect(JSON.parse((await c2.request({ t: "task", op: "hub_task_list", args: {} })).text)[0]).toMatchObject({ id: 1, state: "approved" });
@@ -2432,4 +2434,24 @@ test("a failing inbox advisory lookup cannot discard an already-pulled batch (#6
     Board.prototype.statusTasks = statusTasks;
     daemon.bus.pull = pull;
   }
+}, 20_000);
+
+test("a supplied lifecycle config replaces the project's sdlc.toml and reports no restart pending (#1411)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-sdlc-seam-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, ".agenthub"));
+  writeFileSync(join(dir, ".agenthub/sdlc.toml"), 'mode = "advise"\nrequired_checks = ["gate"]\n');
+  const read = async (supplied: boolean) => {
+    const stateDir = mkdtempSync(join(tmpdir(), "agenthub-sdlc-seam-state-"));
+    cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }));
+    const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...(supplied ? { sdlc: sdlcConfig(undefined) } : {}),
+      config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } });
+    cleanup.push(() => daemon.stop());
+    const console_ = await ControlClient.connect(stateDir, { role: "console" });
+    try { return (await console_.request({ t: "config_edit_get" })).sdlc as { mode: string; pending: boolean }; } finally { console_.close(); }
+  };
+  // Both arms pin the column: the file's advise mode is what runs without the seam, and the seam's off mode neither
+  // runs it nor leaves a restart pending against the file it stands in for.
+  expect(await read(true)).toMatchObject({ mode: "off", pending: false });
+  expect(await read(false)).toMatchObject({ mode: "advise", pending: false });
 }, 20_000);
