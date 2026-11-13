@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { planConformance, planFingerprint } from "../src/hub/plan-conformance.ts";
+import { planConformance, planDrift, planFingerprint } from "../src/hub/plan-conformance.ts";
 const head = "a".repeat(40);
 const evidence = (paths: string[], pathsComplete = true) => ({ head, paths, pathsComplete, typesComplete: true });
 test("plan conformance compares literal exact and directory descendants directionally", () => {
@@ -54,4 +54,20 @@ test("#197 R1 empty or repository-root-mapped plan entries stay unknown", () => 
 
 test("S2 needs affected-path type proof independently of the queue count proof", () => {
   for (const typesComplete of [false, undefined]) expect(planConformance(["src"], { head, paths: ["src/a.ts"], pathsComplete: true, typesComplete }).state).toBe("unknown");
+});
+
+
+test("#1403 exclusions override broader includes, with literal normalized prefixes", () => {
+  expect(planConformance(["src"], evidence(["src/private/a.ts", "src/public/a.ts"]), ["./src//private/"])).toMatchObject({ state: "departure", outside: ["src/private/a.ts"] });
+  expect(planConformance(["src"], evidence(["src/privateer/a.ts"]), ["src/private"])).toMatchObject({ state: "covered" });
+  expect(planConformance(["src"], evidence(["src/a.ts"]), ["../private"])).toMatchObject({ state: "unknown" });
+  expect(planConformance(["src"], evidence(["src/a.ts"]), ["src/*.ts"])).toMatchObject({ state: "covered" });
+});
+
+test("#1403 drift considers only complete inventories and literal plan.paths", () => {
+  expect(planDrift(["src"], ["src/a.ts", "README.md"])).toEqual({ state: "changed", paths: ["src/a.ts"] });
+  expect(planDrift(["src"], ["src-other/a.ts"])).toEqual({ state: "none", paths: [] });
+  expect(planDrift(["src"], [])).toEqual({ state: "none", paths: [] });
+  for (const paths of [undefined, ["../src"], Array.from({ length: 1001 }, (_, i) => `src/${i}`)]) expect(planDrift(["src"], paths)).toEqual({ state: "unknown", paths: [] });
+  expect(planDrift(undefined, [])).toMatchObject({ state: "unknown" });
 });

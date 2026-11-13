@@ -10,7 +10,7 @@ export interface DeliveryTask {
   latestHead?: string;
   /** Host-derived verdict binding, never inferred from a mutable lifecycle receipt. */
   approval?: { head?: string; latestHead?: string; mismatch: boolean; current: boolean };
-  plan?: { paths?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] };
+  plan?: { paths?: string[]; out_of_scope?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] };
   findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView;
   /** #1403 A2: the latest security pass an approving or rejecting verdict recorded, bound to the head it reviewed. */
   securityPass?: SecurityPassRecord;
@@ -97,7 +97,7 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
     const linked = holders.length ? holders : [undefined];
     if (config.mode === "enforce" && row.findings?.openImportant) row.blockers.push("open important review findings: " + row.findings.openImportant);
     for (const holder of linked) {
-      const conformance = holder?.plan ? { ...planConformance(holder.plan.paths, read), accepted: holder.plan.accepted.some(item => item.repo === holder.receipt?.repo && item.pr === holder.receipt?.pr && item.head === read.head && item.revision === holder.plan!.revision && item.fingerprint === holder.plan!.fingerprint && JSON.stringify([...item.paths].sort()) === JSON.stringify([...read.paths].sort())) } : undefined;
+      const conformance = holder?.plan ? { ...planConformance(holder.plan.paths, read, holder.plan.out_of_scope), accepted: holder.plan.accepted.some(item => item.repo === holder.receipt?.repo && item.pr === holder.receipt?.pr && item.head === read.head && item.revision === holder.plan!.revision && item.fingerprint === holder.plan!.fingerprint && JSON.stringify([...item.paths].sort()) === JSON.stringify([...read.paths].sort())) } : undefined;
       if (holder && conformance && config.mode !== "off") (row.planConformance ??= []).push({ task: holder.id, state: conformance.state, outside: conformance.outside.length, untouched: conformance.untouched.length, accepted: conformance.accepted });
       const rawIntegrity = config.mode !== "off" && holder?.receipt ? await readTestIntegrity(holder.receipt, read, bounded) : undefined;
       if (rawIntegrity && holder?.receipt?.issue) {

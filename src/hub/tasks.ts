@@ -50,7 +50,7 @@ import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequ
 import { AUDIT_PROFILES, applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, needsVerification, parseUnitReports, seedLedger, unitId, verificationRefusal, type AuditFinding, type AuditProfile, type AuditSummary, type CarryLookup, type PublicAuditFinding } from "./security-audit.ts";
 import type { AuditSource } from "./audit-source.ts";
 import { matchConfigPath } from "./eval-gate.ts";
-import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
+import { completePlanInventory, planDrift, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, CostScopeError, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
@@ -467,8 +467,8 @@ function acceptRefs(input: unknown): TaskRefs | undefined {
   return { repo: text(raw.repo)! };
 }
 
-/** The same for a plan (issue #31): only its four lists, each of short strings. */
-function cleanPlan(input: unknown, profile: ProfileSelection = "dev"): TaskPlan {
+/** Normalize plan intent at the boundary; lifecycle-off ignores the additive cold-plan fields. */
+function cleanPlan(input: unknown, profile: ProfileSelection = "dev", lifecycle = false): TaskPlan {
   const r = fields(input);
   const evidence: Pick<TaskPlan, "proof" | "risks"> = {};
   for (const key of ["proof", "risks"] as const) {
@@ -478,13 +478,42 @@ function cleanPlan(input: unknown, profile: ProfileSelection = "dev"): TaskPlan 
     const items = value.map(item => item.replace(/\s+/g, " ").trim()).filter(Boolean);
     if (items.length) evidence[key] = items;
   }
+  const intent: import("./board.ts").ColdPlanIntent = {};
+  if (lifecycle) {
+    if (r.base !== undefined) {
+      if (typeof r.base !== "string" || !/^[a-f0-9]{40}$/.test(r.base)) throw new PreEffectToolRefusal("plan.base: expected a full lowercase commit SHA");
+      intent.base = r.base;
+    }
+    for (const key of ["out_of_scope", "stop_if"] as const) {
+      const value = r[key];
+      if (value === undefined) continue;
+      if (!Array.isArray(value) || value.length > 32 || value.some(item => typeof item !== "string" || item.length > 512)) throw new PreEffectToolRefusal(`plan.${key}: expected at most 32 strings of at most 512 characters`);
+      const items = value.map(item => item.replace(/\s+/g, " ").trim()).filter(Boolean);
+      if (items.length) intent[key] = [...new Set(key === "out_of_scope" ? items.map(normPath) : items)];
+    }
+    if (r.steps !== undefined) {
+      if (!Array.isArray(r.steps) || r.steps.length > 32) throw new PreEffectToolRefusal("plan.steps: expected at most 32 steps");
+      intent.steps = r.steps.map(raw => {
+        const row = fields(raw);
+        if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(row).some(key => key !== "description" && key !== "verify")
+          || typeof row.description !== "string" || !row.description.trim() || row.description.length > 512
+          || row.verify !== undefined && (typeof row.verify !== "string" || !row.verify.trim() || row.verify.length > 512)) throw new PreEffectToolRefusal("plan.steps: each step needs a bounded description and optional verify command and expected result");
+        return { description: row.description.replace(/\s+/g, " ").trim(), ...(typeof row.verify === "string" ? { verify: row.verify.replace(/\s+/g, " ").trim() } : {}) };
+      });
+    }
+  }
   let scope: CostPlan;
   try { scope = cleanCostPlan(r); } catch (error) { throw new PreEffectToolRefusal(error instanceof CostScopeError ? error.message : "invalid review or CI cost scope"); }
-  return { ...Object.fromEntries((profileData(profile).plan_keys as (keyof TaskPlan)[]).map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length)), ...evidence, ...scope };
+  return { ...Object.fromEntries((profileData(profile).plan_keys as (keyof TaskPlan)[]).map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length)), ...evidence, ...scope, ...intent };
 }
 
 /** A plan as one line for other owners; the whole plan is on the board. */
-const planText = (plan: TaskPlan = {}) => ALL_PLAN_KEYS.filter((k) => plan[k]?.length).map((k) => `${k.replace("_", " ")}: ${plan[k]!.join("; ")}`).join(" | ");
+const planText = (plan: TaskPlan = {}) => [
+  ...ALL_PLAN_KEYS.filter((k) => plan[k]?.length).map((k) => `${k.replace("_", " ")}: ${plan[k]!.join("; ")}`),
+  ...(plan.base ? [`base: ${plan.base}`] : []),
+  ...(["out_of_scope", "stop_if"] as const).filter(key => plan[key]?.length).map(key => `${key}: ${plan[key]!.join("; ")}`),
+  ...(plan.steps?.length ? [`steps: ${plan.steps.map(step => `${step.description}${step.verify ? `; verify: ${step.verify}` : ""}`).join("; ")}`] : []),
+].join(" | ");
 /** What the PII screen reads of a task (#198): the text the patterns are checked against. */
 const screenText = (t: { title: string; detail: string; plan?: TaskPlan; external?: Task["external"] }) => [t.title, t.detail, planText(t.plan), t.external?.repo, t.external?.url].filter(value => value !== undefined).join("\n");
 /** Re-screens of one task whose verdict was unknown, per hub run (#198). */
@@ -861,7 +890,7 @@ export class Tasks {
 
   private signalsFor(task: Pick<Task, "title" | "detail" | "refs"> & { plan?: TaskPlan }, routing = this.d.routing()) {
     const signals = detectSignals(task, routing, this.d.cwd);
-    const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!).filter(Boolean)];
+    const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? []), ...(task.plan?.out_of_scope ?? []), ...(task.plan?.sections ?? []).map(anchor => anchor.split("#")[0]!).filter(Boolean)];
     if (paths.some(path => matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? [], true))) {
       if (!signals.includes("pii")) signals.push("pii");
       signals.push("pii_path");
@@ -2877,7 +2906,7 @@ export class Tasks {
     const authored = task.history.findLast(entry => entry.event !== "plan reviewed" && entry.planRevision !== undefined)
       ?? task.history.findLast(entry => entry.event !== "plan reviewed" && (entry.planning?.fields as readonly string[] | undefined)?.includes("plan"));
     if (authored && authored !== task.history[0]) return authored.by;
-    return ALL_PLAN_KEYS.some(key => !!task.plan?.[key]?.length) ? authored?.by ?? task.history[0]?.by ?? null : null;
+    return (ALL_PLAN_KEYS.some(key => !!task.plan?.[key]?.length) || !!task.plan?.base || !!task.plan?.out_of_scope?.length || !!task.plan?.stop_if?.length || !!task.plan?.steps?.length) ? authored?.by ?? task.history[0]?.by ?? null : null;
   }
 
   private planReviewAuthority(by: PeerId, task: Task): { planAuthor: PeerId | null; selfReview?: true } {
@@ -3508,7 +3537,7 @@ export class Tasks {
         const direct = afterParts.length ? deps.filter(dep => !parent.deps?.includes(dep)) : deps;
         if (direct.length + afterParts.length > 64) throw new PreEffectToolRefusal("split child dependencies exceed the 64-edge cap");
         while (pending.length) { const dependency = pending.pop()!; if (dependency === id) throw new PreEffectToolRefusal("split dependency reaches its parent"); if (seen.has(dependency)) continue; seen.add(dependency); const task = this.d.board.get(dependency); if (!task) throw new PreEffectToolRefusal("split dependency is missing"); pending.push(...(task.deps ?? [])); }
-        const refs = part.refs === undefined ? parent.refs : cleanRefs(part.refs), plan = cleanPlan(part.plan, storedProfile);
+        const refs = part.refs === undefined ? parent.refs : cleanRefs(part.refs), plan = cleanPlan(part.plan, storedProfile, (this.d.sdlc?.config().mode ?? "off") !== "off");
         // #1161: a part's plan sources are registered ids, as at propose and accept (#1144); refused before any screen or board write.
         this.validatePlanSources(plan);
         const draft = { title: part.title.replace(/\s+/g, " ").trim(), detail: part.detail as string | undefined ?? "", class: cls, refs, plan, deps, afterParts: afterParts as number[], ...(parent.role && cls === parent.class ? { role: parent.role } : {}), ...(parent.profile ? { profile: parent.profile, profileClass: given as string, ...(parent.profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
@@ -3775,8 +3804,8 @@ export class Tasks {
     if (["shipped", "dropped"].includes(release.state)) throw new PreEffectToolRefusal("settled release is final");
     if (by !== USER && (release.state === "frozen" || input.state === "frozen" || input.state === "shipped" || input.state === "dropped")) throw new PreEffectToolRefusal("freeze, ship, drop and frozen changes require a person");
     if (input.state === "shipped" && this.d.board.list().some(task => task.release === release.id && !isClosedTaskState(task.state))) throw new PreEffectToolRefusal("every release task must be approved, cancelled, or moved out before ship");
-    if (input.state === "active" && (release.train || this.d.sdlc?.config().mode !== undefined && this.d.sdlc.config().mode !== "off" || this.d.board.releases().some(row => row.train && ["active", "frozen"].includes(row.state))) && this.d.board.releases().some(row => row.id !== release.id && ["active", "frozen"].includes(row.state))) throw new PreEffectToolRefusal("one open release train at a time");
-    if (input.state === "frozen" && (release.train || this.d.sdlc?.config().mode !== undefined && this.d.sdlc.config().mode !== "off")) throw new PreEffectToolRefusal("use the resource-admitted release cut operation");
+    if (input.state === "active" && (release.train || (this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.board.releases().some(row => row.train && ["active", "frozen"].includes(row.state))) && this.d.board.releases().some(row => row.id !== release.id && ["active", "frozen"].includes(row.state))) throw new PreEffectToolRefusal("one open release train at a time");
+    if (input.state === "frozen" && (release.train || (this.d.sdlc?.config().mode ?? "off") !== "off")) throw new PreEffectToolRefusal("use the resource-admitted release cut operation");
     if (input.state === "shipped" && release.train) {
       if (release.train.history.length >= RELEASE_TRAIN_HISTORY_LIMIT) throw new PreEffectToolRefusal("release train history full; ship needs one history slot, drop this train and create a replacement");
       const readiness = releaseTrainReadiness(release, this.d.board.list());
@@ -3792,7 +3821,7 @@ export class Tasks {
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; needs_network?: unknown; needs_worktree?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined): Promise<Task> {
     const requestCheck = this.requestCheck(by, fence);
-    const plan = cleanPlan(input.plan, this.d.profileData ?? this.d.profile ?? "dev");
+    const plan = cleanPlan(input.plan, this.d.profileData ?? this.d.profile ?? "dev", (this.d.sdlc?.config().mode ?? "off") !== "off");
     this.validatePlanSources(plan);
     requireLocalTaskPeer(input.owner);
     external = external ? { ...external } : undefined;
@@ -6587,7 +6616,7 @@ export class Tasks {
 
   /** The board as the merge queue and the guarded merge read it (#786): ids, dependencies, privacy, receipts, findings and plans. */
   private deliveryLinks(config: SdlcConfig): DeliveryTask[] {
-    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), latestHead: this.reviewHead(t), approval: approvalBinding(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), ...(config.mode === "off" || !config.security || this.isPii(t) ? {} : { securityPass: t.history.findLast(entry => entry.securityPass && !entry.withheld && (entry.event === "approved" || entry.event === "changes_requested"))?.securityPass }), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
+    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), latestHead: this.reviewHead(t), approval: approvalBinding(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), ...(config.mode === "off" || !config.security || this.isPii(t) ? {} : { securityPass: t.history.findLast(entry => entry.securityPass && !entry.withheld && (entry.event === "approved" || entry.event === "changes_requested"))?.securityPass }), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), out_of_scope: this.planPaths(t, "out_of_scope") ?? t.plan?.out_of_scope, revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
   }
 
   /**
@@ -7043,13 +7072,13 @@ export class Tasks {
     return JSON.stringify([task.refs, task.sdlc, task.plan, task.owner, task.reviewer, task.state, this.isPii(task), this.d.sdlc?.config()]);
   }
   private planReadIdentity(task: Task): string { return JSON.stringify([task.sdlc?.repo, task.sdlc?.pr, task.refs.repo, planFingerprint(task.plan ?? {})]); }
-  private planPaths(task: Task): string[] | undefined {
+  private planPaths(task: Task, key: "paths" | "out_of_scope" = "paths"): string[] | undefined {
     if (!task.sdlc?.repo) return;
     // Resolve the artifact slug first: it may warm the canonical project's previously unnamed identity.
     const artifact = this.repositories.scope({ repo: task.sdlc.repo, paths: task.refs.paths });
     const scope = this.repositories.scope(task.refs);
     if (scope.key !== artifact.key) return;
-    return task.plan?.paths?.map(path => scope === this.repositories.project ? this.projectPath(path) : this.repositories.relativePath(scope, path));
+    return task.plan?.[key]?.map(path => scope === this.repositories.project ? this.projectPath(path) : this.repositories.relativePath(scope, path));
   }
   private planScopeIdentity(task: Task): string {
     const paths = this.planPaths(task); // Warm verified aliases before capturing the scope identity.
@@ -7075,7 +7104,7 @@ export class Tasks {
     return securityPassView(config.security, evidence, recorded);
   }
   private planReport(task: Task, evidence?: PrEvidence) {
-    const rawReport = planConformance(this.isPii(task) ? undefined : this.planPaths(task), this.isPii(task) ? undefined : evidence);
+    const rawReport = planConformance(this.isPii(task) ? undefined : this.planPaths(task), this.isPii(task) ? undefined : evidence, this.planPaths(task, "out_of_scope") ?? task.plan?.out_of_scope);
     const safe = [...rawReport.outside, ...rawReport.untouched].every(path => this.publicMetadataText(path));
     const report: PlanConformance = safe ? rawReport : { state: "unknown", head: rawReport.head, outside: [], untouched: [] };
     const fingerprint = planFingerprint(task.plan ?? {});
@@ -7426,7 +7455,7 @@ export class Tasks {
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
     if (by !== USER && task.needsPerson) throw new PreEffectToolRefusal(PERSON_RUN_ACCEPT(task.id)); // #1176: before any spec or plan-review work is spent on it
-    const proposedPlan = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
+    const proposedPlan = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev", (this.d.sdlc?.config().mode ?? "off") !== "off");
     this.validatePlanSources(proposedPlan && Object.keys(proposedPlan).length ? proposedPlan : task.plan);
     this.acceptanceCapacity(task, 0, "check"); // #1080: an urgent task may still take unaccepted offers; `accept` does that, after its gates
     if (metadata && !this.isPii(task) && (!this.nameable(metadata.repo!) || looksSecret(metadata.repo!) || this.aboutPrivatePath("", metadata.repo!, task))) throw new PreEffectToolRefusal("this repository metadata is private or sensitive and is not kept");
@@ -7563,7 +7592,7 @@ export class Tasks {
     if (by !== USER && task.needsPerson) throw new PreEffectToolRefusal(PERSON_RUN_ACCEPT(task.id));
     if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
     // Models send null or {} for an optional field they leave empty: neither replaces a plan.
-    const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev");
+    const given = plan == null ? undefined : cleanPlan(plan, (task.profile ?? "dev") === (this.d.profile ?? "dev") ? this.d.profileData ?? task.profile ?? "dev" : task.profile ?? "dev", (this.d.sdlc?.config().mode ?? "off") !== "off");
     // File-list intent still replaces the old lists; omitted budget keys retain the planner-reviewed scope.
     const cleaned = given && Object.keys(given).length ? { ...cleanCostPlan(task.plan ?? {}), ...given } : undefined;
     this.validatePlanSources(cleaned ?? task.plan);
@@ -7655,7 +7684,8 @@ export class Tasks {
   takeDoneNote = (id: number): string | undefined => {
     const note = this.doneNotes.get(id);
     this.doneNotes.delete(id);
-    return note;
+    const task = this.d.board.get(id);
+    return [note, task ? this.planDriftText(task) : ""].filter(Boolean).join("\n") || undefined;
   };
   /** #572 AC3: what the owner's `hub_task_done` result adds while the project root checkout is on a task branch. */
   checkoutNote = (): string | undefined => { const warning = mainCheckoutWarning(this.d.cwd, this.publicMetadataText); return warning ? `Note: ${warning}.` : undefined; };
@@ -8307,10 +8337,27 @@ export class Tasks {
     } catch { return []; } // Optional memory cannot refuse an assignment or review.
   }
 
+  /** #1403 B1: no checkout-HEAD fallback, foreign repository read or admission effect. */
+  private planDriftText(task: Task): string {
+    if ((this.d.sdlc?.config().mode ?? "off") === "off" || !task.plan?.base || this.isPii(task) || task.owner && this.d.privateTurn?.(task.owner)) return "";
+    let report: import("./plan-conformance.ts").PlanDrift = { state: "unknown", paths: [] };
+    try {
+      const source = this.d.auditSource, base = task.plan.base, head = this.reviewHead(task);
+      if (source && head && /^[a-f0-9]{40}$/.test(base) && /^[a-f0-9]{40}$/.test(head)
+        && this.repositories.scope(task.refs).key === this.repositories.project.key
+        && (!task.sdlc?.repo || this.repositories.scope({ repo: task.sdlc.repo, paths: task.refs.paths }).key === this.repositories.project.key)
+        && source.resolve(base) === base && source.resolve(head) === head) {
+        report = planDrift(task.plan.paths?.map(path => this.projectPath(path)), source.changed(base, head));
+      }
+      if (report.paths.some(path => !this.publicMetadataText(path))) report = { state: "unknown", paths: [] };
+    } catch { /* Optional local Git evidence is unknown, never a failed task transition. */ }
+    return `Plan drift (advice only): drift: ${report.state}${report.paths.length ? ` (${report.paths.join("; ")})` : ""}`;
+  }
+
   /** Current plan advice for an accepted plan's tool result, which has no new assignment envelope. */
   planGuardText(task: Task): string {
     const items = this.planGuardItems(task);
-    return items.length ? ["Live fail notes for this plan (advice, not a block):", ...items.map(item => item.line)].join("\n") : "";
+    return [this.planDriftText(task), items.length ? ["Live fail notes for this plan (advice, not a block):", ...items.map(item => item.line)].join("\n") : ""].filter(Boolean).join("\n");
   }
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */

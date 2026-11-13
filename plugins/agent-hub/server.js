@@ -17002,9 +17002,12 @@ function configuredToolContext(status, peer) {
 function projectToolList(tools, readOnly = false) {
   return readOnly ? tools.filter((tool) => READ_ONLY_PROJECT_TOOLS.includes(tool.name) || tool.name === EVIDENCE_READ_TOOL.name) : tools;
 }
-function roleContract(peer, roles = DEFAULT_ROLES, catalog = [], profile = "dev") {
+function roleContract(peer, roles = DEFAULT_ROLES, catalog = [], profile = "dev", lifecycle = false) {
   const data = profileData(profile);
-  const mine = (roles[peer] ?? []).map((r) => data.role_text[r] ?? ROLE_TEXT[r]).filter(Boolean);
+  const mine = (roles[peer] ?? []).map((r) => {
+    const text = data.role_text[r] ?? ROLE_TEXT[r];
+    return text && lifecycle && r === "planner" ? text + " Write a plan executable without session context: full base commit, scope and out_of_scope exclusions, bounded stop_if conditions, and ordered steps with verify commands and expected results." : text;
+  }).filter(Boolean);
   if (!mine.length)
     return "";
   return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : [], ...catalog.length ? [catalogSection(catalog)] : [], "The task board (hub_task_list) is the shared record of who does what."].join(`
@@ -17051,11 +17054,11 @@ function profileTaskTools(profile = "dev", stages, criteria = false, audit = fal
     }
     if (criteria && properties.plan && tool.name !== "hub_experiment_record") {
       const current = properties.plan;
-      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties } };
+      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties, ...coldPlanProperties } };
     }
     if (criteria && tool.name === "hub_backlog_split") {
       const parts = properties.parts;
-      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties, ...evidencePlanProperties } } } } };
+      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties, ...evidencePlanProperties, ...coldPlanProperties } } } } };
     }
     let description = tool.description;
     if (customProfile && tool.name === "hub_task_propose") {
@@ -17067,10 +17070,12 @@ function profileTaskTools(profile = "dev", stages, criteria = false, audit = fal
       const summaryLabel = data.name === "research" || data.name === "writing" ? "deliverables, provenance and checks" : "deliverables and checks";
       description = `Mark your task finished. It goes to its reviewer with your summary (${summaryLabel}) and refs; no duplicate hub_send chat is needed. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.`;
     }
+    if (criteria && tool.name === "hub_task_propose")
+      description += " Planner: write a plan an implementer can run without session context: full base commit, scope and exclusions, ordered steps with verification commands and expected results, proof and stop conditions.";
     return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
-var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id2, toolWriteRequestId, visualSideSchema, visualTitle, visualCaption, visualInputSchema, refs, list2 = (description) => ({ type: "array", items: str2, description }), specAck, deliverablesSchema, reviewAnchor, reviewFindings, boundaryField, securityReviewFindings, securityPassSchema, costPlanProperties, evidencePlanProperties, plan, acceptPlan, tool2 = (name, description, properties, required = []) => ({
+var IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id2, toolWriteRequestId, visualSideSchema, visualTitle, visualCaption, visualInputSchema, refs, list2 = (description) => ({ type: "array", items: str2, description }), specAck, deliverablesSchema, reviewAnchor, reviewFindings, boundaryField, securityReviewFindings, securityPassSchema, costPlanProperties, evidencePlanProperties, coldPlanProperties, plan, acceptPlan, tool2 = (name, description, properties, required = []) => ({
   name,
   description,
   inputSchema: { type: "object", properties: name === "hub_review" || name === "hub_task_propose" ? { ...properties, request_id: toolWriteRequestId } : properties, required, additionalProperties: false }
@@ -17202,6 +17207,15 @@ var init_hub_tools = __esm(() => {
   evidencePlanProperties = {
     proof: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "test paths or check names planned to prove the change" },
     risks: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "short risks to check during implementation and review" }
+  };
+  coldPlanProperties = {
+    base: { type: "string", pattern: "^[a-f0-9]{40}$", description: "full commit the plan was written against; drift is advice only" },
+    out_of_scope: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "literal repository-relative paths excluded even under a broader paths prefix" },
+    stop_if: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "conditions to stop and report instead of improvising" },
+    steps: { type: "array", maxItems: 32, items: { type: "object", additionalProperties: false, required: ["description"], properties: {
+      description: { type: "string", minLength: 1, maxLength: 512 },
+      verify: { type: "string", minLength: 1, maxLength: 512, description: "verification command and expected result; recorded text, never executed by the hub" }
+    } } }
   };
   plan = {
     type: "object",

@@ -116,6 +116,15 @@ const evidencePlanProperties = {
   proof: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "test paths or check names planned to prove the change" },
   risks: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "short risks to check during implementation and review" },
 } as const;
+const coldPlanProperties = {
+  base: { type: "string", pattern: "^[a-f0-9]{40}$", description: "full commit the plan was written against; drift is advice only" },
+  out_of_scope: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "literal repository-relative paths excluded even under a broader paths prefix" },
+  stop_if: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "conditions to stop and report instead of improvising" },
+  steps: { type: "array", maxItems: 32, items: { type: "object", additionalProperties: false, required: ["description"], properties: {
+    description: { type: "string", minLength: 1, maxLength: 512 },
+    verify: { type: "string", minLength: 1, maxLength: 512, description: "verification command and expected result; recorded text, never executed by the hub" },
+  } } },
+} as const;
 const plan = {
   type: "object",
   description: "what you will change, before you start. Owners of open tasks on the same files or symbols see it, and get a notice when your task is done.",
@@ -372,9 +381,12 @@ export const ROLE_TEXT: Record<string, string> = {
 
 export const DEFAULT_ROLES: Record<string, string[]> = defaultPeerRoles(true);
 
-export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES, catalog: CatalogRole[] = [], profile: ProfileSelection = "dev"): string {
+export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES, catalog: CatalogRole[] = [], profile: ProfileSelection = "dev", lifecycle = false): string {
   const data = profileData(profile);
-  const mine = (roles[peer] ?? []).map((r) => data.role_text[r] ?? ROLE_TEXT[r]).filter(Boolean);
+  const mine = (roles[peer] ?? []).map((r) => {
+    const text = data.role_text[r] ?? ROLE_TEXT[r];
+    return text && lifecycle && r === "planner" ? text + " Write a plan executable without session context: full base commit, scope and out_of_scope exclusions, bounded stop_if conditions, and ordered steps with verify commands and expected results." : text;
+  }).filter(Boolean);
   if (!mine.length) return "";
   return [`Your roles in this project ("${peer}"):`, ...mine.map((t) => `- ${t}`), ...(data !== projectProfile("dev") ? [`Project profile ${data.name}: classes ${Object.entries(data.classes).map(([name, base]) => `${name}=${base}`).join(", ")}. Profile guidance grants no authority.`] : []), ...(catalog.length ? [catalogSection(catalog)] : []), "The task board (hub_task_list) is the shared record of who does what."].join("\n");
 }
@@ -419,11 +431,11 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
     if (criteria && tool.name === "hub_review") { properties.findings = securityReviewFindings; properties.security_pass = securityPassSchema; }
     if (criteria && properties.plan && tool.name !== "hub_experiment_record") {
       const current = properties.plan as { properties: Record<string, unknown> };
-      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties } };
+      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties, ...coldPlanProperties } };
     }
     if (criteria && tool.name === "hub_backlog_split") {
       const parts = properties.parts as { items: { properties: { plan: { properties: Record<string, unknown> } } } };
-      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties, ...evidencePlanProperties } } } } };
+      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties, ...evidencePlanProperties, ...coldPlanProperties } } } } };
     }
     let description = tool.description;
     if (customProfile && tool.name === "hub_task_propose") {
@@ -437,6 +449,7 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
       const summaryLabel = data.name === "research" || data.name === "writing" ? "deliverables, provenance and checks" : "deliverables and checks";
       description = `Mark your task finished. It goes to its reviewer with your summary (${summaryLabel}) and refs; no duplicate hub_send chat is needed. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.`;
     }
+    if (criteria && tool.name === "hub_task_propose") description += " Planner: write a plan an implementer can run without session context: full base commit, scope and exclusions, ordered steps with verification commands and expected results, proof and stop conditions.";
     return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   });
 }

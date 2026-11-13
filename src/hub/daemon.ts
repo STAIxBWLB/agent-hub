@@ -1320,12 +1320,12 @@ export async function startDaemon(opts: DaemonOptions) {
       preparedSessionRoles.set(peer, selected.map(role => role.id));
       preparedSessionRoleIdentities.set(peer, selected.map(roleIdentity));
       if (selected.length) event({ type: "role", peer, actor: "config", stage: "prepared", roles: selected.map(roleIdentity) });
-      return dataRoleContract(peer, roleContract(peer, config.roles, selected, resolvedProfile));
+      return dataRoleContract(peer, roleContract(peer, config.roles, selected, resolvedProfile, lifecycleConfig.mode !== "off"));
     } catch (error) {
       preparedSessionRoles.delete(peer);
       preparedSessionRoleIdentities.delete(peer);
       log(`catalog role assignment refused for ${peer}: ${(error as Error).message}`);
-      const fallback = dataRoleContract(peer, roleContract(peer, config.roles, [], resolvedProfile));
+      const fallback = dataRoleContract(peer, roleContract(peer, config.roles, [], resolvedProfile, lifecycleConfig.mode !== "off"));
       preparedSessionRoles.set(peer, []);
       preparedSessionRoleIdentities.set(peer, []);
       return fallback;

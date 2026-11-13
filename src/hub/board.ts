@@ -211,7 +211,13 @@ export interface TaskRefs {
 export const PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"] as const;
 export const DOCUMENT_PLAN_KEYS = ["paths", "sections", "sources", "claims"] as const;
 export const ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims", "proof", "risks"] as const;
-export type TaskPlan = Partial<Record<(typeof ALL_PLAN_KEYS)[number], string[]>> & CostPlan;
+export interface ColdPlanIntent {
+  base?: string;
+  out_of_scope?: string[];
+  stop_if?: string[];
+  steps?: { description: string; verify?: string }[];
+}
+export type TaskPlan = Partial<Record<(typeof ALL_PLAN_KEYS)[number], string[]>> & CostPlan & ColdPlanIntent;
 /** Task outcomes older than this are pruned: demotion (issue #36) reads one week, seven half-lives. */
 export const OUTCOMES_KEPT_MS = 7 * 24 * 3_600_000;
 

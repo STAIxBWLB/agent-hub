@@ -122,6 +122,8 @@ revision preserves both behaviors; capture still uses its stricter turn fence.
 
 ## Changes
 
+- 2026-11-13: #1403 B1 adds cold-readable intent and base-to-task-head drift advice. The existing PR conformance gate remains separate, so a moved or unreadable plan base cannot become a new acceptance gate.
+
 - 2026-11-10: #850 distinguishes normal-Bus Q2 proof from direct busy-submit characterization and preserves adoption/reattach/deny quiescence ceilings.
 - 2026-11-10: Spec acceptance carry-over (#1328 T4) distinguishes a new person decision from host-verified reuse of the same decision on explicitly superseding work. The narrow exception preserves original consent and records its cancelled source; it does not expose acceptance as a tool or receipt field. Review caught an early carry write before a later plan refusal: staging the host proof and committing only with the admitted outer event preserves the existing pre-effect refusal contract.
 - 2026-11-09: #1328 T6 extended the closed machine-default schema for an explicit setup research choice, reusing guarded publication and preserving the existing autonomy and start choices.
