@@ -151,3 +151,17 @@ test("end to end through the daemon: the planner shows a task it neither owns no
   const notMine = await op(planner, "hub_task_cancel", { id: shownId, reason: "not mine" });
   expect(notMine.ok).toBe(false); expect(notMine.error).toContain("planner may cancel only its own");
 }, 30000);
+
+test("#1436 the planner's refusal to cancel a hub-created card names who can cancel it and the exact command; a card of its own is unchanged", async () => {
+  const r = rig();
+  const card = r.board.propose("hub", { title: "Review policy amendment for recurring finding bugs:N1", class: "plan", backlog: true });
+  const failure = await r.tasks.cancel(card.id, "claude", { reason: "false recurrence" }).then(() => undefined, error => error as Error);
+  expect(failure).toBeInstanceOf(PreEffectToolRefusal);
+  expect(failure!.message).toContain("planner may cancel only its own historically unaccepted backlog or proposed work");
+  expect(failure!.message).toContain(`only the person can cancel it: ahub task cancel ${card.id} --reason <text>`);
+  expect(r.board.get(card.id)!.state).toBe("backlog");
+  // A task another peer proposed keeps today's text exactly.
+  const other = r.board.propose("codex", { title: "someone else's card", class: "implement" });
+  const refused = await r.tasks.cancel(other.id, "claude", { reason: "x" }).then(() => undefined, error => error as Error);
+  expect(refused!.message).toBe("planner may cancel only its own historically unaccepted backlog or proposed work");
+});

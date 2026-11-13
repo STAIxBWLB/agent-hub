@@ -100,6 +100,15 @@ export function parseReviewFindings(raw: unknown, options: { person: boolean; ma
   return result;
 }
 
+/**
+ * #1436: a positional finding id is a review-local label (N1, F5, B1, nit-1, 3): a reviewer numbers its findings per review, so the same label on two tasks names two unrelated findings.
+ * Only a label word or a single letter followed by digits counts, so a semantic id (compliance:hub-task-id-written-as-github-ref, sha256-pin) still can recur across tasks. REVIEW.md asks for semantic ids.
+ */
+export function positionalFindingId(id: string): boolean {
+  const local = id.replace(/^(?:bugs|security|compliance)[-_.:]/i, "");
+  return /^(?:[a-z]|nits?|imp(?:ortant)?|finding|issue|bug|comment|note|item|sec|fix|review)?[-_.:]?\d{1,4}$/i.test(local);
+}
+
 /** Prefer live artifact identity, skipping malformed historical candidates rather than hiding a valid fallback. */
 export function findingHead(receipt?: { head?: string; reviewedHead?: string; localHead?: string }, evidence?: { head: string }, commit?: string): string | undefined {
   return [evidence?.head, receipt?.head, receipt?.reviewedHead, receipt?.localHead, commit]
