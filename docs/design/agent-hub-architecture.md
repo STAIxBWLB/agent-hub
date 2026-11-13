@@ -186,6 +186,8 @@ Privacy decisions are made at hub boundaries, not delegated to model routing. A 
 
 Recovery is a coordinated daemon operation over separately persisted board, delivery, and native-session evidence. A restart or upgrade can continue only with compatible feature evidence from the verified target and host-held proofs that still match the project and actor. Adapters report native evidence; they do not certify their own recovery authority. This avoids treating a stale status file or an unverified receipt as proof that a native process is safe to resume ([#37](https://github.com/STAIxBWLB/agent-hub/issues/37), [#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#900](https://github.com/STAIxBWLB/agent-hub/issues/900)).
 
+Target-version preflight and bounded private launch-failure observations follow the [adapter restoration contract](adapters.md#restoration-launch-diagnostics-1426). Failure diagnostics do not replace the existing native ownership, readiness or permission proofs.
+
 The architecture does not claim that a fixture proves a real provider account, native session, campus network, or operating-system sandbox. Those are distinct runtime evidence and remain separate from source-level and automated checks ([#625](https://github.com/STAIxBWLB/agent-hub/issues/625), [#754](https://github.com/STAIxBWLB/agent-hub/issues/754)).
 
 ## Person review packages (#1056)
