@@ -217,6 +217,11 @@ scalar-value locators are explicitly converted from source-read ranges. Missing,
 truncated, legacy-unbound or changed material is unavailable or stale; private
 upgrades return IDs only, never a source ID, path/origin, excerpt or narrative.
 Resolved excerpts are capped at 4096 UTF-8 bytes and never cached or captured.
+Before handing a passage to a peer, the host latches its existing review-input
+observer exclusion. Derived answers and completion/review prose stay out of
+shared memory and public observer projections; the local worker also excludes
+the whole tool batch and its retained history. Ordinary replacement input follows
+the existing observer-release rules, without changing private-task authority.
 
 The existing source registry owns an optional projection receipt bound to raw
 SHA-256, complete text SHA-256 and the genuine converter fingerprint (or named

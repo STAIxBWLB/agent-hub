@@ -7883,7 +7883,7 @@ export class Tasks {
     const requestCheck = this.requestCheck(by);
     const initial = this.need(id, false, true);
     this.mine(initial, by, "owner", true);
-    const reviewObserverTurn = this.reviewObserverTurn(by, initial.id);
+    const reviewObserverTurn = observerExcluded || this.reviewObserverTurn(by, initial.id);
     const resolvedReviewComments = this.reviewCommentResolve(by, initial, resolved);
     let refresh: CompletionRefresh | undefined;
     if (initial.state === "in_review" || initial.state === "approved") {
@@ -8126,7 +8126,7 @@ export class Tasks {
     if (task.owner) this.d.board.recordOutcome(task.owner, task.class, false);
     this.contradict(task);
     this.d.notify(`task ${this.publicTitle(task)}: its check failed (${outcome}); it stays with ${task.owner ?? by}`);
-    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${!withheld && result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii, "owner", this.reviewObserverTurn(by, id));
+    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${!reviewObserverExcluded && result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii, "owner", this.reviewObserverTurn(by, id));
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
