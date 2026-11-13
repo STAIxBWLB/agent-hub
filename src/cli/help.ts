@@ -255,16 +255,12 @@ export function renderHelp(columns: number, color: boolean, command?: string, de
 
 /** Split a usage at its top-level " | " only: a pipe inside [...] or <...> belongs to one alternative (`[--class <c> | <class>]`). */
 function topLevelPieces(usage: string): string[] {
+  // Blank out each bracketed or angled group (same length), split the blanked text at " | ", and cut the real usage at the same widths.
+  const blanked = usage.replace(/\[[^\]]*\]|<[^>]*>|\([^)]*\)/g, group => " ".repeat(group.length));
   const pieces: string[] = [];
-  let depth = 0, start = 0;
-  for (let i = 0; i < usage.length; i++) {
-    const c = usage[i];
-    if (c === "[" || c === "<" || c === "(") depth++;
-    else if (c === "]" || c === ">" || c === ")") depth = Math.max(0, depth - 1);
-    else if (c === "|" && depth === 0 && usage[i - 1] === " " && usage[i + 1] === " ") { pieces.push(usage.slice(start, i - 1)); start = i + 2; }
-  }
-  pieces.push(usage.slice(start));
-  return pieces.map(piece => piece.trim());
+  let rest = usage;
+  for (const part of blanked.split(" | ")) { pieces.push(rest.slice(0, part.length).trim()); rest = rest.slice(part.length + " | ".length); }
+  return pieces;
 }
 
 /** The subcommand pieces a command documents, each with the words that name it: `ahub task show <id> | escalate <id>` has show and escalate. */
