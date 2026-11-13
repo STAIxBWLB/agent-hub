@@ -88,7 +88,7 @@ function object(value: unknown, fields: readonly string[]): Record<string, unkno
   return value as Record<string, unknown>;
 }
 function array(value: unknown, max: number): unknown[] {
-  if (!Array.isArray(value) || types.isProxy(value) || value.length > max || Object.getOwnPropertySymbols(value).length) return invalid();
+  if (!Array.isArray(value) || types.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > max || Object.getOwnPropertySymbols(value).length) return invalid();
   const descriptors = Object.getOwnPropertyDescriptors(value);
   if (Object.keys(descriptors).length !== value.length + 1) return invalid();
   for (let i = 0; i < value.length; i++) if (!descriptors[i] || !Object.hasOwn(descriptors[i]!, "value") || !descriptors[i]!.enumerable) return invalid();
