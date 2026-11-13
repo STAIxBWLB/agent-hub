@@ -108,7 +108,7 @@ summary 4000, each pro/con 2000, table cell 4000, key 128, path 4096 and asset
 reference 256. These are hub limits, not a claim that acon imposes each limit;
 validation refuses rather than truncates. acon counts Mermaid UTF-16 code units
 and leaves captions unbounded, while the hub counts UTF-8 bytes. All 42 published
-acon 0.1.7 visual cases are consumed directly; six named valid-acon cases are
+acon 0.2.0 visual cases are consumed directly; six named valid-acon cases are
 rejected only by these stricter source/caption/asset-ID ceilings. Historical
 hub-owned cases remain extra coverage, not a substitute for the shared fixture.
 

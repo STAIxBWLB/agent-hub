@@ -12,15 +12,15 @@
       "test/shell.test.ts": "fbdd4dc8c34ac09236bd4f1db6b0045f52d08882"
     },
     "recheckedAgainst": {
-      "version": "0.1.7",
+      "version": "0.2.0",
       "sources": {
-        "src/contract.ts": "e1d636a73a365009a9aef39fbcff741c15aff381",
-        "src/conformance.ts": "9c997a77c5915cc2adec1d68ac2fbc49bd5be7d2",
-        "shell/shell.js": "347897ed2f3c299eac92e3a1cffb42d78213ef20",
+        "src/contract.ts": "532058cc010a56aebdeaa6491049c9ed5d8a60bc",
+        "src/conformance.ts": "023b09082cb07d6c227bf90f9d42f5454f9ed42d",
+        "shell/shell.js": "ac907a15a7eae6d6a047051785c83fa5bf53b509",
         "src/visual-cases.ts": "391cb0a8b463fb83301f2653f3325edfce4448ca"
       }
     },
-    "scope": "Originally derived from the recorded 0.1.3 shell tests: Mermaid/table/beforeAfter reproduce their payloads; comparison adapts the over-bound clipping example to ten points. These remain extra hub-owned cases, rechecked against 0.1.7, not copies of its canonical VISUAL_CASES. The canonical published cases are imported directly in visual-conformance.test.ts. No renderer/native qualification is claimed."
+    "scope": "Originally derived from the recorded 0.1.3 shell tests: Mermaid/table/beforeAfter reproduce their payloads; comparison adapts the over-bound clipping example to ten points. These remain extra hub-owned cases, rechecked against 0.2.0, not copies of its canonical VISUAL_CASES. The canonical published cases are imported directly in visual-conformance.test.ts. No renderer/native qualification is claimed."
   },
   "valid": [
     { "id": "acon-mermaid", "payload": { "kind": "mermaid", "source": "flowchart LR\n  A[Start] --> B{Ok?}\n  B -->|yes| C[Ship]", "title": "Release flow" } },
