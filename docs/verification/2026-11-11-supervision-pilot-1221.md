@@ -169,6 +169,7 @@ read and present in a `task`-narrowed one.
 | 7 | role-scoped (task 866), hub 0.38.0, pid 92515; its start (2026-11-12 11:09:48 KST) puts readings 5, 6 and 7 in one daemon lifetime | 2026-11-13 04:05 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 4 since that daemon start, 2 of them after reading 6 (unknown which bound, task or rule) | 3 |
 | 8 | role-scoped (task 866), hub 0.38.0, pid 92515 (start 2026-11-12 11:09:48 KST), same lifetime as readings 5, 6 and 7 | 2026-11-13 06:14 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 5 since that daemon start, 1 of them after reading 7 (unknown which bound, task or rule) | 3 |
 | 9 | role-scoped (task 866), hub 0.38.0, pid 92515, same lifetime as readings 5 to 8 | 2026-11-13 08:15 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 3 | 3 | 6 since that daemon start, 1 of them after reading 8 (unknown which bound, task or rule) | 3 |
+| 10 | role-scoped (task 866), hub 0.38.0, pid 45122 (start 2026-11-13 11:59:44 KST); a new daemon lifetime, so the refusal counter restarts | 2026-11-13 13:25 KST | unknown (not stored) | 0 on my tasks | 0 on my tasks | 5 | 5 | 0 since this daemon start (unknown before it; the previous lifetime ended at 6) | 5 |
 
 Reading 1 answered `mode shadow` with the three rows in the ledger below: one pending, two
 expired by the queue at their partner's approving verdict. By reading 2 the third had expired the
@@ -285,6 +286,42 @@ byte-identical from `0af9fb5a1`, where reading 5 pinned them, to `f89a0f646`
 (`supervision-rules.ts`, `supervision-proposals.ts` and `settled-roles.ts` all print nothing under
 `git diff --stat`), so the frozen case set still describes the code under measurement.
 
+Reading 10 is the first read of a new daemon lifetime, and it is the first that shows rows written
+after the queue had already entered its steady refusal. At 2026-11-13 13:25 KST (agent-hub 0.38.0,
+pid 45122, `ps -o lstart= -p 45122` reporting 2026-11-13 11:59:44 KST and `etime` 1 h 25 m), the
+`task: 866` read returned five expired rows at two revisions: the same three at `8:3` that readings
+1 to 9 saw, and two at `11:4` that no earlier reading could see. `overlap:866:915` was written at
+12:11 KST and expired at 12:17; `overlap:866:919` was written at 12:15 and expired at 12:46.
+Neither is a new rule firing: the pair of them is the first time this wave stored a row for a peer
+whose task was still open, and both expired on the queue's own schedule before either PR merged.
+
+`refused` reads 0, and that is the reading's own correction of the series rather than a drop: the
+counter belongs to a daemon lifetime, and reading 9's process is gone. The lifetime that started
+2026-11-12 11:09:48 KST and carried readings 5 to 9 ended at six refusals; the lifetime that began
+11:59:44 KST has refused none of its own reads. So the pilot total has to name the lifetime, never
+the wave, and a restart after a counting series is indistinguishable from a quiet queue if the pid
+is not read first. The previous lifetime's final state is recorded here as 6 and is not carried
+forward: nothing in the new process inherits it, and the wave-wide figure is unknown.
+
+Provenance at this reading: board head `722c1e17f` (`feat(sdlc): ahub sdlc audit start|show with a
+hub-written coverage ledger`), one merge since reading 9's `f89a0f646`. It inserts one row into
+`docs/dogfood.md` at `@@ -102,6 +102,7 @@`, which moves the `Supervision rules and proposals
+(#1221 T1, T2)` row from 131 to 132; this task's row is still inserted after it, and the row is
+still located by its text. Neither file this task touches appears in that merge, and
+`docs/design/supervision.md` still ends at `## Deliberately outside this contract` (119) with no
+`Observed limits` heading. The evaluator and the queue are byte-identical from `0af9fb5a1`, where
+reading 5 pinned them, to `722c1e17f` (`supervision-rules.ts`, `supervision-proposals.ts` and
+`settled-roles.ts` all print nothing under `git diff --stat`), so the frozen case set still
+describes the code under measurement.
+
+Both new triggers were file-level only, measured at the heads that carried them: #915 (PR #1442,
+`5de20de20`) inserts `GSD migration guidance (#1431)` at `@@ -67,2 +67,3 @@` and adds one new
+`test/init-gsd-migration.test.ts`, and #919 (PR #1444, `9648a1b94`) inserts `Planner pull routing
+diagnostics (#1430)` at the same two neighbours. The two inserts therefore collide with each other
+and not with this task, whose row goes after the supervision row at 132 and whose only new file is
+this receipt; that collision was reported to their shared owner rather than treated as an overlap
+of this task.
+
 ## Proposal ledger
 
 | proposal | rule | task | revision | trigger | action | outcome | evidence |
@@ -292,6 +329,8 @@ byte-identical from `0af9fb5a1`, where reading 5 pinned them, to `f89a0f646`
 | `sup-067f72d97dd1` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:873` | `request_integration` | expired by the queue 1.3 s after #873's review time; unknown from stored records | #873 has one row of its own in `docs/dogfood.md` (`Console agent-hub versions (#1385)`) and this task inserts one row after the `Supervision rules and proposals (#1221 T1, T2)` row, so the overlap was file-level only; an approved side is a closed side, so the pair left supervision at the verdict, and #873's merge (`2d341c298`) landed with no row naming it |
 | `sup-67b2b2319f69` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:874` | `request_integration` | expired by the queue 1.3 s after #874's review time; unknown from stored records | #874 adds one row to `docs/dogfood.md` several dozen rows above this task's anchor (read at `0c427dd0`); same closure rule, and #874's merge (`89e69a38a`) landed with no row naming it |
 | `sup-adb3295ebc9b` | `declared_overlap_without_integration` | 866 | `8:3` | `overlap:866:881` | `request_integration` | expired by the queue 1.4 s after #881's review time; unknown from stored records | #881 rewrites the Orca O0 row at 124, deletes the O1-O3 rows at 126-128, and collapses the Herdr H0-H3 rows at 251-254 plus the Claude Code row at 255 into two (measured at `45ed8d5c`), while this task inserts one row after the supervision row; jcode asked on 2026-11-11 and confirmed the ranges, so the pair needed no integration record; #881 was still in review at reading 2 and merged as `60db687fd` (#1392) before reading 3, with no row naming that merge either |
+| `sup-aea2246b2b5d` | `declared_overlap_without_integration` | 866 | `11:4` | `overlap:866:915` | `request_integration` | expired by the queue 5 m 56 s after it was written (12:11 to 12:17 KST on 2026-11-13); unknown from stored records | #915 (PR #1442, `5de20de20`) inserts one row of its own, `GSD migration guidance (#1431)`, at `@@ -67,2 +67,3 @@`, plus one new `test/init-gsd-migration.test.ts`; this task inserts one row after the supervision row at 132 and adds no test, so the overlap was file-level only |
+| `sup-bd8af58defb8` | `declared_overlap_without_integration` | 866 | `11:4` | `overlap:866:919` | `request_integration` | expired by the queue 30 m 50 s after it was written (12:15 to 12:46 KST on 2026-11-13); unknown from stored records | #919 (PR #1444, `9648a1b94`) inserts `Planner pull routing diagnostics (#1430)` at the same two neighbours as #915's row and one new `test/planner-pull-routing-refusal.test.ts`; neither file is one this task writes, and the two inserts collide with each other rather than with this task's row |
 
 A pending proposal stays pending until the wave closes: classifying one while later revisions are
 already in view would let its outcome be chosen to fit them. No row on this task is pending at
@@ -306,7 +345,7 @@ non-trigger.
 | model calls | 0 (no inference path in the rules or the queue) |
 | memory writes | 0 |
 | daemon evaluations | pending (replayed from board revisions) |
-| rows written | 7 at the first conductor read, 3 of them on this task, written by the daemon on a task change and not by this task |
+| rows written | 7 at the first conductor read, 3 of them on this task; the task-narrowed read shows 5 at reading 10, the same three plus two written and expired on 2026-11-13, written by the daemon on a task change and not by this task |
 | wall time | wave open 2026-11-11, cap 2026-11-18 |
 
 ## Person burden
