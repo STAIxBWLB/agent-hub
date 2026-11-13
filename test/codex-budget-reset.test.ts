@@ -102,11 +102,17 @@ test("#1440 paused Codex polls within 60s, resets via Budget.evaluate and return
 });
 
 test("#1440 detach and stop remove polling/subscriptions; stale callbacks cannot retime a replacement attachment", async () => {
-  const f = await setup(), oldTimer = f.timers.active()[0]!, oldListener = f.allListeners[0]!;
+  const f = await setup();
+  f.budget.report("codex", [{ id: "5h", used: 1, resetsAt: 1_900_000_000_000, source: "codex rateLimits" }], true, f.clock.now);
+  await until(() => !!f.budget.record("codex"));
+  expect(f.timers.active(60_000)).toHaveLength(1);
+  const oldTimer = f.timers.active(60_000)[0]!, oldListener = f.allListeners[0]!;
   f.client.tui.close();
   await until(() => f.peer.state === "offline");
   expect(f.timers.active()).toHaveLength(0); expect(f.listeners.size).toBe(0);
-  const replacement = await f.attach(); await until(() => f.hostFrames.length === 2);
+  expect(f.budget.record("codex")).toBeDefined();
+  f.clock.now++; // the replacement's fresh native reading can end the existing pause
+  const replacement = await f.attach(); await until(() => f.hostFrames.length === 2 && !f.budget.record("codex"));
   const before = f.reads(); oldTimer.run(); oldListener();
   expect(f.timers.active(NORMAL)).toHaveLength(1);
   replacement.tui.send(JSON.stringify({ id: 99, method: "initialize", params: {} }));
