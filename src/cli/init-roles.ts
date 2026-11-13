@@ -7,8 +7,7 @@
  * refusal (the reason from `roleEligibility` and the eligible alternatives) before anything is written. Only conductor, planner and reviewer move: implementer, verifier and every catalog
  * role stay as they are. A peer whose roles change is written as one explicit list, including the peer that loses a role, because `roles` merges per peer and a missing entry keeps the default.
  */
-import { COMPAT, type CompatId } from "../adapters/compat.ts";
-import { SUPPORTED_PEERS, defaultPeerRoles } from "../adapters/registry.ts";
+import { SUPPORTED_PEERS, defaultPeerRoles, definitionOf } from "../adapters/registry.ts";
 import { roleEligibility, type EligibleRole } from "../adapters/role-eligibility.ts";
 import { START_MODES, type StartMode } from "../hub/start-mode.ts";
 
@@ -65,13 +64,11 @@ export function eligiblePeers(role: EligibleRole, startMode: (peer: string) => S
   return [...ok.filter(peer => installed.includes(peer)), ...ok.filter(peer => !installed.includes(peer))];
 }
 
-/** The peers whose agent CLI is on PATH, by the binary the `ahub agents` inventory probes; the hub-owned local worker needs no CLI. */
-const COMPAT_ID: Record<string, CompatId> = { claude: "claude-implementer", codex: "codex-review", kimi: "kimi-review" };
+/** The peers whose agent CLI is on PATH, by the command each adapter definition names. A hub-owned peer (the local worker, `trust.onPrem`) runs inside the hub and needs no CLI. */
 export function installedPeers(which: (binary: string) => string | null | undefined = binary => Bun.which(binary)): string[] {
   return SUPPORTED_PEERS.filter(peer => {
-    if (peer === "local") return true;
-    const id = COMPAT_ID[peer] ?? (peer as CompatId);
-    return COMPAT[id] !== undefined && !!which(COMPAT[id].probe[0]);
+    const definition = definitionOf(peer);
+    return definition?.trust.onPrem === true || (!!definition && !!which(definition.cli.command));
   });
 }
 
