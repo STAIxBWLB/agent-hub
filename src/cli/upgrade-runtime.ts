@@ -767,11 +767,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       const committed = op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase));
       if (!committed) {
         for (const planned of op.plan.projects) {
+          const progress = op.projects?.find(project => project.id === planned.project?.id);
+          if (progress?.commitSent || progress && ["stopped", "started", "peers-restored", "verified"].includes(progress.phase)) continue;
           if (typeof planned.project?.root !== "string" || !Array.isArray(planned.source?.peers)) continue;
           const gates = recoveryVersionGates(planned, peer => projectDefinition(peer, planned.project.root), configuredCommands(loadConfig(planned.project.root)));
           const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => packageDigest(target.root, { ownDependencies: true }) === target.digest });
           const failures = rows.filter(row => row.state !== "accepted");
-          if (failures.length) throw new Error(`${failures.map(row => row.message).join("; ")}; runtimes unchanged; fix the cause, then ${recoveryCommand(op, "resume")}`);
+          if (failures.length) throw new Error(`${failures.map(row => row.message).join("; ")}; this source has not been committed; fix the cause, then ${recoveryCommand(op, "resume")}`);
         }
       }
       // A legacy coordinator already chose and started this target. Resume its retained evidence without retroactive staging gates.
@@ -1088,9 +1090,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           } finally { capture.dispose(); }
           const launchFailure = restored.blockers.find(item => item.code === "launch-failed")?.failure;
           if (launchFailure) {
-            // Exit diagnosis is not native/session evidence: settle an independently observed attach first.
-            const after = await peerEvidence(planned, progress, original.peer);
-            if (after.state === "live" && after.session === original.sessionId) { await settle(after.session); continue; }
+            // Block immediately on the positive command outcome. Resume still re-reads independent native/session evidence.
             progress.terminals[key] = { state: "failed", failure: launchFailure } satisfies RestoreReceipt; save();
             throw new RecoveryLaunchError(original.peer, launchFailure, recoveryCommand(op, "resume"));
           }

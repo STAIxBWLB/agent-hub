@@ -101,7 +101,8 @@ export function prepareRecoveryLaunch(stateDir: string, peer: string, argv: read
     const launch = [...prefix, argv[0]!, "--preload", preload, ...argv.slice(1)].map(shellQuote).join(" ");
     const record = [...prefix, process.execPath, module, JSON.stringify(capture), "--exit-code"].map(shellQuote).join(" ");
     // A shell status observation adds no long-lived proxy or pipe to the native TTY.
-    const command = `${launch}; ahub_restore_exit=$?; if [ "$ahub_restore_exit" -ne 0 ]; then ${record} "$ahub_restore_exit"; fi; (exit "$ahub_restore_exit")`;
+    const invoke = `ahub_restore_launch_${capture.nonce.replaceAll("-", "")}`;
+    const command = `${invoke}() { "$@"; ahub_restore_exit=$?; if [ "$ahub_restore_exit" -ne 0 ]; then ${record} "$ahub_restore_exit"; fi; return "$ahub_restore_exit"; }; ${invoke} ${launch}`;
     return { command, read: () => readOutcome(capture, cwd), dispose: () => rmSync(dir, { recursive: true, force: true }) };
   } catch (error) { rmSync(dir, { recursive: true, force: true }); throw error; }
 }

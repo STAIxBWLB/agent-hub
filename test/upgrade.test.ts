@@ -1677,3 +1677,12 @@ for (const [name, recovery, expectedMs] of [["nothing configured", undefined, 30
     expect(f.calls).not.toContain("start:alpha");
   }, 30_000);
 }
+
+test("#1426 a live restoration runner names closing its launch terminal and deferred resume", () => {
+  const f = fixture();
+  const choices = nextChoices(f.operation, process.pid);
+  expect(choices.map(choice => choice.kind)).toEqual(["wait"]);
+  expect(choices[0]?.text).toContain("close that launch terminal");
+  expect(choices[0]?.text).toContain("once the runner blocks or exits");
+  expect(choices[0]?.text).toContain(`resume ${f.operation.id}`);
+});

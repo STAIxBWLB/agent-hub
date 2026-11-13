@@ -247,3 +247,15 @@ test("#466 native attachment waits name launch and recorded-session checks inste
   const preparation = renderWait(op, "prepare:alpha", ["pi is busy", "pending approvals"], options(120)).join("\n");
   expect(preparation).toContain("ahub console"); expect(preparation).toContain("approval");
 });
+
+test("#1426 recorded launch failures show their typed cause and resume step", () => {
+  for (const code of ["version_refused", "launch_exit"] as const) {
+    const op = fixture();
+    op.failure = { code, peer: "pi", exitCode: 1, firstLine: "Version not verified: Pi 1.5.2" };
+    const text = renderBlocked(op, choices, options()).join("\n");
+    expect(text).toContain(code);
+    expect(text).toContain("exit 1");
+    expect(text).toContain(`resume ${id}`);
+    expect(text).not.toContain("typed cause unknown");
+  }
+});
