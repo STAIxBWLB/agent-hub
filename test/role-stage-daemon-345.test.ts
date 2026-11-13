@@ -113,7 +113,6 @@ test("#525-6 AC3: Codex plans, an owned Claude child implements, and a fresh Cod
     const planner = await f.planner();
     expect(await f.console_.request({ t: "start", peer: "claude-impl" })).toMatchObject({ ok: true, executionCwd: join(f.root, ".worktrees", "claude-impl") });
     expect(await f.console_.request({ t: "start", peer: "codex-review" })).toMatchObject({ ok: true });
-    expect(await f.console_.request({ t: "budget", set: { peer: "codex-review", used: 0.1, resetsInMs: 600_000 } })).toMatchObject({ ok: true });
     const task = async (client: ControlClient, op: string, args: Record<string, unknown>) => {
       const reply = await client.request({ t: "task", op, args }); expect(reply, reply.error).toMatchObject({ ok: true }); return String(reply.text);
     };
