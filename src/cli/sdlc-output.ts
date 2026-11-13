@@ -171,6 +171,24 @@ export function renderSdlcQueue(reply: unknown, columns?: number, _now = Date.no
   if (list(report.conflicts).length) out.push(blank, ...bullets("file conflicts", list(report.conflicts).map((c: any) => `#${c.left} and #${c.right} share ${plural(c.files ?? 0, "file")} (${c.order === "person_required" ? "the person orders them" : "dependency order"})`), columns, "attention"));
   return out;
 }
+/** One line for the audit's unit states, shared by `audit show` and the release readback. */
+function auditStates(a: any): string {
+  const c = a?.counts ?? {};
+  return `${c.covered ?? 0} covered${a?.prior ? ` (${a.prior} prior)` : ""}, ${c.deferred ?? 0} deferred, ${c.out_of_scope ?? 0} out of scope, ${c.planned ?? 0} planned`;
+}
+/** `ahub sdlc audit show`: the ledger's counts first, then each unit, then the findings. An open important finding shows its id and status only, unless the caller is the person. */
+export function renderSdlcAudit(reply: unknown, columns?: number, _now = Date.now()): Span[][] {
+  const a = (reply as any)?.audit;
+  if (!a) return [...heading("Security audit", columns), ...pair("audits", "none started: run ahub sdlc audit start", columns, 10, "muted")];
+  const out: Line[] = [...heading(`Security audit ${a.audit} (task #${a.task})`, columns)];
+  out.push(...pair("source", `${short(a.ref)}, profile ${a.profile}${a.scoped ? ", scoped" : ""}`, columns, 10), ...pair("coverage", `${a.partial ? "partial: " : ""}${auditStates(a)}`, columns, 10, a.partial || a.counts?.planned ? "attention" : undefined));
+  const f = a.findings ?? {};
+  out.push(...pair("findings", `${f.verified ?? 0} verified, ${f.candidate ?? 0} candidate (unverified), ${f.needsValidation ?? 0} needs validation, ${f.rejected ?? 0} rejected, ${f.other ?? 0} other`, columns, 10, f.candidate ? "attention" : undefined));
+  for (const u of list(a.units)) out.push(...pair(String(u.state).replace("_", " "), `${u.unit}${u.prior ? ` (prior audit ${u.prior.audit})` : ""}${u.reason ? `: ${u.reason}` : ""}`, columns, 14, u.state === "planned" ? "attention" : undefined, "  "));
+  for (const item of list(a.items)) out.push(...pair(String(item.status), `${item.id} (${item.severity}, ${item.disposition})${item.withheld ? ", details withheld" : item.path ? ` ${item.path}` : ""}`, columns, 14, item.status === "candidate" ? "attention" : undefined, "  "));
+  if (a.withheld) out.push(...pair("withheld", `${a.withheld} open important finding${a.withheld === 1 ? "" : "s"}: boundary text is shown to the person only`, columns, 10, "muted"));
+  return out;
+}
 /** `ahub sdlc release <repo> [live-issue...]`: source, document, issue and authorization evidence, then what blocks the release. */
 export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.now()): Span[][] {
   const r = (reply as any)?.report ?? {};
@@ -192,6 +210,8 @@ export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.n
   if (a) out.push(blank, ...pair("authorization", `${a.state}: version ${a.receipt?.version ?? "unknown"} at ${short(a.receipt?.commit)}, approved ${moment(a.receipt?.at, now)}`, columns, w, a.state === "matched" ? "success" : "attention"));
   else out.push(blank, ...pair("authorization", r.releasePolicy ? `none recorded for ${r.releasePolicy.versionSource}: run ahub sdlc authorize-release <version>` : "none recorded: run ahub sdlc authorize-release <version>", columns, w, "muted"));
   for (const t of list(r.trains)) out.push(...pair(`train #${t.release?.id ?? "?"}`, `${t.readiness?.trigger ?? "unknown"}${list(t.readiness?.blockers).length ? `, ${list(t.readiness.blockers).join("; ")}` : ""}`, columns, w, list(t.readiness?.blockers).length ? "attention" : undefined));
+  const sa = r.securityAudit;
+  if (sa) out.push(blank, ...pair("security audit", `${short(sa.ref)} ${sa.profile}${sa.partial ? " (partial)" : ""}: ${auditStates(sa)}${sa.findings?.candidate ? `, ${sa.findings.candidate} unverified candidate${sa.findings.candidate === 1 ? "" : "s"}` : ""}`, columns, w, sa.partial || sa.counts?.planned ? "attention" : undefined));
   const rm = r.releaseMetrics;
   if (rm) {
     const mean = (values: unknown[]) => { const known = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v)); return known.length ? span(known.reduce((a, b) => a + b, 0) / known.length) : "unknown"; };

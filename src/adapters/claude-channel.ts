@@ -433,7 +433,7 @@ function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
               ]
             : []),
         ]),
-    ...profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria).filter(tool => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
+    ...profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria, lifecycle?.audit).filter(tool => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
     ...projectConductorTools(lifecycle?.startPeers),
   ], lifecycle?.readOnly).filter(tool => !permissionTool || IMPLEMENTER_HUB_TOOL_NAMES.includes(tool.name)),
   };

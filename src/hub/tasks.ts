@@ -44,7 +44,10 @@ import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, H
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { evalAdvice, evalGapBlockers, evalRequiredChecks, readEvalFor } from "./eval-gate.ts";
-import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequestLine, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
+import { parseSecurityPass, securityPassBlockers, securityPassView, securityRequestLine, SECURITY_CHECKLIST, type SecurityPassRecord, type SecurityPassView } from "./security-pass.ts";
+import { AUDIT_PROFILES, applyUnitReports, auditBrief, auditFindingView, auditIsPartial, auditSummary, needsVerification, parseUnitReports, seedLedger, unitId, verificationRefusal, type AuditFinding, type AuditProfile, type AuditSummary, type CarryLookup, type PublicAuditFinding } from "./security-audit.ts";
+import type { AuditSource } from "./audit-source.ts";
+import { matchConfigPath } from "./eval-gate.ts";
 import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, CostScopeError, type CostPlan, type ReviewCost } from "./cost-governance.ts";
@@ -140,6 +143,14 @@ interface PreparedSpecInspection {
 
 export interface ReleaseWindow { at: number; host: boolean; quota: boolean; idle: boolean; reasons: string[]; current?: () => boolean; close?: () => Promise<void>; }
 
+/** #1403 A4: the audit as a caller reads it. `withheld` counts open important findings whose text the view leaves out. */
+export interface AuditView extends AuditSummary {
+  units: { unit: string; state: string; prior?: { audit: number; head: string }; reason?: string }[];
+  items: PublicAuditFinding[];
+  withheld?: number;
+  /** Findings in this report that were already verified or rejected, so the hub left them as decided. */
+  notUpdated?: string[];
+}
 export interface TasksDeps {
   /** Private host-owned probe ledger and fixture ports. No configuration, wire or model-selected runner. */
   guidanceProbes?: {
@@ -207,6 +218,8 @@ export interface TasksDeps {
   memorySymbolNodes?: (task: Task) => MemorySymbolNodes | undefined;
   /** Host-only release report selector; derives its answer from committed policy and the in-memory authorization ledger. */
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh; reportPolicy?: (head: string, repo: string) => ReleaseReportPolicy | undefined };
+  /** #1403 A4: read-only git for the security audit (the checkout's head and changed paths); absent means the audit commands are unavailable. */
+  auditSource?: AuditSource;
   /** #785 P1b: the per-head CI watcher's bounds; tests shorten them, the defaults are `CI_WATCH_*` in `ci-watch.ts`. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
   /** #785 P1c: `tasks.auto_pull`, read at each capacity release so a reload applies to the next one; absent or false pulls nothing. */
@@ -6508,6 +6521,152 @@ export class Tasks {
     }
     return report;
   }
+
+  /** #1403 A4: a summary of the newest audit for the release report: ref, profile, partial and unit counts, never a finding or a path. */
+  auditLine(): AuditSummary | undefined {
+    const audit = this.d.board.audits(1)[0];
+    return audit ? auditSummary({ audit: audit.id, task: audit.task, ref: audit.ref, profile: audit.profile, scoped: audit.scoped, at: audit.at }, audit.units, this.d.board.auditFindings(audit.id)) : undefined;
+  }
+
+  private auditCarry(head: string, source: AuditSource): CarryLookup {
+    const audits = this.d.board.audits(32, true), changed = new Map<string, string[] | undefined>();
+    const since = (base: string) => { if (!changed.has(base)) changed.set(base, source.changed(base, head)); return changed.get(base); };
+    return (surface, companion) => {
+      const id = unitId(surface, companion);
+      for (const audit of audits) {
+        const unit = audit.units.find(row => row.unit === id);
+        // The newest audit that lists the unit decides: a scoped audit that left it out says nothing, but a deferred, out-of-scope or still planned unit plans it again.
+        if (!unit) continue;
+        if (unit.state !== "covered") return undefined;
+        const base = unit.prior?.head ?? audit.ref, origin = unit.prior?.audit ?? audit.id, paths = since(base);
+        // Unknown never carries: an unreadable change list, or a changed path under the surface, plans the unit again.
+        return paths && !paths.some(path => matchConfigPath(surface, path)) ? { audit: origin, head: base } : undefined;
+      }
+      return undefined;
+    };
+  }
+
+  /**
+   * #1403 A4: `ahub sdlc audit start`. The person or the one configured conductor files one read-only `review` task whose brief lists the ledger, and the hub seeds the ledger in `hub.db`
+   * (surface x companion, `planned`, or `covered (prior)` for a surface whose paths are unchanged since its last covered state). Nothing is written until every check has passed.
+   */
+  async auditStart(by: PeerId, input: { profile?: unknown; since?: unknown }, fence?: () => string | undefined): Promise<{ task: number; audit: number; units: number; planned: number; carried: number; partial: boolean; ref: string }> {
+    const check = this.requestCheck(by, fence);
+    if (by !== USER && (!this.configuredManualConductor(by) || !this.d.bus.isRostered(by))) throw new PreEffectToolRefusal("only the person or the current configured conductor may start a security audit; ask the person to run ahub sdlc audit start");
+    if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("a security audit cannot start in a private turn; finish that turn and retry ahub sdlc audit start");
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    if (config.mode === "off") throw new PreEffectToolRefusal("security audits need the lifecycle on: set sdlc.mode to advise or enforce in .agenthub/sdlc.toml");
+    if (!config.security) throw new PreEffectToolRefusal("security audits need a [security] table in .agenthub/sdlc.toml (paths and companions)");
+    const source = this.d.auditSource;
+    if (!source) throw new PreEffectToolRefusal("this hub has no git source to read for an audit; start the hub from a git checkout of the project and retry ahub sdlc audit start");
+    const profile = input.profile === undefined ? "standard" : input.profile;
+    if (typeof profile !== "string" || !(AUDIT_PROFILES as readonly string[]).includes(profile)) throw new PreEffectToolRefusal(`profile is one of ${AUDIT_PROFILES.join(", ")}`);
+    const head = source.head();
+    if (!head) throw new PreEffectToolRefusal("the checkout's head commit could not be read; run the audit from a git checkout with a commit");
+    let scoped: string[] | undefined;
+    if (input.since !== undefined) {
+      if (typeof input.since !== "string" || !input.since.trim() || input.since.length > 200) throw new PreEffectToolRefusal("--since names a commit, tag or branch of this checkout");
+      const base = source.resolve(input.since.trim());
+      if (!base) throw new PreEffectToolRefusal("--since does not name a commit in this checkout");
+      scoped = source.changed(base, head);
+      if (!scoped) throw new PreEffectToolRefusal("the paths changed since that ref could not be listed completely; narrow --since or run an unscoped audit");
+    }
+    if (this.d.board.list().some(t => t.class === "review" && t.title.startsWith("Security audit (") && !isClosedTaskState(t.state) && t.state !== "approved" && this.d.board.auditOfTask(t.id, t.created))) throw new PreEffectToolRefusal("a security audit is already open; finish or cancel it first");
+    const units = seedLedger(config.security, profile as AuditProfile, { ...(scoped ? { scoped } : {}), carry: this.auditCarry(head, source) });
+    if (!units.length) throw new PreEffectToolRefusal("no configured security surface has a changed path in that scope; nothing to audit");
+    const partial = auditIsPartial(profile as AuditProfile, scoped !== undefined);
+    const inline = units.filter(u => !u.prior).slice(0, 40), cut = units.filter(u => !u.prior).length - inline.length;
+    const brief = auditBrief([...inline, ...units.filter(u => u.prior)], { profile: profile as AuditProfile, partial, checklist: SECURITY_CHECKLIST, ref: head }) + (cut > 0 ? `\n(${cut} more units: hub_audit_report {id: <this task>, show: true} lists the ledger)` : "");
+    check();
+    const task = await this.propose(by, { title: `Security audit (${profile}${scoped ? ", scoped" : ""}) at ${head.slice(0, 12)}`, detail: brief, class: "review" }, undefined, undefined, fence);
+    let audit: number;
+    try {
+      if (this.isPii(task)) throw new PreEffectToolRefusal("the audit brief matched a private-data pattern; rename the configured surface");
+      audit = this.d.board.auditCreate({ task: task.id, taskCreated: task.created, ref: head, ...(typeof input.since === "string" ? { since: input.since.trim() } : {}), profile, scoped: scoped !== undefined, by, at: this.d.now?.() ?? Date.now(), units });
+    } catch (error) {
+      // The ledger is the audit: a task without one would be an empty promise, so it is cancelled rather than left to run.
+      await this.cancel(task.id, by, { reason: "security audit ledger could not be created" }).catch(() => undefined);
+      throw error;
+    }
+    return { task: task.id, audit, units: units.length, planned: units.filter(u => !u.prior).length, carried: units.filter(u => u.prior).length, partial, ref: head };
+  }
+
+  private auditView(audit: NonNullable<ReturnType<Board["audit"]>>, full: boolean): AuditView {
+    const findings = this.d.board.auditFindings(audit.id);
+    const summary = auditSummary({ audit: audit.id, task: audit.task, ref: audit.ref, profile: audit.profile, scoped: audit.scoped, at: audit.at }, audit.units, findings);
+    return { ...summary, units: audit.units.map(u => ({ unit: u.unit, state: u.state, ...(u.prior ? { prior: u.prior } : {}), ...(u.reason ? { reason: u.reason } : {}) })), items: findings.map(row => auditFindingView(row, full)), ...(full ? {} : { withheld: findings.filter(row => !!auditFindingView(row, false).withheld).length }) };
+  }
+
+  /** `ahub sdlc audit show`: the newest audit, or the one named. The full view (open important boundary text included) is the person's alone; a conductor reads the public one. */
+  auditShow(by: PeerId, id?: unknown): AuditView | undefined {
+    if (by !== USER && (!this.configuredManualConductor(by) || !this.d.bus.isRostered(by))) throw new PreEffectToolRefusal("the audit readback is for the person or the configured conductor");
+    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("the audit readback is unavailable in a private turn");
+    const audit = id === undefined ? this.d.board.audits(1)[0] : Number.isSafeInteger(id) && (id as number) > 0 ? this.d.board.audit(id as number) : undefined;
+    if (id !== undefined && !audit) throw new PreEffectToolRefusal("no such security audit");
+    return audit ? this.auditView(audit, by === USER) : undefined;
+  }
+
+  /**
+   * #1403 A4, A5: `hub_audit_report`. The assigned auditor (the audit task's owner) reports a state per unit and its findings; the hub alone writes the ledger. A reviewer-role peer that did
+   * not file a `confirmed` important finding verifies or rejects it; until then it stays a `candidate`. Boundary text of an open important finding is read only through this tool by the
+   * auditor, a reviewer-role peer or the person, and never rides a message to anyone else.
+   */
+  async auditReport(by: PeerId, input: { id?: unknown; units?: unknown; findings?: unknown; verify?: unknown; show?: unknown }, fence?: () => string | undefined): Promise<AuditView> {
+    const check = this.requestCheck(by, fence);
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    if (config.mode === "off" || !config.security) throw new PreEffectToolRefusal("audit reports need the lifecycle on and a [security] table in .agenthub/sdlc.toml");
+    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("audit reports are unavailable in a private turn: their text must not leave this machine");
+    if (!Number.isSafeInteger(input.id) || (input.id as number) <= 0) throw new PreEffectToolRefusal("hub_audit_report needs the audit task id");
+    const task = this.d.board.get(input.id as number), audit = task ? this.d.board.auditOfTask(task.id, task.created) : undefined;
+    if (!task || !audit) throw new PreEffectToolRefusal("no security audit on that task");
+    if (this.isPii(task)) throw new PreEffectToolRefusal("that task is private");
+    const isOwner = by !== USER && task.owner === by && task.state === "in_progress";
+    const reviewerRole = by !== USER && (this.d.roles?.[by] ?? []).includes("reviewer") && this.d.bus.isRostered(by);
+    const writes = input.units !== undefined || input.findings !== undefined, verifies = input.verify !== undefined;
+    if (!writes && !verifies && input.show !== true) throw new PreEffectToolRefusal("give units and findings (the auditor), verify (a second reviewer) or show: true");
+    if (writes && !isOwner) throw new PreEffectToolRefusal("only the assigned auditor reports units and findings, while the audit task is in progress");
+    if (verifies && !(reviewerRole || by === USER)) throw new PreEffectToolRefusal("only a reviewer-role peer or the person verifies a finding");
+    if (verifies && (task.state === "cancelled" || task.state === "backlog")) throw new PreEffectToolRefusal("the audit task is closed");
+    if (!isOwner && !reviewerRole && by !== USER) throw new PreEffectToolRefusal("only the auditor, a reviewer-role peer or the person reads an audit report");
+    const when = this.d.now?.() ?? Date.now();
+    let units = audit.units, filed: { finding: ReviewFinding; foundBy: string; at: number }[] = [];
+    const decisions: { finding: string; verdict: "verified" | "rejected" }[] = [];
+    if (input.units !== undefined) {
+      try { units = applyUnitReports(audit.units, parseUnitReports(input.units, audit.units), by, when); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid units"); }
+    }
+    if (input.findings !== undefined) {
+      let parsed: ReviewFinding[];
+      try { parsed = parseReviewFindings(input.findings, { person: false, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS, contract: "required" }); }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid findings"); }
+      if (parsed.some(item => item.pass !== "security")) throw new PreEffectToolRefusal("an audit takes security findings only (pass: security)");
+      if (parsed.some(item => item.anchor !== undefined)) throw new PreEffectToolRefusal("anchors belong to review verdicts; name the file in path");
+      const text = JSON.stringify(parsed);
+      if (!this.nameable(text) || this.screenOn() && (await this.screenCall(text)).label !== "clear") throw new PreEffectToolRefusal("finding text was not cleared for the audit ledger: it matches a private-data pattern or the PII screen did not clear it");
+      filed = parsed.map(finding => ({ finding, foundBy: by, at: when }));
+    }
+    if (input.verify !== undefined) {
+      if (!Array.isArray(input.verify) || !input.verify.length || input.verify.length > 32) throw new PreEffectToolRefusal("verify is a list of 1 to 32 {finding, verdict: verified|rejected}");
+      const stored = this.d.board.auditFindings(audit.id);
+      for (const item of input.verify as unknown[]) {
+        const record = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : undefined;
+        if (!record || Object.keys(record).some(key => key !== "finding" && key !== "verdict") || typeof record.finding !== "string" || (record.verdict !== "verified" && record.verdict !== "rejected")) throw new PreEffectToolRefusal("each verify entry is {finding: <id>, verdict: verified|rejected}");
+        const refusal = verificationRefusal(stored.find(row => row.finding.id === record.finding), by);
+        if (refusal) throw new PreEffectToolRefusal(`${record.finding.slice(0, 80)}: ${refusal}`);
+        decisions.push({ finding: record.finding, verdict: record.verdict });
+      }
+      if (new Set(decisions.map(d => d.finding)).size !== decisions.length) throw new PreEffectToolRefusal("a finding is decided once per call");
+    }
+    check();
+    const now = this.d.board.audit(audit.id), nowTask = this.d.board.get(task.id);
+    if (!now || !nowTask || nowTask.owner !== task.owner || nowTask.state !== task.state || JSON.stringify(now.units) !== JSON.stringify(audit.units)) throw new PreEffectToolRefusal("the audit changed while the report was checked; read it again and retry");
+    // One transaction: a unit report, its findings and the verifications land together or not at all.
+    const skipped = this.d.board.auditApply(audit.id, { units: writes ? units : undefined, findings: filed, decisions, by });
+    if (skipped === undefined) throw new PreEffectToolRefusal("a finding was decided meanwhile; read the audit again and retry");
+    const full = this.d.board.audit(audit.id)!;
+    return { ...this.auditView(full, true), ...(skipped.length ? { notUpdated: skipped } : {}) };
+  }
+
   /** #1328 T3: approve a merge observed outside the hub, without attributing a verdict to a reviewer. */
   async adoptMerge(by: PeerId, id: unknown, pr: unknown, fence?: () => string | undefined): Promise<{ task: number; state: "approved" }> {
     const check = this.requestCheck(by, fence);
@@ -6730,6 +6889,8 @@ export class Tasks {
     const publicShipped = this.d.board.releases().filter(release => !rowsNow.some(task => task.release === release.id && this.isPii(task)));
     const metrics = publicShipped.some(release => release.state === "shipped") ? releaseMetrics(publicShipped, rowsNow.filter(task => !this.isPii(task))) : undefined;
     if (metrics) report.releaseMetrics = metrics;
+    const audit = this.auditLine();
+    if (audit) report.securityAudit = audit;
     const trains = this.d.board.releases().filter(release => release.train && ["active", "frozen"].includes(release.state));
     if (trains.length) {
       const planned = trains.map(release => {
