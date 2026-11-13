@@ -242,3 +242,20 @@ test("compatible controlled recovery of unchanged malformed parseable journal pr
   const shown = await person.request({ t: "budget" }); expect(shown.kimiSource.state).toBe("unreadable");
   expect(shown.budget.kimi?.windows ?? []).toEqual([]);
 }, 20_000);
+
+
+test("pre-review quota relay does not spend the later done transition's first review wait cap", async () => {
+  const f = await fixture();
+  f.board.update(f.task.id, "user", "fixture pre-review assignment", { reviewer: "claude-review" });
+  f.paused({ "claude-review": { resetsAt: f.reset } }); f.bus.pause("claude-review");
+  const moved = await f.tasks.reassignForPause("claude-review", undefined);
+  expect(moved).toEqual(expect.arrayContaining([expect.objectContaining({ id: f.task.id, role: "reviewer", to: null })]));
+  const relayed = f.board.get(f.task.id)!;
+  expect(relayed.state).toBe("in_progress"); expect(relayed.history.at(-1)!.reviewerQuotaWait).toBeUndefined();
+  f.clock.now += 130_000; // Implementation continues longer than review_min, before review has begun.
+  const done = await f.tasks.done("codex", f.task.id, "ready after pre-review relay"), wait = done.history.at(-1)!.reviewerQuotaWait!;
+  expect(done).toMatchObject({ state: "in_review", reviewer: null });
+  expect(wait.since).toBe(f.clock.now); expect(wait.deadline).toBe(f.clock.now + 120_000);
+  f.clock.now += 30_000; f.restart(); await drain();
+  expect(f.board.get(done.id)!.history.at(-1)!.reviewerQuotaWait!.deadline).toBe(wait.deadline);
+});

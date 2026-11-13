@@ -1828,7 +1828,7 @@ export class Tasks {
     const queueReviewBinding = task ? this.queueReviewBinding(task) : undefined;
     const quota = choice?.quotaWait;
     const now = this.d.now?.() ?? Date.now(), prior = task ? this.priorReviewerQuotaWait(task) : undefined;
-    const reviewerQuotaWait = quota && task && !this.isPii(task) && ["in_progress", "in_review"].includes(task.state)
+    const reviewerQuotaWait = quota && task && !this.isPii(task) && task.state === "in_review"
       ? { created: task.created, binding: this.queueReviewBinding(task), since: prior?.since ?? now,
         deadline: prior?.deadline ?? Math.floor(now + this.sweepConfig.review_min * 60_000), resetAt: quota.resetsAt } : undefined;
     return { ...(reviewerQuotaWait ? { reviewerQuotaWait } : {}), ...(family ? { reviewerFamily: family } : {}), ...(reason ? { reviewerReason: reason } : {}), ...(assignment?.reviewBlocked ? { reviewBlocked: true } : {}), ...(queueReviewHeld ? { queueReviewHeld: true as const, ...(queueReviewBinding !== undefined ? { queueReviewBinding } : {}) } : {}) };
@@ -8502,7 +8502,7 @@ export class Tasks {
     const capacity = this.capacityBefore(task);
     reviewObserverExcluded ||= this.reviewObserverTurn(by, task.id);
     const quotaWaiting = selection?.reviewSelection?.quotaWait !== undefined;
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: quotaWaiting ? null : reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: storedRefs }), state: reviewer ? "in_review" : "approved", ...(selection || refresh?.state === "approved" ? { reviewer: quotaWaiting ? null : reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...(resolvedReviewComments?.length ? { resolvedReviewComments: this.reviewCommentResolve(by, task, resolvedReviewComments) } : {}), ...this.planObservation(task), withheld: withheld || undefined, ...(specInspection?.report ? { specReport: specInspection.report, specRefBinding: this.specRefBinding({ refs: storedRefs }) } : {}), ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection, { ...task, state: "in_review", refs: storedRefs }), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.queueReviewWritten(next);
     this.writePlannerNotices(next, capacity, next.state === "approved");
     this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
@@ -8881,8 +8881,9 @@ export class Tasks {
   private readonly reviewerQuotaRunning = new Set<number>();
   private reviewerQuotaStopped = false;
   private priorReviewerQuotaWait(task: Task): NonNullable<ReviewerHistory["reviewerQuotaWait"]> | undefined {
-    const binding = this.queueReviewBinding(task);
-    return task.history.findLast(row => row.reviewerQuotaWait?.created === task.created && row.reviewerQuotaWait.binding === binding)?.reviewerQuotaWait;
+    const binding = this.queueReviewBinding(task), firstReview = task.history.findIndex(row => row.event === "done");
+    // Role routing before the first completion never starts a review deadline.
+    return firstReview < 0 ? undefined : task.history.slice(firstReview).findLast(row => row.reviewerQuotaWait?.created === task.created && row.reviewerQuotaWait.binding === binding)?.reviewerQuotaWait;
   }
   private activeReviewerQuotaWait(task: Task): NonNullable<ReviewerHistory["reviewerQuotaWait"]> | undefined {
     const role = task.history[this.reviewRequestRevision(task) - 1];
