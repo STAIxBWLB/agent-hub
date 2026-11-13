@@ -20841,6 +20841,7 @@ var init_native_recovery = __esm(() => {
     missingEvidence: "transcript"
   };
   PI_RECOVERY_SESSION = {
+    restoreVersionGate: "pi",
     resumeArgv: (binding) => [
       "pi",
       "--mode",
@@ -20879,11 +20880,13 @@ var init_native_recovery = __esm(() => {
   };
   LOCAL_RECOVERY_SESSION = { restoreArgs: startupArgs };
   JCODE_RECOVERY_SESSION = {
+    restoreVersionGate: "jcode",
     legacyTargetSupport: { file: "src/hub/peer-catalog.ts", exportName: "OPTIONAL_PEERS", refusal: "target does not support Jcode; end it and make a new plan, or choose a supporting target; runtimes unchanged" },
     recoveryRefusal: (_peer, phase = "plan") => phase === "restore" ? undefined : "jcode: source-pinned native load cannot prove conversation identity; end the peer and make a new recovery plan before effects",
     restoreArgs: (peer) => ({ ...startupArgs(peer), ...peer.sessionId ? { "session-id": peer.sessionId } : {}, ...peer.args?.providerProfile ? { "provider-profile": peer.args.providerProfile } : {} })
   };
   QWEN_RECOVERY_SESSION = {
+    restoreVersionGate: "qwen",
     legacyTargetSupport: { file: "src/hub/peer-catalog.ts", exportName: "OPTIONAL_PEERS", refusal: "target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged" },
     restoreArgs: (peer) => ({ ...startupArgs(peer), ...peer.sessionId ? { "session-id": peer.sessionId } : {} }),
     recoveryRefusal: (peer, phase = "plan") => {

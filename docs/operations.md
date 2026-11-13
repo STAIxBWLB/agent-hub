@@ -3909,6 +3909,13 @@ No PR is created by T1. The [T1b producer report](verification/2026-11-07-compat
 
 ## Upgrade and crash recovery
 
+
+Before preparing or stopping a source, preview and uncommitted staging compare each automatically restored version-gated peer's configured executable with the verified target package's compatibility policy and current machine trust (#1426). A refused version names the peer/version and `ahub agents trust <peer> <version>` or installation of a verified version. Unknown observations remain unknown and block that source before commit. Preview may populate the private verified target-package cache; it does not prepare, stop or select a project runtime. The digest check uses the target's existing owned/hoisted dependency layout. Previously committed or commit-sent sources are not retroactively gated by a later executable/trust change. Ordinary Codex restoration does not acquire the separate reviewer sandbox version gate.
+
+A refused restoration command now produces a private, per-attempt exit observation. The native command keeps its terminal descriptors; the reader accepts only the matching nonce/peer and a bounded complete record. The persisted cause is `version_refused` or `launch_exit`, with exit code and a bounded privacy-screened first hub refusal line (otherwise a neutral instruction to inspect the launch terminal). This observation blocks within the existing readiness slice; it is never evidence of native readiness, ownership or session settlement. Attempt files are disposed, and late writers cannot recreate their removed directory. Native/session fences still decide every retry and settlement.
+
+Fix the named cause, then run the exact `ahub recovery resume <op>` command in the operation status. While its runner is still working, close the refused launch terminal and check status; resume after the runner blocks or exits. A direct peer start cannot bypass the recovery hold. A fresh resume launches once and retains the recorded conversation; it does not silently choose a new one.
+
 ### Side by side project versions (#1039)
 
 `ahub --project <path|id> upgrade --to <version>` reviews and changes only that

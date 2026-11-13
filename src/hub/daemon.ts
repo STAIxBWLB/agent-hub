@@ -8101,10 +8101,11 @@ export async function startDaemon(opts: DaemonOptions) {
   /** The refusal of a start request while recovery holds mutations (#1088): the old sentence first, then whether the peer already runs and the step that works. */
   const startHeldByRecovery = (peer: unknown): string => {
     const held = "recovery is holding mutations";
+    const recoveryExit = recoveryOperationId ? ` If a restoration launch was refused, fix its cause and close that launch terminal; run ahub recovery status ${recoveryOperationId}, then ahub recovery resume ${recoveryOperationId} once its runner blocks or exits.` : "";
     if (typeof peer !== "string" || !PEER_ID.test(peer)) return `${held}; no peer was started. Wait for the recovery to finish (ahub recovery status shows where it is), then start the peer again`;
     const owner = bus.peers.get(peer);
     if (owner && owner.state !== "offline") return `${held}, and ${peer} is already running, so there is nothing to start. Wait for the recovery to finish (ahub recovery status shows where it is), then check ${peer} with ahub status. If the recovery names ${peer} as blocked, a person repairs it with ahub recovery reattach <operation-id> ${peer}, or ends the hold with ahub recovery resume or abort`;
-    return `${held}, so ${peer} was not started. Wait for the recovery to finish (ahub recovery status shows where it is), then start it with ${startCommand(peer)}`;
+    return `${held}, so ${peer} was not started. Wait for the recovery to finish (ahub recovery status shows where it is), then start it with ${startCommand(peer)}${recoveryExit}`;
   };
 
   async function stopPeer(peer: unknown, rosterRemoval = false, operational?: {actor:string;current:()=>void}): Promise<Record<string, unknown>> {

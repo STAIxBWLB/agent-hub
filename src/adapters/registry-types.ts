@@ -24,6 +24,7 @@ import type { CodexOptions } from "./codex-appserver.ts";
 import type { JcodeOptions } from "./jcode.ts";
 import type { LocalOptions } from "./local-worker.ts";
 import type { PiOptions } from "./pi.ts";
+import type { CompatId } from "./compat.ts";
 import type { QwenDualOptions } from "./qwen-dual.ts";
 import type { ClaudePrintOptions } from "./claude-print.ts";
 
@@ -278,6 +279,8 @@ export interface AdapterDefinition {
     trackUnattended?: boolean;
   };
   session: {
+    /** Observational recovery preflight only; actual native startup repeats its own version admission. */
+    restoreVersionGate?: CompatId;
     nativeRevert?: boolean;
     crashPlan?(meta: Record<string, unknown>): { resume?: Record<string, string>; how: string; fresh?: Record<string, string>; tui?: true };
     unrecordedTerminal?: "always" | "tui";

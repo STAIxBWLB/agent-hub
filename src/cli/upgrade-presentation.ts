@@ -159,6 +159,10 @@ export function renderBlocked(op: RecoveryOperation, choices: readonly NextChoic
     const marker = op.projects.find(project => project.id === projectId)?.reattachments?.[peer];
     happened = `${peer}'s recorded session needs reattachment.`;
     why = marker ? `${projectId}: the session detached after restoration; its recorded terminal is ${marker.binding.handle} and its accepted conversation is ${marker.binding.sessionId}.` : "The terminal and session evidence is unknown in this receipt.";
+  } else if (op.failure?.code === "version_refused" || op.failure?.code === "launch_exit") {
+    happened = `${op.failure.peer}: the restoration command exited before readiness.`;
+    why = `${op.failure.code} (exit ${op.failure.exitCode}): ${terminalText(op.failure.firstLine)}`;
+    action = `Fix the cause, then ${recoveryCommand(op, "resume")}. The hold remains until recovery settles.`;
   } else if (op.failure?.code === "database_busy") {
     happened = "The recovery database could not complete this step yet.";
     why = "The coordinator recorded database contention as retryable; its saved recovery state is retained.";

@@ -1,3 +1,8 @@
+import { prepareRecoveryLaunch, RecoveryLaunchError } from "./recovery-launch.ts";
+import { recoveryCommand } from "../hub/recovery-store.ts";
+import { loadConfig } from "../hub/daemon.ts";
+import { configuredCommands } from "../adapters/compat.ts";
+import { recoveryVersionGates, readRecoveryVersionPreflight } from "./recovery-version-preflight.ts";
 import { authorizeConductorOperation, conductorRecoveryBinding } from "./conductor-recovery.ts";
 import { resolveAcceptedBinding } from "./recovery-guidance.ts";
 import { claudeStateFile } from "../hub/claude-state.ts";
@@ -16,7 +21,7 @@ import { negotiateProtocol, protocolWindow } from "../hub/protocol-window.ts";
 import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { canonicalPath, hubHome, realPath } from "../hub/project.ts";
-import { packageDigest, preserveRuntimePackage, preserveRuntimeSource, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
+import { packageDigest, recoveryTargetDigest, preserveRuntimePackage, preserveRuntimeSource, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, reattachOrphanedTerminal, REATTACH_BOUND_MS, waitForIdle, shellQuote, type OrphanedTerminal, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { ReattachmentRequired, MissingRecordedSession, FinalRefusal, planFingerprint, recoveryScope, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { SHARED_CHANNEL_VERSION_ARGV, nativeRecordedSessionState } from "../adapters/definitions/native-recovery.ts";
@@ -422,6 +427,17 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     }
     body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(unrecordedTerminals.length ? { unrecordedTerminals } : {}), ...(freshStart.length ? { freshStart } : {}), ...(terminals.orphaned?.length ? { orphanedTerminals: terminals.orphaned } : {}) });
   }
+  const gated = body.projects.map(planned => ({ planned, gates: recoveryVersionGates(planned, peer => projectDefinition(peer, planned.project.root), configuredCommands(loadConfig(planned.project.root))) })).filter(item => item.gates.length);
+  if (gated.length) {
+    try {
+      const target = kind === "restart" ? { root: PACKAGE_ROOT, digest: verifyPackage(PACKAGE_ROOT, body.version) }
+        : await stageRelease(body.version, body.integrity!, run, hubHome(), selected !== undefined);
+      for (const { planned, gates } of gated) {
+        const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => { try { return (kind === "restart" ? packageDigest(target.root) : recoveryTargetDigest(kind, target.root)) === target.digest; } catch { return false; } } });
+        planned.blockers.push(...rows.filter(row => row.state !== "accepted").map(row => row.message));
+      }
+    } catch { body.blockers.push("target native version preflight could not be verified; make the target package and configured executables readable, then preview again; runtimes unchanged"); }
+  }
   if (!body.projects.length) body.blockers.push("no running registered projects in scope");
   return { ...body, fingerprint: planFingerprint(body) };
 }
@@ -749,6 +765,17 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       // Once every source committed, compatibility cannot be re-applied using mutable project declarations.
       // Package identity/hash and live-test authority above still bind these retained bytes.
       const committed = op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase));
+      if (!committed) {
+        for (const planned of op.plan.projects) {
+          const progress = op.projects?.find(project => project.id === planned.project?.id);
+          if (progress?.commitSent || progress && ["stopped", "started", "peers-restored", "verified"].includes(progress.phase)) continue;
+          if (typeof planned.project?.root !== "string" || !Array.isArray(planned.source?.peers)) continue;
+          const gates = recoveryVersionGates(planned, peer => projectDefinition(peer, planned.project.root), configuredCommands(loadConfig(planned.project.root)));
+          const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => { try { return recoveryTargetDigest(op.plan.kind, target.root) === target.digest; } catch { return false; } } });
+          const failures = rows.filter(row => row.state !== "accepted");
+          if (failures.length) throw new Error(`${failures.map(row => row.message).join("; ")}; this source has not been committed; fix the cause, then ${recoveryCommand(op, "resume")}`);
+        }
+      }
       // A legacy coordinator already chose and started this target. Resume its retained evidence without retroactive staging gates.
       if (cached && committed && op.schema !== 3) return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
       if (cached && committed && op.targetFeatures !== undefined) {
@@ -1055,7 +1082,18 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           const binding = { ...original, launch, launchMetadata: launch };
           progress.terminals[key] = { state: "pending" } satisfies RestoreReceipt; save();
           await recoveryCurrent();
-          const restored = await createTerminal(binding, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId }, undefined, fresh());
+          const capture = prepareRecoveryLaunch(planned.project.stateDir, original.peer, argv, assignments, planned.project.root);
+          let restored: Awaited<ReturnType<typeof createTerminal>>;
+          try {
+            const captured = { ...binding, launch: { ...launch, command: capture.command }, launchMetadata: { ...launch, command: capture.command } };
+            restored = await createTerminal(captured, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId, launchFailure: capture.read }, undefined, fresh());
+          } finally { capture.dispose(); }
+          const launchFailure = restored.blockers.find(item => item.code === "launch-failed")?.failure;
+          if (launchFailure) {
+            // Block immediately on the positive command outcome. Resume still re-reads independent native/session evidence.
+            progress.terminals[key] = { state: "failed", failure: launchFailure } satisfies RestoreReceipt; save();
+            throw new RecoveryLaunchError(original.peer, launchFailure, recoveryCommand(op, "resume"));
+          }
           const exited = restored.blockers.find((b) => b.code === "launcher-exited");
           if (exited) {
             // #215: the launcher's exit alone is not the peer's state (a target that died or flapped also ends it): only

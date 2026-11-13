@@ -1,3 +1,4 @@
+import type { RecoveryLaunchFailure } from "./recovery-launch.ts";
 import { shellQuote } from "./shell-quote.ts";
 export { shellQuote } from "./shell-quote.ts";
 import { createProjectAdapterCatalog, definitionOf, type ProjectAdapterCatalog, type KindMap } from "../adapters/registry.ts";
@@ -77,9 +78,11 @@ export interface RecoveryBlocker {
     | "terminal-orphaned"
     | "command-error"
     | "ambiguous-create"
+    | "launch-failed"
     | "launcher-exited"
     | "terminal-gone";
   message: string;
+  failure?: RecoveryLaunchFailure;
   peer?: TerminalPeer;
   handle?: string;
   /** Stable terminal reference when Orca supplied one, for operator reconciliation. */
@@ -149,6 +152,8 @@ export interface TerminalCreateResult {
 }
 
 export interface TerminalRecoveryOptions {
+  /** Host-owned per-attempt exit observation; diagnostic only, never a readiness proof. */
+  launchFailure?: () => RecoveryLaunchFailure | undefined;
   runner?: CommandRunner;
   /** Exact execution root returned by authenticated extra startup; checked against the current declaration. */
   executionCwd?: string;
@@ -286,6 +291,7 @@ function normalizeOptions(options?: CommandRunner | TerminalRecoveryOptions): Re
   const config: TerminalRecoveryOptions = typeof options === "function" ? { runner: options } : options ?? {};
   const orcaExecutable = config.orcaExecutable ?? resolveOrcaExecutable();
   return {
+    launchFailure: config.launchFailure ?? (() => undefined),
     runner: config.runner ?? defaultRunner(orcaExecutable),
     orcaExecutable,
     packageEntrypoint: config.packageEntrypoint ?? defaultEntrypoint,
@@ -666,6 +672,7 @@ function blocker(code: RecoveryBlocker["code"], message: string, peer?: Terminal
     code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
     code === "terminal-orphaned" ? `reattach the pane with orca terminal switch --terminal ${shellQuote(handle!)}; then refresh in ahub upgrade ([r] on the plan, [s] on an open operation), or rerun it` :
     code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
+    code === "launch-failed" ? "fix the launch refusal, then resume this recovery operation" :
     code === "launcher-exited" ? "the session was not restored; the coordinator's error names the choices" :
     code === "terminal-gone" ? "the terminal was closed; inspect the project's terminals in Orca before resuming recovery" :
     "inspect the named terminal and resume recovery after the identity is verified";
@@ -990,10 +997,16 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     // incarnation and no recorded launcher may still run. One that never recorded itself is left to the readiness
     // bound and to the coordinator's reconciliation of its pending receipt.
     const exited = (why: string) => ({ created: true, ready: false, manualRequired: true, blockers: [blocker("launcher-exited", `the ${binding.peer} restoration launcher in terminal ${createdHandle} ${why} before its TUI was ready`, binding.peer, createdHandle)] });
+    const failed = () => {
+      const failure = config.launchFailure();
+      return failure ? { created: true, ready: false, manualRequired: true, blockers: [{ ...blocker("launch-failed", `restoration command exited ${failure.exitCode}: ${failure.firstLine}; fix the cause, then resume this recovery operation`, binding.peer, createdHandle), failure }] } : undefined;
+    };
     const deadline = Date.now() + Math.min(timeoutMs, MAX_WAIT_MS);
     const slice = () => Math.max(1, Math.min(EXIT_SLICE_MS, deadline - Date.now())); // Orca refuses --timeout-ms 0
+    const earlyFailure = failed(); if (earlyFailure) return earlyFailure;
     let idle = await waitForIdle(replacement, slice(), config);
     for (;;) {
+      const failure = failed(); if (failure) return failure;
       if (idle.blockers[0]?.code === "terminal-gone") {
         const launch = await launches();
         if (launch.gone) return exited("exited");
@@ -1015,6 +1028,7 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     // An idle terminal may be the login shell the launcher returned to, or a TUI that has not yet recorded its
     // launch or been identified by Orca (#599): poll until it maps, contradicts, or the deadline passes.
     for (;;) {
+      const failure = failed(); if (failure) return failure;
       const launch = await launches();
       if (launch.gone) return exited("exited");
       const shown = await showBinding(replacement, config);
