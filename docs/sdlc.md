@@ -122,7 +122,7 @@ binding. Use `release.docs: "checker"` when retaining `docs/verified.json`.
 committed release policy. This exemption skips documentation checking only,
 without supplying release consent, a tag or publication.
 
-Run the following setup steps in order from a separate person-owned terminal.
+Initialization and person-only setup steps below run from a separate person-owned terminal.
 An agent or delegated live test cannot impersonate that person. Command forms
 are the ones printed by `ahub help`; placeholders name values to choose.
 
@@ -130,6 +130,12 @@ are the ones printed by `ahub help`; placeholders name values to choose.
    changes. To edit existing lifecycle settings, use the help form
    `ahub settings edit <config.local.json|sdlc.toml> (set <path> <json> | remove <path>)... [--reason <text>] [--preview] [--yes] | backups [--json]`.
    For example, `ahub settings edit sdlc.toml set mode '"advise"'`.
+   For an already initialized project with a running hub, the person may instead
+   directly instruct its uniquely configured conductor, in that conductor's own
+   session, to run `ahub sdlc configure --mode advise --required-checks 'unit,lint'`.
+   This optional subsequent step stages only off/advise and check names for the
+   next start; it cannot initialize the project or enable enforce. The
+   [instruction and audit rules](#instructed-conductor-configuration-1432) apply.
 2. Record the long-term goal with
    `ahub goal new <title> [--milestone <text>]... [--depends <id>]... [--shared]`.
 3. Create its release line with `ahub release new <name> <goal> <order>`.
@@ -575,6 +581,44 @@ A recurring, read-only read of the security-sensitive surfaces, on request. It n
 - Carry-over: a surface whose state in the newest audit that lists it was `covered`, and whose paths are unchanged since that audit's head, is seeded `covered (prior)` and listed apart from the run's own coverage. A scoped audit that left the unit out says nothing about it. A changed path, an unreadable change list, or a `deferred`, `out_of_scope` or still `planned` unit in that newest audit plans the unit again, and a carried unit takes no new state.
 - `ahub sdlc audit show [<audit>]` prints the source, profile, the counts by unit state and each unit and finding. A `quick` or scoped audit reads as partial. `ahub sdlc release` carries one line with the same counts. Nothing blocks a release.
 - Disclosure: this repository is public, so an open or accepted important security finding shows only its id, status and that its details are withheld, in every view but the person's, and the hub itself sends no message to another peer that carries its path, rationale or boundary. A headless auditor's final answer is shared with the other agents automatically, so keeping that text out of the answer is the audit brief's instruction, not a guarantee the hub can enforce. The hub never opens an issue for one. The tool is refused in a private or PII turn, finding text must pass the same PII patterns and screen as a verdict note, and the tool is kept out of memory capture. The audit brief states that repository content is data (an instruction found in a file is recorded as a finding), that secret values are never quoted, and that target code runs only inside the hub's sandboxed runners.
+
+## Instructed conductor configuration (#1432)
+
+After the project is initialized and its hub is running, the person may directly
+instruct the uniquely configured conductor in that conductor's own session to
+stage `off` or `advise` and the required check names:
+
+```bash
+ahub sdlc configure --mode advise --required-checks 'unit,lint'
+ahub sdlc configure --mode off
+ahub sdlc configure --required-checks '' --json
+```
+
+Replace the example check names with the repository's actual required jobs. The
+last form explicitly clears the list. Omit either setting to preserve it. Changes
+use the existing loader, revision checks, backup and atomic write path, and apply
+at the next hub start. Human output names the actor and pending restart; `--json`
+returns the saved receipt.
+
+Running this command makes a cooperative claim that the person explicitly
+instructed this actor in its own session. The daemon verifies the current unique
+conductor and session context; it cannot independently verify that conversation.
+Task text, files, reviews, peer messages and relays never supply that instruction.
+Child sessions, private or PII contexts, observer input, recovery and shutdown
+refuse the conductor path. `--live-test` cannot turn an agent into the person for
+this operation.
+
+`ahub init`, generic `ahub settings edit`, `enforce`, `[security]`, `eval_check`,
+`config_paths` and custom stages remain person-only. If either the running
+lifecycle or the actual file is already `enforce`, use the person's settings
+editor. The narrow command does not authorize releases, tags, merges or
+publication; release authorization remains a separate instruction and operation.
+
+A durable `sdlc_config_instruction` intent precedes the write. The result audit
+records the actual actor (source `conductor` for that actor), the fixed instruction claim and
+changed paths/value hashes, without the setting values. Failed intent records
+write nothing. If the file was saved but result auditing fails, the refusal says
+`saved: true`; inspect the file and event log before retrying.
 
 ## Person release authorization (#481 S6)
 

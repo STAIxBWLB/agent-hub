@@ -15,6 +15,7 @@ export const LIVE_TEST_PERSON_REFUSAL = "live-test cannot write person-attribute
 
 /** Person verdicts and user-authored workflow content are never delegated. */
 export function liveTestRefusal(command: string, args: readonly string[], context: { repairedFresh?: boolean } = {}): boolean {
+  if (command === "sdlc" && args[0] === "configure") return true;
   if (command === "lineage" && args[0] === "link") return true;
   if (command === "guidance" && ["create", "withdraw"].includes(args[0] ?? "")) return true;
   if (command === "model") return true; // #1317: even listing runtime overrides is person-only, never live-test delegated.
@@ -159,7 +160,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (command === "stop") return "console";
   if (command === "sdlc" && ["release-guard", "release-guard-hook"].includes(args[0] ?? "")) return "allowed";
   // #786, #1063, #1328: guarded merge, merge adoption and explicitly instructed release consent admit the person or unique configured conductor; the daemon checks the role.
-  if (command === "sdlc" && ["merge", "authorize-release", "adopt-merge"].includes(args[0] ?? "")) return "conductor";
+  if (command === "sdlc" && ["merge", "authorize-release", "adopt-merge", "configure"].includes(args[0] ?? "")) return "conductor";
   if (command === "role") return ["list", "show"].includes(args[0] ?? "") ? "allowed" : "console";
   // The original tools identity reaches Tasks for read visibility or task-scoped link admission.
   if (command === "lineage") return ["show", "link"].includes(args[0] ?? "") ? "allowed" : "console";
@@ -203,6 +204,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
 
 /** No argument text is included: notices and refusal logs must not copy task text or credentials. */
 export function cliCommandLabel(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): string {
+  if (command === "sdlc" && args[0] === "configure") return "sdlc configure";
   if (command === "lineage") return ["show", "link"].includes(args[0] ?? "") ? `lineage ${args[0]}` : "lineage";
   if (command === "guidance") return ["create", "list", "show", "withdraw"].includes(args[0] ?? "") ? `guidance ${args[0]}` : "guidance";
   if (command === "model") return ["list", "set", "clear"].includes(args[0] ?? "") ? `model ${args[0]}` : "model";

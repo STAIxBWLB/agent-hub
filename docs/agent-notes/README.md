@@ -122,6 +122,8 @@ revision preserves both behaviors; capture still uses its stricter turn fence.
 
 ## Changes
 
+- 2026-11-14: #1432 adds a narrow off/advise and check-name exception to person-only structural editing, following the existing cooperative direct-instruction model for release authorization. Separate intent and hashed-result audits distinguish a caller claim from a saved configuration, while the generic editor and release-consent authority stay separate.
+
 - 2026-11-13: #1403 B1 adds cold-readable intent and base-to-task-head drift advice. The existing PR conformance gate remains separate, so a moved or unreadable plan base cannot become a new acceptance gate.
 
 - 2026-11-10: #850 distinguishes normal-Bus Q2 proof from direct busy-submit characterization and preserves adoption/reattach/deny quiescence ceilings.

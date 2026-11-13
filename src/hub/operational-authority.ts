@@ -32,6 +32,7 @@ export type ConductorLocalAction = typeof CONDUCTOR_LOCAL_ACTIONS[number];
 export const conductorLocalAction = (value:unknown): value is ConductorLocalAction => typeof value==="string" && (CONDUCTOR_LOCAL_ACTIONS as readonly string[]).includes(value);
 /** Daemon-authorized labels. Recovery labels pass the initial role check, then require their separate per-operation proof. */
 export const CONDUCTOR_DAEMON_OPERATIONS = ["roster add","roster remove","stop","queue show","queue resolve","queue discard","settings set","doctor orphans kill","logs","export",
+  "sdlc configure",
   "board import","intake approve","schedule run","schedule pause","schedule resume","goal link","task unassign","guidance probe register","guidance probe start","guidance probe show","guidance probe receipts","guidance probe cancel","restart","upgrade","recovery resume","recovery abort"] as const;
 /**
  * #933: forms whose effect runs in the CLI process itself (local files). The daemon admits and audits them once at the handshake (`admit`),
@@ -72,6 +73,7 @@ export function conductorOperation(command:string,args:readonly string[]): Condu
   const words=args.filter(arg=>!arg.startsWith("--"));
   const sub=words[0];
   if (command === "restart" || command === "upgrade") return restartOrUpgrade(command, args);
+  if (command === "sdlc" && args[0] === "configure") return "sdlc configure";
   if (command === "recovery") {
     const action = recoveryConductorAction(args);
     return action ? `recovery ${action}` : undefined;
@@ -126,6 +128,7 @@ export function operationalRequestLabel(value:unknown):string|undefined {
     return message.op==="orphans"?"doctor orphans kill":message.op==="logs"||message.op==="export"?message.op:"unknown";
   }
   if(message.t==="peer_stop")return "stop";
+  if(message.t === "sdlc" && message.op === "configure") return "sdlc configure";
   if(message.t==="goal_link")return "goal link";
   if(message.t==="task" && typeof message.op==="string" && Object.hasOwn(CONDUCTOR_TASK_OPS,message.op))return CONDUCTOR_TASK_OPS[message.op];
   if (typeof message.t === "string" && message.t.startsWith("guidance_probe_")) {

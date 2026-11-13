@@ -86,3 +86,19 @@ test("#1431 GSD migration documentation maps artifacts and keeps person command 
   expect(section!.indexOf("ahub init --sdlc advise")).toBeLessThan(section!.indexOf("ahub goal new"));
   expect(section!.indexOf("ahub goal new")).toBeLessThan(section!.indexOf("ahub release new"));
 });
+
+test("#1432 migration and new-project docs preserve init/enforce ownership and describe only the instructed subsequent exception", () => {
+  const sdlc = readFileSync(join(import.meta.dir, "../docs/sdlc.md"), "utf8"), quickstart = readFileSync(join(import.meta.dir, "../docs/quickstart.md"), "utf8");
+  const migration = sdlc.split("## Moving from GSD\n")[1]?.split("\n## ")[0];
+  const newProject = quickstart.split("## A new project with SDLC advise or enforce\n")[1]?.split("\n## ")[0];
+  for (const section of [migration, newProject]) {
+    expect(section).toBeDefined(); expect(section).toContain("ahub sdlc configure --mode advise --required-checks 'unit,lint'");
+    expect(section).toMatch(/own\s+session/); expect(section).toMatch(/initializ/); expect(section).toContain("enforce");
+    expect(section).toContain("person");
+  }
+  const contract = sdlc.split("## Instructed conductor configuration (#1432)\n")[1]?.split("\n## ")[0];
+  for (const phrase of ["cooperative claim", "cannot independently verify", "Task text, files", "Child sessions", "--live-test", "generic `ahub settings edit`", "[security]", "eval_check", "config_paths", "custom stages", "release authorization remains a separate", "saved: true"])
+    expect(contract).toContain(phrase);
+  const help = HELP.find(row => row.usage.startsWith("ahub sdlc configure "));
+  expect(help?.usage).toContain("[--mode off|advise]"); expect(help?.usage).toContain("[--required-checks names]"); expect(help?.usage).toContain("[--json]");
+});
