@@ -17,8 +17,8 @@ export const runCommand: RunCommand = (args, options = {}) => new Promise((resol
     if (next.length > 2_000_000) { exceeded = true; child.kill("SIGTERM"); }
     return next.slice(-2_000_000);
   };
-  child.stdout.on("data", (v) => { stdout = append(stdout, v); });
-  child.stderr.on("data", (v) => { stderr = append(stderr, v); });
+  child.stdout!.on("data", (v) => { stdout = append(stdout, v); });
+  child.stderr!.on("data", (v) => { stderr = append(stderr, v); });
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, options.timeoutMs ?? 60_000);
   const hardTimer = setTimeout(() => child.kill("SIGKILL"), (options.timeoutMs ?? 60_000) + 3000);

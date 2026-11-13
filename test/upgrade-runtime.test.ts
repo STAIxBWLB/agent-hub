@@ -2766,3 +2766,49 @@ for (const [name, recovery, expectedMs] of [["nothing configured", undefined, 12
     }
   }, 60_000);
 }
+
+for (const peer of ["pi", "codex"] as const) test(`#1426 ${peer} refusal is receipted and resume restores the same conversation once fixed`, async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-1426-resume-"))), stateDir = join(root, "state"), home = join(root, "home"), store = join(root, "codex");
+  mkdirSync(stateDir); mkdirSync(join(store, "sessions"), { recursive: true });
+  writeFileSync(join(store, "sessions/rollout-saved.jsonl"), "{}\n");
+  let attached = false, reject = true, creates = 0, waits = 0;
+  const session = "saved", opId = "op-1426";
+  const server = fakeHub(root, stateDir, "i-target", () => ({ operationId: opId, phase: "restored", ready: true,
+    peers: attached ? { [peer]: { id: peer, state: "idle", ...(peer === "codex" ? { threadId: session } : { sessionId: session, args: { mode: "tui" } }) } } : {} }));
+  const shown = () => ({ handle: `new-${creates}`, incarnationId: `inc-${creates}`, worktreeId: "wt", worktreePath: root, connected: true, ...(attached ? { agentIdentity: peer, sessionId: session } : {}) });
+  const run = async (argv: string[]) => {
+    if (argv[1] === "-e") return { code: 0, stdout: "function\n", stderr: "" };
+    if (argv[2] === "create") {
+      creates++;
+      if (reject) {
+        const command = argv[argv.indexOf("--command") + 1]!;
+        const capture = JSON.parse(command.match(/\{"file":.*?,"peer":"(?:pi|codex)"\}/)![0]);
+        writeFileSync(capture.file, JSON.stringify({ schemaVersion: 1, nonce: capture.nonce, peer, exitCode: 1, firstLine: "ahub: Version not verified: Pi 1.5.2", complete: true }));
+      } else attached = true;
+    }
+    if (argv[2] === "wait") {
+      waits++;
+      if (!attached) return { code: 1, stdout: JSON.stringify({ ok: false, error: { code: "timeout" } }), stderr: "" };
+    }
+    return { code: 0, stdout: JSON.stringify({ ok: true, result: argv[2] === "list" ? { terminals: [shown()] } : argv[2] === "wait" ? { satisfied: true } : { terminal: shown() } }), stderr: "" };
+  };
+  const launch = { packageEntrypoint: "/old/main.js", command: "old", argv: [], env: { CODEX_HOME: store } };
+  const binding: TerminalBinding = { peer, handle: "old", incarnationId: "old-i", worktreeId: "wt", projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const planned: PlannedProject = { project: { id: "p-215", root, stateDir, instanceId: "i-source", pid: null, basePort: 0 }, source: { state: "running", peers: [{ id: peer, state: "idle" }], blockers: [] }, terminals: [binding], blockers: [] };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { [`closed:${peer}`]: true } };
+  const op = { id: opId, sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previous = process.env.AGENTHUB_HOME; process.env.AGENTHUB_HOME = home;
+  try {
+    const driver = makeRecoveryDriver(run);
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow(`resume ${opId}`);
+    expect(progress.terminals[`restored:${peer}`]).toMatchObject({ state: "failed", failure: { code: "version_refused", exitCode: 1 } });
+    expect(waits).toBe(1); expect(creates).toBe(1);
+    reject = false;
+    await driver.restore(planned, progress, op, "native", () => {});
+    expect(creates).toBe(2);
+    expect(progress.terminals[`restored:${peer}`]).toMatchObject({ state: "done", binding: { sessionId: session } });
+  } finally {
+    if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
+    server.stop(true); rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -1686,3 +1686,20 @@ test("#1426 a live restoration runner names closing its launch terminal and defe
   expect(choices[0]?.text).toContain("once the runner blocks or exits");
   expect(choices[0]?.text).toContain(`resume ${f.operation.id}`);
 });
+
+import { RecoveryLaunchError } from "../src/cli/recovery-launch.ts";
+for (const peer of ["pi", "codex"]) test(`#1426 ${peer} typed launch failure persists in status and clears on coordinator resume`, async () => {
+  const f = fixture("upgrade", [peer]); let reject = true, attempts = 0;
+  f.driver.restore = async (_planned, _progress, _op, group) => {
+    if (group !== "native") return;
+    attempts++;
+    if (reject) throw new RecoveryLaunchError(peer, { code: "version_refused", exitCode: 1, firstLine: "Version not verified" }, `ahub recovery resume ${f.operation.id}`);
+  };
+  const failed = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(failed.phase).toBe("blocked");
+  expect(failed.failure).toMatchObject({ code: "version_refused", peer, exitCode: 1 });
+  expect(failed.error).toContain(`resume ${f.operation.id}`);
+  reject = false;
+  const restored = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(attempts).toBe(2); expect(restored.phase).toBe("completed"); expect(restored.failure).toBeUndefined();
+});
