@@ -998,7 +998,6 @@
   "src/ui/plugin.ts:INBOX_PROJECT_BUDGET_MS:inline:options.inboxProjectBudgetMs ?? 2_000=2_000#0",
   "src/ui/plugin.ts:INBOX_STALE_MS:inline:options.inboxStaleMs ?? 10_000=10_000#0",
   "src/ui/plugin.ts:SPACE_BUDGET_MS:inline:options.spaceBudgetMs ?? 3_000=3_000#0",
-  "src/ui/plugin.ts:pollMs:inline:pollMs=2000#0",
   "src/ui/plugin.ts:settledCount:inline:settledCount=0#0",
   "src/ui/plugin.ts:swap:inline:from.slice=60#0",
   "src/ui/plugin.ts:title:inline:#${t.id} ${t.title}.slice=200#0",
