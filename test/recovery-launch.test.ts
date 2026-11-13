@@ -91,3 +91,11 @@ test("#1426 an owned fake launch keeps all three terminal descriptors as TTYs", 
     } finally { capture.dispose(); }
   } finally { rmSync(state, { recursive: true, force: true }); }
 });
+
+import { runCommand } from "../src/cli/recovery-package.ts";
+test("#1426 private target-parser input is delivered through stdin without changing ordinary probe output", async () => {
+  const result = await runCommand([process.execPath, "-e", 'const input=await Bun.stdin.text(); console.log(JSON.stringify({input,argv:process.argv}));'], { input: "PRIVATE_STDIN_CANARY", pipeExitGraceMs: 250 });
+  const data = JSON.parse(result.stdout);
+  expect(result.code).toBe(0); expect(data.input).toBe("PRIVATE_STDIN_CANARY");
+  expect(data.argv.some((arg: string) => arg.includes("PRIVATE_STDIN_CANARY"))).toBe(false);
+});

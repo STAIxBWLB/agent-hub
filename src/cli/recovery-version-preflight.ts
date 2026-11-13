@@ -24,6 +24,7 @@ export interface RecoveryVersionPorts {
 const MAX_GATES = 64;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const PROBE_TIMEOUT_MS = 10_000;
+const PROBE_EXIT_GRACE_MS = 250;
 const PEER = /^[a-z][a-z0-9_-]{0,63}$/;
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
@@ -69,7 +70,7 @@ export async function readRecoveryVersionPreflight(
   const env = withoutOrcaEnv(childEnv({ ...process.env, JCODE_NO_TELEMETRY: "1", JCODE_DISABLE_CLAUDE_MCP: "1", AGY_CLI_DISABLE_AUTO_UPDATE: "1" }));
   const run = async (argv: string[], input?: string) => {
     if (!ports.current()) throw new Error("recovery version preflight authority changed");
-    const result = await ports.run(argv, { cwd: projectRoot, env, timeoutMs: PROBE_TIMEOUT_MS, ...(input === undefined ? {} : { input }) });
+    const result = await ports.run(argv, { cwd: projectRoot, env, timeoutMs: PROBE_TIMEOUT_MS, pipeExitGraceMs: PROBE_EXIT_GRACE_MS, ...(input === undefined ? {} : { input }) });
     if (!ports.current()) throw new Error("recovery version preflight authority changed");
     if (result.code !== 0 || typeof result.stdout !== "string" || Buffer.byteLength(result.stdout) > MAX_OUTPUT_BYTES) return undefined;
     return result.stdout;

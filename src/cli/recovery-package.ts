@@ -7,7 +7,7 @@ import { hubHome, realPath } from "../hub/project.ts";
 import { Registry } from "../hub/registry.ts";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
-export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string }) => Promise<CommandResult>;
+export type RunCommand = (args: string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; input?: string; pipeExitGraceMs?: number }) => Promise<CommandResult>;
 export const runCommand: RunCommand = (args, options = {}) => new Promise((resolve, reject) => {
   const child = spawn(args[0]!, args.slice(1), { cwd: options.cwd, env: options.env, stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
   if (options.input !== undefined) { child.stdin?.on("error", () => {}); child.stdin?.end(options.input); }
@@ -19,12 +19,18 @@ export const runCommand: RunCommand = (args, options = {}) => new Promise((resol
   };
   child.stdout!.on("data", (v) => { stdout = append(stdout, v); });
   child.stderr!.on("data", (v) => { stderr = append(stderr, v); });
-  let timedOut = false;
+  let timedOut = false, incomplete = false;
+  let exitGrace: ReturnType<typeof setTimeout> | undefined;
+  // Version probes may fork a process retaining a pipe after their own exit. Bound that read without signaling an unproven descendant.
+  if (options.pipeExitGraceMs !== undefined) child.once("exit", () => {
+    exitGrace = setTimeout(() => { incomplete = true; child.stdout?.destroy(); child.stderr?.destroy(); }, options.pipeExitGraceMs);
+  });
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, options.timeoutMs ?? 60_000);
   const hardTimer = setTimeout(() => child.kill("SIGKILL"), (options.timeoutMs ?? 60_000) + 3000);
-  child.on("error", (e) => { clearTimeout(timer); clearTimeout(hardTimer); reject(e); });
+  child.on("error", (e) => { clearTimeout(timer); clearTimeout(hardTimer); clearTimeout(exitGrace); reject(e); });
   child.on("close", (code) => {
-    clearTimeout(timer); clearTimeout(hardTimer);
+    clearTimeout(timer); clearTimeout(hardTimer); clearTimeout(exitGrace);
+    if (incomplete) return reject(new Error("command output remained open after its process exited; inspect the executable before retrying"));
     if (timedOut || exceeded) reject(new Error(`command ${args[0]} ${timedOut ? "timed out" : "exceeded output limit"}; inspect state before retrying`));
     else resolve({ code: code ?? 1, stdout, stderr });
   });
