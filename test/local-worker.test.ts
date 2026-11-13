@@ -846,3 +846,37 @@ test("runtime model stays latched across tool rounds and changes only on the nex
   expect(models.slice(second).every(model => model === "vllm/fixed")).toBe(true);
   expect(gets).toBe(3); expect(applied).toEqual(["runtime-a", "runtime-b", undefined]);
 });
+
+test("#931 evidence read excludes its final quote from capture and worker history", async () => {
+  const quote = "EVIDENCE_READ_QUOTE_CANARY";
+  const summaries: string[] = [], observations: unknown[] = [];
+  const capture = {
+    init: () => {},
+    observe: (row: unknown) => observations.push(row),
+    summarize: (text: string) => summaries.push(text),
+    end: async () => {},
+  } as unknown as Capture;
+  const ctx = await setup(body => {
+    const user = String(body.messages.findLast(message => message.role === "user")?.content);
+    if (user.includes("ordinary next input")) return body.messages.at(-1)?.role === "tool"
+      ? { content: "ordinary answer" }
+      : { tool_calls: [toolCall("read", { path: "a.txt" })] };
+    if (body.messages.at(-1)?.role === "tool") return { content: quote };
+    return { tool_calls: [toolCall("read", { path: "a.txt" }), toolCall("hub_evidence_read", { id: "ev:" + "a".repeat(32) })] };
+  }, {
+    capture,
+    taskTool: async name => { expect(name).toBe("hub_evidence_read"); return JSON.stringify({ status: "resolved", excerpt: quote }); },
+  });
+  ctx.bus.publish(newEnvelope("user", "plain request to review task #7", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 1, "anchored review response");
+  expect(ctx.said[0]!.body).toBe(quote);
+  expect(summaries).toEqual([]);
+  expect(observations).toEqual([]);
+
+  ctx.bus.publish(newEnvelope("user", "ordinary next input", { to: ["local"], priority: "important" }));
+  await until(() => ctx.said.length === 2, "ordinary follow-up response");
+  const followUp = ctx.model.requests.at(-1)!;
+  expect(JSON.stringify(followUp.body.messages)).not.toContain(quote);
+  expect(observations.length).toBeGreaterThan(0);
+  expect(summaries).toEqual(["ordinary answer"]);
+});

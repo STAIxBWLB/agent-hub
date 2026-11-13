@@ -498,7 +498,7 @@ export class LocalPeer extends BasePeer {
         progress.answerComplete = concluded.complete;
         return concluded.answer;
       }
-      if (!this.probeConfinement && res.message.tool_calls.some(call => call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments))) reviewScope.excluded = true;
+      if (!this.probeConfinement && res.message.tool_calls.some(call => (call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_evidence_read" || call.function.name.replace(/^mcp__[^ ]+__/, "") === "hub_review" && reviewCaptureExcluded(call.function.name, call.function.arguments)))) reviewScope.excluded = true;
       const results: ChatMessage[] = [];
       try {
         for (const call of res.message.tool_calls) {

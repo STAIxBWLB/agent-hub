@@ -7,7 +7,8 @@ import { isDenied } from "../local/deny.ts";
 import { checkCorpusRoot } from "./corpus.ts";
 import { realPath } from "./project.ts";
 import { folderGlobMatches, MAX_NEW_PER_POLL, type FolderEntry, type FolderRunResult, type FolderScan, type ScannedFile } from "./schedules.ts";
-import { MAX_SOURCE_BYTES, screenRegistration, type SourceRegistry } from "./sources.ts";
+import { MAX_SOURCE_BYTES, screenRegistration, sourceProjectionReceipt, type SourceRegistry } from "./sources.ts";
+import type { ProjectedText } from "./text-projection.ts";
 import { matchesPolicy } from "./path-policy.ts";
 
 // agent-hub #512c (hub task #336): the polled folder trigger. Spec: "Schedules and folder triggers (#512)". The hub polls a folder on the schedules timer and never
@@ -139,7 +140,7 @@ export interface FolderRegistration {
   /** Read at each call: the routing can be reloaded between polls. */
   piiPatterns: () => readonly string[];
   /** The projected text of a file's bytes by its extension, or undefined when no converter handles it. */
-  project?: (extension: string, bytes: Buffer) => string | undefined;
+  project?: (extension: string, bytes: Buffer) => string | ProjectedText | undefined;
 }
 
 /**
@@ -151,11 +152,17 @@ export function registerScanned(file: ScannedFile, host: FolderRegistration): { 
   const bytes = readScanned(file);
   if (!bytes) throw new Error("the file changed or became unreadable before it was registered");
   const extension = /\.[A-Za-z0-9]{1,16}$/.exec(file.name)?.[0]?.toLowerCase() ?? "";
+  let projected: ProjectedText | undefined;
   const verdict = screenRegistration({ bytes, kind: "file", path: file.real }, {
     piiPaths: [...host.piiPaths], piiPatterns: [...host.piiPatterns()], cwd: host.cwd, matchesPolicy,
-    ...(host.project ? { project: data => extension ? host.project!(extension, data) : undefined } : {}),
+    ...(host.project ? { project: (data: Buffer) => {
+      const value = extension ? host.project!(extension, data) : undefined;
+      if (typeof value === "string" || value === undefined) return value;
+      projected = value; return value.text;
+    } } : {}),
   });
-  const added = host.registry.add({ bytes, kind: "file", origin: file.real, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) });
+  const projection = sourceProjectionReceipt(bytes, verdict.text, projected ? { extension, value: projected } : undefined);
+  const added = host.registry.add({ bytes, kind: "file", origin: file.real, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}), ...(projection ? { projection } : {}) });
   return { id: added.id, private: added.private };
 }
 
