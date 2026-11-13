@@ -1,3 +1,4 @@
+import { renderBudget } from "../src/cli/output.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,4 +94,18 @@ test("#1440 pause observation uses the canonical account and stale unsubscribe c
   f.budget.report("codex", [{ id: "5h", used: 0.1, resetsAt: f.clock.now + 100_000, source: "native quota" }]);
   await until(() => !f.budget.record("codex")); expect(seen).toEqual([true, false]);
   stopCurrent();
+});
+
+
+test("#1440 public projections discard extra account fields and stale diagnostics do not predict credit-funded turns", () => {
+  const status = { codex: { windows: [], paused: { reason: "quota", since: 1, resetsAt: 2 }, accountUsage: {
+    at: 1, stale: true, ordinaryUsageAllowed: false, hasCredits: true, unlimited: false,
+    resetCreditsAvailable: 3, resetCreditsExpiryKnown: false,
+    balance: "BALANCE_CANARY", accountId: "ACCOUNT_ID_CANARY", creditId: "CREDIT_ID_CANARY",
+  } } };
+  const projected = publicPeerBudget(status, () => true);
+  expect(JSON.stringify(projected)).not.toMatch(/CANARY|balance|accountId|creditId/);
+  const text = renderBudget({ budget: projected }, 80, 10).map(line => line.map(part => part.text).join("")).join("\n");
+  expect(text).toContain("stale snapshot"); expect(text).toContain("expiry unknown");
+  expect(text).not.toContain("turns would use paid credits"); expect(text).not.toContain("CANARY");
 });
