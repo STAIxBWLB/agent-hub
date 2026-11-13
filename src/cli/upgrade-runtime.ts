@@ -21,7 +21,7 @@ import { negotiateProtocol, protocolWindow } from "../hub/protocol-window.ts";
 import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { canonicalPath, hubHome, realPath } from "../hub/project.ts";
-import { packageDigest, preserveRuntimePackage, preserveRuntimeSource, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
+import { packageDigest, recoveryTargetDigest, preserveRuntimePackage, preserveRuntimeSource, stageCurrentRuntime, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectSavedTerminal, inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, reattachOrphanedTerminal, REATTACH_BOUND_MS, waitForIdle, shellQuote, type OrphanedTerminal, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { ReattachmentRequired, MissingRecordedSession, FinalRefusal, planFingerprint, recoveryScope, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { SHARED_CHANNEL_VERSION_ARGV, nativeRecordedSessionState } from "../adapters/definitions/native-recovery.ts";
@@ -430,10 +430,10 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
   const gated = body.projects.map(planned => ({ planned, gates: recoveryVersionGates(planned, peer => projectDefinition(peer, planned.project.root), configuredCommands(loadConfig(planned.project.root))) })).filter(item => item.gates.length);
   if (gated.length) {
     try {
-      const target = kind === "restart" ? { root: PACKAGE_ROOT, digest: verifyPackage(PACKAGE_ROOT, body.version, { ownDependencies: true }) }
+      const target = kind === "restart" ? { root: PACKAGE_ROOT, digest: verifyPackage(PACKAGE_ROOT, body.version) }
         : await stageRelease(body.version, body.integrity!, run, hubHome(), selected !== undefined);
       for (const { planned, gates } of gated) {
-        const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => packageDigest(target.root, { ownDependencies: true }) === target.digest });
+        const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => { try { return (kind === "restart" ? packageDigest(target.root) : recoveryTargetDigest(kind, target.root)) === target.digest; } catch { return false; } } });
         planned.blockers.push(...rows.filter(row => row.state !== "accepted").map(row => row.message));
       }
     } catch { body.blockers.push("target native version preflight could not be verified; make the target package and configured executables readable, then preview again; runtimes unchanged"); }
@@ -771,7 +771,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           if (progress?.commitSent || progress && ["stopped", "started", "peers-restored", "verified"].includes(progress.phase)) continue;
           if (typeof planned.project?.root !== "string" || !Array.isArray(planned.source?.peers)) continue;
           const gates = recoveryVersionGates(planned, peer => projectDefinition(peer, planned.project.root), configuredCommands(loadConfig(planned.project.root)));
-          const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => packageDigest(target.root, { ownDependencies: true }) === target.digest });
+          const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => { try { return recoveryTargetDigest(op.plan.kind, target.root) === target.digest; } catch { return false; } } });
           const failures = rows.filter(row => row.state !== "accepted");
           if (failures.length) throw new Error(`${failures.map(row => row.message).join("; ")}; this source has not been committed; fix the cause, then ${recoveryCommand(op, "resume")}`);
         }
