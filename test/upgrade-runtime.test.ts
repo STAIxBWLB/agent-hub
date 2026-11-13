@@ -2812,3 +2812,52 @@ for (const peer of ["pi", "codex"] as const) test(`#1426 ${peer} refusal is rece
     server.stop(true); rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("#1426 upgrade preview names a target-only Pi version refusal before any source preparation or stop", async () => {
+  const temp = realPath(mkdtempSync(join(tmpdir(), "ahub-1426-preview-"))), home = join(temp, "home"), root = join(temp, "project");
+  mkdirSync(root); mkdirSync(home);
+  const previous = process.env.AGENTHUB_HOME; process.env.AGENTHUB_HOME = home;
+  const registry = new Registry(join(home, "registry.db")), project = registry.register(root);
+  registry.claim(project.id, "i-source", process.pid, processSignature(process.pid)); registry.close();
+  mkdirSync(project.stateDir, { recursive: true });
+  const messages: Record<string, unknown>[] = [], commands: string[][] = [];
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request, srv) { return srv.upgrade(request) ? undefined : new Response("no"); }, websocket: { message(ws, data) {
+    const msg = JSON.parse(String(data)); messages.push(msg);
+    const identity = { projectId: project.id, instanceId: "i-source", cwd: root, protocol: PROTOCOL, version: VERSION };
+    const reply = msg.t === "hello" ? { t: "welcome", ...identity } : msg.t === "status" ? { status: { ...identity, peers: { pi: { state: "idle" } } } }
+      : { recovery: { ready: true, peers: { pi: { id: "pi", state: "idle", sessionId: "saved", args: { mode: "tui" } } } } };
+    ws.send(JSON.stringify({ rid: msg.rid, ok: true, ...reply }));
+  } } });
+  writeFileSync(join(project.stateDir, "control-token"), "preview-token\n");
+  writeFileSync(join(project.stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, projectId: project.id, instanceId: "i-source", cwd: root }));
+  const shown = { handle: "pi-pane", incarnationId: "pi-inc", worktreeId: "wt", worktreePath: root, connected: true, agentIdentity: "pi", sessionId: "saved" };
+  writeFileSync(join(project.stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "pi", projectRoot: root, stateDir: project.stateDir, instanceId: "i-source", launcherPid: process.pid, launcherSignature: processSignature(process.pid), launchId: "preview-launch", handle: shown.handle, incarnationId: shown.incarnationId, worktreeId: shown.worktreeId, env: {} }]));
+  const run = async (argv: string[]) => {
+    commands.push(argv);
+    if (argv[0] === "npm") return { code: 0, stdout: JSON.stringify({ version: VERSION, "dist.integrity": "sha512-fixture" }), stderr: "" };
+    if (argv[1] === "install") {
+      const destination = argv[argv.indexOf("--cwd") + 1]!, target = join(destination, "node_modules/@staix/agent-hub");
+      for (const directory of ["src/cli", "plugins/agent-hub/.claude-plugin", "templates", ".claude-plugin"]) mkdirSync(join(target, directory), { recursive: true });
+      writeFileSync(join(target, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version: VERSION }));
+      writeFileSync(join(target, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version: VERSION }));
+      writeFileSync(join(target, "src/cli/main.js"), "");
+      writeFileSync(join(destination, "bun.lock"), JSON.stringify({ packages: { "@staix/agent-hub": [VERSION, "sha512-fixture"] } }));
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    if (argv[2]?.startsWith("// recovery-version-policy")) return { code: 0, stdout: JSON.stringify({ probe: ["pi", "--version"] }), stderr: "" };
+    if (argv[2]?.startsWith("// recovery-version-assess")) return { code: 0, stdout: JSON.stringify({ ok: false, state: "refused", version: "999.0.0" }), stderr: "" };
+    if (argv[0] === "pi") return { code: 0, stdout: "999.0.0\n", stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result: argv[2] === "list" ? { terminals: [shown] } : { terminal: shown } }), stderr: "" };
+  };
+  try {
+    const plan = await makeUpgradePlan("upgrade", VERSION, root, run);
+    expect(plan.projects).toHaveLength(1);
+    expect(plan.projects[0]?.blockers.join("\n")).toContain("pi: target refuses installed version 999.0.0");
+    expect(plan.projects[0]?.blockers.join("\n")).toContain("ahub agents trust pi 999.0.0");
+    expect(messages.some(msg => ["prepare", "commit", "stop"].includes(String(msg.op)))).toBe(false);
+    expect(commands.some(argv => argv.includes("create") || argv.includes("close"))).toBe(false);
+  } finally {
+    server.stop(true); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
