@@ -1,4 +1,4 @@
-import { definitionOf, type ProjectAdapterCatalog } from "./registry.ts";
+import { SUPPORTED_PEERS, definitionOf, type ProjectAdapterCatalog } from "./registry.ts";
 import type { StartMode } from "../hub/start-mode.ts";
 
 /**
@@ -61,4 +61,39 @@ export function applyRoleCeiling(peer: string, declared: readonly string[], star
   const conductorDropped = declared.includes("conductor") && !roles.includes("conductor") && notices.length > 0;
   if (roles.length !== declared.length - (conductorDropped ? 1 : 0)) notices.unshift(`roles.${peer}: ignored roles outside the adapter ceiling`);
   return { roles, notices };
+}
+
+/** One kind's row of the eligibility table: its start forms and what `roleEligibility` answers for it. */
+export interface EligibilityRow {
+  peer: string;
+  /** The forms the kind can start in, in the definition's order. */
+  forms: readonly string[];
+  /** The forms in which the kind may conduct (none for a kind that cannot conduct at all). */
+  conductor: readonly string[];
+  planner: boolean;
+  reviewer: boolean;
+}
+
+/**
+ * #1408 R4: the eligibility table, one row per builtin kind, read only from `roleEligibility` so the docs table, init, the loader and doctor cannot disagree. Pure and ordered as the registry is.
+ * A conductor form is judged in that form (`roleEligibility(peer, "conductor", form)`), so a kind that can conduct only interactively lists only its interactive form.
+ */
+export function eligibilityRows(): EligibilityRow[] {
+  return SUPPORTED_PEERS.map(peer => {
+    const forms = definitionOf(peer)?.start.forms ?? [];
+    return {
+      peer, forms: [...forms],
+      conductor: forms.filter(form => roleEligibility(peer, "conductor", form).eligible),
+      planner: roleEligibility(peer, "planner").eligible,
+      reviewer: roleEligibility(peer, "reviewer").eligible,
+    };
+  });
+}
+
+const mark = (yes: boolean) => yes ? "yes" : "no";
+/** The Markdown table `docs/roles.md` carries, generated from `eligibilityRows`; `test/roles-doc.test.ts` compares the document with it. */
+export function renderEligibilityTable(): string {
+  const header = "| Kind | Start forms | Conductor | Planner | Reviewer |\n| --- | --- | --- | --- | --- |";
+  const rows = eligibilityRows().map(row => `| ${row.peer} | ${row.forms.join(", ") || "none"} | ${row.conductor.length ? row.conductor.join(", ") : "no"} | ${mark(row.planner)} | ${mark(row.reviewer)} |`);
+  return [header, ...rows].join("\n");
 }
