@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board, type TaskPlan } from "../src/hub/board.ts";
@@ -29,7 +29,7 @@ function rig(mode: SdlcMode = "advise") {
     const task = board.propose("user", { title: "plan drift fixture", class: "triage", plan, refs: head ? { commit: head } : {} });
     return board.update(task.id, "user", "assigned", { owner: "codex" });
   }
-  return { board, tasks, deps, state, card };
+  return { cwd, board, tasks, deps, state, card };
 }
 
 test("#1403 accept and done tool readbacks compare base to the recorded task head, advice only", async () => {
@@ -70,6 +70,8 @@ test("#1403 missing task head and foreign repository never read the checkout", (
   expect(r.tasks.planGuardText(withoutHead)).toContain("drift: unknown");
   const foreign = r.board.update(missing.id, "user", "metadata", { refs: { repo: "other/project", commit: HEAD } });
   expect(r.tasks.planGuardText(foreign)).toContain("drift: unknown");
+  const foreignArtifact = r.board.update(missing.id, "user", "metadata", { refs: { repo: undefined, commit: HEAD }, sdlc: { stage: "build", repo: "other/project", head: HEAD } });
+  expect(r.tasks.planGuardText(foreignArtifact)).toContain("drift: unknown");
   expect(r.state.reads).toEqual([]);
 });
 
@@ -92,7 +94,7 @@ test("#1403 cold intent survives storage and the task brief, verify is text only
   const accepted = r.tasks.accept("codex", row.id, plan);
   expect(r.board.get(row.id)?.plan).toEqual({ ...plan, out_of_scope: ["src/private"], stop_if: ["API changes"], steps: [{ description: "Edit source", verify: "touch must-not-run; expect absent" }] });
   expect(r.tasks.publicView(accepted).plan).toEqual(r.board.get(row.id)?.plan);
-  expect(r.tasks.overlaps(accepted)).toBeDefined();
+  expect(existsSync(join(r.cwd, "must-not-run"))).toBe(false);
 });
 
 test("#1403 malformed cold intent is refused pre-effect; off preserves old ignored-input behavior", () => {
@@ -125,4 +127,18 @@ test("#1403 cold plan schemas are lifecycle-only for dev, other profiles and nes
       for (const field of ["base", "out_of_scope", "stop_if", "steps"]) expect(Object.hasOwn(plan.properties, field)).toBe(enabled);
     }
   }
+});
+
+
+test("#1403 forbidden files still produce base drift when inside plan.paths", () => {
+  const r = rig(), row = r.card({ base: BASE, paths: ["src"], out_of_scope: ["src/private"] });
+  r.state.paths = ["src/private/a.ts"];
+  expect(r.tasks.planGuardText(row)).toContain("drift: changed (src/private/a.ts)");
+});
+
+test("#1403 current privacy state withholds drift names from public readback", () => {
+  const r = rig(), row = r.card();
+  r.state.paths = ["src/patient 900101-1234567.ts"];
+  expect(r.tasks.planGuardText(row)).toContain("drift: unknown");
+  expect(r.tasks.planGuardText(row)).not.toContain("900101");
 });

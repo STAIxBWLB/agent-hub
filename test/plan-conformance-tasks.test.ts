@@ -254,3 +254,11 @@ for(const changeType of ["RENAMED","COPIED"])test(`S2 R1 ${changeType} refuses b
    await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
   }
  });
+
+
+test("#1403 an exclusion inside a broad plan is a departure in status and queue", async () => {
+ const r=rig("advise"); r.state.queueList=true; r.state.paths=["src/private/a.ts"];
+ r.board.update(r.id,"codex","accepted",{plan:{paths:["src"],out_of_scope:["src/private"]}});
+ expect((await r.tasks.lifecycleStatus(r.id) as any).planConformance).toMatchObject({state:"departure",outside:["src/private/a.ts"]});
+ expect((await r.tasks.deliveryQueue("o/r")).rows[0]?.planConformance?.[0]).toMatchObject({state:"departure",outside:1});
+});

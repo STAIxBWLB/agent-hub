@@ -8246,6 +8246,7 @@ export class Tasks {
       const source = this.d.auditSource, base = task.plan.base, head = this.reviewHead(task);
       if (source && head && /^[a-f0-9]{40}$/.test(base) && /^[a-f0-9]{40}$/.test(head)
         && this.repositories.scope(task.refs).key === this.repositories.project.key
+        && (!task.sdlc?.repo || this.repositories.scope({ repo: task.sdlc.repo, paths: task.refs.paths }).key === this.repositories.project.key)
         && source.resolve(base) === base && source.resolve(head) === head) {
         report = planDrift(task.plan.paths?.map(path => this.projectPath(path)), source.changed(base, head));
       }
