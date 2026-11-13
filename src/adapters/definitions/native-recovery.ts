@@ -48,6 +48,7 @@ export const CLAUDE_RECOVERY_SESSION: SessionPolicy = {
   personFresh: true, missingEvidence: "transcript",
 };
 export const PI_RECOVERY_SESSION: SessionPolicy = {
+  restoreVersionGate: "pi",
   resumeArgv: binding => ["pi", "--mode", "tui", ...(binding.backend ? ["--backend", binding.backend] : []), ...(binding.model ? ["--model", binding.model] : []),
     ...(binding.sessionFile ? ["--session-file", binding.sessionFile] : ["--session-id", binding.sessionId])],
   personFresh: false,
@@ -75,11 +76,13 @@ export const KIMI_RECOVERY_SESSION: SessionPolicy = {
 };
 export const LOCAL_RECOVERY_SESSION: SessionPolicy = { restoreArgs: startupArgs };
 export const JCODE_RECOVERY_SESSION: SessionPolicy = {
+  restoreVersionGate: "jcode",
   legacyTargetSupport: { file: "src/hub/peer-catalog.ts", exportName: "OPTIONAL_PEERS", refusal: "target does not support Jcode; end it and make a new plan, or choose a supporting target; runtimes unchanged" },
   recoveryRefusal: (_peer, phase = "plan") => phase === "restore" ? undefined : "jcode: source-pinned native load cannot prove conversation identity; end the peer and make a new recovery plan before effects",
   restoreArgs: peer => ({ ...startupArgs(peer), ...(peer.sessionId ? { "session-id": peer.sessionId } : {}), ...(peer.args?.providerProfile ? { "provider-profile": peer.args.providerProfile } : {}) }),
 };
 export const QWEN_RECOVERY_SESSION: SessionPolicy = {
+  restoreVersionGate: "qwen",
   legacyTargetSupport: { file: "src/hub/peer-catalog.ts", exportName: "OPTIONAL_PEERS", refusal: "target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged" },
   restoreArgs: peer => ({ ...startupArgs(peer), ...(peer.sessionId ? { "session-id": peer.sessionId } : {}) }),
   // #286 Part 3: the Qwen TUI belongs to the person's terminal. It is never restored as a headless worker; `ahub qwen --mode tui` resumes it (qwen -r <session>) from its saved offset.

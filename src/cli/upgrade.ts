@@ -1,3 +1,4 @@
+import { RecoveryLaunchError, type RecoveryLaunchFailure } from "./recovery-launch.ts";
 import { nativeRestoreGroup } from "../adapters/definitions/native-identity-defaults.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
@@ -152,7 +153,7 @@ export interface RecoveryOperation {
   /** Presentation observations only: old receipts without these fields have unknown timings and cause. */
   waits?: Record<string, RecoveryWaitTiming>;
   presentationCause?: RecoveryPresentationCause;
-  failure?: { code: "database_busy"; retryable: true; site?: string[] };
+  failure?: { code: "database_busy"; retryable: true; site?: string[] } | (RecoveryLaunchFailure & { peer: string });
   /** A typed verify outcome, never inferred from an error message or a peer's current state. */
   blockedReattachment?: { projectId: string; peer: RecoveryNativePeer };
   /** Positive typed store observation; disposal rechecks it before accepting a repaired-session loss. */
@@ -315,7 +316,7 @@ export function nextChoices(receipt: RecoveryOperation, runner?: number | "unkno
   if (op.phase === "completed" || op.phase === "cancelled") return [];
   // claimRunner refuses an owner it cannot read, so resume, abort and dispose are all refused until the record reads.
   if (runner === "unknown") return [{ kind: "wait", text: `${recoveryCommand(op, "status")} again: whether a runner holds the operation could not be read (resume, abort and dispose are refused until it can)` }];
-  if (runner) return [{ kind: "wait", text: `wait: runner ${runner} is working; ${recoveryCommand(op, "status")}` }];
+  if (runner) return [{ kind: "wait", text: `wait: runner ${runner} is working; ${recoveryCommand(op, "status")}. If a restoration launch was refused, fix its cause and close that launch terminal; once the runner blocks or exits, ${recoveryCommand(op, "resume")}` }];
   const unsettled = disposeRefusal(op, live);
   const stop: NextChoice = unsettled ? { kind: "wait", text: `wait until ${unsettled.project}'s hub settles, then ${recoveryCommand(op, "status")}` } : { kind: "stop", text: recoveryCommand(op, "dispose", STOP) };
   if (op.disposition) return [unsettled ? stop : { kind: "stop", text: `rerun ${stop.text}` }];
@@ -929,6 +930,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     if (error instanceof MissingRecordedSession) op.missingRecordedSession = error.evidence;
     if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
     else delete op.blockedReattachment;
+    if (error instanceof RecoveryLaunchError) op.failure = { peer: error.peer, ...error.failure };
     if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
     if (error instanceof FinalRefusal) op.final = true;
     op.phase = "blocked";
@@ -1028,7 +1030,8 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
       if (error instanceof MissingRecordedSession) op.missingRecordedSession = error.evidence;
       if (error instanceof ReattachmentRequired) op.blockedReattachment = { projectId: error.projectId, peer: error.peer };
       else delete op.blockedReattachment;
-      if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
+      if (error instanceof RecoveryLaunchError) op.failure = { peer: error.peer, ...error.failure };
+    if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
       op.phase = "blocked";
       op.error = `${error instanceof Error ? error.message : "reattachment is unconfirmed"}; ${nextActionsText(op, await liveProjects(op, driver.inspect))}`;
       save();
@@ -1211,7 +1214,8 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         op.updatedAt = driver.now(); writeOperation(id, op, home);
       }
     } catch (error) {
-      if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
+      if (error instanceof RecoveryLaunchError) op.failure = { peer: error.peer, ...error.failure };
+    if (isDatabaseBusy(error)) { op.failure = { code: "database_busy", retryable: true, site: databaseBusySite(error) }; error = new RecoveryDatabaseBusy(); }
       op.phase = "blocked"; op.updatedAt = driver.now();
       op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"} (a committed source stops by itself); ${nextActionsText(op, await liveProjects(op, project => driver.inspect(project, undefined, "cleanup")))}`;
       writeOperation(id, op, home);

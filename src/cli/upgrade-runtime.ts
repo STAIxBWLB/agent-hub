@@ -1,3 +1,8 @@
+import { prepareRecoveryLaunch, RecoveryLaunchError } from "./recovery-launch.ts";
+import { recoveryCommand } from "../hub/recovery-store.ts";
+import { loadConfig } from "../hub/daemon.ts";
+import { configuredCommands } from "../adapters/compat.ts";
+import { recoveryVersionGates, readRecoveryVersionPreflight } from "./recovery-version-preflight.ts";
 import { authorizeConductorOperation, conductorRecoveryBinding } from "./conductor-recovery.ts";
 import { resolveAcceptedBinding } from "./recovery-guidance.ts";
 import { claudeStateFile } from "../hub/claude-state.ts";
@@ -422,6 +427,17 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     }
     body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(unrecordedTerminals.length ? { unrecordedTerminals } : {}), ...(freshStart.length ? { freshStart } : {}), ...(terminals.orphaned?.length ? { orphanedTerminals: terminals.orphaned } : {}) });
   }
+  const gated = body.projects.map(planned => ({ planned, gates: recoveryVersionGates(planned, peer => projectDefinition(peer, planned.project.root), configuredCommands(loadConfig(planned.project.root))) })).filter(item => item.gates.length);
+  if (gated.length) {
+    try {
+      const target = kind === "restart" ? { root: PACKAGE_ROOT, digest: verifyPackage(PACKAGE_ROOT, body.version, { ownDependencies: true }) }
+        : await stageRelease(body.version, body.integrity!, run, hubHome(), selected !== undefined);
+      for (const { planned, gates } of gated) {
+        const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => packageDigest(target.root, { ownDependencies: true }) === target.digest });
+        planned.blockers.push(...rows.filter(row => row.state !== "accepted").map(row => row.message));
+      }
+    } catch { body.blockers.push("target native version preflight could not be verified; make the target package and configured executables readable, then preview again; runtimes unchanged"); }
+  }
   if (!body.projects.length) body.blockers.push("no running registered projects in scope");
   return { ...body, fingerprint: planFingerprint(body) };
 }
@@ -749,6 +765,14 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       // Once every source committed, compatibility cannot be re-applied using mutable project declarations.
       // Package identity/hash and live-test authority above still bind these retained bytes.
       const committed = op.projects?.every(project => ["stopped", "started", "peers-restored", "verified"].includes(project.phase));
+      if (!committed) {
+        for (const planned of op.plan.projects) {
+          const gates = recoveryVersionGates(planned, peer => projectDefinition(peer, planned.project.root), configuredCommands(loadConfig(planned.project.root)));
+          const rows = await readRecoveryVersionPreflight(target.root, planned.project.root, gates, { run, current: () => packageDigest(target.root, { ownDependencies: true }) === target.digest });
+          const failures = rows.filter(row => row.state !== "accepted");
+          if (failures.length) throw new Error(`${failures.map(row => row.message).join("; ")}; runtimes unchanged; fix the cause, then ${recoveryCommand(op, "resume")}`);
+        }
+      }
       // A legacy coordinator already chose and started this target. Resume its retained evidence without retroactive staging gates.
       if (cached && committed && op.schema !== 3) return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
       if (cached && committed && op.targetFeatures !== undefined) {
@@ -1055,7 +1079,20 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
           const binding = { ...original, launch, launchMetadata: launch };
           progress.terminals[key] = { state: "pending" } satisfies RestoreReceipt; save();
           await recoveryCurrent();
-          const restored = await createTerminal(binding, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId }, undefined, fresh());
+          const capture = prepareRecoveryLaunch(planned.project.stateDir, original.peer, argv, assignments, planned.project.root);
+          let restored: Awaited<ReturnType<typeof createTerminal>>;
+          try {
+            const captured = { ...binding, launch: { ...launch, command: capture.command }, launchMetadata: { ...launch, command: capture.command } };
+            restored = await createTerminal(captured, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId, launchFailure: capture.read }, undefined, fresh());
+          } finally { capture.dispose(); }
+          const launchFailure = restored.blockers.find(item => item.code === "launch-failed")?.failure;
+          if (launchFailure) {
+            // Exit diagnosis is not native/session evidence: settle an independently observed attach first.
+            const after = await peerEvidence(planned, progress, original.peer);
+            if (after.state === "live" && after.session === original.sessionId) { await settle(after.session); continue; }
+            progress.terminals[key] = { state: "failed", failure: launchFailure } satisfies RestoreReceipt; save();
+            throw new RecoveryLaunchError(original.peer, launchFailure, recoveryCommand(op, "resume"));
+          }
           const exited = restored.blockers.find((b) => b.code === "launcher-exited");
           if (exited) {
             // #215: the launcher's exit alone is not the peer's state (a target that died or flapped also ends it): only

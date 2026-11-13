@@ -1,3 +1,4 @@
+import type { RecoveryLaunchFailure } from "./recovery-launch.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
@@ -6,7 +7,7 @@ export type RestoreReceipt =
   | { state: "pending" }
   | { state: "waiting"; origin: "pending" | "failed"; binding: TerminalBinding }
   | { state: "done"; binding: TerminalBinding }
-  | { state: "failed" };
+  | { state: "failed"; failure?: RecoveryLaunchFailure };
 export interface RestoreEvidence {
   target: "running" | "stopped" | "changed";
   launcher: "live" | "gone" | "unknown" | "no-record-yet" | "replaced" | "older-instance";
@@ -50,10 +51,18 @@ export function decodeRestoreReceipt(value: unknown, options: { authority?: "cur
   if (value === "pending" || value === "failed") return { state: value };
   if (!object(value)) malformed();
   if (Object.hasOwn(value, "state")) {
-    const allowed = value.state === "waiting" ? ["state", "origin", "binding"] : value.state === "done" ? ["state", "binding"] : ["state"];
+    const allowed = value.state === "waiting" ? ["state", "origin", "binding"] : value.state === "done" ? ["state", "binding"] : value.state === "failed" ? ["state", "failure"] : ["state"];
     if (Object.keys(value).some(key => !allowed.includes(key))) malformed();
     switch (value.state) {
-      case "pending": case "failed": return { state: value.state };
+      case "pending": return { state: "pending" };
+      case "failed": {
+        const failure = value.failure;
+        if (failure !== undefined && (!object(failure) || !["version_refused", "launch_exit"].includes(String(failure.code))
+          || !Number.isInteger(failure.exitCode) || Number(failure.exitCode) <= 0 || Number(failure.exitCode) > 255
+          || typeof failure.firstLine !== "string" || Array.from(failure.firstLine).length > 512
+          || Object.keys(failure).some(key => !["code", "exitCode", "firstLine"].includes(key)))) malformed();
+        return { state: "failed", ...(failure ? { failure: failure as unknown as RecoveryLaunchFailure } : {}) };
+      }
       case "waiting": {
         if (value.origin !== "pending" && value.origin !== "failed") malformed();
         return { state: "waiting", origin: value.origin, binding: terminalBinding(value.binding, historical) };
