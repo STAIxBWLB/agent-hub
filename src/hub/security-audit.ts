@@ -88,13 +88,17 @@ export function applyUnitReports(units: readonly AuditUnit[], reports: readonly 
 }
 
 /** A finding the auditor filed, with who found it and who verified (or rejected) it. The finding itself is in the A1 shape. */
-export interface AuditFinding { finding: ReviewFinding; foundBy: string; verifiedBy?: string; rejectedBy?: string; at: number }
-export type FindingStatus = "verified" | "rejected" | "candidate" | "needs_validation" | "recorded";
+/** `settledBy` and `settledAs` are the hub-written settlement of a verified finding; `finding.disposition` already reads as `settledAs` once it is set. */
+export interface AuditFinding { finding: ReviewFinding; foundBy: string; verifiedBy?: string; rejectedBy?: string; settledBy?: string; settledAs?: Settlement; at: number }
+export type FindingStatus = "verified" | "rejected" | "candidate" | "needs_validation" | "recorded" | "settled";
+export type Settlement = "fixed" | "false_positive";
+export const SETTLEMENTS: readonly Settlement[] = ["fixed", "false_positive"];
 
 /** Only a confirmed open important security finding needs a second reader; everything else is recorded as filed. */
 export const needsVerification = (finding: ReviewFinding): boolean =>
   finding.pass === "security" && finding.severity === "important" && finding.disposition === "open" && finding.state === "confirmed";
 export function findingStatus(row: AuditFinding): FindingStatus {
+  if (row.settledAs) return "settled";
   if (row.rejectedBy) return "rejected";
   if (row.finding.pass === "security" && row.finding.severity === "important" && row.finding.state === "needs_validation") return "needs_validation";
   if (!needsVerification(row.finding)) return "recorded";
@@ -111,21 +115,36 @@ export function verificationRefusal(row: AuditFinding | undefined, by: string): 
   return undefined;
 }
 
+/**
+ * The settle rule (#1403 A4 follow-up): a verified open important finding becomes `fixed` or `false_positive` by a different reviewer than the one who found it, or by the person, once. Returns the
+ * refusal, which names the next step, or undefined when `by` may settle it. The caller checks the role; the store repeats the guards, so a lost race changes nothing.
+ */
+export function settlementRefusal(row: AuditFinding | undefined, by: string): string | undefined {
+  if (!row) return "no such finding in this audit (hub_audit_report show: true lists the ledger)";
+  if (row.settledAs) return `this finding was already settled as ${row.settledAs}`;
+  if (row.rejectedBy) return "this finding was rejected, so there is nothing to settle";
+  if (!row.verifiedBy) return needsVerification(row.finding)
+    ? "this finding is still a candidate: a different reviewer verifies it first (verify: [{finding, verdict: verified}]), then it can be settled in a later call"
+    : "only a verified confirmed open important security finding is settled; other findings are recorded as filed";
+  if (row.foundBy === by) return "a finding is settled by a different reviewer than the one who found it, or by the person";
+  return undefined;
+}
+
 export interface AuditSummary {
   audit: number; task: number; ref: string; profile: AuditProfile; partial: boolean; scoped: boolean; at: number;
   counts: Record<UnitState, number>;
   /** Units seeded covered from an earlier audit; also counted in `counts.covered`. */
   prior: number;
-  findings: { verified: number; candidate: number; needsValidation: number; rejected: number; other: number };
+  findings: { verified: number; candidate: number; needsValidation: number; rejected: number; settled: number; other: number };
 }
 export function auditSummary(meta: { audit: number; task: number; ref: string; profile: AuditProfile; scoped: boolean; at: number }, units: readonly AuditUnit[], findings: readonly AuditFinding[]): AuditSummary {
   const counts: Record<UnitState, number> = { planned: 0, covered: 0, deferred: 0, out_of_scope: 0 };
   for (const unit of units) counts[unit.state]++;
-  const tally = { verified: 0, candidate: 0, needsValidation: 0, rejected: 0, other: 0 };
+  const tally = { verified: 0, candidate: 0, needsValidation: 0, rejected: 0, settled: 0, other: 0 };
   for (const row of findings) {
     const status = findingStatus(row);
     if (status === "verified") tally.verified++; else if (status === "candidate") tally.candidate++; else if (status === "needs_validation") tally.needsValidation++;
-    else if (status === "rejected") tally.rejected++; else tally.other++;
+    else if (status === "rejected") tally.rejected++; else if (status === "settled") tally.settled++; else tally.other++;
   }
   return { ...meta, partial: auditIsPartial(meta.profile, meta.scoped), counts, prior: units.filter(u => u.prior).length, findings: tally };
 }
