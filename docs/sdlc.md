@@ -688,3 +688,37 @@ its existing authority and currentness fences. Snapshot guidance never certifies
 that an accepted spec or reviewed issue is still current. Unavailable, private or
 closed plan evidence retains its original diagnostic lead and planner action. Private task projections
 withhold these issue-specific diagnostics.
+
+## Advisor surveys and considered findings (#1403 T7)
+
+`ahub sdlc survey start [--focus bugs|tests|debt|deps|dx|docs]` is an on-request
+person/current-conductor operation with the lifecycle enabled. It creates one
+read-only `plan` task at an exact source ref. Repository content is data, not
+instructions: the task does not install or run a scanner, execute a fix, publish
+an issue or push a branch. `ahub sdlc survey show <task> [--json]` reads its report.
+
+The assigned planner reports through `hub_survey_report`: findings have a stable
+semantic id, evidence `path:line`, affected paths, impact, effort `S|M|L`, risk,
+confidence `high|medium|low`, and `fix_sketch`. A report alone creates no card.
+The planner must vet each finding against that pinned source before submitting
+an explicit vetted decision. This is the planner's attestation, not a host proof
+that source was reread. Vetted high/medium confidence yields a backlog `plan`
+card; low confidence yields read-only `triage` investigation. No card authorizes
+execution. Replay and concurrent vetting share a repository-scoped semantic
+finding marker; positional labels never match across tasks.
+
+Review `false_positive`, audit rejection and survey rejection share an
+append-only considered ledger with id, paths, reason and source binding.
+A later scoped brief shows matching ids as rejected before with the reason,
+subject to existing privacy/security disclosure. A changed path clears the
+suppression for that path. Unrelated path changes do not clear it. Unknown or
+incomplete change evidence shows rejected before, change unknown, and retains
+suppression. The planner may reconsider only with an explicit vetted reason;
+that creates a reconsideration entry and may create the card while preserving
+the historical rejection. No rejection is deleted or silently rebound. Open host-created cards alone dedupe a matching marker. Approved or cancelled cards remain history: when the rejection no longer suppresses the finding, a new vetted card names the prior closed card as "hub task N" and the reason it reopened. Closing a card never clears an unchanged rejection.
+
+Private turns, child contexts, recovery and ended role authority refuse writes.
+Security finding text and paths remain in authorized private reports, not
+public backlog cards, briefs or memory. Lifecycle off advertises no survey tool
+or additional task readback. Live audit/survey dogfood (#1403 T8) still requires
+the person's separate instruction; this feature adds no schedule or live run.

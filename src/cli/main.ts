@@ -138,7 +138,8 @@ import { queueResolveArgsValid } from "../hub/person-command.ts";
 import { outputWidth, renderRuntimeModels, renderRoster, renderRoles, rolesView,renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderOrphanCleanup, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp, guidanceProbeUsage, listsSubcommand, subcommandUsage } from "./help.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
-import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit, renderSdlcConfiguration } from "./sdlc-output.ts";
+import { SURVEY_FOCUS } from "../hub/advisor-survey.ts";
+import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMerge, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus, renderSdlcAudit, renderSdlcConfiguration, renderSdlcSurvey } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
@@ -387,7 +388,7 @@ function showToolText(render: (data: any, columns?: number, now?: number) => Spa
   if (present.json) return console.log(text);
   printOutput(render(data, present.columns, Date.now()), present.color);
 }
-const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release", "audit", "configure"];
+const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release", "audit", "configure", "survey"];
 function sdlcOperands(): string[] { return SDLC_READ.includes(args[0] ?? "") ? outputArguments() : args; }
 function printOutput(lines: Span[][], color: boolean): void {
   for (const line of lines) console.log(paint(line, color));
@@ -1985,6 +1986,31 @@ const commands: Record<string, () => Promise<void> | void> = {
       } catch { fail("release authorization unavailable; the daemon must be reachable with a matching person approval"); }
       finally { hub?.close(); }
       return;
+    }
+    if (sub === "survey") {
+      const action = args[1];
+      if (action === "start") {
+        const flags = takeFlags(args.slice(2), ["--focus"], []);
+        if (flags.rest.length || args.filter(arg => arg === "--focus").length > 1 || flags.one["--focus"] !== undefined && !(SURVEY_FOCUS as readonly string[]).includes(flags.one["--focus"])) fail("usage: ahub sdlc survey start [--focus bugs|tests|debt|deps|dx|docs]");
+        const hub = await connect();
+        try {
+          const reply = await hub.request({ t: "sdlc", op: "survey-start", ...(flags.one["--focus"] === undefined ? {} : { focus: flags.one["--focus"] }) }, 60_000);
+          if (!reply.ok) fail(/unknown SDLC operation|does not know/.test(String(reply.error)) ? "running hub does not support advisor surveys; upgrade and restart it first" : reply.error);
+          const receipt = { task: reply.task, survey: reply.survey, ref: reply.ref, ...(reply.focus === undefined ? {} : { focus: reply.focus }) };
+          if (present!.json) console.log(JSON.stringify(receipt, null, 2)); else human(renderSdlcSurvey, receipt);
+        } finally { hub.close(); }
+        return;
+      }
+      if (action === "show" && args.length === 3 && /^[1-9]\d*$/.test(args[2]!) && Number.isSafeInteger(Number(args[2]))) {
+        const hub = await connect();
+        try {
+          const reply = await hub.request({ t: "sdlc", op: "survey-show", id: Number(args[2]) });
+          if (!reply.ok) fail(reply.error);
+          if (present!.json) console.log(JSON.stringify(reply.survey ?? null, null, 2)); else human(renderSdlcSurvey, reply.survey);
+        } finally { hub.close(); }
+        return;
+      }
+      fail("usage: ahub sdlc survey start [--focus bugs|tests|debt|deps|dx|docs] | ahub sdlc survey show <task>");
     }
     if (sub === "audit") {
       // #1403 A4: `audit start [--profile quick|standard] [--since <ref>]` files the read-only audit task and seeds its ledger; `audit show [<audit>]` reads the newest or the named one.
