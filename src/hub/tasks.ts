@@ -5030,12 +5030,18 @@ export class Tasks {
     if (!Array.isArray(claims) || claims.length > 50) throw new PreEffectToolRefusal("synthesis claims unavailable; refresh the task's bounded declared claim list");
     return claims.map((_claim, index) => {
       const identity = taskClaimIdentity(task, index + 1);
-      try { return { ...identity, inventory: this.d.board.latestEvidenceLinks(this.d.project, task.id, identity.claimId, identity.claimRevision, 128) }; }
-      catch { return { ...identity, inventory: { links: [] as EvidenceLinkV1[], complete: false } }; }
+      try {
+        const inventory = this.d.board.latestEvidenceLinks(this.d.project, task.id, identity.claimId, identity.claimRevision, 128);
+        let contradictionHistory: ReturnType<Board["evidenceContradictionHistory"]> = { ids: [], sources: [], members: [], complete: false };
+        if (inventory.complete) try { contradictionHistory = this.d.board.evidenceContradictionHistory(this.d.project, task.id, identity.claimId, identity.claimRevision, inventory.links); } catch { /* Unknown immutable history cannot erase a contradiction. */ }
+        if (contradictionHistory.complete && contradictionHistory.sources.some(id => { try { return !this.d.evidenceSourceMeta?.(id); } catch { return true; } })) contradictionHistory.complete = false;
+        return { ...identity, inventory, contradictionHistory };
+      }
+      catch { return { ...identity, inventory: { links: [] as EvidenceLinkV1[], complete: false }, contradictionHistory: { ids: [] as string[], sources: [] as string[], members: [] as string[], complete: false } }; }
     });
   }
 
-  private synthesisSources(links: readonly EvidenceLinkV1[]): { private: boolean; key: string; bytes: number } {
+  private synthesisSources(links: readonly Pick<EvidenceLinkV1, "sourceId">[]): { private: boolean; key: string; bytes: number } {
     const meta: unknown[] = [], seen = new Set<string>(); let bytes = 0;
     for (const link of links) {
       if (seen.has(link.sourceId)) continue; seen.add(link.sourceId);
@@ -5053,7 +5059,7 @@ export class Tasks {
     return this.studyWrite(async () => {
       check(); const revision = this.d.board.statusRevision(), task = this.synthesisTask(by, fields.taskId);
       if (this.synthesisPrivate(task, by)) return { taskId: task.id, status: "private" as const };
-      const claims = this.synthesisInventories(task), links = claims.flatMap(claim => claim.inventory.links);
+      const claims = this.synthesisInventories(task), links = claims.flatMap(claim => [...claim.inventory.links, ...claim.contradictionHistory.sources.map(sourceId => ({ sourceId }))]);
       if (this.synthesisSources(links).private) return { taskId: task.id, status: "private" as const };
       const delivered = latestDeliverables(task.history) ?? [];
       const artifacts = delivered.filter(record => !record.private && record.path && !this.experimentOutputPrivate(task, record.path))
@@ -5062,8 +5068,8 @@ export class Tasks {
       if (this.d.board.statusRevision() !== revision) return { taskId: task.id, status: "unavailable" as const, cause: "inventory_changed" };
       return { taskId: task.id, taskCreated: task.created, status: "available" as const, scope: "declared_inventory" as const,
         deliverables: artifacts, claims: claims.map(claim => {
-          const binding = inventoryBinding(this.synthesisRows(claim.inventory.links), claim.inventory.complete);
-          return { claimId: claim.claimId, claimRevision: claim.claimRevision, complete: claim.inventory.complete,
+          const binding = inventoryBinding(this.synthesisRows(claim.inventory.links), claim.inventory.complete, claim.contradictionHistory);
+          return { claimId: claim.claimId, claimRevision: claim.claimRevision, complete: claim.inventory.complete && claim.contradictionHistory.complete,
             ...(binding ? { inventory: binding } : {}), evidence: this.synthesisRows(claim.inventory.links).map(({ link, status }) => ({ id: link.id, revision: link.revision, status })) };
         }) };
     });
@@ -5084,7 +5090,8 @@ export class Tasks {
       check(); const boardRevision = this.d.board.statusRevision(), task = this.synthesisTask(by, fields.taskId), taskId = task.id;
       if (this.synthesisPrivate(task, by)) return { taskId, status: "private" };
       const before = this.synthesisInventories(task), allLinks = before.flatMap(claim => claim.inventory.links);
-      const sources = this.synthesisSources(allLinks);
+      const privacyLinks = [...allLinks, ...before.flatMap(claim => claim.contradictionHistory.sources.map(sourceId => ({ sourceId })))];
+      const sources = this.synthesisSources(privacyLinks);
       if (sources.private) return { taskId, status: "private" };
       const activeLinks = allLinks.filter(link => link.status !== "withdrawn");
       if (this.synthesisSources(activeLinks).bytes > 64 * 1024 * 1024) return { taskId, status: "unavailable", cause: "source_input_limit" };
@@ -5099,7 +5106,7 @@ export class Tasks {
       };
       const changed = () => {
         check(); const now = this.synthesisTask(by, taskId);
-        if (this.synthesisPrivate(now, by) || this.synthesisSources(allLinks).private) return { taskId, status: "private" as const };
+        if (this.synthesisPrivate(now, by) || this.synthesisSources(privacyLinks).private) return { taskId, status: "private" as const };
         return { taskId, status: "stale" as const, cause: "context_changed" };
       };
       try { if (by !== USER) this.d.onReviewObserverInput?.(by); } catch { return { taskId, status: "unavailable", cause: "observer_unavailable" }; }
@@ -5143,21 +5150,23 @@ export class Tasks {
           resolutions.push({ id: link.id, revision: link.revision, status: resolution.status === "resolved" ? "resolved" : resolution.status === "stale" ? "stale" : "unavailable" });
         }
         const entry = task.history.findLast(entry => entry.by === USER && entry.event === "claim verdict" && entry.claim?.slot === claim.slot && entry.claim.list === claim.claimRevision)?.claim;
+        const verdict = entry && ["supported", "unsupported", "unclear"].includes(entry.verdict) ? entry.verdict : undefined;
         const synthesis = entry?.synthesis;
         observed.push({ claimId: claim.claimId, claimRevision: claim.claimRevision,
           inventory: { ...claim.inventory, links: this.synthesisRows(claim.inventory.links) },
-          resolutions, judgment: { present: !!entry, ...(synthesis ? synthesis : {}) } });
+          contradictionHistory: claim.contradictionHistory,
+          resolutions, judgment: { present: !!verdict, ...(verdict ? { verdict } : {}), ...(verdict && synthesis ? synthesis : {}) } });
       }
       const finalCurrent = () => {
         try {
-          if (!current() || this.synthesisSources(allLinks).key !== sources.key) return false;
+          if (!current() || this.synthesisSources(privacyLinks).key !== sources.key) return false;
           const fencedSources = new Set<string>();
           for (const link of activeLinks) if (!fencedSources.has(link.sourceId)) {
             fencedSources.add(link.sourceId);
             if (sourceKeys.get(link.sourceId) && this.d.evidenceSourceSnapshotKey?.(link) !== sourceKeys.get(link.sourceId)) return false;
           }
           if (reads.some(value => !guardedDeliverableCurrent(value.path, this.deliverablePorts(task, { failClosedOnDiscoveryLimit: true }), value.read))) return false;
-          return this.synthesisSources(allLinks).key === sources.key && current();
+          return this.synthesisSources(privacyLinks).key === sources.key && current();
         } catch { return false; }
       };
       if (!finalCurrent()) return changed();
@@ -5982,7 +5991,7 @@ export class Tasks {
         ...currentClaims.filter(claim => !manifest.claims.some(ref => ref.claimId === claim.claimId))];
       const claims = ordered.map(claim => {
         if (!claim.inventory) throw new Error("incomplete inventory");
-        const inventory = inventoryBinding(claim.inventory.links, claim.inventory.complete);
+        const inventory = inventoryBinding(claim.inventory.links, claim.inventory.complete, claim.contradictionHistory);
         if (!inventory) throw new Error("incomplete inventory");
         const links = claim.inventory.links.map(row => "link" in row ? row.link : row);
         const evidence = (manifest.claims.find(row => row.claimId === claim.claimId)?.evidence ?? []).map(ref => {
@@ -6017,7 +6026,10 @@ export class Tasks {
       return this.writeClaimVerdict(by, task.id, claim, { boardRevision, taskCreated: task.created, taskFlowRevision: task.history.length,
         claimRevision: taskClaimIdentity(task, claim.slot).claimRevision });
     });
-    if (!("history" in result)) throw new PreEffectToolRefusal("current synthesis is private, unavailable or changed; refresh public inputs before recording a disposition");
+    if (!("history" in result)) {
+      if ("cause" in result && result.cause === "source_input_limit") throw new PreEffectToolRefusal("synthesis source input exceeds the bounded check; split the task into smaller research tasks before recording a disposition");
+      throw new PreEffectToolRefusal("current synthesis is private, unavailable or changed; refresh public inputs before recording a disposition");
+    }
     return result;
   }
 

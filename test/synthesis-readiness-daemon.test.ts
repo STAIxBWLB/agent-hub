@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Board, taskClaimIdentity } from "../src/hub/board.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
-import { inventoryBinding, synthesisManifestHash } from "../src/hub/synthesis-readiness.ts";
+import { synthesisManifestHash } from "../src/hub/synthesis-readiness.ts";
 import { hashDeliverables } from "../src/hub/deliverable-files.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { realPath } from "../src/hub/project.ts";
@@ -39,7 +39,7 @@ test("#931 daemon keeps explicit synthesis reads console-only, current and close
     expect(JSON.stringify(view)).not.toContain("CLAIM_TEXT_CANARY");
     const identity = taskClaimIdentity(task, 1), manifest = { schemaVersion: 1, taskId: task.id, taskCreated: task.created,
       deliverable: { id: `d-${"0".repeat(12)}`, sha256: "0".repeat(64) }, bibliography: { id: `d-${"1".repeat(12)}`, sha256: "1".repeat(64) },
-      claims: [{ claimId: identity.claimId, claimRevision: identity.claimRevision, inventory: inventoryBinding([], true), evidence: [] }] };
+      claims: [{ claimId: identity.claimId, claimRevision: identity.claimRevision, inventory: view.claims[0].inventory, evidence: [] }] };
     const response = await call(person, "study_check", { taskId: task.id, manifest });
     expect(Boolean(response.ok), response.error).toBe(true);
     const result = JSON.parse(response.text);
@@ -59,7 +59,11 @@ test("#931 daemon keeps explicit synthesis reads console-only, current and close
     expect(plain.code, plain.stderr).toBe(1); expect(plain.stdout).toContain("structural/provenance only");
     const inventoryCli = await ahub("study", "evidence", "--task", String(task.id), "--json");
     expect(inventoryCli.code, inventoryCli.stderr).toBe(0); expect(JSON.parse(inventoryCli.stdout)).toEqual(view);
-    for (const op of ["study_evidence", "study_check"]) expect((await call(owner, op, { taskId: task.id, manifest })).ok).toBe(false);
+    for (const op of ["study_evidence", "study_check"]) {
+      const refusal = await call(owner, op, { taskId: task.id, manifest });
+      expect(refusal.ok).toBe(false); expect(refusal.error).toContain("console commands");
+      expect(refusal.error).toContain("ahub study"); expect(refusal.error).not.toContain("hub_study_");
+    }
     expect((await call(person, "study_check", { taskId: task.id, manifest, current: "SPOOFED_CANARY" })).ok).toBe(false);
     expect(board.statusRevision()).toBe(before);
     const synthesis = { manifestSha256: "a".repeat(64), disposition: "qualified" };

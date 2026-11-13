@@ -92,7 +92,9 @@ Its T1 authorization, revision and recovery boundaries are defined in
 Explicit synthesis checks bind the complete evidence inventory and registered
 deliverable hashes through that boundary, rechecking privacy and immutable
 provenance after asynchronous reads. Their separate readiness statuses certify
-structural provenance only; #901 retains person judgment. See
+structural provenance only; #901 retains person judgment. Append-only relation
+history prevents withdrawal/reclassification from silently erasing a contradiction;
+its current manifest still needs the person's explicit disposition. See
 [explicit synthesis readiness](task-board.md#explicit-synthesis-readiness-931-t3).
 
 ## Bounded visual attachments (#1058)

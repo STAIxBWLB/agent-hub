@@ -16,7 +16,7 @@ function fixture(rows: EvidenceLinkV1[] = [link()]) {
     deliverable: { id: "d-" + "1".repeat(12), sha256: hash(md) }, bibliography: { id: "d-" + "2".repeat(12), sha256: hash(bib) },
     claims: [{ claimId, claimRevision: REV, inventory: inventoryBinding(rows, true)!, evidence: [{ id: rows[0]!.id, revision: rows[0]!.revision, citationKey: "paper" }] }] };
   const claim: SynthesisCurrentClaim = { claimId, claimRevision: REV, inventory: { links: rows, complete: true },
-    resolutions: rows.map(row => ({ id: row.id, revision: row.revision, status: "resolved" })), judgment: { present: true } };
+    resolutions: rows.map(row => ({ id: row.id, revision: row.revision, status: "resolved" })), judgment: { present: true, verdict: "supported" } };
   const current: SynthesisCurrent = { taskId: 7, taskCreated: 123, deliverable: { ...manifest.deliverable, state: "unchanged", text: md },
     bibliography: { ...manifest.bibliography, state: "unchanged", text: bib }, claims: [claim] };
   return { manifest, current, claim, rows };
@@ -101,6 +101,15 @@ test("#931 ready means structural provenance only and a resolved bibliography al
   expect(noJudgment.status).toBe("not_ready");
 });
 
+test("#931 structural readiness reports the person's verdict class without treating it as truth certification", () => {
+  for (const verdict of ["supported", "unsupported", "unclear", undefined] as const) {
+    const f = fixture(); f.claim.judgment = { present: true, ...(verdict === undefined ? {} : { verdict }) };
+    const result = report(checkSynthesis(f.manifest, f.current));
+    expect(result.status).toBe("ready"); expect(result.scope).toBe("structural_provenance");
+    expect(result.claims[0]).toMatchObject({ judgment: "present", personVerdict: verdict ?? "unknown" });
+  }
+});
+
 test("#931 whole-report readiness requires every current declared claim in the manifest", () => {
   const f = fixture(), secondLink = { ...link("2"), claimId: "claim:7:123:2" };
   const second: SynthesisCurrentClaim = { claimId: secondLink.claimId, claimRevision: REV, inventory: { links: [secondLink], complete: true },
@@ -160,6 +169,7 @@ test("#931 revision, reclassification and withdrawal of even unselected links in
   for (const change of ["revision", "relation", "withdrawal"] as const) {
     const f = fixture([link(), link("2", "context")]), other = f.rows[1]!;
     f.claim.inventory = { complete: true, links: [f.rows[0]!, change === "withdrawal" ? { link: other, status: "withdrawn" } : { ...other, ...(change === "revision" ? { revision: 2 } : { relation: "contradicts" as const }) }] };
+    f.claim.contradictionHistory = { ids: change === "relation" ? [other.id] : [], complete: true };
     expect(checkSynthesis(f.manifest, f.current).status).toBe("stale");
   }
 });
@@ -185,8 +195,60 @@ test("#931 withdrawn inventory rows stay hash-bound without requiring active sou
   f.claim.inventory = { links: [f.rows[0]!, { link: f.rows[1]!, status: "withdrawn" }], complete: true };
   f.manifest.claims[0]!.inventory = inventoryBinding(f.claim.inventory.links, true)!;
   f.claim.resolutions = [{ id: f.rows[0]!.id, revision: 1, status: "resolved" }];
+  f.claim.contradictionHistory = { ids: [f.rows[1]!.id], complete: true };
   const result = report(checkSynthesis(f.manifest, f.current));
-  expect(result.status).toBe("ready"); expect(result.claims[0]).toMatchObject({ inventory: "current", provenance: "resolved", locator: "resolved", contradiction: "none" });
+  expect(result.status).toBe("not_ready"); expect(result.claims[0]).toMatchObject({ inventory: "current", provenance: "resolved", locator: "resolved", contradiction: "withdrawn", contradictionHistory: "complete" });
+  f.claim.judgment = { present: true, verdict: "supported", manifestSha256: synthesisManifestHash(f.manifest), disposition: "resolved" };
+  expect(checkSynthesis(f.manifest, f.current).status).toBe("ready");
+});
+
+test("#931 withdrawn or reclassified historical counterevidence requires exact current-manifest person resolution", () => {
+  for (const kind of ["withdrawn", "reclassified"] as const) for (const disposition of ["resolved", "qualified"] as const) {
+    const f = fixture([link(), link("2", "contradicts")]), counter = f.rows[1]!;
+    const revised: EvidenceLinkV1 = { ...counter, revision: 2, ...(kind === "withdrawn" ? { status: "withdrawn" as const } : { relation: "context" as const }) };
+    f.claim.inventory = { complete: true, links: [f.rows[0]!, revised] };
+    f.claim.contradictionHistory = { ids: [counter.id], complete: true };
+    f.claim.resolutions = [{ id: f.rows[0]!.id, revision: 1, status: "resolved" },
+      ...(kind === "reclassified" ? [{ id: counter.id, revision: 2, status: "resolved" as const }] : [])];
+    f.manifest.claims[0]!.inventory = inventoryBinding(f.claim.inventory.links, true)!;
+    const unresolved = report(checkSynthesis(f.manifest, f.current));
+    expect(unresolved.status).toBe("not_ready"); expect(unresolved.claims[0]?.contradiction).toBe("withdrawn");
+    expect(unresolved.next).toContain("resolve_contradiction");
+    f.claim.judgment = { present: true, verdict: "supported", manifestSha256: "f".repeat(64), disposition };
+    expect(checkSynthesis(f.manifest, f.current).status).toBe("not_ready");
+    f.claim.judgment.manifestSha256 = synthesisManifestHash(f.manifest);
+    const resolved = report(checkSynthesis(f.manifest, f.current));
+    expect(resolved.status).toBe("ready"); expect(resolved.claims[0]?.contradiction).toBe(disposition);
+    f.claim.judgment.present = false;
+    expect(checkSynthesis(f.manifest, f.current).status).not.toBe("ready");
+    f.claim.judgment = undefined;
+    expect(checkSynthesis(f.manifest, f.current).status).toBe("unknown");
+    f.manifest.claims[0]!.inventory = inventoryBinding([f.rows[0]!, counter], true)!;
+    f.claim.judgment = { present: true, verdict: "supported", manifestSha256: synthesisManifestHash(f.manifest), disposition };
+    const stale = report(checkSynthesis(f.manifest, f.current));
+    expect(stale.status).toBe("stale"); expect(stale.claims[0]?.contradiction).toBe("withdrawn");
+  }
+});
+
+test("#931 later revisions require complete valid host contradiction history even with a current person disposition", () => {
+  const revised = { ...link("2", "context"), revision: 2 };
+  for (const history of [undefined, { ids: [], complete: false }, { ids: ["not-an-evidence-id"], complete: true },
+    { ids: [revised.id, revised.id], complete: true }, { ids: ["ev:" + "f".repeat(32)], complete: true }]) {
+    const f = fixture([link(), revised]);
+    f.claim.contradictionHistory = history;
+    f.claim.judgment = { present: true, verdict: "supported", manifestSha256: synthesisManifestHash(f.manifest), disposition: "resolved" };
+    const result = report(checkSynthesis(f.manifest, f.current));
+    expect(result.status).toBe("unknown"); expect(result.binding).toBe("unknown");
+    expect(result.claims[0]).toMatchObject({ contradictionHistory: "unknown", contradiction: "unknown" });
+    expect(result.next).toContain("read_complete_inventory");
+  }
+  const active = fixture([link(), { ...link("2", "contradicts"), revision: 2 }]);
+  active.claim.contradictionHistory = { ids: [], complete: true };
+  expect(checkSynthesis(active.manifest, active.current).status).toBe("unknown");
+  const neverContradicted = fixture([link(), revised]);
+  neverContradicted.claim.contradictionHistory = { ids: [], complete: true };
+  const ready = report(checkSynthesis(neverContradicted.manifest, neverContradicted.current));
+  expect(ready.status).toBe("ready"); expect(ready.claims[0]?.contradiction).toBe("none");
 });
 
 test("#931 changed claim, source projection/locator and final artifact cannot retain readiness", () => {

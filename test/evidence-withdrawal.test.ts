@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { evidenceLinkCanonical, evidenceLinkId, parseEvidenceLink, parseEvidenceRecord, type EvidenceLinkV1, type EvidenceRecordInput } from "../src/hub/research-evidence.ts";
-import { checkSynthesis, inventoryBinding, type SynthesisCurrent, type SynthesisManifestV1 } from "../src/hub/synthesis-readiness.ts";
+import { checkSynthesis, inventoryBinding, synthesisManifestHash, type SynthesisCurrent, type SynthesisManifestV1 } from "../src/hub/synthesis-readiness.ts";
 
 const claimRevision = "a".repeat(16), raw = "b".repeat(64), projection = "c".repeat(64), sourceId = "src:" + "d".repeat(16), id = "ev:" + "1".repeat(32);
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -64,14 +64,17 @@ test("#931 stored withdrawn unselected links stay inventory-bound but need no ac
     claims: [{ claimId: support.claimId, claimRevision, inventory: inventoryBinding([support, counter], true)!, evidence: [{ id: support.id, revision: 1, citationKey: "paper" }] }] };
   const current: SynthesisCurrent = { taskId: 7, taskCreated: 123, deliverable: { ...manifest.deliverable, state: "unchanged", text: md },
     bibliography: { ...manifest.bibliography, state: "unchanged", text: bib }, claims: [{ claimId: support.claimId, claimRevision,
-      inventory: { links: [support, withdrawn], complete: true }, resolutions: [{ id: support.id, revision: 1, status: "resolved" }], judgment: { present: true } }] };
+      inventory: { links: [support, withdrawn], complete: true }, contradictionHistory: { ids: [counter.id], complete: true },
+      resolutions: [{ id: support.id, revision: 1, status: "resolved" }], judgment: { present: true, verdict: "supported" } }] };
   const stale = checkSynthesis(manifest, current);
   expect(stale.status).toBe("stale");
   manifest.claims[0]!.inventory = inventoryBinding([support, withdrawn], true)!;
-  const ready = checkSynthesis(manifest, current);
-  expect(ready.status).toBe("ready");
-  if (!("claims" in ready)) throw new Error("expected public structural statuses");
-  expect(ready.claims[0]).toMatchObject({ inventory: "current", provenance: "resolved", locator: "resolved", contradiction: "none" });
+  const unresolved = checkSynthesis(manifest, current);
+  expect(unresolved.status).toBe("not_ready");
+  if (!("claims" in unresolved)) throw new Error("expected public structural statuses");
+  expect(unresolved.claims[0]).toMatchObject({ inventory: "current", provenance: "resolved", locator: "resolved", contradiction: "withdrawn" });
+  current.claims![0]!.judgment = { present: true, verdict: "supported", manifestSha256: synthesisManifestHash(manifest), disposition: "resolved" };
+  expect(checkSynthesis(manifest, current).status).toBe("ready");
   manifest.claims[0]!.evidence = [{ id: withdrawn.id, revision: 2, citationKey: "paper" }];
   expect(checkSynthesis(manifest, current).status).not.toBe("ready");
 });

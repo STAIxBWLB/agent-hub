@@ -12605,6 +12605,7 @@ export async function startDaemon(opts: DaemonOptions) {
           catch { return void reply({ t: "task", ok: false, error: "public release read unavailable" }); }
         }
         // #601: ahub study is the person's. A tools connection (any agent) may use the hub_study_* tools, never these op names, whatever Tasks would answer.
+        if ((msg.op === "study_evidence" || msg.op === "study_check") && c.role !== "console") return void reply({ t: "task", ok: false, error: "task inventory and synthesis checks are console commands; ask the person to run ahub study evidence --task or ahub study check; a single link is readable through hub_evidence_read" });
         if (String(msg.op).startsWith("study_") && c.role !== "console") return void reply({ t: "task", ok: false, error: "ahub study draft, revise, approve and close are console commands; agents use the hub_study_* tools" });
         if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
         if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: msg.op === "hub_visual" || msg.op === "hub_visual_show" ? visualOperational("recovery").message : "recovery is holding mutations" });

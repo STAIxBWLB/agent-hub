@@ -43,10 +43,11 @@ test("#931 real CLI rejects invalid manifest descriptors and paired judgment fla
       writeFileSync(join(root, name!), text!);
       const result = await ahub("study", "check", "7", name!);
       expect(result.code).toBe(1); expect(result.text).toContain(reason!); expect(result.text).not.toContain("hub is not running");
+      if (name !== "invalid.json") expect(result.text).toContain("manifest file");
     }
     symlinkSync(join(root, "invalid.json"), join(root, "linked.json"));
     const symlink = await ahub("study", "check", "7", "linked.json");
-    expect(symlink.code).toBe(1); expect(symlink.text).toContain("cannot read the contract file");
+    expect(symlink.code).toBe(1); expect(symlink.text).toContain("cannot read the manifest file");
     const flags = await ahub("task", "claim", "7", "1", "supported", "--manifest", "a".repeat(64));
     expect(flags.code).toBe(1); expect(flags.text).toContain("--disposition"); expect(flags.text).not.toContain("hub is not running");
   } finally { rmSync(root, { recursive: true, force: true }); }

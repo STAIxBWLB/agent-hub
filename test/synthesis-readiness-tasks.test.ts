@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Database } from "bun:sqlite";
 import { Board, taskClaimIdentity } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
@@ -206,6 +207,19 @@ test("#931 an inventory write after the snapshot is refused atomically before pe
   expect((await f.check(manifest)).status).toBe("stale");
 });
 
+for (const change of ["withdrawn", "context"] as const) test(`#931 owner ${change} cannot erase historical counterevidence without a person disposition`, async () => {
+  const f = await fixture(), counter = await f.tasks.evidenceRecord("codex", f.input(1, "contradicts"));
+  await f.tasks.evidenceRecord("codex", { ...f.input(1, change === "context" ? "context" : "contradicts"), id: counter.id, revision: 2,
+    ...(change === "withdrawn" ? { status: "withdrawn" as const } : {}) });
+  const manifest = await f.manifest(), result = await f.check(manifest);
+  expect(result.status).toBe("not_ready");
+  if (!("claims" in result)) throw new Error("expected independent contradiction status");
+  expect(result.claims[0]?.contradiction).toBe("withdrawn");
+  await f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis: {
+    manifestSha256: synthesisManifestHash(manifest), disposition: "resolved" } }, manifest);
+  expect((await f.check(manifest)).status).toBe("ready");
+});
+
 test("#931 withdrawal appends a revision, stales prior inventory and preserves historical public readback", async () => {
   const f = await fixture(), counter = await f.tasks.evidenceRecord("codex", f.input(1, "contradicts"));
   const manifest = await f.manifest();
@@ -217,10 +231,76 @@ test("#931 withdrawal appends a revision, stales prior inventory and preserves h
   expect(await f.tasks.evidenceRead("codex", { id: counter.id })).toEqual({ ...withdrawn, status: "withdrawn" });
   expect((await f.tasks.evidenceRead("codex", { id: counter.id, revision: 1 })).status).toBe("resolved");
   expect((await f.check(manifest)).status).toBe("stale");
-  const refreshed = await f.check(await f.manifest());
-  expect(refreshed.status).toBe("ready");
+  const currentManifest = await f.manifest(), refreshed = await f.check(currentManifest);
+  expect(refreshed.status).toBe("not_ready");
   if (!("claims" in refreshed)) throw new Error("expected current withdrawal inventory");
-  expect(refreshed.claims[0]?.contradiction).toBe("none");
+  expect(refreshed.claims[0]?.contradiction).toBe("withdrawn");
+  await f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis: {
+    manifestSha256: synthesisManifestHash(currentManifest), disposition: "qualified" } }, currentManifest);
+  expect((await f.check(currentManifest)).status).toBe("ready");
+});
+
+test("#931 claim-list restoration cannot hide counterevidence moved to another claim revision", async () => {
+  const f = await fixture(), original = f.board.get(f.task.id)!.plan!.claims!, counter = await f.tasks.evidenceRecord("codex", f.input(1, "contradicts"));
+  f.tasks.accept("codex", f.task.id, { claims: ["temporary revised statement"] });
+  await f.tasks.evidenceRecord("codex", { ...f.input(1, "context"), id: counter.id, revision: 2 });
+  f.tasks.accept("codex", f.task.id, { claims: original });
+  const manifest = await f.manifest(), result = await f.check(manifest);
+  expect(result.status).toBe("not_ready");
+  if (!("claims" in result)) throw new Error("expected historical contradiction status");
+  expect(result.claims[0]?.contradiction).toBe("withdrawn");
+  await f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis: {
+    manifestSha256: synthesisManifestHash(manifest), disposition: "resolved" } }, manifest);
+  expect((await f.check(manifest)).status).toBe("ready");
+  f.tasks.accept("codex", f.task.id, { claims: ["temporary revised statement"] });
+  await f.tasks.evidenceRecord("codex", { ...f.input(1, "context"), id: counter.id, revision: 3 });
+  f.tasks.accept("codex", f.task.id, { claims: original });
+  expect((await f.check(manifest)).status).toBe("stale");
+  expect((await f.check(await f.manifest())).status).toBe("not_ready");
+});
+
+test("#931 missing immutable counterevidence history is unknown, never silently cleared", async () => {
+  const f = await fixture(), counter = await f.tasks.evidenceRecord("codex", f.input(1, "contradicts"));
+  await f.tasks.evidenceRecord("codex", { ...f.input(1, "context"), id: counter.id, revision: 2 });
+  const manifest = await f.manifest(), db = new Database(join(f.cwd, "hub.db"));
+  try { db.query("DELETE FROM research_evidence_links WHERE project=? AND id=? AND revision=1").run("synthesis-fixture", counter.id); }
+  finally { db.close(); }
+  const result = await f.check(manifest);
+  expect(result.status).toBe("unknown");
+  if (!("claims" in result)) throw new Error("expected history status");
+  expect(result.claims[0]?.contradictionHistory).toBe("unknown"); expect(result.claims[0]?.contradiction).toBe("unknown");
+  await expect(f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis: {
+    manifestSha256: synthesisManifestHash(manifest), disposition: "resolved" } }, manifest)).rejects.toThrow(/unavailable|stale/);
+});
+
+test("#931 historical source privacy remains current after an owner repoints counterevidence", async () => {
+  for (const during of [false, true]) {
+    const f = await fixture(), counter = await f.tasks.evidenceRecord("codex", f.input(1, "contradicts"));
+    await f.tasks.evidenceRecord("codex", { ...f.input(0, "context"), id: counter.id, revision: 2 });
+    const manifest = await f.manifest();
+    if (during) f.control.screen = async () => { f.registry.markPrivate(f.sources[1]!.id); };
+    else f.registry.markPrivate(f.sources[1]!.id);
+    expect(await f.check(manifest)).toEqual({ taskId: f.task.id, status: "private" });
+  }
+});
+
+test("#931 person verdict class is explicit while readiness remains structural", async () => {
+  const f = await fixture(), manifest = await f.manifest();
+  for (const verdict of ["supported", "unsupported", "unclear"] as const) {
+    f.tasks.recordClaimVerdict("user", f.task.id, { slot: 1, verdict });
+    const result = await f.check(manifest);
+    expect(result.status).toBe("ready");
+    if (!("claims" in result)) throw new Error("expected verdict class");
+    expect(result.claims[0]?.personVerdict).toBe(verdict);
+  }
+});
+
+test("#931 person disposition input ceiling names splitting the task before any write", async () => {
+  const f = await fixture(), manifest = await f.manifest(), meta = f.deps.evidenceSourceMeta!, before = f.board.statusRevision();
+  f.deps.evidenceSourceMeta = id => { const row = meta(id); return row ? { ...row, bytes: 64 * 1024 * 1024 + 1 } : undefined; };
+  await expect(f.tasks.recordSynthesisClaimVerdict("user", f.task.id, { slot: 1, verdict: "supported", synthesis: {
+    manifestSha256: synthesisManifestHash(manifest), disposition: "resolved" } }, manifest)).rejects.toThrow("split the task");
+  expect(f.board.statusRevision()).toBe(before);
 });
 
 test("#931 owner and person withdrawal on a closed task name the follow-up-task next step", async () => {

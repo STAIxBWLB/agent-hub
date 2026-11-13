@@ -166,6 +166,7 @@ export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "sum
 export type TaskClass = (typeof CLASSES)[number];
 /** #1403 A4: one security audit as stored. `units` is the ledger; it changes only through `Board.auditReport`. */
 export interface StoredAudit { id: number; task: number; taskCreated: number; ref: string; since?: string; profile: AuditProfile; scoped: boolean; at: number; by: string; units: AuditUnit[] }
+const EVIDENCE_HISTORY_WINDOW = 1024;
 export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "approved" | "changes_requested" | "cancelled";
 
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
@@ -1103,6 +1104,42 @@ export class Board {
     });
     // ponytail: the task-wide cap can make a smaller claim inventory unknown; a claim-indexed validated read is the upgrade path.
     return { links, complete: rows.length <= limit };
+  }
+
+  /** Verified immutable relation history, never a second judgment store. */
+  evidenceContradictionHistory(project: string, taskId: number, claimId: string, claimRevision: string, links: readonly EvidenceLinkV1[]): { ids: string[]; sources: string[]; members: string[]; binding?: { revision: number; sha256: string }; complete: boolean } {
+    if (!researchText(project) || !researchInteger(taskId) || !/^claim:[1-9][0-9]{0,15}:(?:0|[1-9][0-9]{0,15}):[1-9][0-9]?$/.test(claimId)
+      || !/^[a-f0-9]{16}$/.test(claimRevision) || links.length > 128 || new Set(links.map(link => link.id)).size !== links.length
+      || links.some(link => link.taskId !== taskId || link.claimId !== claimId || link.claimRevision !== claimRevision)) throw new Error("evidence history identity invalid; refresh the complete inventory");
+    const unknown = { ids: [] as string[], sources: [] as string[], members: [] as string[], complete: false };
+    const taskRows = this.db.query("SELECT id,MAX(revision) AS revision FROM research_evidence_links WHERE project=? AND task_id=? GROUP BY id ORDER BY id LIMIT ?")
+      .all(project, taskId, 129) as { id: string; revision: number }[];
+    if (taskRows.length > 128) return unknown;
+    const latest = taskRows.map(row => {
+      const link = this.evidenceLink(project, row.id, row.revision);
+      if (!link || link.taskId !== taskId) throw new Error("evidence inventory changed; refresh its history");
+      return link;
+    }).filter(link => link.claimId === claimId);
+    const current = latest.filter(link => link.claimRevision === claimRevision);
+    if (current.length !== links.length || current.some(link => !links.some(given => evidenceLinkCanonical(given) === evidenceLinkCanonical(link)))) throw new Error("evidence inventory changed; refresh its history");
+    const revisions = latest.reduce((count, link) => count + link.revision, 0);
+    // ponytail: above 1024 owned revisions, history is unknown. Upgrade to paged verified history commitments before widening this window.
+    if (!Number.isSafeInteger(revisions) || revisions > EVIDENCE_HISTORY_WINDOW) return unknown;
+    const rows = latest.length ? this.db.query(`SELECT id,revision FROM research_evidence_links WHERE project=? AND task_id=? AND id IN (${latest.map(() => "?").join(",")}) ORDER BY id,revision LIMIT ?`)
+      .all(project, taskId, ...latest.map(link => link.id), EVIDENCE_HISTORY_WINDOW + 1) as { id: string; revision: number }[] : [];
+    if (rows.length > EVIDENCE_HISTORY_WINDOW) return unknown;
+    const seen = new Map<string, number>(), contradicted = new Set<string>(), sources = new Set<string>(), canonical: string[] = [];
+    for (const row of rows) {
+      const last = latest.find(link => link.id === row.id), prior = this.evidenceLink(project, row.id, row.revision);
+      if (!last || !prior || prior.taskId !== taskId || prior.claimId !== claimId || row.revision !== (seen.get(row.id) ?? 0) + 1 || row.revision > last.revision)
+        throw new Error("evidence history is incomplete or changed; restore trusted evidence storage and retry");
+      seen.set(row.id, row.revision); sources.add(prior.sourceId); canonical.push(evidenceLinkCanonical(prior));
+      if (prior.relation === "contradicts") contradicted.add(row.id);
+      if (row.revision === last.revision && evidenceLinkCanonical(prior) !== evidenceLinkCanonical(last)) throw new Error("evidence inventory changed; refresh its history before retrying");
+    }
+    if (latest.some(link => seen.get(link.id) !== link.revision)) throw new Error("evidence history is incomplete; restore trusted evidence storage and retry");
+    const sha256 = createHash("sha256").update(JSON.stringify({ project, taskId, claimId, rows: canonical })).digest("hex");
+    return { ids: [...contradicted].sort(), sources: [...sources].sort(), members: latest.map(link => link.id), binding: { revision: revisions, sha256 }, complete: true };
   }
 
   recordEvidenceLink(project: string, input: EvidenceLinkV1, fence: { taskFlowRevision: number; taskCreated: number; owner: PeerId; personWithdrawal?: true }): EvidenceLinkV1 {

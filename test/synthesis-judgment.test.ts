@@ -55,17 +55,25 @@ test("#901 parsed person disposition closes only the exact currently bound struc
     claims: [{ claimId: support.claimId, claimRevision, inventory: inventoryBinding([support, counter], true)!, evidence: [{ id: support.id, revision: 1, citationKey: "paper" }] }] };
   const current: SynthesisCurrent = { taskId: 7, taskCreated: 123, deliverable: { ...manifest.deliverable, state: "unchanged", text: md },
     bibliography: { ...manifest.bibliography, state: "unchanged", text: bib }, claims: [{ claimId: support.claimId, claimRevision,
-      inventory: { links: [support, counter], complete: true }, resolutions: [support, counter].map(link => ({ id: link.id, revision: 1, status: "resolved" as const })), judgment: { present: true } }] };
+      inventory: { links: [support, counter], complete: true }, resolutions: [support, counter].map(link => ({ id: link.id, revision: 1, status: "resolved" as const })), judgment: { present: true, verdict: "supported" } }] };
   expect(checkSynthesis(manifest, current).status).toBe("not_ready"); // A legacy supported verdict never closes declared counterevidence.
   const verdict = parseClaimVerdict({ slot: 1, verdict: "supported", synthesis: { manifestSha256: synthesisManifestHash(manifest), disposition: "qualified" } }, 1);
-  current.claims![0]!.judgment = { present: true, ...verdict.synthesis };
+  current.claims![0]!.judgment = { present: true, verdict: verdict.verdict, ...verdict.synthesis };
   const ready = checkSynthesis(manifest, current);
   expect(ready.status).toBe("ready");
   if (!("claims" in ready)) throw new Error("expected separate human/provenance statuses");
-  expect(ready.claims[0]).toMatchObject({ judgment: "present", contradiction: "qualified", provenance: "resolved" });
+  expect(ready.claims[0]).toMatchObject({ judgment: "present", personVerdict: "supported", contradiction: "qualified", provenance: "resolved" });
   current.claims![0]!.judgment = { present: true, ...verdict.synthesis, manifestSha256: "f".repeat(64) };
   const stalePersonBinding = checkSynthesis(manifest, current);
   expect(stalePersonBinding.status).toBe("not_ready");
   if (!("claims" in stalePersonBinding)) throw new Error("expected contradiction status");
   expect(stalePersonBinding.claims[0]?.contradiction).toBe("open");
+  for (const personVerdict of ["supported", "unsupported", "unclear"] as const) {
+    current.claims![0]!.judgment = { present: true, verdict: personVerdict, ...verdict.synthesis };
+    const structural = checkSynthesis(manifest, current);
+    expect(structural.status).toBe("ready");
+    if (!("claims" in structural)) throw new Error("expected independently reported person verdict");
+    expect(structural.claims[0]?.personVerdict).toBe(personVerdict);
+    expect(structural.scope).toBe("structural_provenance");
+  }
 });

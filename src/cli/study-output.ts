@@ -174,7 +174,7 @@ export function renderSynthesisReadiness(value: unknown, columns?: number): Span
   out.push(...pair("citations", `${v.citations?.state} (cited ${v.citations?.cited ?? "unknown"}, missing ${v.citations?.missing ?? "unknown"})`, columns, 12));
   for (const claim of list(v.claims)) {
     out.push(...heading(claim.claimId, columns));
-    for (const key of ["claim", "inventory", "citationKey", "evidenceLink", "locator", "provenance", "judgment", "contradiction"]) out.push(...pair(key, claim[key], columns, 14));
+    for (const key of ["claim", "inventory", "citationKey", "evidenceLink", "locator", "provenance", "judgment", "personVerdict", "contradictionHistory", "contradiction"]) out.push(...pair(key, claim[key], columns, 14));
   }
   for (const next of list(v.next)) out.push(...pair("next", SYNTHESIS_NEXT[next] ?? "inspect the current manifest bindings", columns, 12, "attention"));
   return out;

@@ -108,8 +108,10 @@ structural/provenance readiness for the complete declared claim list, not
 truth, entailment, source quality or independent corroboration. Changing a
 claim, artifact, projection/converter or any inventory link invalidates the
 earlier binding, including unselected counterevidence. Missing, private,
-truncated or unavailable inputs cannot produce ready. Non-ready exits 1;
-JSON and text report the same statuses. This check runs only on explicit
+truncated or unavailable inputs cannot produce ready. Non-ready exits 1.
+The report shows the person verdict class (`supported`, `unsupported`,
+`unclear`) separately. All count as a recorded assessment; ready does not mean
+supported. JSON and text report the same statuses. This check runs only on explicit
 invocation. The existing `scripts/check-citations.ts` mode is unchanged.
 The manifest is capped at 64 KiB, 50 claims, 128 selected links total and
 128 ASCII characters per citation key. Existing latest-inventory reads use a
@@ -122,6 +124,13 @@ and `status: "withdrawn"` through `hub_evidence_record`. Omitting status means
 active; an explicit `active` normalizes to omission. Prior revisions remain
 retained. Latest readback names withdrawal without returning a passage. A
 withdrawal remains part of the complete inventory hash.
+A former `contradicts` link stays a `withdrawn` contradiction after withdrawal
+or reclassification. An earlier plain verdict cannot clear it: a person must
+resolve or qualify the current manifest. History is verified within 1,024 rows
+per claim; incomplete or unavailable history cannot establish ready. Historical
+source privacy is rechecked too. History across claim versions of the same
+claimId is committed into the inventory hash; restoring an older claim list
+cannot hide counterevidence moved to another version.
 The task must still be in progress and public, including for a person. A closed
 task's evidence stays final; open a follow-up research task for corrections and
 create its own manifest instead of reusing the earlier task's binding.

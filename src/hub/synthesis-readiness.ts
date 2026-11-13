@@ -5,6 +5,7 @@ import { evidenceLinkCanonical, parseEvidenceLink, type EvidenceLinkV1 } from ".
 
 export const SYNTHESIS_LIMITS = Object.freeze({ manifestBytes: 64 * 1024, claims: 50, links: 128, citationKeyChars: 128 });
 export interface SynthesisInventoryBinding { revision: number; sha256: string }
+export interface SynthesisContradictionHistory { ids: readonly string[]; complete: boolean; members?: readonly string[]; binding?: SynthesisInventoryBinding }
 export interface SynthesisManifestClaim {
   claimId: string;
   claimRevision: string;
@@ -32,9 +33,10 @@ export interface SynthesisCurrentClaim {
   claimId: string;
   claimRevision: string;
   inventory?: { links: readonly SynthesisInventoryLink[]; complete: boolean };
+  contradictionHistory?: SynthesisContradictionHistory;
   resolutions?: readonly { id: string; revision: number; status: "resolved" | "stale" | "unavailable" | "private" | "withdrawn" }[];
   /** Host-observed person authority, never a manifest field or a model's relation label. */
-  judgment?: { present: boolean; manifestSha256?: string; disposition?: "resolved" | "qualified" };
+  judgment?: { present: boolean; verdict?: "supported" | "unsupported" | "unclear"; manifestSha256?: string; disposition?: "resolved" | "qualified" };
 }
 /** Host-screened call-scoped observations only; never deserialize this interface from a tool caller. */
 export interface SynthesisCurrent {
@@ -57,7 +59,9 @@ export interface SynthesisClaimReadiness {
   /** Fresh source/projection provenance for every active inventory row, including unselected counterevidence. */
   provenance: "resolved" | "stale" | "unavailable" | "unknown";
   judgment: "present" | "missing" | "unknown";
-  contradiction: "none" | "open" | "resolved" | "qualified" | "unknown";
+  personVerdict: "supported" | "unsupported" | "unclear" | "unknown";
+  contradictionHistory: "complete" | "unknown";
+  contradiction: "none" | "open" | "withdrawn" | "resolved" | "qualified" | "unknown";
   selected: number;
   next: SynthesisNext[];
 }
@@ -149,12 +153,19 @@ function inventoryRows(latest: readonly SynthesisInventoryLink[], complete: bool
   } catch { return undefined; }
 }
 /** Complete latest inventory only, including unselected counterevidence and explicit host withdrawal states. */
-export function inventoryBinding(latest: readonly SynthesisInventoryLink[], complete: boolean): SynthesisInventoryBinding | undefined {
+export function inventoryBinding(latest: readonly SynthesisInventoryLink[], complete: boolean, history?: SynthesisContradictionHistory): SynthesisInventoryBinding | undefined {
   const rows = inventoryRows(latest, complete); if (!rows) return undefined;
   let revision = 0;
   for (const row of rows) { revision += row.link.revision; if (!Number.isSafeInteger(revision)) return undefined; }
   const canonical = rows.sort((a, b) => (a.link.id < b.link.id ? -1 : a.link.id > b.link.id ? 1 : a.link.revision - b.link.revision))
     .map(row => ({ link: evidenceLinkCanonical(row.link), status: row.status }));
+  if (history) {
+    if (history.complete !== true) return undefined;
+    if (history.binding) {
+      if (!Number.isSafeInteger(history.binding.revision) || history.binding.revision < revision || !HASH.test(history.binding.sha256)) return undefined;
+      return { revision: history.binding.revision, sha256: sha(JSON.stringify({ latest: canonical, history: history.binding })) };
+    }
+  }
   return { revision, sha256: sha(JSON.stringify(canonical)) };
 }
 
@@ -207,7 +218,7 @@ export function checkSynthesis(input: unknown, current: SynthesisCurrent): Synth
     const identity = !sameTask || observed && observed.claimRevision !== claim.claimRevision ? "stale" : observed ? "current" : "unknown";
     const rows = observed?.inventory && identity === "current" ? inventoryRows(observed.inventory.links, observed.inventory.complete) : undefined;
     const matching = rows?.every(row => row.link.claimId === claim.claimId && row.link.claimRevision === claim.claimRevision && row.link.taskId === manifest.taskId);
-    const binding = observed?.inventory && matching ? inventoryBinding(observed.inventory.links, observed.inventory.complete) : undefined;
+    const binding = observed?.inventory && matching ? inventoryBinding(observed.inventory.links, observed.inventory.complete, observed.contradictionHistory) : undefined;
     const inventory = identity === "stale" ? "stale" : !binding ? "unknown" : binding.revision === claim.inventory.revision && binding.sha256 === claim.inventory.sha256 ? "current" : "stale";
     let evidenceLink: SynthesisClaimReadiness["evidenceLink"] = rows && matching ? "present" : "unknown";
     let locator: SynthesisClaimReadiness["locator"] = "resolved";
@@ -228,24 +239,40 @@ export function checkSynthesis(input: unknown, current: SynthesisCurrent): Synth
     }
     const citationKey = citations.state === "unknown" ? "unknown" : claim.evidence.length && claim.evidence.every(ref => cited.has(ref.citationKey) && !missing.has(ref.citationKey)) ? "resolved" : "missing";
     const judgment = observed?.judgment?.present === true ? "present" : observed?.judgment?.present === false ? "missing" : "unknown";
-    let contradiction: SynthesisClaimReadiness["contradiction"] = !rows || !matching ? "unknown" : rows.some(row => row.status === "active" && row.link.relation === "contradicts") ? "open" : "none";
-    if (contradiction === "open" && identity === "current" && inventory === "current" && evidenceLink === "present" && locator === "resolved" && provenance === "resolved"
+    const personVerdict = judgment === "present" && ["supported", "unsupported", "unclear"].includes(observed?.judgment?.verdict ?? "") ? observed!.judgment!.verdict! : "unknown";
+    const ever = new Set((rows ?? []).filter(row => row.link.relation === "contradicts").map(row => row.link.id));
+    let contradictionHistory: SynthesisClaimReadiness["contradictionHistory"] = rows && matching && rows.every(row => row.link.revision === 1) ? "complete" : "unknown";
+    if (observed?.contradictionHistory) {
+      try {
+        const history = observed.contradictionHistory, ids = array(history.ids, SYNTHESIS_LIMITS.links).map(id => token(id, LINK));
+        const members = history.members === undefined ? (rows ?? []).map(row => row.link.id) : array(history.members, SYNTHESIS_LIMITS.links).map(id => token(id, LINK));
+        if (history.complete === true && new Set(ids).size === ids.length && new Set(members).size === members.length
+          && ids.every(id => members.includes(id)) && rows?.every(row => members.includes(row.link.id)) && [...ever].every(id => ids.includes(id))) {
+          for (const id of ids) ever.add(id); contradictionHistory = rows && matching ? "complete" : "unknown";
+        } else contradictionHistory = "unknown";
+      } catch { contradictionHistory = "unknown"; }
+    }
+    let contradiction: SynthesisClaimReadiness["contradiction"] = contradictionHistory !== "complete" ? "unknown"
+      : rows!.some(row => row.status === "active" && row.link.relation === "contradicts") ? "open"
+      : ever.size ? "withdrawn" : "none";
+    if ((contradiction === "open" || contradiction === "withdrawn") && identity === "current" && inventory === "current" && evidenceLink === "present" && locator === "resolved" && provenance === "resolved"
       && deliverable === "unchanged" && bibliography === "unchanged"
       && judgment === "present" && observed?.judgment?.manifestSha256 === manifestSha256
       && (observed.judgment.disposition === "resolved" || observed.judgment.disposition === "qualified")) contradiction = observed.judgment.disposition;
     const next: SynthesisNext[] = [];
     if (identity === "stale" || inventory === "stale" || evidenceLink === "stale") next.push("refresh_manifest");
     if (inventory === "unknown") next.push("read_complete_inventory");
+    if (contradictionHistory === "unknown") next.push("read_complete_inventory");
     if (citationKey !== "resolved") next.push("repair_citations");
     if (evidenceLink !== "present") next.push("record_evidence");
     if (locator !== "resolved" || provenance !== "resolved") next.push("resolve_locator");
     if (judgment !== "present") next.push("record_person_judgment");
-    if (contradiction === "open" || contradiction === "unknown") next.push("resolve_contradiction");
-    return { claimId: claim.claimId, claimRevision: claim.claimRevision, claim: identity, inventory, citationKey, evidenceLink, locator, provenance, judgment, contradiction, selected: claim.evidence.length, next: unique(next) };
+    if (contradiction === "open" || contradiction === "withdrawn" || contradiction === "unknown") next.push("resolve_contradiction");
+    return { claimId: claim.claimId, claimRevision: claim.claimRevision, claim: identity, inventory, citationKey, evidenceLink, locator, provenance, judgment, personVerdict, contradictionHistory, contradiction, selected: claim.evidence.length, next: unique(next) };
   });
   const stale = !sameTask || deliverable === "changed" || bibliography === "changed" || claims.some(row => row.claim === "stale" || row.inventory === "stale" || row.evidenceLink === "stale" || row.locator === "stale" || row.provenance === "stale");
   const unknown = claimCoverage === "unknown" || deliverable === "unknown" || bibliography === "unknown" || citations.state === "unknown" || claims.some(row => row.claim === "unknown" || row.inventory === "unknown" || row.evidenceLink === "unknown" || row.locator === "unknown" || row.locator === "unavailable" || row.provenance === "unknown" || row.provenance === "unavailable" || row.judgment === "unknown" || row.contradiction === "unknown");
-  const bindingUnknown = claimCoverage === "unknown" || deliverable === "unknown" || bibliography === "unknown" || claims.some(row => row.claim === "unknown" || row.inventory === "unknown" || row.evidenceLink === "unknown" || row.locator === "unknown" || row.locator === "unavailable" || row.provenance === "unknown" || row.provenance === "unavailable");
+  const bindingUnknown = claimCoverage === "unknown" || deliverable === "unknown" || bibliography === "unknown" || claims.some(row => row.claim === "unknown" || row.inventory === "unknown" || row.evidenceLink === "unknown" || row.locator === "unknown" || row.locator === "unavailable" || row.provenance === "unknown" || row.provenance === "unavailable" || row.contradictionHistory === "unknown");
   const ready = !stale && !unknown && claimCoverage === "complete" && deliverable === "unchanged" && bibliography === "unchanged" && citations.state === "resolved" && claims.every(row => !row.next.length);
   const next = unique<SynthesisNext>([...(!sameTask || stale ? ["refresh_manifest" as const] : []), ...(claimCoverage !== "complete" ? ["complete_manifest_claims" as const] : []), ...(deliverable !== "unchanged" || bibliography !== "unchanged" ? ["provide_artifact" as const] : []), ...(citations.state !== "resolved" ? ["repair_citations" as const] : []), ...claims.flatMap(row => row.next)]);
   return { taskId: manifest.taskId, status: stale ? "stale" : ready ? "ready" : unknown ? "unknown" : "not_ready", scope: "structural_provenance", manifestSha256, binding: stale ? "stale" : bindingUnknown ? "unknown" : "current", claimCoverage, deliverable, bibliography, citations, claims, next };

@@ -255,7 +255,10 @@ inventory must be complete. Guarded document/bibliography reads use 256 KiB and
 `EvidenceLinkV1.status` may be `withdrawn` only on a later append-only revision.
 Legacy omission means active and keeps its original canonical bytes/ID;
 explicit active input normalizes to omission. Withdrawn rows remain in complete
-inventory bindings but supply no active locator or contradiction. The owner or
+inventory bindings but supply no active locator. A link that was ever
+`contradicts` remains unresolved after withdrawal or reclassification: its state
+is `withdrawn`, never silently `none`. Only a person's resolved/qualified
+disposition bound to the current manifest clears it, whoever withdrew it. The owner or
 console person uses the existing writer for withdrawal; the active task's owner
 is fenced separately from the actual recorded actor. Source, claim and privacy
 admission stay unchanged. The person exception permits withdrawal, not initial
@@ -264,6 +267,15 @@ Person withdrawal also requires an in-progress public research task. Closed
 task evidence stays final: corrections require a follow-up research task and
 its own manifest binding, and a refusal names that next step. The earlier task's
 manifest cannot be applied to the new task incarnation.
+The host verifies each retained revision's canonical hash and contiguous
+sequence within 1,024 revisions per claim. Missing, corrupt or over-window
+history is unknown and cannot verify readiness. Current privacy also covers
+historical source references used by this observation. The history spans claim
+revisions of the same claimId and contributes its verified commitment to the
+existing inventory revision/hash. Moving a link to another claim revision or
+restoring the exact #901 claim list cannot discard its former contradiction
+or re-bind an earlier person disposition. #901 identity and verdict restoration
+remain unchanged.
 Recovery requires `research_evidence_withdrawal` only while a persisted
 withdrawal revision needs its newer parser. Active-only legacy stores retain
 their existing compatibility requirement.
@@ -297,7 +309,10 @@ readiness. The observer latch precedes evidence-derived inputs.
 
 The pure offline checker reports citation resolution, source/locator freshness,
 person-judgment presence, contradiction state and unchanged deliverables
-separately. Every currently declared claim must be covered. A model's relation
+separately. The person verdict class (`supported`, `unsupported`, `unclear`)
+is shown independently from judgment presence. Any is a recorded assessment
+for structural readiness; ready never means the person supported the claim.
+Every currently declared claim must be covered. A model's relation
 label or matching passage cannot certify semantic support. Offline forbids
 document fetching and network source reads, while the existing configured
 privacy screen may run. An unavailable or unknown screen is never clear; the
